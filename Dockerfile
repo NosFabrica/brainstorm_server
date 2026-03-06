@@ -37,4 +37,5 @@ RUN poetry install --no-interaction --no-cache --without dev
 # Copy Application
 COPY . .
 
-CMD [ "poetry", "run", "alembic", "upgrade", "head", "&&" ,"poetry","run", "uvicorn" , "app.api:app", "--host", "0.0.0.0", "--port", "8000" ]
+COPY start.sh /app/start.sh
+CMD ["/app/start.sh"]
