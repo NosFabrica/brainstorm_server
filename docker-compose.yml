@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  web:
+    # networks:
+    #   - brainstorm-network
+    build: .
+    command: bash -c ' poetry run alembic upgrade head && poetry run uvicorn app.api:app --host 0.0.0.0'
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_URL=postgresql+asyncpg://postgres:postgrespw@host.docker.internal:5432
+      - REDIS_HOST=host.docker.internal
+      - REDIS_PORT=26379
+      - NEO4J_URI=bolt://brainstorm-neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=password
+    depends_on:
+      brainstorm-database:
+        condition: service_healthy
+      brainstorm-neo4j:
+        condition: service_healthy
+      # brainstorm-redis-stack:
+      #   condition: service_healthy
+    restart: on-failure
+
+  brainstorm-database:
+    # networks:
+    #   - brainstorm-network
+
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespw
+      POSTGRES_DB: brainstorm-database
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  brainstorm-redis-stack:
+
+    # networks:
+    #   - brainstorm-network
+    image: redis/redis-stack:latest
+    restart: always
+    ports:
+      - "6379:6379"
+
+  brainstorm-neo4j:
+    image: neo4j:5
+    container_name: neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474" # Neo4j Browser (http)
+      - "7687:7687" # Bolt
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4J_server_memory_pagecache_size: 512M
+      NEO4J_server_memory_heap_initial__size: 512M
+      NEO4J_server_memory_heap_max__size: 512M
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+
+    # networks:
+    #   brainstorm-network:
+    #     external: true
