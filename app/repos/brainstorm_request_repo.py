@@ -46,18 +46,20 @@ async def count_brainstorm_requests_with_priority_over_one_on_db(
     db: AsyncDBSession,
     reference_id: int,
 ) -> int:
-    statement = select(func.count()).where(
-        BrainstormRequest.private_id < reference_id,
-        BrainstormRequest.status.in_(
-            [
-                BrainstormRequestStatus.ONGOING.value,
-                BrainstormRequestStatus.WAITING.value,
-            ]
-        ),
+    statement = select(func.max(BrainstormRequest.private_id)).where(
+        BrainstormRequest.status != BrainstormRequestStatus.WAITING.value
     )
 
     result = await db.execute(statement)
-    return result.scalar_one()
+    last_non_waiting_id = result.scalar_one_or_none()
+
+    if last_non_waiting_id is None:
+        return reference_id
+
+    if last_non_waiting_id > reference_id:
+        return 0
+
+    return reference_id - last_non_waiting_id
 
 
 async def select_latest_brainstorm_request_on_db(
@@ -68,6 +70,23 @@ async def select_latest_brainstorm_request_on_db(
         .where(BrainstormRequest.pubkey == pubkey)
         .order_by(desc(BrainstormRequest.created_at))
         .options(defer(BrainstormRequest.result))
+        .limit(1)
+    )
+
+    existing_data = await execute_db_statement(db, statement, __name__)
+    result: BrainstormRequest | None = existing_data.scalars().first()
+
+    return result
+
+
+async def select_latest_successful_brainstorm_request_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> BrainstormRequest | None:
+    statement = (
+        select(BrainstormRequest)
+        .where(BrainstormRequest.pubkey == pubkey)
+        .where(BrainstormRequest.status == BrainstormRequestStatus.SUCCESS.value)
+        .order_by(desc(BrainstormRequest.created_at))
         .limit(1)
     )
 

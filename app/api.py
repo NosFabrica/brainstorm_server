@@ -45,13 +45,16 @@ async def lifespan(app: FastAPI):
     # test connectivity with Neo4j
     await test_neo4j_driver()
 
-    listener_nostr_upload_task = asyncio.create_task(consume_strfry_plugin_messages())
+    consume_strfry_plugin_messages_task = asyncio.create_task(
+        consume_strfry_plugin_messages()
+    )
+
     if settings.perform_nostr_full_sync:
         # populate the STRFRY relay
         logger.info(
             "Populating your local Brainstorm Relay. Brainstorm is deactivated until it is finished"
         )
-        #await nostr_event_transferer()
+        await nostr_event_transferer()
         logger.info(
             "Finished populating your local Brainstorm Relay!! Populating your Graph DB..."
         )
@@ -59,7 +62,9 @@ async def lifespan(app: FastAPI):
         await wait_until_graph_db_is_populated()
         logger.info("Finished populating your Graph Database!! Enjoy Brainstorm!!")
     else:
-        logger.info("Skipping intial nostr relay full sync... if you want to do it, modify the env variables and restart.")
+        logger.info(
+            "Skipping intial nostr relay full sync... if you want to do it, modify the env variables and restart."
+        )
     # start the regular update cronjob task
     # regular_update_task = asyncio.create_task(nostr_event_recent_transferer_cronjob())
 
@@ -77,6 +82,7 @@ async def lifespan(app: FastAPI):
         listener_nostr_upload_task.cancel()
         listener_neo4j_write_task.cancel()
         listener_ongoing_job_task.cancel()
+        consume_strfry_plugin_messages_task.cancel()
         # regular_update_task.cancel()
 
 

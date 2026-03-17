@@ -49,6 +49,7 @@ async def process_message(message: dict):
         "medium": {},
         "medium_low": {},
         "low": {},
+        "low_and_reported_by_2_or_more_trusted_pubkeys": {},
     }
 
     if grape_rank_result.scorecards:
@@ -61,7 +62,10 @@ async def process_message(message: dict):
             if scorecard.influence < 0.07:
                 confidence = "medium_low"
             if scorecard.influence < 0.02:
-                confidence = "low"
+                if scorecard.trusted_reporters >= 2:
+                    confidence = "low_and_reported_by_2_or_more_trusted_pubkeys"
+                else:
+                    confidence = "low"
 
             if not number_by_confidence_by_hops[confidence].get(scorecard.hops):
                 number_by_confidence_by_hops[confidence][scorecard.hops] = 0
@@ -136,11 +140,13 @@ async def consume_strfry_plugin_messages():
     while True:
         redis_client = None
 
+        async with neo4j_driver.session() as neo4j_session:
+            await create_pubkey_index(neo4j_session)
+
         try:
             redis_client = get_redis_client()
             while True:
                 msg = await redis_client.blpop(STRFRY_EVENTS_QUEUE_NAME, timeout=30)
-                
                 if msg:
                     try:
                         _, message_bytes = msg

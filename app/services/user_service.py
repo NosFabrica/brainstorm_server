@@ -1,9 +1,11 @@
 from app.db_models import BrainstormNsec, BrainstormRequestStatus
+from app.models.grapeRankResult import GrapeRankResult
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.brainstorm_nsec import select_brainstorm_nsec_by_pubkey_on_db
 from app.repos.brainstorm_request_repo import (
     count_brainstorm_requests_with_priority_over_one_on_db,
     select_latest_brainstorm_request_on_db,
+    select_latest_successful_brainstorm_request_on_db,
 )
 from app.repos.user_repo import (
     get_influence_for_observer,
@@ -72,6 +74,9 @@ async def get_user_graph_data(
 ) -> UserGraphData:
 
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
+    trusted_reporters_key = (
+        f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
+    )
 
     query = """
     MATCH (user:NostrUser {pubkey: $pubkey})
@@ -80,7 +85,8 @@ async def get_user_graph_data(
         MATCH (other:NostrUser)-[:FOLLOWS]->(user)
         RETURN collect({
             pubkey: other.pubkey,
-            influence: other[$influence_key]
+            influence: other[$influence_key],
+            trusted_reporters: other[$trusted_reporters_key]
         }) AS followed_by
     }
 
@@ -88,7 +94,8 @@ async def get_user_graph_data(
         MATCH (user)-[:FOLLOWS]->(other:NostrUser)
         RETURN collect({
             pubkey: other.pubkey,
-            influence: other[$influence_key]
+            influence: other[$influence_key],
+            trusted_reporters: other[$trusted_reporters_key]
         }) AS following
     }
 
@@ -96,7 +103,8 @@ async def get_user_graph_data(
         MATCH (other:NostrUser)-[:MUTES]->(user)
         RETURN collect({
             pubkey: other.pubkey,
-            influence: other[$influence_key]
+            influence: other[$influence_key],
+            trusted_reporters: other[$trusted_reporters_key]
         }) AS muted_by
     }
 
@@ -104,7 +112,8 @@ async def get_user_graph_data(
         MATCH (user)-[:MUTES]->(other:NostrUser)
         RETURN collect({
             pubkey: other.pubkey,
-            influence: other[$influence_key]
+            influence: other[$influence_key],
+            trusted_reporters: other[$trusted_reporters_key]
         }) AS muting
     }
 
@@ -112,7 +121,8 @@ async def get_user_graph_data(
         MATCH (other:NostrUser)-[:REPORTS]->(user)
         RETURN collect({
             pubkey: other.pubkey,
-            influence: other[$influence_key]
+            influence: other[$influence_key],
+            trusted_reporters: other[$trusted_reporters_key]
         }) AS reported_by
     }
 
@@ -120,7 +130,8 @@ async def get_user_graph_data(
         MATCH (user)-[:REPORTS]->(other:NostrUser)
         RETURN collect({
             pubkey: other.pubkey,
-            influence: other[$influence_key]
+            influence: other[$influence_key],
+            trusted_reporters: other[$trusted_reporters_key]
         }) AS reporting
     }
 
@@ -139,6 +150,7 @@ async def get_user_graph_data(
             query,
             pubkey=pubkey,
             influence_key=influence_key,
+            trusted_reporters_key=trusted_reporters_key,
         )
 
         record = await result.single()
@@ -212,3 +224,31 @@ async def get_user_history_data(db: AsyncDBSession, pubkey: str) -> UserHistoryI
     return brainstorm_nsec_db_obj_to_user_history_schema_converter(
         brainstorm_nsec_db_obj=brainstorm_nsec_db_obj,
     )
+
+
+async def get_whitelisted_pubkeys_of_observer(
+    db: AsyncDBSession, pubkey: str, threshold: float = 0.02
+) -> list[str]:
+
+    latest_successful_result = await select_latest_successful_brainstorm_request_on_db(
+        db, pubkey
+    )
+
+    if not latest_successful_result:
+        return []
+
+    if not latest_successful_result.result:
+        raise Exception("successful graperank didnt have result")
+
+    graperank_result = GrapeRankResult.model_validate_json(
+        latest_successful_result.result
+    )
+
+    if graperank_result.scorecards is None:
+        raise Exception("graperank_result.scorecards is None")
+
+    return [
+        x.observee
+        for x in graperank_result.scorecards.values()
+        if x.influence >= threshold
+    ]

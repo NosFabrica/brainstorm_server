@@ -47,7 +47,8 @@ async def process_neo4j_write_message(message: dict):
         UNWIND $rows AS row
         MATCH (n:NostrUser {{pubkey: row.observee}})
         SET n.influence_{observer} = row.influence,
-            n.hops_{observer} = row.hops
+            n.hops_{observer} = row.hops,
+            n.trusted_reporters_{observer} = row.trusted_reporters
         """
         async with neo4j_driver.session() as session:
             await session.run(query, rows=batch)

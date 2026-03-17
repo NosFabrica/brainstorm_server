@@ -64,3 +64,13 @@ class GetOwnUserDataResponse(SuccessfulResponseDataSchema):
 
 class GetOwnLatestGraperankResponse(SuccessfulResponseDataSchema):
     data: BrainstormRequestInstance | None
+
+
+class WhitelistedPubkeys(BaseModel):
+    observerPubkey: str
+    numPubkeys: int
+    pubkeys: list[str]
+
+
+class GetWhitelistedPubkeysOfObserverResponse(SuccessfulResponseDataSchema):
+    data: WhitelistedPubkeys

@@ -49,6 +49,7 @@ class BrainstormPubkeyInstance(CreatedAndUpdatedAtModel):
 class UserConnection(BaseModel):
     pubkey: str
     influence: float | None = None
+    trusted_reporters: int | None = None
 
 
 class UserGraphData(BaseModel):

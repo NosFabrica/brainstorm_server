@@ -12,6 +12,7 @@ class ScoreCard(BaseModel):
     verified: bool | None = None
     hops: int = 0
     trusted_followers: int = 0
+    trusted_reporters: int = 0
 
 
 class GrapeRankResult(BaseModel):
