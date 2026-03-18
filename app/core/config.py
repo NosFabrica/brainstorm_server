@@ -18,9 +18,10 @@ class Settings(BaseSettings):
     redis_port: str = Field(...)
     nostr_transfer_from_relay: str = Field(...)
     nostr_transfer_to_relay: str = Field(...)
-    nostr_transfer_to_relay2: str | None = Field(None)  # temporary
+    nostr_transfer_to_relay2: str | None = Field(None)
     nostr_upload_ta_events_relay: str = Field(...)
     cutoff_of_valid_graperank_scores: float = Field(...)
+    perform_nostr_full_sync: bool = Field(...)
 
     class Config:
         env_file = ".env"
