@@ -51,6 +51,7 @@ async def get_brainstorm_request_by_id_and_password(
             db=db,
             brainstorm_request_id=brainstorm_request_id,
             brainstorm_request_password=brainstorm_request_password,
+            include_result=include_result,
         )
     )
 
