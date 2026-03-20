@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -5,6 +6,22 @@ from fastapi import HTTPException, Request, Security, status
 from fastapi.security.api_key import APIKeyHeader
 
 from app.utils.auth.auth_util import decrypt_jwt_token
+
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def validate_nostr_pubkey(pubkey: str) -> str:
+    """Validate that a string is a 64-character lowercase hex pubkey.
+
+    Returns the normalised (lowercased) pubkey or raises 400.
+    """
+    normalised = pubkey.strip().lower()
+    if not _HEX64_RE.match(normalised):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid nostr pubkey: expected 64-character hex string, got {len(pubkey)} characters",
+        )
+    return normalised
 
 # Accept both the standard Authorization: Bearer header and the legacy
 # custom access_token header for backward compatibility.
