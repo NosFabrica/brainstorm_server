@@ -23,16 +23,17 @@ async def delete_brainstorm_request_by_id_on_db(
 
 
 async def select_brainstorm_request_by_id_and_password_on_db(
-    db: AsyncDBSession, brainstorm_request_id: int, brainstorm_request_password: str
+    db: AsyncDBSession,
+    brainstorm_request_id: int,
+    brainstorm_request_password: str,
+    include_result: bool = False,
 ) -> BrainstormRequest:
-    statement = (
-        select(BrainstormRequest)
-        .where(
-            BrainstormRequest.private_id == brainstorm_request_id,
-            BrainstormRequest.password == brainstorm_request_password,
-        )
-        .options(defer(BrainstormRequest.result))
+    statement = select(BrainstormRequest).where(
+        BrainstormRequest.private_id == brainstorm_request_id,
+        BrainstormRequest.password == brainstorm_request_password,
     )
+    if not include_result:
+        statement = statement.options(defer(BrainstormRequest.result))
     existing_data = await execute_db_statement(db, statement, __name__)
     result: BrainstormRequest | None = existing_data.scalars().first()
 
