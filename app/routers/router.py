@@ -1,13 +1,10 @@
-from typing import Optional
 from fastapi import Query
 from fastapi import APIRouter, Depends, Request
 
 from app.core.database import get_db
-from app.repos.brainstorm_request_repo import (
-    select_latest_successful_brainstorm_request_on_db,
-)
-from app.routers.brainstorm_request.router import router as brainstorm_request_router
-from app.routers.brainstorm_pubkey.router import router as brainstorm_pubkey_router
+
+# from app.routers.brainstorm_request.router import router as brainstorm_request_router
+# from app.routers.brainstorm_pubkey.router import router as brainstorm_pubkey_router
 from app.routers.auth_challenge.router import router as auth_challenge_router
 from app.routers.setup.router import router as setup_router
 from app.routers.user.router import router as user_router
@@ -16,7 +13,6 @@ from app.schemas.request_response_schemas import (
     WhitelistedPubkeys,
 )
 from app.services.user_service import (
-    get_own_latest_graperank,
     get_whitelisted_pubkeys_of_observer,
 )
 from app.utils.api_validators import verify_token
@@ -24,21 +20,21 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 router = APIRouter()
 
-BRAINSTORM_PUBKEY_ROUTER_PREFIX = "/brainstormPubkey"
+# BRAINSTORM_PUBKEY_ROUTER_PREFIX = "/brainstormPubkey"
 
-router.include_router(
-    router=brainstorm_pubkey_router,
-    prefix=BRAINSTORM_PUBKEY_ROUTER_PREFIX,
-    tags=["brainstorm_pubkey"],
-)
+# router.include_router(
+#     router=brainstorm_pubkey_router,
+#     prefix=BRAINSTORM_PUBKEY_ROUTER_PREFIX,
+#     tags=["brainstorm_pubkey"],
+# )
 
-BRAINSTORM_REQUEST_ROUTER_PREFIX = "/brainstormRequest"
+# BRAINSTORM_REQUEST_ROUTER_PREFIX = "/brainstormRequest"
 
-router.include_router(
-    router=brainstorm_request_router,
-    prefix=BRAINSTORM_REQUEST_ROUTER_PREFIX,
-    tags=["brainstorm_request"],
-)
+# router.include_router(
+#     router=brainstorm_request_router,
+#     prefix=BRAINSTORM_REQUEST_ROUTER_PREFIX,
+#     tags=["brainstorm_request"],
+# )
 
 AUTH_CHALLENGE_ROUTER_PREFIX = "/authChallenge"
 

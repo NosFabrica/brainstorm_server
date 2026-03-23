@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from app.utils.rate_limiting.rate_limiting import validateIfRequestedTooOftenByIP
 from fastapi import HTTPException
 from fastapi import APIRouter, Depends, Request, status
 from app.core.database import get_db
@@ -58,13 +59,16 @@ async def create_graperank_calc_endpoint(
     jwt_data: JWTData = request.state.jwt_data
     user_pubkey = jwt_data.nostr_pubkey
 
-    # latest = await get_own_latest_graperank(db, user_pubkey)
+    if request.client:
+        await validateIfRequestedTooOftenByIP(request.client.host)
 
-    # if latest and latest.created_at > datetime.now() - timedelta(hours=1):
-    #     raise HTTPException(
-    #         status_code=status.HTTP_403_FORBIDDEN,
-    #         detail="The last triggered Graperank was too recent",
-    #     )
+    latest = await get_own_latest_graperank(db, user_pubkey)
+
+    if latest and latest.created_at > datetime.now() - timedelta(minutes=30):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The last triggered Graperank was too recent",
+        )
 
     result = await create_brainstorm_request(
         db=db,
