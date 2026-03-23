@@ -28,9 +28,6 @@ async def get_setup_endpoint(
     )
 
     ta_pubkey = Keys.parse(secret_key=brainstorm_nsec.nsec).public_key().to_hex()
-    relay = settings.nostr_upload_ta_events_relay
+    relay = settings.nostr_upload_ta_events_relay_public_url
 
-    return [
-        [f"30382:{tag}", ta_pubkey, relay]
-        for tag in TAGS_IN_30382
-    ]
+    return [[f"30382:{tag}", ta_pubkey, relay] for tag in TAGS_IN_30382]
