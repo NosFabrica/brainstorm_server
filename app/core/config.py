@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     nostr_upload_ta_events_relay_public_url: str = Field(...)
     cutoff_of_valid_graperank_scores: float = Field(...)
     perform_nostr_full_sync: bool = Field(...)
+    frontend_url: str = Field(...)
 
     class Config:
         env_file = ".env"

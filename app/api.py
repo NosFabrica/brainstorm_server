@@ -97,17 +97,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-if settings.deploy_environment == "LOCAL":
-    logger.info("Allowing CORS...")
-    origins = ["*"]
+origins = ["*"]
+if settings.deploy_environment != "LOCAL":
+    logger.info("Setting specific CORS origin...")
+    origins = [settings.frontend_url]
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=False,  # TODO: REMOVE THIS ONCE NEEDED
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+logger.info("Allowing CORS...")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=False,  # TODO: REMOVE THIS ONCE NEEDED
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware(middleware_type="http")
