@@ -139,4 +139,5 @@ app.include_router(
     prefix="",
 )
 
-add_sql_admin_panel(app)
+if settings.deploy_environment == "LOCAL":
+    add_sql_admin_panel(app)
