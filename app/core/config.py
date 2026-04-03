@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     cutoff_of_valid_graperank_scores: float = Field(...)
     perform_nostr_full_sync: bool = Field(...)
     frontend_url: str = Field(...)
+    admin_enabled: bool = Field(default=False)
+    admin_whitelisted_pubkeys: str = Field(default="")
 
     class Config:
         env_file = ".env"

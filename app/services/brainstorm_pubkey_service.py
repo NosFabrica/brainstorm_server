@@ -1,20 +1,42 @@
-from app.db_models import BrainstormNsec
-from app.schemas.schemas import BrainstormPubkeyInstance, BrainstormRequestInstance
 from nostr_sdk import Keys
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+
+from app.repos.brainstorm_nsec import (
+    get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
+)
+from app.schemas.schemas import BrainstormPubkeyInstance
+from app.services.brainstorm_request_service import create_brainstorm_request
 
 
-def brainstorm_pubkey_db_obj_to_schema_converter(
-    brainstorm_nsec_db_obj: BrainstormNsec,
-    triggered_graperank: BrainstormRequestInstance | None,
+async def get_or_create_brainstorm_pubkey(
+    db: AsyncDBSession, nostr_pubkey: str
 ) -> BrainstormPubkeyInstance:
-    brainstorm_pubkey_obj = BrainstormPubkeyInstance(
-        global_pubkey=brainstorm_nsec_db_obj.pubkey,
-        brainstorm_pubkey=Keys.parse(secret_key=brainstorm_nsec_db_obj.nsec)
-        .public_key()
-        .to_hex(),
-        triggered_graperank=triggered_graperank,
-        created_at=brainstorm_nsec_db_obj.created_at,
-        updated_at=brainstorm_nsec_db_obj.updated_at,
+    result, was_created_now = (
+        await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
+            db, pubkey=nostr_pubkey
+        )
     )
 
-    return brainstorm_pubkey_obj
+    # Read ORM attributes eagerly before any further DB ops expire the object
+    result_pubkey = result.pubkey
+    result_nsec = result.nsec
+    result_created_at = result.created_at
+    result_updated_at = result.updated_at
+
+    triggered_graperank = None
+    if was_created_now:
+        triggered_graperank = await create_brainstorm_request(
+            db=db,
+            algorithm="graperank",
+            parameters=nostr_pubkey,
+            pubkey=nostr_pubkey,
+            nsec_exists=True,
+        )
+
+    return BrainstormPubkeyInstance(
+        global_pubkey=result_pubkey,
+        brainstorm_pubkey=Keys.parse(secret_key=result_nsec).public_key().to_hex(),
+        triggered_graperank=triggered_graperank,
+        created_at=result_created_at,
+        updated_at=result_updated_at,
+    )

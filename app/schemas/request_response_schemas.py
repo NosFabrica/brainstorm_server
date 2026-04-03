@@ -74,3 +74,7 @@ class WhitelistedPubkeys(BaseModel):
 
 class GetWhitelistedPubkeysOfObserverResponse(SuccessfulResponseDataSchema):
     data: WhitelistedPubkeys
+
+
+class IsAdminResponse(SuccessfulResponseDataSchema):
+    data: bool

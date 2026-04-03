@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Request
 from app.core.database import get_db
 
 # from app.routers.brainstorm_request.router import router as brainstorm_request_router
-# from app.routers.brainstorm_pubkey.router import router as brainstorm_pubkey_router
+from app.routers.admin.router import router as admin_router
 from app.routers.auth_challenge.router import router as auth_challenge_router
 from app.routers.setup.router import router as setup_router
 from app.routers.user.router import router as user_router
@@ -20,13 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 router = APIRouter()
 
-# BRAINSTORM_PUBKEY_ROUTER_PREFIX = "/brainstormPubkey"
+ADMIN_ROUTER_PREFIX = "/admin"
 
-# router.include_router(
-#     router=brainstorm_pubkey_router,
-#     prefix=BRAINSTORM_PUBKEY_ROUTER_PREFIX,
-#     tags=["brainstorm_pubkey"],
-# )
+router.include_router(
+    router=admin_router,
+    prefix=ADMIN_ROUTER_PREFIX,
+    tags=["admin"],
+)
 
 # BRAINSTORM_REQUEST_ROUTER_PREFIX = "/brainstormRequest"
 
