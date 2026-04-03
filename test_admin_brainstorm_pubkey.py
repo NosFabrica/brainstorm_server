@@ -39,7 +39,7 @@ def main():
 
     # 2. Sign and verify
     event = (
-        EventBuilder(Kind(27235), "")
+        EventBuilder(Kind(22242), "")
         .tags([
             Tag.parse(["t", "brainstorm_login"]),
             Tag.parse(["challenge", challenge]),
