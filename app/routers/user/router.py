@@ -4,10 +4,12 @@ from fastapi import HTTPException
 from fastapi import APIRouter, Depends, Request, status
 from app.core.database import get_db
 from app.schemas.request_body_schemas import SubmitNostrAuthChallengeBody
+from app.routers.admin.router import get_whitelisted_pubkeys
 from app.schemas.request_response_schemas import (
     GetOwnLatestGraperankResponse,
     GetOwnUserDataResponse,
     GetUserDataResponse,
+    IsAdminResponse,
 )
 
 
@@ -100,6 +102,17 @@ async def get_own_user_data_endpoint(
     history = await get_user_history_data(db, user_pubkey)
 
     return GetOwnUserDataResponse(data=OwnUserData(graph=result, history=history))
+
+
+@router.get(
+    path="/isAdmin",
+    tags=[],
+    dependencies=[],
+    summary="Check if the authenticated user is an admin",
+)
+async def is_admin_endpoint(request: Request) -> IsAdminResponse:
+    jwt_data: JWTData = request.state.jwt_data
+    return IsAdminResponse(data=jwt_data.nostr_pubkey in get_whitelisted_pubkeys())
 
 
 @router.get(

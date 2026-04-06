@@ -42,6 +42,10 @@ if settings.deploy_environment == DEPLOY_ENVIRONMENT_LOCAL:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # initialize admin whitelist cache and log config
+    from app.routers.admin.router import init_admin_whitelist
+    init_admin_whitelist()
+
     # test connectivity with Neo4j
     await test_neo4j_driver()
 

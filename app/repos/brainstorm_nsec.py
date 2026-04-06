@@ -26,6 +26,7 @@ async def get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
     db.add(instance)
 
     await db.flush()
+    await db.refresh(instance)
 
     return instance, True
 
