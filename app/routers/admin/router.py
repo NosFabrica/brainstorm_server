@@ -1,3 +1,6 @@
+from typing import Optional
+
+from app.utils.auth.auth_models import JWTData
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from nostr_sdk import PublicKey
@@ -24,14 +27,17 @@ def init_admin_whitelist() -> None:
     if not raw:
         _whitelisted_pubkeys = set()
     else:
-        _whitelisted_pubkeys = {_normalize_pubkey(p.strip()) for p in raw.split(",") if p.strip()}
+        _whitelisted_pubkeys = {
+            _normalize_pubkey(p.strip()) for p in raw.split(",") if p.strip()
+        }
 
     if settings.admin_enabled:
         truncated = [
-            PublicKey.parse(pk).to_bech32()[:16] + "..."
-            for pk in _whitelisted_pubkeys
+            PublicKey.parse(pk).to_bech32()[:16] + "..." for pk in _whitelisted_pubkeys
         ]
-        logger.info(f"Admin routes ENABLED. Whitelisted pubkeys ({len(truncated)}): {truncated}")
+        logger.info(
+            f"Admin routes ENABLED. Whitelisted pubkeys ({len(truncated)}): {truncated}"
+        )
     else:
         logger.info("Admin routes DISABLED.")
 
@@ -40,7 +46,9 @@ def get_whitelisted_pubkeys() -> set[str]:
     return _whitelisted_pubkeys
 
 
-async def verify_admin_access(request: Request):
+async def verify_admin_access(
+    request: Request,
+):
     if not settings.admin_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -54,7 +62,7 @@ async def verify_admin_access(request: Request):
             detail="No whitelisted pubkeys configured",
         )
 
-    jwt_data = await verify_token(request)
+    jwt_data: JWTData = request.state.jwt_data
     if jwt_data.nostr_pubkey not in whitelist:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -62,7 +70,7 @@ async def verify_admin_access(request: Request):
         )
 
 
-router = APIRouter(dependencies=[Depends(verify_admin_access)])
+router = APIRouter(dependencies=[Depends(verify_token), Depends(verify_admin_access)])
 
 router.include_router(
     router=brainstorm_pubkey_router,
