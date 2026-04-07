@@ -66,7 +66,9 @@ async def create_graperank_calc_endpoint(
 
     latest = await get_own_latest_graperank(db, user_pubkey)
 
-    if latest and latest.created_at > datetime.now() - timedelta(minutes=30):
+    if latest and latest.created_at.replace(tzinfo=None) > datetime.now() - timedelta(
+        minutes=30
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="The last triggered Graperank was too recent",
