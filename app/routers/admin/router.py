@@ -75,5 +75,5 @@ router = APIRouter(dependencies=[Depends(verify_token), Depends(verify_admin_acc
 router.include_router(
     router=brainstorm_pubkey_router,
     prefix="/brainstormPubkey",
-    tags=["admin", "brainstorm_pubkey"],
+    tags=["admin"],
 )
