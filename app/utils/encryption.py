@@ -1,3 +1,5 @@
+import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -5,49 +7,67 @@ from cryptography.fernet import Fernet, MultiFernet
 
 KEY_FILE_PATH = Path("/run/secrets/nsec_encryption_keys")
 
-_cached_mf: MultiFernet | None = None
-_cache_loaded: bool = False
+_mf: MultiFernet | None = None
+_keys: list[str] = []
 _lock = threading.Lock()
 
 
-def _load_from_file() -> MultiFernet | None:
+def _parse_keys(raw: str) -> list[str]:
+    return [k.strip() for k in raw.split(",") if k.strip()]
+
+
+def read_keys_from_file(path: Path = KEY_FILE_PATH) -> list[str]:
     try:
-        raw = KEY_FILE_PATH.read_text().strip()
+        raw = path.read_text().strip()
     except FileNotFoundError:
-        return None
-    if not raw:
-        return None
-    keys = [Fernet(k.strip()) for k in raw.split(",") if k.strip()]
-    if not keys:
-        return None
-    return MultiFernet(keys)
+        return []
+    return _parse_keys(raw) if raw else []
 
 
-def _get_multi_fernet() -> MultiFernet | None:
-    global _cached_mf, _cache_loaded
-    if _cache_loaded:
-        return _cached_mf
+def write_keys_to_file(keys: list[str], path: Path = KEY_FILE_PATH) -> None:
+    """Atomic write of comma-joined keys to path (0600)."""
+    content = ",".join(keys)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".keys.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def load_keys_from_file(path: Path = KEY_FILE_PATH) -> int:
+    """(Re)load keys from disk into the in-process MultiFernet. Returns key count."""
+    global _mf, _keys
+    keys = read_keys_from_file(path)
     with _lock:
-        if not _cache_loaded:
-            _cached_mf = _load_from_file()
-            _cache_loaded = True
-    return _cached_mf
+        _keys = keys
+        _mf = MultiFernet([Fernet(k) for k in keys]) if keys else None
+    return len(keys)
 
 
-def reload_keys() -> None:
-    """Clear cached MultiFernet; next call reloads from file. SIGUSR1 handler."""
-    global _cached_mf, _cache_loaded
+def current_keys() -> list[str]:
     with _lock:
-        _cached_mf = None
-        _cache_loaded = False
+        return list(_keys)
+
+
+def get_mf() -> MultiFernet | None:
+    with _lock:
+        return _mf
 
 
 def is_encryption_configured() -> bool:
-    return _get_multi_fernet() is not None
+    return get_mf() is not None
 
 
 def encrypt_nsec(plaintext: str) -> str:
-    mf = _get_multi_fernet()
+    mf = get_mf()
     if mf is None:
         return plaintext
     return mf.encrypt(plaintext.encode()).decode()
@@ -56,7 +76,7 @@ def encrypt_nsec(plaintext: str) -> str:
 def decrypt_nsec(value: str) -> str:
     if value.startswith("nsec1"):
         return value
-    mf = _get_multi_fernet()
+    mf = get_mf()
     if mf is None:
         return value
     return mf.decrypt(value.encode()).decode()

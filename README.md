@@ -88,52 +88,56 @@ Read path prefers `encrypted_nsec`, falls back to `nsec`. New rows dual-write.
 
 ### Key storage
 
-The encryption key lives in a file, not env vars: `/run/secrets/nsec_encryption_keys` inside the container, bind-mounted from `./secrets/nsec_encryption_keys` on the host (see `brainstorm_one_click_deployment/docker-compose.yml`). File format: comma-separated Fernet keys, newest first. Missing or empty file → encryption disabled (passthrough).
+The encryption key lives in a file, not env vars: `/run/secrets/nsec_encryption_keys` inside the container, bind-mounted **rw** from `./secrets/nsec_encryption_keys` on the host (see `brainstorm_one_click_deployment/docker-compose.yml`). File format: comma-separated Fernet keys, newest first.
 
-The app reads and caches the key on first use. A SIGUSR1 signal clears the cache so the next call rereads the file — this is how rotation achieves zero downtime.
+The app loads the file into a mutable in-process `MultiFernet` at startup. Rotation rewrites the file and reloads in-place — no signals, no container restart.
 
 ### Bootstrap
 
-```bash
-cd brainstorm_one_click_deployment
-mkdir -p secrets
-docker compose up -d brainstorm-server
-docker compose --profile ops run --rm nsec-rotate
-```
+On first startup, if the key file is missing or empty, the app auto-generates a fresh Fernet key, writes it to the file, and encrypts any pre-existing plaintext rows from the legacy `nsec` column. No manual bootstrap step required.
 
-The rotation script detects the missing key file, generates one inside the container, writes it to `./secrets/nsec_encryption_keys` via the bind mount, signals the app to pick it up, and encrypts any existing rows.
+**Important:** after first bootstrap on a given host, copy `./secrets/nsec_encryption_keys` to your secrets vault. The key file is the only thing standing between `encrypted_nsec` ciphertexts and plaintext recovery — losing it (once the plaintext column is dropped) loses all server-held nsecs.
 
 ### Key rotation
 
-```bash
-cd brainstorm_one_click_deployment
-docker compose --profile ops run --rm nsec-rotate
+Rotation is triggered via a whitelisted admin endpoint. Your pubkey must be in `admin_whitelisted_pubkeys` and `admin_enabled` must be true on the target server.
+
+```
+POST /admin/nsec-encryption/rotate    → 202 {"status": "started"}
+POST /admin/nsec-encryption/verify    → 200 {"ok": N, "fail": 0}
 ```
 
-Flow (automated by `scripts/rotate_nsec_key.py`):
+`rotate` is fire-and-forget: it spawns an in-process background task and returns immediately. 409 is returned if a rotation is already running. Progress and errors land in the server logs — see *Later work* below for the audit table follow-up.
 
-1. Read current key from file.
-2. Generate new Fernet key.
-3. Write `<new>,<old>` to file, send SIGUSR1 to `brainstorm-server`. App now decrypts with either key.
-4. Re-encrypt every row using the new key.
-5. Verify every row decrypts with the new key alone.
-6. Write `<new>` to file, send SIGUSR1 again. Old key is gone.
+Flow (in `app/services/nsec_encryption_service.py`):
 
-Zero downtime — no container recreate. On any failure before step 6, the file still has both keys and the app still works.
+1. Pre-flight: verify every `encrypted_nsec` row decrypts with the current key. Abort if any row fails — refuse to rotate over drifted state.
+2. Generate new Fernet key. Atomic-write `<new>,<old>` to the key file, reload in-process. App now decrypts with either key.
+3. Re-encrypt every row using the new key.
+4. Verify every row decrypts with `<new>` alone.
+5. Atomic-write `<new>` to the key file, reload. Rotation complete.
 
-Flags: `--dry-run`, `--verify-only`, `--container NAME`, `--batch-size N`.
+On any failure after step 2, the key file remains `<new>,<old>` so the app keeps working while you investigate.
+
+**After rotation, manually copy the new key file to your secrets vault.**
 
 ### Rollback
 
-Since plaintext `nsec` column is preserved, rolling back is safe:
+Since the plaintext `nsec` column is preserved, rolling back is safe:
 1. Revert code deploy.
 2. Old code reads directly from `nsec` column, ignoring `encrypted_nsec`.
 
 ### Emergency: key lost
 
-Back up the key file (password manager / secrets vault). As long as the key exists somewhere, nsecs are recoverable.
+Back up the key file to a secrets vault after every rotation. As long as the key exists somewhere, nsecs are recoverable.
 
-If truly lost while `nsec` column still exists: clear `encrypted_nsec`, write a new key file, re-run the rotation script to re-encrypt from the plaintext column. After the `nsec` column is dropped, nsecs become unrecoverable without the key.
+If truly lost while the `nsec` column still exists: clear `encrypted_nsec`, restart the server (the lifespan bootstrap will generate a fresh key and re-encrypt from the plaintext column). After the `nsec` column is dropped, nsecs become unrecoverable without the key.
+
+### Later work
+
+- **Audit / rotation history table** (`nsec_key_rotation`) — record started_at, finished_at, actor pubkey, status, rows_updated, error. Enables a status-polling endpoint for the rotation task.
+- **Chunked re-encryption** — current implementation loads all rows at once; revisit if the table grows large.
+- **Drop the plaintext `nsec` column** — separate migration once prod soak confirms `encrypted_nsec` is authoritative.
 
 ## Scripts
 
@@ -165,14 +169,3 @@ python3 scripts/test_admin_brainstorm_pubkey.py --base-url https://brainstormser
 
 Your nsec will be prompted securely (hidden input). Your pubkey must be in `admin_whitelisted_pubkeys` on the target server.
 
-### `scripts/rotate_nsec_key.py`
-
-Bootstraps and rotates the nsec encryption key. See [Nsec encryption](#nsec-encryption) above.
-
-### `scripts/test_seed_users.py`
-
-Seeds 10 test Nostr users with follow, mute, and report relationships to a local relay.
-
-```bash
-python3 scripts/test_seed_users.py [--relay ws://localhost:7777]
-```
