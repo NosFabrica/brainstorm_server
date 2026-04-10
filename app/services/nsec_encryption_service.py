@@ -89,6 +89,36 @@ async def _reencrypt_all(mf: MultiFernet) -> int:
     return updated
 
 
+async def bootstrap_keys() -> None:
+    """Load keys from disk, or generate a fresh one if the file is empty.
+
+    Called at app startup. Refuses to mint a new key if ciphertext rows
+    already exist — that would strand them. Operator must restore the
+    key file from the secrets vault instead.
+    """
+    loaded = load_keys_from_file()
+    if loaded > 0:
+        logger.info(f"nsec encryption: loaded {loaded} key(s) from file")
+        return
+
+    if await count_encrypted_rows() > 0:
+        logger.error(
+            "nsec encryption: key file missing but encrypted_nsec rows exist; "
+            "refusing to bootstrap a new key. Restore the key file from your "
+            "secrets vault. Requests that decrypt nsecs will fail until fixed."
+        )
+        return
+
+    logger.info("nsec encryption: no key file found, generating new key")
+    write_keys_to_file([Fernet.generate_key().decode()])
+    load_keys_from_file()
+    encrypted = await encrypt_plaintext_rows()
+    logger.info(
+        f"nsec encryption: bootstrapped new key; encrypted {encrypted} "
+        f"pre-existing plaintext rows"
+    )
+
+
 async def count_encrypted_rows() -> int:
     """Rows already holding ciphertext — used to guard against bootstrapping
     over an existing key file that got lost."""
