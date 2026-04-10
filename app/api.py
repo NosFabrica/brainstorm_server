@@ -1,4 +1,5 @@
 import asyncio
+import signal
 from contextlib import asynccontextmanager
 import random
 import string
@@ -21,6 +22,7 @@ from app.core.loggr import loggr
 from app.core.sql_admin_panel import add_sql_admin_panel
 from app.routers.router import router as main_router
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
+from app.utils.encryption import reload_keys as reload_nsec_keys
 from app.nostr_event_transferer.nostr_event_transferer import (
     nostr_event_recent_transferer_cronjob,
     nostr_event_transferer,
@@ -42,6 +44,11 @@ if settings.deploy_environment == DEPLOY_ENVIRONMENT_LOCAL:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        signal.signal(signal.SIGUSR1, lambda *_: (logger.info("SIGUSR1: reloading nsec encryption keys"), reload_nsec_keys()))
+    except (ValueError, OSError) as e:
+        logger.warning(f"Could not register SIGUSR1 handler: {e}")
+
     # initialize admin whitelist cache and log config
     from app.routers.admin.router import init_admin_whitelist
     init_admin_whitelist()
