@@ -21,10 +21,13 @@ from app.core.loggr import loggr
 from app.core.sql_admin_panel import add_sql_admin_panel
 from app.routers.router import router as main_router
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
+from app.services.nsec_encryption_service import bootstrap_keys
 from app.nostr_event_transferer.nostr_event_transferer import (
     nostr_event_recent_transferer_cronjob,
     nostr_event_transferer,
 )
+
+from app.routers.admin.router import init_admin_whitelist
 
 logger = loggr.get_logger(__name__)
 
@@ -42,8 +45,9 @@ if settings.deploy_environment == DEPLOY_ENVIRONMENT_LOCAL:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await bootstrap_keys()
+
     # initialize admin whitelist cache and log config
-    from app.routers.admin.router import init_admin_whitelist
     init_admin_whitelist()
 
     # test connectivity with Neo4j

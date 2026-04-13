@@ -7,6 +7,7 @@ from nostr_sdk import PublicKey
 
 from app.core.config import settings
 from app.core.loggr import loggr
+from app.routers.admin.nsec_encryption.router import router as nsec_encryption_router
 from app.routers.brainstorm_pubkey.router import router as brainstorm_pubkey_router
 from app.utils.api_validators import verify_token
 
@@ -75,5 +76,11 @@ router = APIRouter(dependencies=[Depends(verify_token), Depends(verify_admin_acc
 router.include_router(
     router=brainstorm_pubkey_router,
     prefix="/brainstormPubkey",
+    tags=["admin"],
+)
+
+router.include_router(
+    router=nsec_encryption_router,
+    prefix="/nsec-encryption",
     tags=["admin"],
 )
