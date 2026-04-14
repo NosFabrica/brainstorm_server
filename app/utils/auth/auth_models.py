@@ -13,6 +13,7 @@ class JWTData(BaseModel):
     nostr_pubkey: str
     token_type: TokenType = TokenType.USER
     expires_date: datetime
+    is_admin: bool = False
 
 
 class JWTSQLAdminData(BaseModel):
