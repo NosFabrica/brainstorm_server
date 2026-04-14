@@ -25,6 +25,9 @@ from app.nostr_event_transferer.nostr_event_transferer import (
     nostr_event_recent_transferer_cronjob,
     nostr_event_transferer,
 )
+from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
+    fail_stale_ongoing_brainstorm_requests_cronjob,
+)
 
 logger = loggr.get_logger(__name__)
 
@@ -77,6 +80,9 @@ async def lifespan(app: FastAPI):
     listener_nostr_upload_task = asyncio.create_task(consume_nostr_upload_messages())
     listener_neo4j_write_task = asyncio.create_task(consume_neo4j_write_messages())
     listener_ongoing_job_task = asyncio.create_task(consume_job_started_messages())
+    fail_stale_ongoing_task = asyncio.create_task(
+        fail_stale_ongoing_brainstorm_requests_cronjob()
+    )
 
     try:
         yield
@@ -87,6 +93,7 @@ async def lifespan(app: FastAPI):
         listener_neo4j_write_task.cancel()
         listener_ongoing_job_task.cancel()
         consume_strfry_plugin_messages_task.cancel()
+        fail_stale_ongoing_task.cancel()
         # regular_update_task.cancel()
 
 
