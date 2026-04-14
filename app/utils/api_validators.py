@@ -15,7 +15,7 @@ def validate_nostr_pubkey(pubkey: str) -> str:
     if not _HEX64_RE.match(normalised):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid nostr pubkey: expected 64-character hex, got {len(pubkey)} characters",
+            detail=f"Invalid nostr pubkey: expected 64-character hex, got {len(normalised)} characters",
         )
     return normalised
 
