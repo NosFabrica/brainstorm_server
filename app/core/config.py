@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     frontend_url: str = Field(...)
     admin_enabled: bool = Field(default=False)
     admin_whitelisted_pubkeys: str = Field(default="")
+    stale_ongoing_brainstorm_request_threshold_hours: float = Field(default=7.0)
+    stale_ongoing_brainstorm_request_check_interval_minutes: float = Field(default=30.0)
     block_frequent_graperank_requests: bool = Field(default=False)
     block_frequent_graperank_requests_minutes: int = Field(default=30)
 

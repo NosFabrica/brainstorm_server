@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.orm import defer
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -174,6 +176,22 @@ async def update_brainstorm_request_result_by_id_on_db(
 
     _ = await execute_db_statement(db, statement, __name__)
     return None
+
+
+async def fail_stale_ongoing_brainstorm_requests_on_db(
+    db: AsyncDBSession, stale_threshold: timedelta
+) -> int:
+    cutoff = datetime.now() - stale_threshold
+    statement = (
+        update(BrainstormRequest)
+        .where(
+            BrainstormRequest.status == BrainstormRequestStatus.ONGOING.value,
+            BrainstormRequest.updated_at < cutoff,
+        )
+        .values(status=BrainstormRequestStatus.FAILURE.value)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.rowcount
 
 
 async def create_brainstorm_request_on_db(
