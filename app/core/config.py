@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     frontend_url: str = Field(...)
     admin_enabled: bool = Field(default=False)
     admin_whitelisted_pubkeys: str = Field(default="")
+    block_frequent_graperank_requests: bool = Field(default=False)
+    block_frequent_graperank_requests_minutes: int = Field(default=30)
 
     class Config:
         env_file = ".env"
