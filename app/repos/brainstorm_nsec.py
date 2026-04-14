@@ -4,7 +4,15 @@ from app.core.database import execute_db_statement, handle_no_data
 from app.db_models import BrainstormNsec
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.utils.encryption import decrypt_nsec, encrypt_nsec
 from app.utils.nostr import generate_random_nsec
+
+
+def _resolve_plaintext_nsec(row: BrainstormNsec) -> str:
+    """Prefer encrypted_nsec if present, otherwise fall back to plaintext nsec."""
+    if row.encrypted_nsec:
+        return decrypt_nsec(row.encrypted_nsec)
+    return row.nsec
 
 
 async def get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
@@ -14,13 +22,15 @@ async def get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
     existing_data = await execute_db_statement(db, stmt, __name__)
     result: BrainstormNsec | None = existing_data.scalar_one_or_none()
     if result:
+        result.nsec = _resolve_plaintext_nsec(result)
         return result, False
 
-    # Create new one
+    # Create new one - dual-write: plaintext in nsec, encrypted in encrypted_nsec
     nsec = generate_random_nsec()
     instance = BrainstormNsec(
         pubkey=pubkey,
         nsec=nsec,
+        encrypted_nsec=encrypt_nsec(nsec),
     )
 
     db.add(instance)
@@ -74,4 +84,5 @@ async def select_brainstorm_nsec_by_pubkey_on_db(
     handle_no_data(result)
     assert result
 
+    result.nsec = _resolve_plaintext_nsec(result)
     return result

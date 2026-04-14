@@ -10,9 +10,14 @@ Usage:
 import argparse
 import getpass
 import json
+import sys
+from pathlib import Path
 
 import httpx
-from nostr_sdk import Keys, PublicKey, EventBuilder, Kind, Tag
+from nostr_sdk import Keys, PublicKey
+
+sys.path.insert(0, str(Path(__file__).parent))
+from get_admin_token import fetch_admin_token  # noqa: E402
 
 
 def main():
@@ -32,28 +37,8 @@ def main():
     print(f"Pubkey: {pubkey}")
     print(f"Target: {target}\n")
 
-    # 1. Auth challenge
-    r = httpx.get(f"{args.base_url}/authChallenge/{pubkey}")
-    r.raise_for_status()
-    challenge = r.json()["data"]["challenge"]
+    token = fetch_admin_token(args.base_url, keys)
 
-    # 2. Sign and verify
-    event = (
-        EventBuilder(Kind(22242), "")
-        .tags([
-            Tag.parse(["t", "brainstorm_login"]),
-            Tag.parse(["challenge", challenge]),
-        ])
-        .sign_with_keys(keys)
-    )
-    r = httpx.post(
-        f"{args.base_url}/authChallenge/{pubkey}/verify",
-        json={"signed_event": json.loads(event.as_json())},
-    )
-    r.raise_for_status()
-    token = r.json()["data"]["token"]
-
-    # 3. Call admin route
     r = httpx.get(
         f"{args.base_url}/admin/brainstormPubkey/{target}",
         headers={"Authorization": f"Bearer {token}"},

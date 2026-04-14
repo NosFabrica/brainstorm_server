@@ -77,6 +77,7 @@ class BrainstormNostrRelayTransfer(TimestampMixin, Base):
 class BrainstormNsec(TimestampMixin, Base):
     __tablename__ = "brainstorm_nsec"
     nsec: Mapped[str] = mapped_column(String, nullable=False)
+    encrypted_nsec: Mapped[str] = mapped_column(String, nullable=True)
     pubkey: Mapped[str] = mapped_column(String, primary_key=True)
     last_time_triggered_graperank = mapped_column(DateTime, nullable=True)
     last_time_calculated_graperank = mapped_column(DateTime, nullable=True)

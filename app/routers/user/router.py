@@ -11,7 +11,7 @@ from app.schemas.request_response_schemas import (
     GetUserDataResponse,
     IsAdminResponse,
 )
-
+from app.core.config import settings
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.schemas.schemas import OwnUserData
@@ -64,15 +64,19 @@ async def create_graperank_calc_endpoint(
     if request.client:
         await validateIfRequestedTooOftenByIP(request.client.host)
 
-    latest = await get_own_latest_graperank(db, user_pubkey)
+    if settings.block_frequent_graperank_requests:
 
-    if latest and latest.created_at.replace(tzinfo=None) > datetime.now() - timedelta(
-        minutes=30
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="The last triggered Graperank was too recent",
-        )
+        latest = await get_own_latest_graperank(db, user_pubkey)
+
+        if latest and latest.created_at.replace(
+            tzinfo=None
+        ) > datetime.now() - timedelta(
+            minutes=settings.block_frequent_graperank_requests_minutes
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The last triggered Graperank was too recent",
+            )
 
     result = await create_brainstorm_request(
         db=db,
