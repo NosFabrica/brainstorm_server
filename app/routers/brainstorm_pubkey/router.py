@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.database import get_db
 from app.schemas.request_response_schemas import BrainstormPubkeyResponse
 from app.services.brainstorm_pubkey_service import get_or_create_brainstorm_pubkey
+from app.utils.api_validators import validate_nostr_pubkey
 
 
 router = APIRouter()
@@ -20,5 +21,6 @@ async def get_brainstorm_pubkey_endpoint(
     nostr_pubkey: str,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> BrainstormPubkeyResponse:
+    nostr_pubkey = validate_nostr_pubkey(nostr_pubkey)
     result = await get_or_create_brainstorm_pubkey(db, nostr_pubkey)
     return BrainstormPubkeyResponse(data=result)
