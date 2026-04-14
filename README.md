@@ -56,6 +56,15 @@ Requests must include a valid auth token (JWT) and the token's pubkey must be in
 
 - `GET /admin/brainstormPubkey/{nostr_pubkey}` — trigger a GrapeRank calculation for any pubkey
 
+## GrapeRank request rate limiting
+
+Per-user throttling for `POST /graperank`. When enabled, a user cannot trigger a new calculation if their latest one is more recent than the configured window.
+
+```env
+BLOCK_FREQUENT_GRAPERANK_REQUESTS=false        # enable/disable the per-user cooldown (default: false)
+BLOCK_FREQUENT_GRAPERANK_REQUESTS_MINUTES=30   # cooldown window in minutes (default: 30)
+```
+
 ### Updating env vars
 
 No image rebuild needed. Values are read at process startup, so a restart is enough:
