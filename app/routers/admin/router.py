@@ -7,7 +7,10 @@ from nostr_sdk import PublicKey
 
 from app.core.config import settings
 from app.core.loggr import loggr
+from app.routers.admin.activity.router import router as activity_router
 from app.routers.admin.nsec_encryption.router import router as nsec_encryption_router
+from app.routers.admin.stats.router import router as stats_router
+from app.routers.admin.users.router import router as users_router
 from app.routers.brainstorm_pubkey.router import router as brainstorm_pubkey_router
 from app.utils.api_validators import verify_token
 
@@ -82,5 +85,23 @@ router.include_router(
 router.include_router(
     router=nsec_encryption_router,
     prefix="/nsec-encryption",
+    tags=["admin"],
+)
+
+router.include_router(
+    router=users_router,
+    prefix="/users",
+    tags=["admin"],
+)
+
+router.include_router(
+    router=activity_router,
+    prefix="/activity",
+    tags=["admin"],
+)
+
+router.include_router(
+    router=stats_router,
+    prefix="/stats",
     tags=["admin"],
 )

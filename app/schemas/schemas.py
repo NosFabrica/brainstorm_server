@@ -40,6 +40,32 @@ class BrainstormRequestInstance(CreatedAndUpdatedAtModel):
     pubkey: str | None
 
 
+class AdminStats(BaseModel):
+    total_users: int | None
+    scored_users: int
+    sp_adopters: int | None
+    total_reports: int | None
+    queue_depth: int
+
+
+class AdminUserListItem(BaseModel):
+    pubkey: str
+    ta_pubkey: str | None
+    times_calculated: int
+    last_triggered: datetime
+    last_updated: datetime
+    latest_status: str | None
+    latest_ta_status: str | None
+    latest_algorithm: str | None
+
+
+class AdminUsersListData(BaseModel):
+    data: list[AdminUserListItem]
+    total: int
+    page: int
+    limit: int
+
+
 class BrainstormPubkeyInstance(CreatedAndUpdatedAtModel):
     global_pubkey: str
     brainstorm_pubkey: str
