@@ -8,6 +8,7 @@ from app.repos.brainstorm_request_repo import (
     select_recent_brainstorm_requests_on_db,
 )
 from app.schemas.request_response_schemas import AdminHistoryResponse
+from app.schemas.schemas import AdminHistoryData
 from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
 )
@@ -23,14 +24,26 @@ async def get_activity_endpoint(
     status: Optional[str] = None,
     algorithm: Optional[str] = None,
     pubkey: Optional[str] = None,
+    page: int = 0,
+    limit: int = 25,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> AdminHistoryResponse:
-    rows = await select_recent_brainstorm_requests_on_db(
-        db, pubkey=pubkey, status=status, algorithm=algorithm
+    rows, total = await select_recent_brainstorm_requests_on_db(
+        db,
+        pubkey=pubkey,
+        status=status,
+        algorithm=algorithm,
+        page=page,
+        limit=limit,
     )
     return AdminHistoryResponse(
-        data=[
-            brainstorm_request_db_obj_to_schema_converter(r, include_result=False)
-            for r in rows
-        ]
+        data=AdminHistoryData(
+            data=[
+                brainstorm_request_db_obj_to_schema_converter(r, include_result=False)
+                for r in rows
+            ],
+            total=total,
+            page=page,
+            limit=limit,
+        )
     )

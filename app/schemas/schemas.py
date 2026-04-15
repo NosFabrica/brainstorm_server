@@ -66,6 +66,13 @@ class AdminUsersListData(BaseModel):
     limit: int
 
 
+class AdminHistoryData(BaseModel):
+    data: list[BrainstormRequestInstance]
+    total: int
+    page: int
+    limit: int
+
+
 class BrainstormPubkeyInstance(CreatedAndUpdatedAtModel):
     global_pubkey: str
     brainstorm_pubkey: str

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 
+from nostr_sdk import PublicKey
 from sqlalchemy import asc, delete, desc, func, select, update
 from sqlalchemy.orm import defer
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -83,6 +84,8 @@ async def select_latest_brainstorm_request_on_db(
 
 
 async def compute_admin_stats_on_db(db: AsyncDBSession) -> dict:
+    # Queue depth = WAITING requests newer than the most recent non-WAITING one.
+    # Older WAITING rows can be stuck/abandoned and are excluded intentionally.
     max_non_waiting_stmt = select(func.max(BrainstormRequest.private_id)).where(
         BrainstormRequest.status != BrainstormRequestStatus.WAITING.value
     )
@@ -157,8 +160,16 @@ async def select_recent_active_pubkeys_on_db(
         BrainstormRequest.pubkey.is_not(None),
     )
     if search:
+        # Accept hex (partial or full) or full npub (converted to hex).
+        # TODO: also support partial display_name match (requires profile data).
+        needle = search.strip()
+        if needle.startswith("npub1"):
+            try:
+                needle = PublicKey.parse(needle).to_hex()
+            except Exception:
+                pass
         latest_subq_q = latest_subq_q.where(
-            BrainstormRequest.pubkey.ilike(f"%{search}%")
+            BrainstormRequest.pubkey.ilike(f"%{needle}%")
         )
     latest_subq = latest_subq_q.group_by(BrainstormRequest.pubkey).subquery()
 
@@ -200,23 +211,33 @@ async def select_recent_brainstorm_requests_on_db(
     status: str | None = None,
     algorithm: str | None = None,
     days: int = 30,
-) -> list[BrainstormRequest]:
+    page: int = 0,
+    limit: int = 25,
+) -> tuple[list[BrainstormRequest], int]:
     cutoff = datetime.now() - timedelta(days=days)
+    filters = [BrainstormRequest.created_at >= cutoff]
+    if pubkey is not None:
+        filters.append(BrainstormRequest.pubkey == pubkey)
+    if status is not None:
+        filters.append(BrainstormRequest.status == status)
+    if algorithm is not None:
+        filters.append(BrainstormRequest.algorithm == algorithm)
+
+    count_stmt = select(func.count()).select_from(BrainstormRequest).where(*filters)
+    total: int = (
+        await execute_db_statement(db, count_stmt, __name__)
+    ).scalar_one()
+
     statement = (
         select(BrainstormRequest)
-        .where(BrainstormRequest.created_at >= cutoff)
+        .where(*filters)
         .order_by(desc(BrainstormRequest.created_at))
         .options(defer(BrainstormRequest.result))
+        .offset(page * limit)
+        .limit(limit)
     )
-    if pubkey is not None:
-        statement = statement.where(BrainstormRequest.pubkey == pubkey)
-    if status is not None:
-        statement = statement.where(BrainstormRequest.status == status)
-    if algorithm is not None:
-        statement = statement.where(BrainstormRequest.algorithm == algorithm)
-
     existing_data = await execute_db_statement(db, statement, __name__)
-    return list(existing_data.scalars().all())
+    return list(existing_data.scalars().all()), total
 
 
 async def select_latest_successful_brainstorm_request_on_db(
