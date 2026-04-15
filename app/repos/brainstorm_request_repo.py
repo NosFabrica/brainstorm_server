@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, desc, func, select, update
+from sqlalchemy import asc, delete, desc, func, select, update
 from sqlalchemy.orm import defer
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
@@ -127,32 +127,48 @@ async def compute_admin_stats_on_db(db: AsyncDBSession) -> dict:
     }
 
 
+_USERS_SORT_COLUMNS = {
+    "pubkey": "pubkey",
+    "times_calculated": "times_calculated",
+    "last_triggered": "last_triggered",
+    "last_updated": "last_updated",
+}
+
+
 async def select_recent_active_pubkeys_on_db(
     db: AsyncDBSession,
     days: int = 30,
     page: int = 0,
     limit: int = 25,
+    search: str | None = None,
+    sort: str = "last_triggered",
+    order: str = "desc",
 ) -> tuple[list[dict], int]:
     cutoff = datetime.now() - timedelta(days=days)
 
-    latest_subq = (
-        select(
-            BrainstormRequest.pubkey.label("pubkey"),
-            func.count(BrainstormRequest.private_id).label("times_calculated"),
-            func.max(BrainstormRequest.created_at).label("last_triggered"),
-            func.max(BrainstormRequest.updated_at).label("last_updated"),
-            func.max(BrainstormRequest.private_id).label("latest_id"),
+    latest_subq_q = select(
+        BrainstormRequest.pubkey.label("pubkey"),
+        func.count(BrainstormRequest.private_id).label("times_calculated"),
+        func.max(BrainstormRequest.created_at).label("last_triggered"),
+        func.max(BrainstormRequest.updated_at).label("last_updated"),
+        func.max(BrainstormRequest.private_id).label("latest_id"),
+    ).where(
+        BrainstormRequest.created_at >= cutoff,
+        BrainstormRequest.pubkey.is_not(None),
+    )
+    if search:
+        latest_subq_q = latest_subq_q.where(
+            BrainstormRequest.pubkey.ilike(f"%{search}%")
         )
-        .where(
-            BrainstormRequest.created_at >= cutoff,
-            BrainstormRequest.pubkey.is_not(None),
-        )
-        .group_by(BrainstormRequest.pubkey)
-    ).subquery()
+    latest_subq = latest_subq_q.group_by(BrainstormRequest.pubkey).subquery()
 
     count_stmt = select(func.count()).select_from(latest_subq)
     total_result = await execute_db_statement(db, count_stmt, __name__)
     total: int = total_result.scalar_one()
+
+    sort_col_name = _USERS_SORT_COLUMNS.get(sort, "last_triggered")
+    sort_col = latest_subq.c[sort_col_name]
+    direction = asc if order.lower() == "asc" else desc
 
     br_latest = BrainstormRequest.__table__.alias("br_latest")
     statement = (
@@ -168,7 +184,7 @@ async def select_recent_active_pubkeys_on_db(
         )
         .join(br_latest, br_latest.c.private_id == latest_subq.c.latest_id)
         .outerjoin(BrainstormNsec, BrainstormNsec.pubkey == latest_subq.c.pubkey)
-        .order_by(desc(latest_subq.c.last_triggered))
+        .order_by(direction(sort_col))
         .offset(page * limit)
         .limit(limit)
     )

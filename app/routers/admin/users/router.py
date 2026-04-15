@@ -28,10 +28,13 @@ router = APIRouter()
 async def get_recent_users_endpoint(
     page: int = 0,
     limit: int = 25,
+    search: Optional[str] = None,
+    sort: str = "last_triggered",
+    order: str = "desc",
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> AdminUsersListResponse:
     rows, total = await select_recent_active_pubkeys_on_db(
-        db, page=page, limit=limit
+        db, page=page, limit=limit, search=search, sort=sort, order=order
     )
     items: list[AdminUserListItem] = []
     for r in rows:
