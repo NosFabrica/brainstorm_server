@@ -30,7 +30,7 @@ from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
     fail_stale_ongoing_brainstorm_requests_cronjob,
 )
 
-from app.routers.admin.router import init_admin_whitelist
+from app.core.admin_whitelist import init_admin_whitelist
 
 logger = loggr.get_logger(__name__)
 
