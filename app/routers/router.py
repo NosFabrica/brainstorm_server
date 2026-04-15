@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, Request
 
 from app.core.database import get_db
 
-# from app.routers.brainstorm_request.router import router as brainstorm_request_router
 from app.routers.admin.router import router as admin_router
 from app.routers.auth_challenge.router import router as auth_challenge_router
 from app.routers.setup.router import router as setup_router
@@ -27,14 +26,6 @@ router.include_router(
     prefix=ADMIN_ROUTER_PREFIX,
     tags=["admin"],
 )
-
-# BRAINSTORM_REQUEST_ROUTER_PREFIX = "/brainstormRequest"
-
-# router.include_router(
-#     router=brainstorm_request_router,
-#     prefix=BRAINSTORM_REQUEST_ROUTER_PREFIX,
-#     tags=["brainstorm_request"],
-# )
 
 AUTH_CHALLENGE_ROUTER_PREFIX = "/authChallenge"
 
