@@ -1,14 +1,15 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from fastapi_pagination import Page
+from fastapi_pagination.ext.sqlalchemy import paginate
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
 from app.repos.brainstorm_request_repo import (
-    select_recent_brainstorm_requests_on_db,
+    build_recent_brainstorm_requests_stmt,
 )
-from app.schemas.request_response_schemas import AdminHistoryResponse
-from app.schemas.schemas import AdminHistoryData
+from app.schemas.schemas import BrainstormRequestInstance
 from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
 )
@@ -18,32 +19,24 @@ router = APIRouter()
 
 @router.get(
     path="",
-    summary="Admin: recent brainstorm request activity (last 30d, all users)",
+    response_model=Page[BrainstormRequestInstance],
+    summary="Admin: recent brainstorm request activity (last N days, all users)",
 )
 async def get_activity_endpoint(
     status: Optional[str] = None,
     algorithm: Optional[str] = None,
     pubkey: Optional[str] = None,
-    page: int = 0,
-    limit: int = 25,
+    days: int = Query(30, ge=1, le=365),
     db: AsyncDBSession = Depends(dependency=get_db),
-) -> AdminHistoryResponse:
-    rows, total = await select_recent_brainstorm_requests_on_db(
-        db,
-        pubkey=pubkey,
-        status=status,
-        algorithm=algorithm,
-        page=page,
-        limit=limit,
+):
+    stmt = build_recent_brainstorm_requests_stmt(
+        pubkey=pubkey, status=status, algorithm=algorithm, days=days
     )
-    return AdminHistoryResponse(
-        data=AdminHistoryData(
-            data=[
-                brainstorm_request_db_obj_to_schema_converter(r, include_result=False)
-                for r in rows
-            ],
-            total=total,
-            page=page,
-            limit=limit,
-        )
+    return await paginate(
+        db,
+        stmt,
+        transformer=lambda rows: [
+            brainstorm_request_db_obj_to_schema_converter(r, include_result=False)
+            for r in rows
+        ],
     )

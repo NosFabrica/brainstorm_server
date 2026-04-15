@@ -59,20 +59,6 @@ class AdminUserListItem(BaseModel):
     latest_algorithm: str | None
 
 
-class AdminUsersListData(BaseModel):
-    data: list[AdminUserListItem]
-    total: int
-    page: int
-    limit: int
-
-
-class AdminHistoryData(BaseModel):
-    data: list[BrainstormRequestInstance]
-    total: int
-    page: int
-    limit: int
-
-
 class BrainstormPubkeyInstance(CreatedAndUpdatedAtModel):
     global_pubkey: str
     brainstorm_pubkey: str
