@@ -7,7 +7,7 @@ from app.schemas.request_response_schemas import BrainstormRequestResponse
 from app.schemas.schemas import BrainstormRequestInstance
 from app.services.brainstorm_request_service import (
     create_brainstorm_request,
-    get_brainstorm_request_by_id_and_password,
+    get_brainstorm_request_by_id,
 )
 
 
@@ -22,15 +22,13 @@ router = APIRouter()
 )
 async def get_brainstorm_request_endpoint(
     brainstorm_request_id: int,
-    brainstorm_request_password: str = Query(...),
     include_result: bool = Query(False),
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> BrainstormRequestResponse:
 
-    result: BrainstormRequestInstance = await get_brainstorm_request_by_id_and_password(
+    result: BrainstormRequestInstance = await get_brainstorm_request_by_id(
         db=db,
         brainstorm_request_id=brainstorm_request_id,
-        brainstorm_request_password=brainstorm_request_password,
         include_result=include_result,
     )
     return BrainstormRequestResponse(data=result)
