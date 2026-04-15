@@ -1,50 +1,18 @@
-from typing import Optional
-
 from app.utils.auth.auth_models import JWTData
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from nostr_sdk import PublicKey
-
+from app.core.admin_whitelist import get_whitelisted_pubkeys
 from app.core.config import settings
 from app.core.loggr import loggr
+from app.routers.admin.activity.router import router as activity_router
 from app.routers.admin.nsec_encryption.router import router as nsec_encryption_router
+from app.routers.admin.stats.router import router as stats_router
+from app.routers.admin.users.router import router as users_router
 from app.routers.brainstorm_pubkey.router import router as brainstorm_pubkey_router
+from app.routers.brainstorm_request.router import router as brainstorm_request_router
 from app.utils.api_validators import verify_token
 
 logger = loggr.get_logger(__name__)
-
-_whitelisted_pubkeys: set[str] = set()
-
-
-def _normalize_pubkey(raw: str) -> str:
-    if raw.startswith("npub1"):
-        return PublicKey.parse(raw).to_hex()
-    return raw
-
-
-def init_admin_whitelist() -> None:
-    global _whitelisted_pubkeys
-    raw = settings.admin_whitelisted_pubkeys
-    if not raw:
-        _whitelisted_pubkeys = set()
-    else:
-        _whitelisted_pubkeys = {
-            _normalize_pubkey(p.strip()) for p in raw.split(",") if p.strip()
-        }
-
-    if settings.admin_enabled:
-        truncated = [
-            PublicKey.parse(pk).to_bech32()[:16] + "..." for pk in _whitelisted_pubkeys
-        ]
-        logger.info(
-            f"Admin routes ENABLED. Whitelisted pubkeys ({len(truncated)}): {truncated}"
-        )
-    else:
-        logger.info("Admin routes DISABLED.")
-
-
-def get_whitelisted_pubkeys() -> set[str]:
-    return _whitelisted_pubkeys
 
 
 async def verify_admin_access(
@@ -82,5 +50,29 @@ router.include_router(
 router.include_router(
     router=nsec_encryption_router,
     prefix="/nsec-encryption",
+    tags=["admin"],
+)
+
+router.include_router(
+    router=users_router,
+    prefix="/users",
+    tags=["admin"],
+)
+
+router.include_router(
+    router=activity_router,
+    prefix="/activity",
+    tags=["admin"],
+)
+
+router.include_router(
+    router=stats_router,
+    prefix="/stats",
+    tags=["admin"],
+)
+
+router.include_router(
+    router=brainstorm_request_router,
+    prefix="/brainstormRequest",
     tags=["admin"],
 )

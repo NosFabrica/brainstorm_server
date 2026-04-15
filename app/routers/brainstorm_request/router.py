@@ -18,7 +18,7 @@ router = APIRouter()
     path="/{brainstorm_request_id}",
     tags=[],
     dependencies=[],
-    summary="Get a Branstorm Request endpoint",
+    summary="Get a Branstorm Request endpoint (admin only)",
 )
 async def get_brainstorm_request_endpoint(
     brainstorm_request_id: int,
@@ -40,7 +40,7 @@ async def get_brainstorm_request_endpoint(
     path="/",
     tags=[],
     dependencies=[],
-    summary="Create a Branstorm Request endpoint",
+    summary="Create a Branstorm Request endpoint (admin only)",
 )
 async def create_brainstorm_request_endpoint(
     brainstorm_request_creation_body: CreateBrainstormRequestBody,

@@ -13,10 +13,12 @@ from app.utils.auth.auth_models import JWTData, JWTSQLAdminData
 def create_jwt_token(
     nostr_pubkey: str,
     token_expiration_datetime: datetime,
+    is_admin: bool = False,
 ) -> str:
     jwt_data = JWTData(
         nostr_pubkey=nostr_pubkey,
         expires_date=token_expiration_datetime,
+        is_admin=is_admin,
     )
 
     jwt_token = jwt.encode(

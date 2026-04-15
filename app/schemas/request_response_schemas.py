@@ -4,6 +4,7 @@ from fastapi import status
 from pydantic import BaseModel
 
 from app.schemas.schemas import (
+    AdminStats,
     AuthSuccessfulToken,
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
@@ -76,5 +77,7 @@ class GetWhitelistedPubkeysOfObserverResponse(SuccessfulResponseDataSchema):
     data: WhitelistedPubkeys
 
 
-class IsAdminResponse(SuccessfulResponseDataSchema):
-    data: bool
+class AdminStatsResponse(SuccessfulResponseDataSchema):
+    data: AdminStats
+
+

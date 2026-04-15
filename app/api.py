@@ -15,6 +15,7 @@ from app.message_queue_tasks.message_queue_consumer import (
 from app.neo4j_db.driver import test_neo4j_driver
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi_pagination import add_pagination
 
 from app.core.config import settings
 from app.core.loggr import loggr
@@ -30,7 +31,7 @@ from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
     fail_stale_ongoing_brainstorm_requests_cronjob,
 )
 
-from app.routers.admin.router import init_admin_whitelist
+from app.core.admin_whitelist import init_admin_whitelist
 
 logger = loggr.get_logger(__name__)
 
@@ -156,3 +157,5 @@ app.include_router(
 
 if settings.deploy_environment == "LOCAL":
     add_sql_admin_panel(app)
+
+add_pagination(app)

@@ -30,6 +30,7 @@ nostr-sdk = "0.41.0"
 neo4j = "^6.0.3"
 tqdm = "^4.67.1"
 pynacl = "^1.6.2"
+fastapi-pagination = ">=0.12.26,<1.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1.3"

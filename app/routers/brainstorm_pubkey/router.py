@@ -1,6 +1,7 @@
-from app.schemas.schemas import BrainstormRequestInstance
+from app.schemas.schemas import BrainstormPubkeyInstance, BrainstormRequestInstance
 from app.services.brainstorm_request_service import create_brainstorm_request
 from fastapi import APIRouter, Depends
+from nostr_sdk import Keys
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
@@ -38,8 +39,13 @@ async def get_brainstorm_pubkey_endpoint(
 async def trigger_brainstorm_pubkey_graperank_endpoint(
     nostr_pubkey: str,
     db: AsyncDBSession = Depends(dependency=get_db),
-) -> BrainstormRequestInstance:
-    await select_brainstorm_nsec_by_pubkey_on_db(db, pubkey=nostr_pubkey)
+) -> BrainstormPubkeyResponse:
+    nsec_obj = await select_brainstorm_nsec_by_pubkey_on_db(db, pubkey=nostr_pubkey)
+
+    nsec_pubkey = nsec_obj.pubkey
+    nsec_value = nsec_obj.nsec
+    nsec_created_at = nsec_obj.created_at
+    nsec_updated_at = nsec_obj.updated_at
 
     triggered_graperank: BrainstormRequestInstance = await create_brainstorm_request(
         db=db,
@@ -48,4 +54,13 @@ async def trigger_brainstorm_pubkey_graperank_endpoint(
         pubkey=nostr_pubkey,
         nsec_exists=True,
     )
-    return BrainstormPubkeyResponse(data=triggered_graperank)
+
+    return BrainstormPubkeyResponse(
+        data=BrainstormPubkeyInstance(
+            global_pubkey=nsec_pubkey,
+            brainstorm_pubkey=Keys.parse(secret_key=nsec_value).public_key().to_hex(),
+            triggered_graperank=triggered_graperank,
+            created_at=nsec_created_at,
+            updated_at=nsec_updated_at,
+        )
+    )
