@@ -26,15 +26,13 @@ async def delete_brainstorm_request_by_id_on_db(
     return result
 
 
-async def select_brainstorm_request_by_id_and_password_on_db(
+async def select_brainstorm_request_by_id_on_db(
     db: AsyncDBSession,
     brainstorm_request_id: int,
-    brainstorm_request_password: str,
     include_result: bool = False,
 ) -> BrainstormRequest:
     statement = select(BrainstormRequest).where(
         BrainstormRequest.private_id == brainstorm_request_id,
-        BrainstormRequest.password == brainstorm_request_password,
     )
     if not include_result:
         statement = statement.options(defer(BrainstormRequest.result))
@@ -99,9 +97,7 @@ async def compute_admin_stats_on_db(db: AsyncDBSession) -> dict:
     )
     if max_non_waiting is not None:
         queue_stmt = queue_stmt.where(BrainstormRequest.private_id > max_non_waiting)
-    queue_depth = (
-        await execute_db_statement(db, queue_stmt, __name__)
-    ).scalar_one()
+    queue_depth = (await execute_db_statement(db, queue_stmt, __name__)).scalar_one()
 
     scored_users_stmt = select(
         func.count(func.distinct(BrainstormRequest.pubkey))
@@ -220,23 +216,6 @@ async def select_latest_successful_brainstorm_request_on_db(
 
     existing_data = await execute_db_statement(db, statement, __name__)
     result: BrainstormRequest | None = existing_data.scalars().first()
-
-    return result
-
-
-async def select_brainstorm_request_by_id_on_db(
-    db: AsyncDBSession, brainstorm_request_id: int
-) -> BrainstormRequest:
-    statement = (
-        select(BrainstormRequest)
-        .where(BrainstormRequest.private_id == brainstorm_request_id)
-        .options(defer(BrainstormRequest.result))
-    )
-    existing_data = await execute_db_statement(db, statement, __name__)
-    result: BrainstormRequest | None = existing_data.scalars().first()
-
-    handle_no_data(result)
-    assert result
 
     return result
 

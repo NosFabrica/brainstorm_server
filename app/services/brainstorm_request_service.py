@@ -10,7 +10,7 @@ from app.repos.brainstorm_request_repo import (
     count_brainstorm_requests_with_priority_over_one_on_db,
     create_brainstorm_request_on_db,
     delete_brainstorm_request_by_id_on_db,
-    select_brainstorm_request_by_id_and_password_on_db,
+    select_brainstorm_request_by_id_on_db,
 )
 
 from app.schemas.schemas import BrainstormRequestInstance
@@ -40,19 +40,15 @@ def brainstorm_request_db_obj_to_schema_converter(
     return brainstorm_request_obj
 
 
-async def get_brainstorm_request_by_id_and_password(
+async def get_brainstorm_request_by_id(
     db: AsyncDBSession,
     brainstorm_request_id: int,
-    brainstorm_request_password: str,
     include_result: bool,
 ) -> BrainstormRequestInstance:
-    brainstorm_request_db_obj = (
-        await select_brainstorm_request_by_id_and_password_on_db(
-            db=db,
-            brainstorm_request_id=brainstorm_request_id,
-            brainstorm_request_password=brainstorm_request_password,
-            include_result=include_result,
-        )
+    brainstorm_request_db_obj = await select_brainstorm_request_by_id_on_db(
+        db=db,
+        brainstorm_request_id=brainstorm_request_id,
+        include_result=include_result,
     )
 
     how_many_others_with_priority = (
