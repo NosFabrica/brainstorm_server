@@ -40,12 +40,7 @@ async def _fetch_owner_name(user_pubkey: str) -> str:
     await fetcher.connect()
 
     try:
-        flt = (
-            Filter()
-            .kinds([Kind(0)])
-            .authors([PublicKey.parse(user_pubkey)])
-            .limit(1)
-        )
+        flt = Filter().kinds([Kind(0)]).authors([PublicKey.parse(user_pubkey)]).limit(1)
         events_obj = await fetcher.fetch_events(flt, timeout=timedelta(seconds=10))
         events = events_obj.to_vec()
     finally:
@@ -102,10 +97,10 @@ async def publish_assistant_kind0_for_user(
         builder = EventBuilder(kind=Kind(0), content=content)
         event = await client.sign_event_builder(builder)
         output = await client.send_event(event)
-        if output.failed:
-            logger.error(f"Some relays rejected kind 0 event: {output.failed}")
         if not output.success:
-            raise Exception("Failed to publish kind 0 event to any relay")
+            raise Exception(
+                f"Failed to publish kind 0 event to any relay: {output.failed}"
+            )
     finally:
         await client.disconnect()
 
