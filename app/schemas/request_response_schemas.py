@@ -77,6 +77,15 @@ class GetWhitelistedPubkeysOfObserverResponse(SuccessfulResponseDataSchema):
     data: WhitelistedPubkeys
 
 
+class PublishAssistantProfileData(BaseModel):
+    event_id: str
+    assistant_pubkey: str
+
+
+class PublishAssistantProfileResponse(SuccessfulResponseDataSchema):
+    data: PublishAssistantProfileData
+
+
 class AdminStatsResponse(SuccessfulResponseDataSchema):
     data: AdminStats
 

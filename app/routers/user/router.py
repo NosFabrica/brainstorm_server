@@ -8,11 +8,14 @@ from app.schemas.request_response_schemas import (
     GetOwnLatestGraperankResponse,
     GetOwnUserDataResponse,
     GetUserDataResponse,
+    PublishAssistantProfileData,
+    PublishAssistantProfileResponse,
 )
 from app.core.config import settings
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.schemas.schemas import OwnUserData
+from app.services.assistant_profile_service import publish_assistant_kind0_for_user
 from app.services.brainstorm_request_service import create_brainstorm_request
 from app.services.user_service import (
     get_own_latest_graperank,
@@ -106,6 +109,32 @@ async def get_own_user_data_endpoint(
     history = await get_user_history_data(db, user_pubkey)
 
     return GetOwnUserDataResponse(data=OwnUserData(graph=result, history=history))
+
+
+@router.post(
+    path="/assistantProfile",
+    tags=[],
+    dependencies=[],
+    summary="Publish a kind 0 metadata event for the user's brainstorm assistant",
+)
+async def publish_assistant_profile_endpoint(
+    request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> PublishAssistantProfileResponse:
+
+    jwt_data: JWTData = request.state.jwt_data
+    user_pubkey = jwt_data.nostr_pubkey
+
+    event_id, assistant_pubkey = await publish_assistant_kind0_for_user(
+        db, user_pubkey
+    )
+
+    return PublishAssistantProfileResponse(
+        data=PublishAssistantProfileData(
+            event_id=event_id,
+            assistant_pubkey=assistant_pubkey,
+        )
+    )
 
 
 @router.get(
