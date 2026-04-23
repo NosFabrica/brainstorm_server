@@ -13,7 +13,6 @@ from app.schemas.request_response_schemas import (
 )
 from app.services.graperank_presets import (
     ASSIGNABLE,
-    GrapeRankPresetTemplate,
     normalize_preset,
 )
 from app.utils.auth.auth_models import JWTData
@@ -49,23 +48,15 @@ async def set_graperank_preset_endpoint(
     request: Request,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GrapeRankPresetResponse:
-    try:
-        preset = GrapeRankPresetTemplate(body.preset.upper())
-    except ValueError:
+    if body.preset not in ASSIGNABLE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unknown preset '{body.preset}'",
-        )
-
-    if preset not in ASSIGNABLE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Preset '{preset.value}' is not assignable via this endpoint",
+            detail=f"Preset '{body.preset.value}' is not assignable via this endpoint",
         )
 
     jwt_data: JWTData = request.state.jwt_data
-    await set_graperank_preset_by_pubkey_on_db(db, jwt_data.nostr_pubkey, preset.value)
-    return GrapeRankPresetResponse(data=GrapeRankPreset(preset=preset.value))
+    await set_graperank_preset_by_pubkey_on_db(db, jwt_data.nostr_pubkey, body.preset.value)
+    return GrapeRankPresetResponse(data=GrapeRankPreset(preset=body.preset.value))
 
 
 @router.put(
