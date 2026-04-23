@@ -5,6 +5,7 @@ from app.core.database import get_db
 
 from app.routers.admin.router import router as admin_router
 from app.routers.auth_challenge.router import router as auth_challenge_router
+from app.routers.graperank.router import router as graperank_router
 from app.routers.setup.router import router as setup_router
 from app.routers.user.router import router as user_router
 from app.schemas.request_response_schemas import (
@@ -49,6 +50,15 @@ router.include_router(
     dependencies=[Depends(verify_token)],
     router=user_router,
     prefix=USER_ROUTER_PREFIX,
+    tags=["user"],
+)
+
+GRAPERANK_ROUTER_PREFIX = "/user/graperank"
+
+router.include_router(
+    dependencies=[Depends(verify_token)],
+    router=graperank_router,
+    prefix=GRAPERANK_ROUTER_PREFIX,
     tags=["user"],
 )
 

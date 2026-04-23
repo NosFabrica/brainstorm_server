@@ -9,3 +9,7 @@ class CreateBrainstormRequestBody(BaseModel):
 
 class SubmitNostrAuthChallengeBody(BaseModel):
     signed_event: dict
+
+
+class SetGrapeRankPresetBody(BaseModel):
+    preset: str
