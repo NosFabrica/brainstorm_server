@@ -90,3 +90,11 @@ class AdminStatsResponse(SuccessfulResponseDataSchema):
     data: AdminStats
 
 
+class GrapeRankPreset(BaseModel):
+    preset: str
+
+
+class GrapeRankPresetResponse(SuccessfulResponseDataSchema):
+    data: GrapeRankPreset
+
+
