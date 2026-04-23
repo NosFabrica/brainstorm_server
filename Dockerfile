@@ -2,7 +2,7 @@ ARG PYTHON_VERSION=3.12-slim-bullseye
 
 FROM python:${PYTHON_VERSION} AS python-base
 
-ENV POETRY_VERSION=1.6.1
+ENV POETRY_VERSION=2.3.4
 ENV POETRY_HOME=/opt/poetry
 ENV POETRY_VENV=/opt/poetry-venv
 
@@ -32,7 +32,7 @@ COPY poetry.lock pyproject.toml ./
 # RUN poetry check
 
 # Install Dependencies
-RUN poetry install --no-interaction --no-cache --without dev
+RUN poetry install --no-interaction --no-cache --without dev --no-root
 
 # Copy Application
 COPY . .
