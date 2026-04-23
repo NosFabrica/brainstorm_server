@@ -59,7 +59,7 @@ router.include_router(
     dependencies=[Depends(verify_token)],
     router=graperank_router,
     prefix=GRAPERANK_ROUTER_PREFIX,
-    tags=["graperank"],
+    tags=["user"],
 )
 
 
