@@ -73,6 +73,28 @@ async def update_last_time_calculated_graperank_on_db(
     await db.execute(statement)
 
 
+async def get_graperank_preset_by_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> str | None:
+    statement = select(BrainstormNsec.graperank_preset).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none()
+
+
+async def set_graperank_preset_by_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str, preset: str
+) -> None:
+    await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey)
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(graperank_preset=preset)
+    )
+    await db.execute(statement)
+
+
 async def select_brainstorm_nsec_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> BrainstormNsec:

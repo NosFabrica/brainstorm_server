@@ -58,6 +58,7 @@ class BrainstormRequest(TimestampMixin, Base):
     parameters: Mapped[str] = mapped_column(String, nullable=False)
     algorithm: Mapped[str] = mapped_column(String, nullable=False)
     pubkey: Mapped[str] = mapped_column(String, nullable=True)
+    graperank_preset_used: Mapped[str] = mapped_column(String, nullable=True)
 
 
 class BrainstormNostrRelayTransfer(TimestampMixin, Base):
@@ -81,3 +82,4 @@ class BrainstormNsec(TimestampMixin, Base):
     pubkey: Mapped[str] = mapped_column(String, primary_key=True)
     last_time_triggered_graperank = mapped_column(DateTime, nullable=True)
     last_time_calculated_graperank = mapped_column(DateTime, nullable=True)
+    graperank_preset: Mapped[str] = mapped_column(String, nullable=True)

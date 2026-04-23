@@ -38,6 +38,8 @@ class BrainstormRequestInstance(CreatedAndUpdatedAtModel):
     parameters: str
     how_many_others_with_priority: int
     pubkey: str | None
+    graperank_preset_used: str | None = None
+    graperank_params: dict | None = None
 
 
 class AdminStats(BaseModel):
