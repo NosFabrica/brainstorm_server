@@ -299,10 +299,17 @@ async def fail_stale_ongoing_brainstorm_requests_on_db(
 
 
 async def create_brainstorm_request_on_db(
-    db: AsyncDBSession, algorithm: str, parameters: str, pubkey: str
+    db: AsyncDBSession,
+    algorithm: str,
+    parameters: str,
+    pubkey: str,
+    graperank_preset_used: str | None = None,
 ) -> BrainstormRequest:
     new_brainstorm_request_obj = BrainstormRequest(
-        algorithm=algorithm, parameters=parameters, pubkey=pubkey
+        algorithm=algorithm,
+        parameters=parameters,
+        pubkey=pubkey,
+        graperank_preset_used=graperank_preset_used,
     )
 
     db.add(new_brainstorm_request_obj)

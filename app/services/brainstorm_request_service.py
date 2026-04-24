@@ -3,6 +3,7 @@ from app.core.redis_db import redis_client
 
 from app.db_models import BrainstormRequest, BrainstormRequestStatus
 from app.repos.brainstorm_nsec import (
+    get_graperank_preset_by_pubkey_on_db,
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
     update_last_time_triggered_graperank_on_db,
 )
@@ -14,6 +15,10 @@ from app.repos.brainstorm_request_repo import (
 )
 
 from app.schemas.schemas import BrainstormRequestInstance
+from app.services.graperank_presets import (
+    build_params_payload,
+    normalize_preset,
+)
 
 
 def brainstorm_request_db_obj_to_schema_converter(
@@ -35,6 +40,7 @@ def brainstorm_request_db_obj_to_schema_converter(
         ta_status=brainstorm_request_db_obj.status_ta_publication,
         pubkey=brainstorm_request_db_obj.pubkey,
         count_values=brainstorm_request_db_obj.count_values,
+        graperank_preset_used=brainstorm_request_db_obj.graperank_preset_used,
     )
 
     return brainstorm_request_obj
@@ -97,9 +103,16 @@ async def create_brainstorm_request(
     nsec_exists: bool = False,
 ) -> BrainstormRequestInstance:
 
+    stored_preset = await get_graperank_preset_by_pubkey_on_db(db, parameters)
+    preset = normalize_preset(stored_preset)
+
     brainstorm_request_db_obj: BrainstormRequest = (
         await create_brainstorm_request_on_db(
-            db, algorithm=algorithm, parameters=parameters, pubkey=pubkey
+            db,
+            algorithm=algorithm,
+            parameters=parameters,
+            pubkey=pubkey,
+            graperank_preset_used=preset.value,
         )
     )
 
@@ -113,6 +126,7 @@ async def create_brainstorm_request(
         brainstorm_request_db_obj=brainstorm_request_db_obj,
         how_many_others_with_priority=how_many_others_with_priority,
     )
+    instance.graperank_params = build_params_payload(preset)
 
     if not nsec_exists:
         await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
