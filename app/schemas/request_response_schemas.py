@@ -11,6 +11,7 @@ from app.schemas.schemas import (
     OwnUserData,
     UserGraphData,
 )
+from app.services.graperank_presets import GrapeRankPresetParams, GrapeRankPresetTemplate
 
 
 class BaseResponseDataSchema(BaseModel):
@@ -91,10 +92,24 @@ class AdminStatsResponse(SuccessfulResponseDataSchema):
 
 
 class GrapeRankPreset(BaseModel):
-    preset: str
+    preset: GrapeRankPresetTemplate
 
 
 class GrapeRankPresetResponse(SuccessfulResponseDataSchema):
     data: GrapeRankPreset
+
+
+class GrapeRankPresetItem(BaseModel):
+    id: GrapeRankPresetTemplate
+    params: GrapeRankPresetParams
+
+
+class GrapeRankPresetsData(BaseModel):
+    presets: list[GrapeRankPresetItem]
+    custom: GrapeRankPresetItem | None = None
+
+
+class GrapeRankPresetsResponse(SuccessfulResponseDataSchema):
+    data: GrapeRankPresetsData
 
 

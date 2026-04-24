@@ -148,6 +148,42 @@ If truly lost while the `nsec` column still exists: clear `encrypted_nsec`, rest
 - **Chunked re-encryption** — current implementation loads all rows at once; revisit if the table grows large.
 - **Drop the plaintext `nsec` column** — separate migration once prod soak confirms `encrypted_nsec` is authoritative.
 
+## Adding / removing a GrapeRank preset param
+
+Preset params (`rigor`, `attenuationFactor`, etc.) are defined in Python and consumed by the Java worker (`brainstorm_graperank_algorithm`). Python is the source of truth. Java enforces the contract via Jackson — missing required fields throw.
+
+### Add a new param
+
+**Python (this repo):**
+
+1. [`app/services/graperank_presets.py`](app/services/graperank_presets.py)
+   - Add `newFieldName: float` to `GrapeRankPresetParams` (camelCase, matches Java).
+   - Add the value for each entry in `PRESET_DEFINITIONS` (DEFAULT, PERMISSIVE, RESTRICTIVE).
+2. `GET /user/graperank/presets` auto-includes the new field in its response. No schema edits.
+
+**Java (`brainstorm_graperank_algorithm`):**
+
+3. `src/main/java/.../grape/GrapeRankParams.java`
+   - Add `@JsonProperty(required = true) double newFieldName` to the record. Same camelCase name as Python.
+4. `src/main/java/.../grape/Constants.java`
+   - Add a `DEFAULT_NEW_FIELD_NAME` constant.
+   - Pass it to the `DEFAULT_PARAMS` constructor.
+5. Wire the new field into the algorithm (likely `GrapeRankAlgorithm.java`).
+
+**Deploy:**
+
+- Deploy Java first, then Python — or both together. Old Java reading a payload with an unknown field is fine (`FAIL_ON_UNKNOWN_PROPERTIES=false`). New Java reading an old payload without the required field will throw and mark the request `FAILED` — avoid by deploying Java at or before Python.
+
+### Remove a param
+
+1. Delete from `GrapeRankPresetParams` + every entry in `PRESET_DEFINITIONS`.
+2. Delete from `GrapeRankParams` record + `Constants.DEFAULT_PARAMS` + algorithm call sites.
+3. Deploy Python first so new messages stop carrying the field. Java ignores unknown fields, so old-Java + new-Python is safe until Java catches up.
+
+### Historical rows
+
+Old `BrainstormRequest.graperank_params` JSON snapshots are frozen in the shape they were written with. They are never replayed — they're audit-only. Adding or removing fields does not require a DB migration.
+
 ## Scripts
 
 Scripts live in `scripts/` and are excluded from the Docker image via `.dockerignore`. Run from your local machine.

@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import DateTime, Integer, Float, String, func, Boolean, UniqueConstraint
+from sqlalchemy import DateTime, Integer, Float, JSON, String, func, Boolean, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -59,6 +59,7 @@ class BrainstormRequest(TimestampMixin, Base):
     algorithm: Mapped[str] = mapped_column(String, nullable=False)
     pubkey: Mapped[str] = mapped_column(String, nullable=True)
     graperank_preset_used: Mapped[str] = mapped_column(String, nullable=True)
+    graperank_params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class BrainstormNostrRelayTransfer(TimestampMixin, Base):

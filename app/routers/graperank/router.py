@@ -10,7 +10,9 @@ from app.schemas.request_body_schemas import SetGrapeRankPresetBody
 from app.schemas.request_response_schemas import (
     GrapeRankPreset,
     GrapeRankPresetResponse,
+    GrapeRankPresetsResponse,
 )
+from app.services.graperank_preset_service import list_graperank_presets
 from app.services.graperank_presets import (
     ASSIGNABLE,
     normalize_preset,
@@ -34,7 +36,7 @@ async def get_graperank_preset_endpoint(
     jwt_data: JWTData = request.state.jwt_data
     stored = await get_graperank_preset_by_pubkey_on_db(db, jwt_data.nostr_pubkey)
     preset = normalize_preset(stored)
-    return GrapeRankPresetResponse(data=GrapeRankPreset(preset=preset.value))
+    return GrapeRankPresetResponse(data=GrapeRankPreset(preset=preset))
 
 
 @router.put(
@@ -56,7 +58,7 @@ async def set_graperank_preset_endpoint(
 
     jwt_data: JWTData = request.state.jwt_data
     await set_graperank_preset_by_pubkey_on_db(db, jwt_data.nostr_pubkey, body.preset.value)
-    return GrapeRankPresetResponse(data=GrapeRankPreset(preset=body.preset.value))
+    return GrapeRankPresetResponse(data=GrapeRankPreset(preset=body.preset))
 
 
 @router.put(
@@ -72,3 +74,17 @@ async def set_custom_graperank_preset_endpoint(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail="Custom preset not implemented yet",
     )
+
+
+@router.get(
+    path="/presets",
+    tags=[],
+    dependencies=[],
+    summary="List all GrapeRank presets with their parameter values",
+)
+async def get_graperank_presets_endpoint(
+    request: Request,
+) -> GrapeRankPresetsResponse:
+    # JWT required by router-level dependency. Per-user custom preset
+    # lookup will use request.state.jwt_data in a follow-up.
+    return GrapeRankPresetsResponse(data=list_graperank_presets())
