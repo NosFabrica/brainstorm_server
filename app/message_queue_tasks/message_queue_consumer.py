@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import get_redis_client
@@ -147,18 +148,20 @@ async def consume_strfry_plugin_messages():
         try:
             redis_client = get_redis_client()
             while True:
-                logger.info(f"waiting for message...")
                 msg = await redis_client.blpop(STRFRY_EVENTS_QUEUE_NAME, timeout=30)
-                logger.info(f"got neofry event message!")
                 if msg:
                     try:
-
                         _, message_bytes = msg
                         message = json.loads(message_bytes)
-                        # asyncio.create_task(process_message(message))
+                        backlog = await redis_client.llen(STRFRY_EVENTS_QUEUE_NAME)
+                        t0 = time.monotonic()
                         async with neo4j_driver.session() as neo4j_session:
                             await process_strfry_event(neo4j_session, message)
-                        logger.info(f"processed neofry event message! next...")
+                        logger.info(
+                            f"processed kind={message.get('kind')} "
+                            f"tags={len(message.get('tags', []))} "
+                            f"in {time.monotonic() - t0:.2f}s, backlog={backlog}"
+                        )
                     except Exception as e:
                         logger.error(e)
 
