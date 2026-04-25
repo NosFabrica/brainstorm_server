@@ -12,6 +12,7 @@ logger = loggr.get_logger(__name__)
 async def process_strfry_event(session: AsyncNeoDriver, event: dict):
 
     kind = event.get("kind")
+    logger.info(f"processing event kind={kind} tags={len(event.get('tags', []))}")
 
     if kind == 3:
         # logger.info("Consuming event of kind 3")
