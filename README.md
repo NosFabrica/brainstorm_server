@@ -116,7 +116,7 @@ POST /admin/nsec-encryption/rotate    → 202 {"status": "started"}
 POST /admin/nsec-encryption/verify    → 200 {"ok": N, "fail": 0}
 ```
 
-`rotate` is fire-and-forget: it spawns an in-process background task and returns immediately. 409 is returned if a rotation is already running. Progress and errors land in the server logs — see *Later work* below for the audit table follow-up.
+`rotate` is fire-and-forget: it spawns an in-process background task and returns immediately. 409 is returned if a rotation is already running. Progress and errors land in the server logs — see _Later work_ below for the audit table follow-up.
 
 Flow (in `app/services/nsec_encryption_service.py`):
 
@@ -133,6 +133,7 @@ On any failure after step 2, the key file remains `<new>,<old>` so the app keeps
 ### Rollback
 
 Since the plaintext `nsec` column is preserved, rolling back is safe:
+
 1. Revert code deploy.
 2. Old code reads directly from `nsec` column, ignoring `encrypted_nsec`.
 
@@ -148,41 +149,62 @@ If truly lost while the `nsec` column still exists: clear `encrypted_nsec`, rest
 - **Chunked re-encryption** — current implementation loads all rows at once; revisit if the table grows large.
 - **Drop the plaintext `nsec` column** — separate migration once prod soak confirms `encrypted_nsec` is authoritative.
 
-## Adding / removing a GrapeRank preset param
+## GrapeRank preset params
 
-Preset params (`rigor`, `attenuationFactor`, etc.) are defined in Python and consumed by the Java worker (`brainstorm_graperank_algorithm`). Python is the source of truth. Java enforces the contract via Jackson — missing required fields throw.
+Preset values live in the `graperank_preset` table — one row per preset (`DEFAULT`, `PERMISSIVE`, `RESTRICTIVE`). Seeded by migration with factory defaults. After deploy, the DB is the source of truth; admins edit values via the admin endpoint. Each write also appends to `graperank_preset_history` (append-only audit log).
 
-### Add a new param
+Reads always hit the DB — no in-process cache. One small indexed PK lookup per brainstorm request creation; trivial cost vs. the rest of request creation. Multi-worker coherent by construction: every worker sees admin writes immediately after commit.
 
-**Python (this repo):**
+Two enums separate concerns: [`BuiltinPresetTemplate`](app/services/graperank_presets.py) (DEFAULT/PERMISSIVE/RESTRICTIVE) is used as the input type at admin endpoints and the user PUT body, so FastAPI rejects `CUSTOM` at validation. [`GrapeRankPresetTemplate`](app/services/graperank_presets.py) (the same three plus `CUSTOM`) is used for stored state and response schemas where `CUSTOM` is a real possibility.
 
-1. [`app/services/graperank_presets.py`](app/services/graperank_presets.py)
-   - Add `newFieldName: float` to `GrapeRankPresetParams` (camelCase, matches Java).
-   - Add the value for each entry in `PRESET_DEFINITIONS` (DEFAULT, PERMISSIVE, RESTRICTIVE).
-2. `GET /user/graperank/presets` auto-includes the new field in its response. No schema edits.
+Pydantic validates the wire shape (`GrapeRankPresetParams`, camelCase, `extra="forbid"` — typos fail fast).
+
+The shape is the contract with the Java worker (`brainstorm_graperank_algorithm`). Java enforces it via Jackson — missing required fields throw and the request is marked `FAILED`.
+
+### Tuning an existing preset (per-deployment)
+
+```
+PUT /admin/graperank/preset/{DEFAULT|PERMISSIVE|RESTRICTIVE}
+Body: full GrapeRankPresetParams
+```
+
+Validates via pydantic, writes the row, appends a history entry with `change_type=UPDATE` and `changed_by=<admin pubkey>`. Subsequent brainstorm requests on any worker read fresh values from the DB.
+
+History: `GET /admin/graperank/preset/{id}/history` (newest first, capped at 100).
+
+### Adding a new param (schema change)
+
+1. [`GrapeRankPresetParams`](app/services/graperank_presets.py) — add `newFieldName: float` (camelCase, matches Java).
+2. [`db_models/__init__.py`](app/db_models/__init__.py) — add `new_field_name` column to both `GrapeRankPreset` and `GrapeRankPresetHistory`.
+3. [`graperank_preset_repo.COLUMN_MAP`](app/repos/graperank_preset_repo.py) — add the camel↔snake mapping.
+4. New alembic migration: `ALTER TABLE` both tables to add the column. Set initial value for existing rows.
+5. `GET /user/graperank/presets` auto-includes the new field. No schema edits.
 
 **Java (`brainstorm_graperank_algorithm`):**
 
-3. `src/main/java/.../grape/GrapeRankParams.java`
-   - Add `@JsonProperty(required = true) double newFieldName` to the record. Same camelCase name as Python.
-4. `src/main/java/.../grape/Constants.java`
-   - Add a `DEFAULT_NEW_FIELD_NAME` constant.
-   - Pass it to the `DEFAULT_PARAMS` constructor.
-5. Wire the new field into the algorithm (likely `GrapeRankAlgorithm.java`).
+6. `GrapeRankParams.java` — add `@JsonProperty(required = true) double newFieldName`.
+7. `Constants.java` — add to `DEFAULT_PARAMS` (dev-only, not on prod path).
+8. Wire into `GrapeRankAlgorithm.java`.
 
-**Deploy:**
+**Deploy order:** Java first, then Python. Old Java reading a payload with an unknown field is fine (`FAIL_ON_UNKNOWN_PROPERTIES=false`). New Java reading an old payload without the required field throws.
 
-- Deploy Java first, then Python — or both together. Old Java reading a payload with an unknown field is fine (`FAIL_ON_UNKNOWN_PROPERTIES=false`). New Java reading an old payload without the required field will throw and mark the request `FAILED` — avoid by deploying Java at or before Python.
+### Removing a param
 
-### Remove a param
+1. Delete from `GrapeRankPresetParams`, both DB models, and `COLUMN_MAP`.
+2. Migration: `ALTER TABLE ... DROP COLUMN` on both tables.
+3. Java: delete from `GrapeRankParams` record + `Constants.DEFAULT_PARAMS` + algorithm.
+4. Deploy Python first; Java ignores unknown fields.
 
-1. Delete from `GrapeRankPresetParams` + every entry in `PRESET_DEFINITIONS`.
-2. Delete from `GrapeRankParams` record + `Constants.DEFAULT_PARAMS` + algorithm call sites.
-3. Deploy Python first so new messages stop carrying the field. Java ignores unknown fields, so old-Java + new-Python is safe until Java catches up.
+### Adding a new preset (e.g. `EXPERIMENTAL`)
 
-### Historical rows
+Static enum on purpose — adding a preset name is a code change, not a config change.
 
-Old `BrainstormRequest.graperank_params` JSON snapshots are frozen in the shape they were written with. They are never replayed — they're audit-only. Adding or removing fields does not require a DB migration.
+1. Add enum member to both `BuiltinPresetTemplate` and `GrapeRankPresetTemplate` (same string value).
+2. New migration: insert row into `graperank_preset` with factory values + a `CREATE` history row.
+
+### Historical request rows
+
+`BrainstormRequest.graperank_params` JSON snapshots are frozen in the shape they were written with. They're never replayed — audit-only. Adding or removing fields does not require backfilling these.
 
 ## Scripts
 
@@ -213,4 +235,3 @@ python3 scripts/test_admin_brainstorm_pubkey.py --base-url https://brainstormser
 ```
 
 Your nsec will be prompted securely (hidden input). Your pubkey must be in `admin_whitelisted_pubkeys` on the target server.
-

@@ -1,8 +1,13 @@
 from enum import Enum
-from types import MappingProxyType
-from typing import Mapping
 
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+
+from app.repos.graperank_preset_repo import (
+    get_preset_on_db,
+    row_to_camel_dict,
+    update_preset_on_db,
+)
 
 
 class GrapeRankPresetTemplate(str, Enum):
@@ -12,15 +17,16 @@ class GrapeRankPresetTemplate(str, Enum):
     CUSTOM = "CUSTOM"
 
 
-ASSIGNABLE: set[GrapeRankPresetTemplate] = {
-    GrapeRankPresetTemplate.DEFAULT,
-    GrapeRankPresetTemplate.PERMISSIVE,
-    GrapeRankPresetTemplate.RESTRICTIVE,
-}
+# Built-in presets — each has a row in graperank_preset, seeded by migration,
+# admin-editable. Excludes CUSTOM (per-user, separate endpoint).
+class BuiltinPresetTemplate(str, Enum):
+    DEFAULT = "DEFAULT"
+    PERMISSIVE = "PERMISSIVE"
+    RESTRICTIVE = "RESTRICTIVE"
 
 
 class GrapeRankPresetParams(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     rigor: float
     attenuationFactor: float
@@ -36,54 +42,32 @@ class GrapeRankPresetParams(BaseModel):
     verifiedMutersInfluenceCutoff: float
 
 
-_PRESET_DEFINITIONS: dict[GrapeRankPresetTemplate, GrapeRankPresetParams] = {
-    GrapeRankPresetTemplate.DEFAULT: GrapeRankPresetParams(
-        rigor=0.5,
-        attenuationFactor=0.85,
-        followRating=1.0,
-        followConfidence=0.03,
-        muteRating=-0.1,
-        muteConfidence=0.5,
-        reportRating=-0.1,
-        reportConfidence=0.5,
-        followConfidenceOfObserver=0.5,
-        verifiedFollowersInfluenceCutoff=0.02,
-        verifiedReportersInfluenceCutoff=0.1,
-        verifiedMutersInfluenceCutoff=0.01,
-    ),
-    GrapeRankPresetTemplate.PERMISSIVE: GrapeRankPresetParams(
-        rigor=0.3,
-        attenuationFactor=0.95,
-        followRating=1.0,
-        followConfidence=0.1,
-        muteRating=0.0,
-        muteConfidence=0.1,
-        reportRating=0.0,
-        reportConfidence=0.1,
-        followConfidenceOfObserver=0.1,
-        verifiedFollowersInfluenceCutoff=0.002,
-        verifiedReportersInfluenceCutoff=0.002,
-        verifiedMutersInfluenceCutoff=0.002,
-    ),
-    GrapeRankPresetTemplate.RESTRICTIVE: GrapeRankPresetParams(
-        rigor=0.65,
-        attenuationFactor=0.5,
-        followRating=1.0,
-        followConfidence=0.03,
-        muteRating=-0.9,
-        muteConfidence=0.9,
-        reportRating=-0.9,
-        reportConfidence=0.9,
-        followConfidenceOfObserver=0.5,
-        verifiedFollowersInfluenceCutoff=0.5,
-        verifiedReportersInfluenceCutoff=0.5,
-        verifiedMutersInfluenceCutoff=0.5,
-    ),
-}
+async def resolve_preset_params(
+    db: AsyncDBSession,
+    preset: GrapeRankPresetTemplate,
+) -> GrapeRankPresetParams:
+    if preset == GrapeRankPresetTemplate.CUSTOM:
+        raise NotImplementedError("Custom preset params lookup not implemented yet")
 
-PRESET_DEFINITIONS: Mapping[GrapeRankPresetTemplate, GrapeRankPresetParams] = (
-    MappingProxyType(_PRESET_DEFINITIONS)
-)
+    row = await get_preset_on_db(db, preset.value)
+    if row is None:
+        raise RuntimeError(
+            f"graperank_preset row missing for {preset.value} — "
+            "alembic seed migration likely not applied"
+        )
+    return GrapeRankPresetParams(**row_to_camel_dict(row))
+
+
+async def update_preset_params(
+    db: AsyncDBSession,
+    preset: BuiltinPresetTemplate,
+    params: GrapeRankPresetParams,
+    changed_by: str | None,
+) -> GrapeRankPresetParams:
+    row = await update_preset_on_db(
+        db, preset.value, params.model_dump(), changed_by
+    )
+    return GrapeRankPresetParams(**row_to_camel_dict(row))
 
 
 def normalize_preset(raw: str | None) -> GrapeRankPresetTemplate:
@@ -93,9 +77,3 @@ def normalize_preset(raw: str | None) -> GrapeRankPresetTemplate:
         return GrapeRankPresetTemplate(raw.upper())
     except ValueError:
         return GrapeRankPresetTemplate.DEFAULT
-
-
-def resolve_preset_params(preset: GrapeRankPresetTemplate) -> GrapeRankPresetParams:
-    if preset == GrapeRankPresetTemplate.CUSTOM:
-        raise NotImplementedError("Custom preset params lookup not implemented yet")
-    return PRESET_DEFINITIONS[preset]

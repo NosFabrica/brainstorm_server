@@ -14,7 +14,7 @@ from app.schemas.request_response_schemas import (
 )
 from app.services.graperank_preset_service import list_graperank_presets
 from app.services.graperank_presets import (
-    ASSIGNABLE,
+    GrapeRankPresetTemplate,
     normalize_preset,
 )
 from app.utils.auth.auth_models import JWTData
@@ -50,15 +50,11 @@ async def set_graperank_preset_endpoint(
     request: Request,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GrapeRankPresetResponse:
-    if body.preset not in ASSIGNABLE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Preset '{body.preset.value}' is not assignable via this endpoint",
-        )
-
     jwt_data: JWTData = request.state.jwt_data
     await set_graperank_preset_by_pubkey_on_db(db, jwt_data.nostr_pubkey, body.preset.value)
-    return GrapeRankPresetResponse(data=GrapeRankPreset(preset=body.preset))
+    return GrapeRankPresetResponse(
+        data=GrapeRankPreset(preset=GrapeRankPresetTemplate(body.preset.value)),
+    )
 
 
 @router.put(
@@ -84,7 +80,8 @@ async def set_custom_graperank_preset_endpoint(
 )
 async def get_graperank_presets_endpoint(
     request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GrapeRankPresetsResponse:
     # JWT required by router-level dependency. Per-user custom preset
     # lookup will use request.state.jwt_data in a follow-up.
-    return GrapeRankPresetsResponse(data=list_graperank_presets())
+    return GrapeRankPresetsResponse(data=await list_graperank_presets(db))

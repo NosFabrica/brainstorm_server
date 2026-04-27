@@ -1,5 +1,6 @@
 import enum
-from sqlalchemy import DateTime, Integer, Float, JSON, String, func, Boolean, UniqueConstraint
+from sqlalchemy import DateTime, Integer, Float, String, func, Boolean, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -59,7 +60,7 @@ class BrainstormRequest(TimestampMixin, Base):
     algorithm: Mapped[str] = mapped_column(String, nullable=False)
     pubkey: Mapped[str] = mapped_column(String, nullable=True)
     graperank_preset_used: Mapped[str] = mapped_column(String, nullable=True)
-    graperank_params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    graperank_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class BrainstormNostrRelayTransfer(TimestampMixin, Base):
@@ -84,3 +85,45 @@ class BrainstormNsec(TimestampMixin, Base):
     last_time_triggered_graperank = mapped_column(DateTime, nullable=True)
     last_time_calculated_graperank = mapped_column(DateTime, nullable=True)
     graperank_preset: Mapped[str] = mapped_column(String, nullable=True)
+
+
+# Built-in GrapeRank presets. One row per template (DEFAULT, PERMISSIVE, RESTRICTIVE).
+# Seeded by migration with factory defaults, edited via admin endpoint.
+class GrapeRankPreset(TimestampMixin, Base):
+    __tablename__ = "graperank_preset"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    rigor: Mapped[float] = mapped_column(Float, nullable=False)
+    attenuation_factor: Mapped[float] = mapped_column(Float, nullable=False)
+    follow_rating: Mapped[float] = mapped_column(Float, nullable=False)
+    follow_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    mute_rating: Mapped[float] = mapped_column(Float, nullable=False)
+    mute_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    report_rating: Mapped[float] = mapped_column(Float, nullable=False)
+    report_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    follow_confidence_of_observer: Mapped[float] = mapped_column(Float, nullable=False)
+    verified_followers_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
+    verified_reporters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
+    verified_muters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class GrapeRankPresetHistory(Base):
+    __tablename__ = "graperank_preset_history"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    preset_id: Mapped[str] = mapped_column(String, nullable=False)
+    rigor: Mapped[float] = mapped_column(Float, nullable=False)
+    attenuation_factor: Mapped[float] = mapped_column(Float, nullable=False)
+    follow_rating: Mapped[float] = mapped_column(Float, nullable=False)
+    follow_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    mute_rating: Mapped[float] = mapped_column(Float, nullable=False)
+    mute_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    report_rating: Mapped[float] = mapped_column(Float, nullable=False)
+    report_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    follow_confidence_of_observer: Mapped[float] = mapped_column(Float, nullable=False)
+    verified_followers_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
+    verified_reporters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
+    verified_muters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
+    change_type: Mapped[str] = mapped_column(String, nullable=False)
+    changed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    changed_at: Mapped[DateTime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )

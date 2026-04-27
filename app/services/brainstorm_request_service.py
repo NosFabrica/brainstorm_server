@@ -106,7 +106,7 @@ async def create_brainstorm_request(
 
     stored_preset = await get_graperank_preset_by_pubkey_on_db(db, parameters)
     preset = normalize_preset(stored_preset)
-    params = resolve_preset_params(preset)
+    params = await resolve_preset_params(db, preset)
 
     brainstorm_request_db_obj: BrainstormRequest = (
         await create_brainstorm_request_on_db(

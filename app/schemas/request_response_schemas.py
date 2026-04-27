@@ -104,6 +104,10 @@ class GrapeRankPresetItem(BaseModel):
     params: GrapeRankPresetParams
 
 
+class GrapeRankPresetItemResponse(SuccessfulResponseDataSchema):
+    data: GrapeRankPresetItem
+
+
 class GrapeRankPresetsData(BaseModel):
     presets: list[GrapeRankPresetItem]
     custom: GrapeRankPresetItem | None = None
@@ -111,5 +115,22 @@ class GrapeRankPresetsData(BaseModel):
 
 class GrapeRankPresetsResponse(SuccessfulResponseDataSchema):
     data: GrapeRankPresetsData
+
+
+class GrapeRankPresetHistoryEntry(BaseModel):
+    id: int
+    presetId: GrapeRankPresetTemplate
+    params: GrapeRankPresetParams
+    changeType: str
+    changedBy: str | None
+    changedAt: str
+
+
+class GrapeRankPresetHistoryData(BaseModel):
+    entries: list[GrapeRankPresetHistoryEntry]
+
+
+class GrapeRankPresetHistoryResponse(SuccessfulResponseDataSchema):
+    data: GrapeRankPresetHistoryData
 
 
