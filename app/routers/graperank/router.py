@@ -13,10 +13,7 @@ from app.schemas.request_response_schemas import (
     GrapeRankPresetsResponse,
 )
 from app.services.graperank_preset_service import list_graperank_presets
-from app.services.graperank_presets import (
-    GrapeRankPresetTemplate,
-    normalize_preset,
-)
+from app.services.graperank_presets import GrapeRankPresetTemplate, normalize_preset
 from app.utils.auth.auth_models import JWTData
 
 
@@ -50,11 +47,15 @@ async def set_graperank_preset_endpoint(
     request: Request,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GrapeRankPresetResponse:
+    if body.preset == GrapeRankPresetTemplate.CUSTOM:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Custom preset not implemented yet",
+        )
+
     jwt_data: JWTData = request.state.jwt_data
     await set_graperank_preset_by_pubkey_on_db(db, jwt_data.nostr_pubkey, body.preset.value)
-    return GrapeRankPresetResponse(
-        data=GrapeRankPreset(preset=GrapeRankPresetTemplate(body.preset.value)),
-    )
+    return GrapeRankPresetResponse(data=GrapeRankPreset(preset=body.preset))
 
 
 @router.put(

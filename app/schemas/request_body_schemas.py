@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from app.services.graperank_presets import BuiltinPresetTemplate
+from app.services.graperank_presets import GrapeRankPresetTemplate
 
 
 class CreateBrainstormRequestBody(BaseModel):
@@ -14,4 +14,4 @@ class SubmitNostrAuthChallengeBody(BaseModel):
 
 
 class SetGrapeRankPresetBody(BaseModel):
-    preset: BuiltinPresetTemplate
+    preset: GrapeRankPresetTemplate
