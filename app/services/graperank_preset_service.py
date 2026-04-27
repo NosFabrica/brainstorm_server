@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.repos.brainstorm_nsec import get_graperank_custom_params_by_pubkey_on_db
 from app.repos.graperank_preset_repo import get_all_presets_on_db, row_to_camel_dict
 from app.schemas.request_response_schemas import (
     GrapeRankPresetItem,
@@ -12,7 +13,9 @@ from app.services.graperank_presets import (
 )
 
 
-async def list_graperank_presets(db: AsyncDBSession) -> GrapeRankPresetsData:
+async def list_graperank_presets(
+    db: AsyncDBSession, pubkey: str
+) -> GrapeRankPresetsData:
     rows = await get_all_presets_on_db(db)
     by_id = {row.id: row for row in rows}
 
@@ -30,4 +33,14 @@ async def list_graperank_presets(db: AsyncDBSession) -> GrapeRankPresetsData:
                 params=GrapeRankPresetParams(**row_to_camel_dict(row)),
             )
         )
-    return GrapeRankPresetsData(presets=presets, custom=None)
+
+    custom_raw = await get_graperank_custom_params_by_pubkey_on_db(db, pubkey)
+    custom = (
+        GrapeRankPresetItem(
+            id=GrapeRankPresetTemplate.CUSTOM,
+            params=GrapeRankPresetParams(**custom_raw),
+        )
+        if custom_raw
+        else None
+    )
+    return GrapeRankPresetsData(presets=presets, custom=custom)

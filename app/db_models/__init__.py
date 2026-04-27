@@ -85,6 +85,7 @@ class BrainstormNsec(TimestampMixin, Base):
     last_time_triggered_graperank = mapped_column(DateTime, nullable=True)
     last_time_calculated_graperank = mapped_column(DateTime, nullable=True)
     graperank_preset: Mapped[str] = mapped_column(String, nullable=True)
+    graperank_custom_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 # Built-in GrapeRank presets. One row per template (DEFAULT, PERMISSIVE, RESTRICTIVE).
@@ -109,7 +110,7 @@ class GrapeRankPreset(TimestampMixin, Base):
 class GrapeRankPresetHistory(Base):
     __tablename__ = "graperank_preset_history"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    preset_id: Mapped[str] = mapped_column(String, nullable=False)
+    preset_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     rigor: Mapped[float] = mapped_column(Float, nullable=False)
     attenuation_factor: Mapped[float] = mapped_column(Float, nullable=False)
     follow_rating: Mapped[float] = mapped_column(Float, nullable=False)

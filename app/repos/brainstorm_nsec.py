@@ -95,6 +95,28 @@ async def set_graperank_preset_by_pubkey_on_db(
     await db.execute(statement)
 
 
+async def get_graperank_custom_params_by_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> dict | None:
+    statement = select(BrainstormNsec.graperank_custom_params).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none()
+
+
+async def set_graperank_custom_params_by_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str, params: dict
+) -> None:
+    await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey)
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(graperank_custom_params=params)
+    )
+    await db.execute(statement)
+
+
 async def select_brainstorm_nsec_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> BrainstormNsec:
