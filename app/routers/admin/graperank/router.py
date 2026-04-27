@@ -16,11 +16,11 @@ from app.schemas.request_response_schemas import (
     AdminPresetItemResponse,
     AdminPresetResponse,
 )
-from app.services.graperank_presets import (
+from app.schemas.graperank_schemas import (
     BuiltinPresetTemplate,
     GrapeRankPresetParams,
-    update_preset_params,
 )
+from app.services.graperank_preset_service import update_preset_params
 from app.utils.auth.auth_models import JWTData
 
 

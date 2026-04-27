@@ -15,7 +15,7 @@ from app.repos.brainstorm_request_repo import (
 )
 
 from app.schemas.schemas import BrainstormRequestInstance
-from app.services.graperank_presets import (
+from app.services.graperank_preset_service import (
     normalize_preset,
     resolve_preset_params,
 )

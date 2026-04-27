@@ -15,10 +15,12 @@ from app.schemas.request_response_schemas import (
     GrapeRankPresetResponse,
     GrapeRankPresetsResponse,
 )
-from app.services.graperank_preset_service import list_graperank_presets
-from app.services.graperank_presets import (
+from app.schemas.graperank_schemas import (
     GrapeRankPresetParams,
     GrapeRankPresetTemplate,
+)
+from app.services.graperank_preset_service import (
+    list_graperank_presets,
     normalize_preset,
 )
 from app.utils.auth.auth_models import JWTData

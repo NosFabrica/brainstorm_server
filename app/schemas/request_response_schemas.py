@@ -11,7 +11,7 @@ from app.schemas.schemas import (
     OwnUserData,
     UserGraphData,
 )
-from app.services.graperank_presets import (
+from app.schemas.graperank_schemas import (
     BuiltinPresetTemplate,
     GrapeRankPresetParams,
     GrapeRankPresetTemplate,
