@@ -120,6 +120,40 @@ async def get_events_from_graperank_result(
     return events
 
 
+async def fetch_existing_events_for_dropped_pubkeys(
+    observer_pubkey: str,
+    dropped_pubkeys: list[str],
+) -> list[Event]:
+
+    fetcher = Client()
+    added = 0
+    for relay in RELAYS:
+        try:
+            await fetcher.add_relay(relay)
+            added += 1
+        except Exception as e:
+            logger.error(f"deletion fetch: bad relay {relay}: {e}")
+    if added == 0:
+        logger.error("deletion fetch: no relays available, skipping")
+        return []
+
+    await fetcher.connect()
+    try:
+        flt = (
+            Filter()
+            .kinds([Kind(30382)])
+            .authors([PublicKey.parse(observer_pubkey)])
+            .identifiers(dropped_pubkeys)
+        )
+        events_obj = await fetcher.fetch_events(flt, timeout=timedelta(seconds=30))
+        return events_obj.to_vec()
+    finally:
+        try:
+            await fetcher.disconnect()
+        except Exception as e:
+            logger.error(f"deletion fetch: disconnect failed: {e}")
+
+
 async def get_deletion_events_for_dropped_pubkeys(
     observer_pubkey: str,
     dropped_pubkeys: list[str],
@@ -134,17 +168,11 @@ async def get_deletion_events_for_dropped_pubkeys(
         f"dropped pubkeys to build deletion events"
     )
 
-    flt = (
-        Filter()
-        .kinds([Kind(30382)])
-        .authors([PublicKey.parse(observer_pubkey)])
-        .identifiers(dropped_pubkeys)
+    existing_events = await fetch_existing_events_for_dropped_pubkeys(
+        observer_pubkey=observer_pubkey,
+        dropped_pubkeys=dropped_pubkeys,
     )
-    events_obj = await nostr_client.fetch_events(flt, timeout=timedelta(seconds=30))
-    existing_events = events_obj.to_vec()
-    logger.info(
-        f"found {len(existing_events)} existing kind 30382 events to delete"
-    )
+    logger.info(f"found {len(existing_events)} existing kind 30382 events to delete")
 
     event_ids_by_d_tag: dict[str, list[EventId]] = {}
     for ev in existing_events:
@@ -203,13 +231,13 @@ async def process_nostr_upload_message(message: dict):
             grape_rank_result, nostr_client
         )
 
-        deletion_events = await get_deletion_events_for_dropped_pubkeys(
-            observer_pubkey=observer,
-            dropped_pubkeys=grape_rank_result.droppedBelowCutoffPubkeys,
-            nostr_client=nostr_client,
-        )
+        # deletion_events = await get_deletion_events_for_dropped_pubkeys(
+        #     observer_pubkey=observer,
+        #     dropped_pubkeys=grape_rank_result.droppedBelowCutoffPubkeys,
+        #     nostr_client=nostr_client,
+        # )
 
-        nostr_events.extend(deletion_events)
+        # nostr_events.extend(deletion_events)
 
         start_time = time.time()
 
