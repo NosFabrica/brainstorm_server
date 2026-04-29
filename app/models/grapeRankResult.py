@@ -20,3 +20,5 @@ class GrapeRankResult(BaseModel):
     rounds: int | None = None
     duration_seconds: float
     success: bool = False
+    changedScorePubkeys: list[str] = []
+    droppedBelowCutoffPubkeys: list[str] = []

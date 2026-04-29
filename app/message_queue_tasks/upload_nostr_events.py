@@ -16,9 +16,12 @@ from nostr_sdk import (  # type: ignore
     Client,
     Event,
     EventBuilder,
+    EventId,
+    Filter,
     Keys,
     Kind,
     NostrSigner,
+    PublicKey,
     Tag,
 )
 import time
@@ -67,10 +70,19 @@ async def get_events_from_graperank_result(
     events: list[Event] = []
     logger.info(f"{bool(grape_rank_result.scorecards)}")
     assert grape_rank_result.scorecards is not None
+    changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
+    logger.info(
+        f"filtering to {len(changed_pubkeys)} changed-score pubkeys "
+        f"out of {len(grape_rank_result.scorecards)} scorecards"
+    )
     start_time_sort = time.time()
     logger.info("sorting scorecards...")
     sorted_scorecards = sorted(
-        grape_rank_result.scorecards.values(),
+        (
+            sc
+            for pubkey, sc in grape_rank_result.scorecards.items()
+            if pubkey in changed_pubkeys
+        ),
         key=lambda sc: sc.influence,
         reverse=True,
     )
@@ -108,6 +120,55 @@ async def get_events_from_graperank_result(
     return events
 
 
+async def get_deletion_events_for_dropped_pubkeys(
+    observer_pubkey: str,
+    dropped_pubkeys: list[str],
+    nostr_client: Client,
+) -> list[Event]:
+
+    if not dropped_pubkeys:
+        return []
+
+    logger.info(
+        f"fetching existing kind 30382 events for {len(dropped_pubkeys)} "
+        f"dropped pubkeys to build deletion events"
+    )
+
+    flt = (
+        Filter()
+        .kinds([Kind(30382)])
+        .authors([PublicKey.parse(observer_pubkey)])
+        .identifiers(dropped_pubkeys)
+    )
+    events_obj = await nostr_client.fetch_events(flt, timeout=timedelta(seconds=30))
+    existing_events = events_obj.to_vec()
+    logger.info(
+        f"found {len(existing_events)} existing kind 30382 events to delete"
+    )
+
+    event_ids_by_d_tag: dict[str, list[EventId]] = {}
+    for ev in existing_events:
+        d_tag: str | None = None
+        for tag in ev.tags().to_vec():
+            tag_vec = tag.as_vec()
+            if len(tag_vec) >= 2 and tag_vec[0] == "d":
+                d_tag = tag_vec[1]
+                break
+        if d_tag is None:
+            continue
+        event_ids_by_d_tag.setdefault(d_tag, []).append(ev.id())
+
+    deletion_events: list[Event] = []
+    for d_tag, event_ids in event_ids_by_d_tag.items():
+        tags = [Tag.parse(["e", eid.to_hex()]) for eid in event_ids]
+        builder = EventBuilder(kind=Kind(5), content="dropped below cutoff")
+        builder = builder.tags(tags)
+        signed_event = await nostr_client.sign_event_builder(builder)
+        deletion_events.append(signed_event)
+
+    return deletion_events
+
+
 async def process_nostr_upload_message(message: dict):
 
     # is_success = message["result"]["success"]
@@ -141,6 +202,14 @@ async def process_nostr_upload_message(message: dict):
         nostr_events = await get_events_from_graperank_result(
             grape_rank_result, nostr_client
         )
+
+        deletion_events = await get_deletion_events_for_dropped_pubkeys(
+            observer_pubkey=observer,
+            dropped_pubkeys=grape_rank_result.droppedBelowCutoffPubkeys,
+            nostr_client=nostr_client,
+        )
+
+        nostr_events.extend(deletion_events)
 
         start_time = time.time()
 
@@ -176,7 +245,8 @@ async def process_nostr_upload_message(message: dict):
         logger.info(
             f"Took {final_time} seconds to process {len(nostr_events)} nostr events"
         )
-        logger.info(f"Check Nostr Event {nostr_events[0].as_json()}")
+        if nostr_events:
+            logger.info(f"Check Nostr Event {nostr_events[0].as_json()}")
     except Exception as e:
         logger.error(f"Error on request {message["private_id"]} , {e}")
         async with db_session() as db:
