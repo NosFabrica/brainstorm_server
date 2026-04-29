@@ -77,20 +77,21 @@ async def process_event_kind_10000(session: AsyncNeoDriver, event: dict):
         await session.run(cypher, publisher=publisher)
         return
 
-    cypher = """
+    upsert_cypher = """
     MERGE (pub:NostrUser {pubkey: $publisher})
-
-    WITH pub, $muted_pubkeys AS fps
-    UNWIND fps AS fp
+    WITH pub
+    UNWIND $muted_pubkeys AS fp
         MERGE (f:NostrUser {pubkey: fp})
         MERGE (pub)-[:MUTES]->(f)
+    """
+    await session.run(upsert_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys)
 
-    WITH pub, fps
-    OPTIONAL MATCH (pub)-[r:MUTES]->(oldF)
-    WHERE NOT oldF.pubkey IN fps
-    DELETE r"""
-
-    await session.run(cypher, publisher=publisher, muted_pubkeys=muted_pubkeys)
+    cleanup_cypher = """
+    MATCH (pub:NostrUser {pubkey: $publisher})-[r:MUTES]->(oldF)
+    WHERE NOT oldF.pubkey IN $muted_pubkeys
+    DELETE r
+    """
+    await session.run(cleanup_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys)
 
 
 async def process_event_kind_3(session: AsyncNeoDriver, event: dict):
@@ -107,17 +108,22 @@ async def process_event_kind_3(session: AsyncNeoDriver, event: dict):
         await session.run(cypher, publisher=publisher)
         return
 
-    cypher = """
+    upsert_cypher = """
     MERGE (pub:NostrUser {pubkey: $publisher})
-
-    WITH pub, $followed_pubkeys AS fps
-    UNWIND fps AS fp
+    WITH pub
+    UNWIND $followed_pubkeys AS fp
         MERGE (f:NostrUser {pubkey: fp})
         MERGE (pub)-[:FOLLOWS]->(f)
+    """
+    await session.run(
+        upsert_cypher, publisher=publisher, followed_pubkeys=followed_pubkeys
+    )
 
-    WITH pub, fps
-    OPTIONAL MATCH (pub)-[r:FOLLOWS]->(oldF)
-    WHERE NOT oldF.pubkey IN fps
-    DELETE r"""
-
-    await session.run(cypher, publisher=publisher, followed_pubkeys=followed_pubkeys)
+    cleanup_cypher = """
+    MATCH (pub:NostrUser {pubkey: $publisher})-[r:FOLLOWS]->(oldF)
+    WHERE NOT oldF.pubkey IN $followed_pubkeys
+    DELETE r
+    """
+    await session.run(
+        cleanup_cypher, publisher=publisher, followed_pubkeys=followed_pubkeys
+    )

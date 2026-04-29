@@ -142,7 +142,6 @@ async def consume_strfry_plugin_messages():
 
         async with neo4j_driver.session() as neo4j_session:
             await create_pubkey_index(neo4j_session)
-
         try:
             redis_client = get_redis_client()
             while True:
@@ -151,9 +150,10 @@ async def consume_strfry_plugin_messages():
                     try:
                         _, message_bytes = msg
                         message = json.loads(message_bytes)
-                        # asyncio.create_task(process_message(message))
+
                         async with neo4j_driver.session() as neo4j_session:
                             await process_strfry_event(neo4j_session, message)
+
                     except Exception as e:
                         logger.error(e)
 
