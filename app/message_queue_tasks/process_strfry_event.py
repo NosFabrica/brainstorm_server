@@ -12,7 +12,6 @@ logger = loggr.get_logger(__name__)
 async def process_strfry_event(session: AsyncNeoDriver, event: dict):
 
     kind = event.get("kind")
-    logger.info(f"processing event kind={kind} tags={len(event.get('tags', []))}")
 
     if kind == 3:
         # logger.info("Consuming event of kind 3")
@@ -85,18 +84,14 @@ async def process_event_kind_10000(session: AsyncNeoDriver, event: dict):
         MERGE (f:NostrUser {pubkey: fp})
         MERGE (pub)-[:MUTES]->(f)
     """
-    await session.run(
-        upsert_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys
-    )
+    await session.run(upsert_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys)
 
     cleanup_cypher = """
     MATCH (pub:NostrUser {pubkey: $publisher})-[r:MUTES]->(oldF)
     WHERE NOT oldF.pubkey IN $muted_pubkeys
     DELETE r
     """
-    await session.run(
-        cleanup_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys
-    )
+    await session.run(cleanup_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys)
 
 
 async def process_event_kind_3(session: AsyncNeoDriver, event: dict):
