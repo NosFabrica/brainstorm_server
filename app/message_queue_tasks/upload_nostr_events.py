@@ -116,8 +116,11 @@ async def get_events_from_graperank_result(
         signed_event = await nostr_client.sign_event_builder(event_builder)
 
         events.append(signed_event)
-
+    logger.info(f"publishing change results. total number: {len(events)} ")
     return events
+
+
+DELETION_FETCH_BATCH_SIZE = 200
 
 
 async def fetch_existing_events_for_dropped_pubkeys(
@@ -139,14 +142,34 @@ async def fetch_existing_events_for_dropped_pubkeys(
 
     await fetcher.connect()
     try:
-        flt = (
-            Filter()
-            .kinds([Kind(30382)])
-            .authors([PublicKey.parse(observer_pubkey)])
-            .identifiers(dropped_pubkeys)
-        )
-        events_obj = await fetcher.fetch_events(flt, timeout=timedelta(seconds=30))
-        return events_obj.to_vec()
+        author = PublicKey.parse(observer_pubkey)
+        all_events: list[Event] = []
+        seen_ids: set[str] = set()
+        total_batches = (
+            len(dropped_pubkeys) + DELETION_FETCH_BATCH_SIZE - 1
+        ) // DELETION_FETCH_BATCH_SIZE
+        for i in range(0, len(dropped_pubkeys), DELETION_FETCH_BATCH_SIZE):
+            batch = dropped_pubkeys[i : i + DELETION_FETCH_BATCH_SIZE]
+            batch_index = i // DELETION_FETCH_BATCH_SIZE + 1
+            logger.info(
+                f"deletion fetch batch {batch_index}/{total_batches} "
+                f"({len(batch)} identifiers)"
+            )
+            flt = Filter().kinds([Kind(30382)]).authors([author]).identifiers(batch)
+            try:
+                events_obj = await fetcher.fetch_events(
+                    flt, timeout=timedelta(seconds=30)
+                )
+            except Exception as e:
+                logger.error(f"deletion fetch batch {batch_index} failed: {e}")
+                continue
+            for ev in events_obj.to_vec():
+                eid = ev.id().to_hex()
+                if eid in seen_ids:
+                    continue
+                seen_ids.add(eid)
+                all_events.append(ev)
+        return all_events
     finally:
         try:
             await fetcher.disconnect()
@@ -231,13 +254,13 @@ async def process_nostr_upload_message(message: dict):
             grape_rank_result, nostr_client
         )
 
-        # deletion_events = await get_deletion_events_for_dropped_pubkeys(
-        #     observer_pubkey=observer,
-        #     dropped_pubkeys=grape_rank_result.droppedBelowCutoffPubkeys,
-        #     nostr_client=nostr_client,
-        # )
+        deletion_events = await get_deletion_events_for_dropped_pubkeys(
+            observer_pubkey=observer,
+            dropped_pubkeys=grape_rank_result.droppedBelowCutoffPubkeys,
+            nostr_client=nostr_client,
+        )
 
-        # nostr_events.extend(deletion_events)
+        nostr_events.extend(deletion_events)
 
         start_time = time.time()
 
