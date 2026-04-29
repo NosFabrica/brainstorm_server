@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from app.services.graperank_presets import GrapeRankPresetTemplate
+from app.schemas.graperank_schemas import GrapeRankPresetTemplate
 
 
 class CreateBrainstormRequestBody(BaseModel):

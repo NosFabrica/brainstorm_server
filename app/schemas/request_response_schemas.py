@@ -11,6 +11,11 @@ from app.schemas.schemas import (
     OwnUserData,
     UserGraphData,
 )
+from app.schemas.graperank_schemas import (
+    BuiltinPresetTemplate,
+    GrapeRankPresetParams,
+    GrapeRankPresetTemplate,
+)
 
 
 class BaseResponseDataSchema(BaseModel):
@@ -91,10 +96,60 @@ class AdminStatsResponse(SuccessfulResponseDataSchema):
 
 
 class GrapeRankPreset(BaseModel):
-    preset: str
+    preset: GrapeRankPresetTemplate
 
 
 class GrapeRankPresetResponse(SuccessfulResponseDataSchema):
     data: GrapeRankPreset
+
+
+class GrapeRankPresetItem(BaseModel):
+    id: GrapeRankPresetTemplate
+    params: GrapeRankPresetParams
+
+
+class GrapeRankPresetsData(BaseModel):
+    presets: list[GrapeRankPresetItem]
+    custom: GrapeRankPresetItem | None = None
+
+
+class GrapeRankPresetsResponse(SuccessfulResponseDataSchema):
+    data: GrapeRankPresetsData
+
+
+# Admin-only schemas — typed with BuiltinPresetTemplate so OpenAPI docs don't
+# expose CUSTOM as an option on admin endpoints.
+class AdminPreset(BaseModel):
+    preset: BuiltinPresetTemplate
+
+
+class AdminPresetResponse(SuccessfulResponseDataSchema):
+    data: AdminPreset
+
+
+class AdminPresetItem(BaseModel):
+    id: BuiltinPresetTemplate
+    params: GrapeRankPresetParams
+
+
+class AdminPresetItemResponse(SuccessfulResponseDataSchema):
+    data: AdminPresetItem
+
+
+class AdminPresetHistoryEntry(BaseModel):
+    id: int
+    presetId: BuiltinPresetTemplate
+    params: GrapeRankPresetParams
+    changeType: str
+    changedBy: str | None
+    changedAt: str
+
+
+class AdminPresetHistoryData(BaseModel):
+    entries: list[AdminPresetHistoryEntry]
+
+
+class AdminPresetHistoryResponse(SuccessfulResponseDataSchema):
+    data: AdminPresetHistoryData
 
 

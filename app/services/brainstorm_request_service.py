@@ -15,9 +15,9 @@ from app.repos.brainstorm_request_repo import (
 )
 
 from app.schemas.schemas import BrainstormRequestInstance
-from app.services.graperank_presets import (
-    build_params_payload,
+from app.services.graperank_preset_service import (
     normalize_preset,
+    resolve_preset_params,
 )
 
 
@@ -41,6 +41,7 @@ def brainstorm_request_db_obj_to_schema_converter(
         pubkey=brainstorm_request_db_obj.pubkey,
         count_values=brainstorm_request_db_obj.count_values,
         graperank_preset_used=brainstorm_request_db_obj.graperank_preset_used,
+        graperank_params=brainstorm_request_db_obj.graperank_params,
     )
 
     return brainstorm_request_obj
@@ -104,7 +105,10 @@ async def create_brainstorm_request(
 ) -> BrainstormRequestInstance:
 
     stored_preset = await get_graperank_preset_by_pubkey_on_db(db, parameters)
-    preset = normalize_preset(stored_preset)
+    requested_preset = normalize_preset(stored_preset)
+    effective_preset, params = await resolve_preset_params(
+        db, requested_preset, pubkey=parameters
+    )
 
     brainstorm_request_db_obj: BrainstormRequest = (
         await create_brainstorm_request_on_db(
@@ -112,7 +116,8 @@ async def create_brainstorm_request(
             algorithm=algorithm,
             parameters=parameters,
             pubkey=pubkey,
-            graperank_preset_used=preset.value,
+            graperank_preset_used=effective_preset.value,
+            graperank_params=params.model_dump(),
         )
     )
 
@@ -126,7 +131,6 @@ async def create_brainstorm_request(
         brainstorm_request_db_obj=brainstorm_request_db_obj,
         how_many_others_with_priority=how_many_others_with_priority,
     )
-    instance.graperank_params = build_params_payload(preset)
 
     if not nsec_exists:
         await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(

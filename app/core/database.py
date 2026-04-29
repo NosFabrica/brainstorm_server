@@ -1,3 +1,4 @@
+import json
 from asyncio import current_task
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Optional
@@ -15,11 +16,19 @@ from sqlalchemy.ext.asyncio import (
 from app.core.config import settings
 from app.core.loggr import loggr
 
+
+# SA's json_serializer must return a string. jsonable_encoder coerces exotic
+# types (datetime, UUID, Pydantic) to JSON-safe Python objects; json.dumps
+# turns them into the string SA expects.
+def _json_serializer(value: Any) -> str:
+    return json.dumps(jsonable_encoder(value))
+
+
 engine = create_async_engine(
     settings.db_url,
     future=True,
     echo=False,
-    json_serializer=jsonable_encoder,
+    json_serializer=_json_serializer,
     pool_size=20,
     max_overflow=80,
     pool_timeout=240,

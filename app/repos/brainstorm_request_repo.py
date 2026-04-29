@@ -304,12 +304,14 @@ async def create_brainstorm_request_on_db(
     parameters: str,
     pubkey: str,
     graperank_preset_used: str | None = None,
+    graperank_params: dict | None = None,
 ) -> BrainstormRequest:
     new_brainstorm_request_obj = BrainstormRequest(
         algorithm=algorithm,
         parameters=parameters,
         pubkey=pubkey,
         graperank_preset_used=graperank_preset_used,
+        graperank_params=graperank_params,
     )
 
     db.add(new_brainstorm_request_obj)
