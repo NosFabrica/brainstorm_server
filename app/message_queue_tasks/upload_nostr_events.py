@@ -125,7 +125,7 @@ DELETION_FETCH_BATCH_SIZE = 200
 # When True, ignore graperank's droppedBelowCutoffPubkeys list and instead
 # delete events for every scorecard whose influence is below the cutoff.
 # Used as a backwards-compat sweep until older results are cleaned up.
-DELETE_ALL_BELOW_CUTOFF_EVENTS = False
+DELETE_ALL_BELOW_CUTOFF_EVENTS = True
 
 
 async def fetch_existing_events_for_dropped_pubkeys(
