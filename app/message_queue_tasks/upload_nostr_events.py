@@ -91,7 +91,7 @@ async def get_events_from_graperank_result(
 
     for scorecard in sorted_scorecards:
 
-        if scorecard.influence < settings.cutoff_of_valid_graperank_scores:
+        if round(scorecard.influence, 2) < settings.cutoff_of_valid_graperank_scores:
             continue
 
         d_tag = scorecard.observee
@@ -121,6 +121,11 @@ async def get_events_from_graperank_result(
 
 
 DELETION_FETCH_BATCH_SIZE = 200
+
+# When True, ignore graperank's droppedBelowCutoffPubkeys list and instead
+# delete events for every scorecard whose influence is below the cutoff.
+# Used as a backwards-compat sweep until older results are cleaned up.
+DELETE_ALL_BELOW_CUTOFF_EVENTS = False
 
 
 async def fetch_existing_events_for_dropped_pubkeys(
@@ -184,6 +189,9 @@ async def get_deletion_events_for_dropped_pubkeys(
 ) -> list[Event]:
 
     if not dropped_pubkeys:
+        logger.info(
+            f"zero pubkeys that moved below the threshold. no events will be deleted"
+        )
         return []
 
     logger.info(
@@ -255,9 +263,23 @@ async def process_nostr_upload_message(message: dict):
             grape_rank_result, nostr_client
         )
 
+        if DELETE_ALL_BELOW_CUTOFF_EVENTS:
+            pubkeys_to_delete = [
+                sc.observee
+                for sc in grape_rank_result.scorecards.values()
+                if sc.influence < settings.cutoff_of_valid_graperank_scores
+            ]
+            logger.info(
+                f"DELETE_ALL_BELOW_CUTOFF_EVENTS=True: sweeping all "
+                f"{len(pubkeys_to_delete)} below-cutoff pubkeys "
+                f"instead of using droppedBelowCutoffPubkeys"
+            )
+        else:
+            pubkeys_to_delete = grape_rank_result.droppedBelowCutoffPubkeys
+
         deletion_events = await get_deletion_events_for_dropped_pubkeys(
             author_pubkey=signing_pubkey,
-            dropped_pubkeys=grape_rank_result.droppedBelowCutoffPubkeys,
+            dropped_pubkeys=pubkeys_to_delete,
             nostr_client=nostr_client,
         )
 
