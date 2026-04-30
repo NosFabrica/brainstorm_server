@@ -68,7 +68,7 @@ async def get_user_history_endpoint(
         db,
         stmt,
         transformer=lambda rows: [
-            brainstorm_request_db_obj_to_schema_converter(r, include_result=False)
+            brainstorm_request_db_obj_to_schema_converter(r, include_result=False, is_admin=True)
             for r in rows
         ],
     )
