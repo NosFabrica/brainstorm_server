@@ -267,7 +267,7 @@ async def process_nostr_upload_message(message: dict):
             pubkeys_to_delete = [
                 sc.observee
                 for sc in grape_rank_result.scorecards.values()
-                if sc.influence < settings.cutoff_of_valid_graperank_scores
+                if round(sc.influence, 2) < settings.cutoff_of_valid_graperank_scores
             ]
             logger.info(
                 f"DELETE_ALL_BELOW_CUTOFF_EVENTS=True: sweeping all "
