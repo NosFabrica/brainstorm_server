@@ -124,7 +124,7 @@ DELETION_FETCH_BATCH_SIZE = 200
 
 
 async def fetch_existing_events_for_dropped_pubkeys(
-    observer_pubkey: str,
+    author_pubkey: str,
     dropped_pubkeys: list[str],
 ) -> list[Event]:
 
@@ -142,7 +142,7 @@ async def fetch_existing_events_for_dropped_pubkeys(
 
     await fetcher.connect()
     try:
-        author = PublicKey.parse(observer_pubkey)
+        author = PublicKey.parse(author_pubkey)
         all_events: list[Event] = []
         seen_ids: set[str] = set()
         total_batches = (
@@ -178,7 +178,7 @@ async def fetch_existing_events_for_dropped_pubkeys(
 
 
 async def get_deletion_events_for_dropped_pubkeys(
-    observer_pubkey: str,
+    author_pubkey: str,
     dropped_pubkeys: list[str],
     nostr_client: Client,
 ) -> list[Event]:
@@ -192,7 +192,7 @@ async def get_deletion_events_for_dropped_pubkeys(
     )
 
     existing_events = await fetch_existing_events_for_dropped_pubkeys(
-        observer_pubkey=observer_pubkey,
+        author_pubkey=author_pubkey,
         dropped_pubkeys=dropped_pubkeys,
     )
     logger.info(f"found {len(existing_events)} existing kind 30382 events to delete")
@@ -249,13 +249,14 @@ async def process_nostr_upload_message(message: dict):
 
     try:
         nostr_client: Client = await init_nostr_client(nsec_db_obj.nsec)
+        signing_pubkey = Keys.parse(secret_key=nsec_db_obj.nsec).public_key().to_hex()
 
         nostr_events = await get_events_from_graperank_result(
             grape_rank_result, nostr_client
         )
 
         deletion_events = await get_deletion_events_for_dropped_pubkeys(
-            observer_pubkey=observer,
+            author_pubkey=signing_pubkey,
             dropped_pubkeys=grape_rank_result.droppedBelowCutoffPubkeys,
             nostr_client=nostr_client,
         )
