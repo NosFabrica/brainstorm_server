@@ -30,6 +30,7 @@ async def get_brainstorm_request_endpoint(
         db=db,
         brainstorm_request_id=brainstorm_request_id,
         include_result=include_result,
+        is_admin=True,
     )
     return BrainstormRequestResponse(data=result)
 

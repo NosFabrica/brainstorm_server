@@ -56,6 +56,7 @@ class BrainstormRequest(TimestampMixin, Base):
     )
     result: Mapped[str] = mapped_column(String, nullable=True)
     count_values: Mapped[str] = mapped_column(String, nullable=True)
+    error: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     parameters: Mapped[str] = mapped_column(String, nullable=False)
     algorithm: Mapped[str] = mapped_column(String, nullable=False)
     pubkey: Mapped[str] = mapped_column(String, nullable=True)

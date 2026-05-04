@@ -271,11 +271,17 @@ async def update_brainstorm_request_result_by_id_on_db(
     result: str,
     count_values: str,
     status: BrainstormRequestStatus,
+    error: dict | None = None,
 ) -> None:
     statement = (
         update(BrainstormRequest)
         .where(BrainstormRequest.private_id == brainstorm_request_id)
-        .values(result=result, status=status.value, count_values=count_values)
+        .values(
+            result=result,
+            status=status.value,
+            count_values=count_values,
+            error=error,
+        )
     )
 
     _ = await execute_db_statement(db, statement, __name__)

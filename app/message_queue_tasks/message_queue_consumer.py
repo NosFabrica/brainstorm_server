@@ -79,6 +79,7 @@ async def process_message(message: dict):
             result=json.dumps(message["result"]),
             status=status,
             count_values=json.dumps(number_by_confidence_by_hops),
+            error=grape_rank_result.error.model_dump() if grape_rank_result.error else None,
         )
         if pubkey:
             await update_last_time_calculated_graperank_on_db(db, pubkey)

@@ -14,7 +14,7 @@ from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
 )
 
-from app.schemas.schemas import BrainstormRequestInstance
+from app.schemas.schemas import GrapeRankError, BrainstormRequestInstance
 from app.services.graperank_preset_service import (
     normalize_preset,
     resolve_preset_params,
@@ -25,7 +25,17 @@ def brainstorm_request_db_obj_to_schema_converter(
     brainstorm_request_db_obj: BrainstormRequest,
     include_result: bool = False,
     how_many_others_with_priority: int = 0,
+    is_admin: bool = False,
 ) -> BrainstormRequestInstance:
+    raw_error = brainstorm_request_db_obj.error
+    if raw_error is None:
+        error = None
+    else:
+        error = GrapeRankError.model_validate(raw_error)
+        if not is_admin:
+            # message may contain stack-trace-ish detail
+            error = error.model_copy(update={"message": None})
+
     brainstorm_request_obj = BrainstormRequestInstance(
         private_id=brainstorm_request_db_obj.private_id,
         status=brainstorm_request_db_obj.status,
@@ -42,6 +52,7 @@ def brainstorm_request_db_obj_to_schema_converter(
         count_values=brainstorm_request_db_obj.count_values,
         graperank_preset_used=brainstorm_request_db_obj.graperank_preset_used,
         graperank_params=brainstorm_request_db_obj.graperank_params,
+        error=error,
     )
 
     return brainstorm_request_obj
@@ -51,6 +62,7 @@ async def get_brainstorm_request_by_id(
     db: AsyncDBSession,
     brainstorm_request_id: int,
     include_result: bool,
+    is_admin: bool = False,
 ) -> BrainstormRequestInstance:
     brainstorm_request_db_obj = await select_brainstorm_request_by_id_on_db(
         db=db,
@@ -70,6 +82,7 @@ async def get_brainstorm_request_by_id(
         brainstorm_request_db_obj=brainstorm_request_db_obj,
         include_result=include_result,
         how_many_others_with_priority=how_many_others_with_priority,
+        is_admin=is_admin,
     )
 
 

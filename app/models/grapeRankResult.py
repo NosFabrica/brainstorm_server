@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+from app.schemas.schemas import GrapeRankError
+
 
 class ScoreCard(BaseModel):
     observer: str
@@ -22,3 +24,4 @@ class GrapeRankResult(BaseModel):
     success: bool = False
     changedScorePubkeys: list[str] = []
     droppedBelowCutoffPubkeys: list[str] = []
+    error: GrapeRankError | None = None

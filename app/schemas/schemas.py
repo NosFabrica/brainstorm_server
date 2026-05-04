@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+from app.schemas.error_codes import ErrorCode
 
 
 #################
@@ -26,6 +28,25 @@ class CreatedAndUpdatedAtModel(BaseModel):
     updated_at: datetime
 
 
+class GrapeRankError(BaseModel):
+    code: ErrorCode
+    message: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def bucket_unknown_code(cls, data):
+        if isinstance(data, dict):
+            raw_code = data.get("code")
+            if isinstance(raw_code, str) and raw_code not in ErrorCode._value2member_map_:
+                existing = data.get("message")
+                data = {
+                    **data,
+                    "code": ErrorCode.UNKNOWN.value,
+                    "message": f"{existing} ({raw_code})" if existing else None,
+                }
+        return data
+
+
 class BrainstormRequestInstance(CreatedAndUpdatedAtModel):
     private_id: int
     status: str
@@ -40,6 +61,7 @@ class BrainstormRequestInstance(CreatedAndUpdatedAtModel):
     pubkey: str | None
     graperank_preset_used: str | None = None
     graperank_params: dict | None = None
+    error: GrapeRankError | None = None
 
 
 class AdminStats(BaseModel):
