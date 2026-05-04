@@ -5,7 +5,9 @@ from app.core.loggr import loggr
 from app.db_models import BrainstormRequestStatus
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
+    get_last_published_pubkeys_by_pubkey_on_db,
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
+    update_last_published_pubkeys_by_pubkey_on_db,
 )
 from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
@@ -16,9 +18,12 @@ from nostr_sdk import (  # type: ignore
     Client,
     Event,
     EventBuilder,
+    EventId,
+    Filter,
     Keys,
     Kind,
     NostrSigner,
+    PublicKey,
     Tag,
 )
 import time
@@ -67,10 +72,19 @@ async def get_events_from_graperank_result(
     events: list[Event] = []
     logger.info(f"{bool(grape_rank_result.scorecards)}")
     assert grape_rank_result.scorecards is not None
+    changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
+    logger.info(
+        f"filtering to {len(changed_pubkeys)} changed-score pubkeys "
+        f"out of {len(grape_rank_result.scorecards)} scorecards"
+    )
     start_time_sort = time.time()
     logger.info("sorting scorecards...")
     sorted_scorecards = sorted(
-        grape_rank_result.scorecards.values(),
+        (
+            sc
+            for pubkey, sc in grape_rank_result.scorecards.items()
+            if pubkey in changed_pubkeys
+        ),
         key=lambda sc: sc.influence,
         reverse=True,
     )
@@ -79,7 +93,7 @@ async def get_events_from_graperank_result(
 
     for scorecard in sorted_scorecards:
 
-        if scorecard.influence < settings.cutoff_of_valid_graperank_scores:
+        if round(scorecard.influence, 2) < settings.cutoff_of_valid_graperank_scores:
             continue
 
         d_tag = scorecard.observee
@@ -104,8 +118,136 @@ async def get_events_from_graperank_result(
         signed_event = await nostr_client.sign_event_builder(event_builder)
 
         events.append(signed_event)
-
+    logger.info(f"publishing change results. total number: {len(events)} ")
     return events
+
+
+async def get_zero_score_events_for_pubkeys(
+    pubkeys: list[str],
+    nostr_client: Client,
+) -> list[Event]:
+    # Replaceable kind 30382 events with rank=0. Published before the kind 5
+    # deletions so that even if the relay rejects kind 5, the score is
+    # effectively zeroed out.
+    events: list[Event] = []
+    for pk in pubkeys:
+        tags = [
+            Tag.parse(["d", pk]),
+            Tag.parse(["rank", "0"]),
+            Tag.parse(["followers", "0"]),
+        ]
+        builder = EventBuilder(kind=Kind(30382), content="").tags(tags)
+        signed_event = await nostr_client.sign_event_builder(builder)
+        events.append(signed_event)
+    return events
+
+
+DELETION_FETCH_BATCH_SIZE = 200
+
+# When True, ignore graperank's droppedBelowCutoffPubkeys list and instead
+# delete events for every scorecard whose influence is below the cutoff.
+# Used as a backwards-compat sweep until older results are cleaned up.
+DELETE_ALL_BELOW_CUTOFF_EVENTS = True
+
+
+async def fetch_existing_events_for_dropped_pubkeys(
+    author_pubkey: str,
+    dropped_pubkeys: list[str],
+) -> list[Event]:
+
+    fetcher = Client()
+    added = 0
+    for relay in RELAYS:
+        try:
+            await fetcher.add_relay(relay)
+            added += 1
+        except Exception as e:
+            logger.error(f"deletion fetch: bad relay {relay}: {e}")
+    if added == 0:
+        logger.error("deletion fetch: no relays available, skipping")
+        return []
+
+    await fetcher.connect()
+    try:
+        author = PublicKey.parse(author_pubkey)
+        all_events: list[Event] = []
+        seen_ids: set[str] = set()
+        total_batches = (
+            len(dropped_pubkeys) + DELETION_FETCH_BATCH_SIZE - 1
+        ) // DELETION_FETCH_BATCH_SIZE
+        for i in range(0, len(dropped_pubkeys), DELETION_FETCH_BATCH_SIZE):
+            batch = dropped_pubkeys[i : i + DELETION_FETCH_BATCH_SIZE]
+            batch_index = i // DELETION_FETCH_BATCH_SIZE + 1
+            logger.info(
+                f"deletion fetch batch {batch_index}/{total_batches} "
+                f"({len(batch)} identifiers)"
+            )
+            flt = Filter().kinds([Kind(30382)]).authors([author]).identifiers(batch)
+            try:
+                events_obj = await fetcher.fetch_events(
+                    flt, timeout=timedelta(seconds=30)
+                )
+            except Exception as e:
+                logger.error(f"deletion fetch batch {batch_index} failed: {e}")
+                continue
+            for ev in events_obj.to_vec():
+                eid = ev.id().to_hex()
+                if eid in seen_ids:
+                    continue
+                seen_ids.add(eid)
+                all_events.append(ev)
+        return all_events
+    finally:
+        try:
+            await fetcher.disconnect()
+        except Exception as e:
+            logger.error(f"deletion fetch: disconnect failed: {e}")
+
+
+async def get_deletion_events_for_dropped_pubkeys(
+    author_pubkey: str,
+    dropped_pubkeys: list[str],
+    nostr_client: Client,
+) -> list[Event]:
+
+    if not dropped_pubkeys:
+        logger.info(
+            f"zero pubkeys that moved below the threshold. no events will be deleted"
+        )
+        return []
+
+    logger.info(
+        f"fetching existing kind 30382 events for {len(dropped_pubkeys)} "
+        f"dropped pubkeys to build deletion events"
+    )
+
+    existing_events = await fetch_existing_events_for_dropped_pubkeys(
+        author_pubkey=author_pubkey,
+        dropped_pubkeys=dropped_pubkeys,
+    )
+    logger.info(f"found {len(existing_events)} existing kind 30382 events to delete")
+
+    event_ids_by_d_tag: dict[str, list[EventId]] = {}
+    for ev in existing_events:
+        d_tag: str | None = None
+        for tag in ev.tags().to_vec():
+            tag_vec = tag.as_vec()
+            if len(tag_vec) >= 2 and tag_vec[0] == "d":
+                d_tag = tag_vec[1]
+                break
+        if d_tag is None:
+            continue
+        event_ids_by_d_tag.setdefault(d_tag, []).append(ev.id())
+
+    deletion_events: list[Event] = []
+    for d_tag, event_ids in event_ids_by_d_tag.items():
+        tags = [Tag.parse(["e", eid.to_hex()]) for eid in event_ids]
+        builder = EventBuilder(kind=Kind(5), content="dropped below cutoff")
+        builder = builder.tags(tags)
+        signed_event = await nostr_client.sign_event_builder(builder)
+        deletion_events.append(signed_event)
+
+    return deletion_events
 
 
 async def process_nostr_upload_message(message: dict):
@@ -137,10 +279,61 @@ async def process_nostr_upload_message(message: dict):
 
     try:
         nostr_client: Client = await init_nostr_client(nsec_db_obj.nsec)
+        signing_pubkey = Keys.parse(secret_key=nsec_db_obj.nsec).public_key().to_hex()
 
         nostr_events = await get_events_from_graperank_result(
             grape_rank_result, nostr_client
         )
+
+        async with db_session() as db:
+            previously_published_pubkeys = (
+                await get_last_published_pubkeys_by_pubkey_on_db(db, pubkey=observer)
+            )
+
+        currently_published_pubkeys = [
+            sc.observee
+            for sc in grape_rank_result.scorecards.values()
+            if round(sc.influence, 2) >= settings.cutoff_of_valid_graperank_scores
+        ]
+
+        if DELETE_ALL_BELOW_CUTOFF_EVENTS:
+            pubkeys_to_delete = [
+                sc.observee
+                for sc in grape_rank_result.scorecards.values()
+                if round(sc.influence, 2) < settings.cutoff_of_valid_graperank_scores
+            ]
+            logger.info(
+                f"DELETE_ALL_BELOW_CUTOFF_EVENTS=True: sweeping all "
+                f"{len(pubkeys_to_delete)} below-cutoff pubkeys "
+                f"instead of using droppedBelowCutoffPubkeys"
+            )
+        else:
+            pubkeys_to_delete = list(grape_rank_result.droppedBelowCutoffPubkeys)
+
+        scorecard_pubkeys = set(grape_rank_result.scorecards.keys())
+        missing_from_scorecards = [
+            pk for pk in previously_published_pubkeys if pk not in scorecard_pubkeys
+        ]
+        if missing_from_scorecards:
+            logger.info(
+                f"adding {len(missing_from_scorecards)} previously-published pubkeys "
+                f"that are no longer in scorecards to the deletion set"
+            )
+            pubkeys_to_delete.extend(missing_from_scorecards)
+
+        zero_score_events = await get_zero_score_events_for_pubkeys(
+            pubkeys=pubkeys_to_delete,
+            nostr_client=nostr_client,
+        )
+
+        deletion_events = await get_deletion_events_for_dropped_pubkeys(
+            author_pubkey=signing_pubkey,
+            dropped_pubkeys=pubkeys_to_delete,
+            nostr_client=nostr_client,
+        )
+
+        nostr_events.extend(zero_score_events)
+        nostr_events.extend(deletion_events)
 
         start_time = time.time()
 
@@ -170,13 +363,21 @@ async def process_nostr_upload_message(message: dict):
                 status=BrainstormRequestStatus.SUCCESS,
             )
 
+            await update_last_published_pubkeys_by_pubkey_on_db(
+                db,
+                pubkey=observer,
+                published_pubkeys=currently_published_pubkeys,
+                graperank_request_id=message["private_id"],
+            )
+
             await db.commit()
 
         final_time = round(time.time() - start_time)
         logger.info(
             f"Took {final_time} seconds to process {len(nostr_events)} nostr events"
         )
-        logger.info(f"Check Nostr Event {nostr_events[0].as_json()}")
+        if nostr_events:
+            logger.info(f"Check Nostr Event {nostr_events[0].as_json()}")
     except Exception as e:
         logger.error(f"Error on request {message["private_id"]} , {e}")
         async with db_session() as db:

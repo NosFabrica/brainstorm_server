@@ -117,6 +117,50 @@ async def set_graperank_custom_params_by_pubkey_on_db(
     await db.execute(statement)
 
 
+# 32-byte raw nostr pubkey, packed back-to-back (no separator) for compact storage.
+_PUBKEY_BYTES = 32
+
+
+def _pack_pubkeys(pubkeys: list[str]) -> bytes:
+    return b"".join(bytes.fromhex(pk) for pk in pubkeys)
+
+
+def _unpack_pubkeys(blob: bytes | None) -> list[str]:
+    if not blob:
+        return []
+    return [
+        blob[i : i + _PUBKEY_BYTES].hex()
+        for i in range(0, len(blob), _PUBKEY_BYTES)
+    ]
+
+
+async def get_last_published_pubkeys_by_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> list[str]:
+    statement = select(BrainstormNsec.last_published_pubkeys).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return _unpack_pubkeys(result.scalar_one_or_none())
+
+
+async def update_last_published_pubkeys_by_pubkey_on_db(
+    db: AsyncDBSession,
+    pubkey: str,
+    published_pubkeys: list[str],
+    graperank_request_id: int,
+) -> None:
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(
+            last_published_pubkeys=_pack_pubkeys(published_pubkeys),
+            last_published_graperank_request_id=graperank_request_id,
+        )
+    )
+    await db.execute(statement)
+
+
 async def select_brainstorm_nsec_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> BrainstormNsec:
