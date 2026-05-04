@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+from app.schemas.schemas import GrapeRankError
+
 
 class ScoreCard(BaseModel):
     observer: str
@@ -20,3 +22,4 @@ class GrapeRankResult(BaseModel):
     rounds: int | None = None
     duration_seconds: float
     success: bool = False
+    error: GrapeRankError | None = None
