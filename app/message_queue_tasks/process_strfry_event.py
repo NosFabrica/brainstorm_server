@@ -1,10 +1,15 @@
 from app.core.loggr import loggr
+from app.core.redis_db import redis_client
 from neo4j import AsyncDriver as AsyncNeoDriver
 import time
 from tqdm import tqdm
 from itertools import islice
 
 BATCH_SIZE = 100  # Adjust as needed
+
+FOLLOWED_BY_KEY_PREFIX = "followed_by:"
+MUTED_BY_KEY_PREFIX = "muted_by:"
+REPORTED_BY_KEY_PREFIX = "reported_by:"
 
 logger = loggr.get_logger(__name__)
 
@@ -59,6 +64,10 @@ async def process_event_kind_1984(session: AsyncNeoDriver, event: dict):
 
     await session.run(cypher, publisher=publisher, reported_pubkeys=reported_pubkeys)
 
+    await _update_reverse_sets(
+        REPORTED_BY_KEY_PREFIX, publisher, added_pubkeys=reported_pubkeys
+    )
+
 
 async def process_event_kind_10000(session: AsyncNeoDriver, event: dict):
 
@@ -71,14 +80,22 @@ async def process_event_kind_10000(session: AsyncNeoDriver, event: dict):
 
     if not muted_pubkeys:
         cypher = """
-        MATCH (pub:NostrUser {pubkey: $publisher})-[r:MUTES]->()
-        DELETE r
+        OPTIONAL MATCH (pub:NostrUser {pubkey: $publisher})-[r:MUTES]->(oldF)
+        WITH collect(oldF.pubkey) AS removed, collect(r) AS rels
+        FOREACH (rel IN rels | DELETE rel)
+        RETURN removed
         """
-        await session.run(cypher, publisher=publisher)
+        result = await session.run(cypher, publisher=publisher)
+        record = await result.single()
+        removed = record["removed"] if record else []
+        await _update_reverse_sets(
+            MUTED_BY_KEY_PREFIX, publisher, removed_pubkeys=removed
+        )
         return
 
     upsert_cypher = """
     MERGE (pub:NostrUser {pubkey: $publisher})
+
     WITH pub
     UNWIND $muted_pubkeys AS fp
         MERGE (f:NostrUser {pubkey: fp})
@@ -89,9 +106,22 @@ async def process_event_kind_10000(session: AsyncNeoDriver, event: dict):
     cleanup_cypher = """
     MATCH (pub:NostrUser {pubkey: $publisher})-[r:MUTES]->(oldF)
     WHERE NOT oldF.pubkey IN $muted_pubkeys
-    DELETE r
+    WITH collect(oldF.pubkey) AS removed, collect(r) AS rels
+    FOREACH (rel IN rels | DELETE rel)
+    RETURN removed
     """
-    await session.run(cleanup_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys)
+    result = await session.run(
+        cleanup_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys
+    )
+    record = await result.single()
+    removed = record["removed"] if record else []
+
+    await _update_reverse_sets(
+        MUTED_BY_KEY_PREFIX,
+        publisher,
+        added_pubkeys=muted_pubkeys,
+        removed_pubkeys=removed,
+    )
 
 
 async def process_event_kind_3(session: AsyncNeoDriver, event: dict):
@@ -102,14 +132,22 @@ async def process_event_kind_3(session: AsyncNeoDriver, event: dict):
 
     if not followed_pubkeys:
         cypher = """
-        MATCH (pub:NostrUser {pubkey: $publisher})-[r:FOLLOWS]->()
-        DELETE r
+        OPTIONAL MATCH (pub:NostrUser {pubkey: $publisher})-[r:FOLLOWS]->(oldF)
+        WITH collect(oldF.pubkey) AS removed, collect(r) AS rels
+        FOREACH (rel IN rels | DELETE rel)
+        RETURN removed
         """
-        await session.run(cypher, publisher=publisher)
+        result = await session.run(cypher, publisher=publisher)
+        record = await result.single()
+        removed = record["removed"] if record else []
+        await _update_reverse_sets(
+            FOLLOWED_BY_KEY_PREFIX, publisher, removed_pubkeys=removed
+        )
         return
 
     upsert_cypher = """
     MERGE (pub:NostrUser {pubkey: $publisher})
+
     WITH pub
     UNWIND $followed_pubkeys AS fp
         MERGE (f:NostrUser {pubkey: fp})
@@ -122,8 +160,37 @@ async def process_event_kind_3(session: AsyncNeoDriver, event: dict):
     cleanup_cypher = """
     MATCH (pub:NostrUser {pubkey: $publisher})-[r:FOLLOWS]->(oldF)
     WHERE NOT oldF.pubkey IN $followed_pubkeys
-    DELETE r
+    WITH collect(oldF.pubkey) AS removed, collect(r) AS rels
+    FOREACH (rel IN rels | DELETE rel)
+    RETURN removed
     """
-    await session.run(
+    result = await session.run(
         cleanup_cypher, publisher=publisher, followed_pubkeys=followed_pubkeys
     )
+    record = await result.single()
+    removed = record["removed"] if record else []
+
+    await _update_reverse_sets(
+        FOLLOWED_BY_KEY_PREFIX,
+        publisher,
+        added_pubkeys=followed_pubkeys,
+        removed_pubkeys=removed,
+    )
+
+
+async def _update_reverse_sets(
+    key_prefix: str,
+    publisher: str,
+    added_pubkeys: list[str] | None = None,
+    removed_pubkeys: list[str] | None = None,
+):
+    added_pubkeys = added_pubkeys or []
+    removed_pubkeys = removed_pubkeys or []
+    if not added_pubkeys and not removed_pubkeys:
+        return
+    pipe = redis_client.pipeline(transaction=False)
+    for pk in added_pubkeys:
+        pipe.sadd(f"{key_prefix}{pk}", publisher)
+    for pk in removed_pubkeys:
+        pipe.srem(f"{key_prefix}{pk}", publisher)
+    await pipe.execute()
