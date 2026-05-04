@@ -1,5 +1,15 @@
 import enum
-from sqlalchemy import DateTime, Integer, Float, String, func, Boolean, UniqueConstraint
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    Float,
+    LargeBinary,
+    String,
+    func,
+    Boolean,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.ext.declarative import declared_attr
@@ -87,6 +97,14 @@ class BrainstormNsec(TimestampMixin, Base):
     last_time_calculated_graperank = mapped_column(DateTime, nullable=True)
     graperank_preset: Mapped[str] = mapped_column(String, nullable=True)
     graperank_custom_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_published_pubkeys: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True
+    )
+    last_published_graperank_request_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("brainstorm_request.private_id"),
+        nullable=True,
+    )
 
 
 # Built-in GrapeRank presets. One row per template (DEFAULT, PERMISSIVE, RESTRICTIVE).

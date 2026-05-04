@@ -5,7 +5,9 @@ from app.core.loggr import loggr
 from app.db_models import BrainstormRequestStatus
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
+    get_last_published_pubkeys_by_pubkey_on_db,
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
+    update_last_published_pubkeys_by_pubkey_on_db,
 )
 from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
@@ -117,6 +119,26 @@ async def get_events_from_graperank_result(
 
         events.append(signed_event)
     logger.info(f"publishing change results. total number: {len(events)} ")
+    return events
+
+
+async def get_zero_score_events_for_pubkeys(
+    pubkeys: list[str],
+    nostr_client: Client,
+) -> list[Event]:
+    # Replaceable kind 30382 events with rank=0. Published before the kind 5
+    # deletions so that even if the relay rejects kind 5, the score is
+    # effectively zeroed out.
+    events: list[Event] = []
+    for pk in pubkeys:
+        tags = [
+            Tag.parse(["d", pk]),
+            Tag.parse(["rank", "0"]),
+            Tag.parse(["followers", "0"]),
+        ]
+        builder = EventBuilder(kind=Kind(30382), content="").tags(tags)
+        signed_event = await nostr_client.sign_event_builder(builder)
+        events.append(signed_event)
     return events
 
 
@@ -263,6 +285,17 @@ async def process_nostr_upload_message(message: dict):
             grape_rank_result, nostr_client
         )
 
+        async with db_session() as db:
+            previously_published_pubkeys = (
+                await get_last_published_pubkeys_by_pubkey_on_db(db, pubkey=observer)
+            )
+
+        currently_published_pubkeys = [
+            sc.observee
+            for sc in grape_rank_result.scorecards.values()
+            if round(sc.influence, 2) >= settings.cutoff_of_valid_graperank_scores
+        ]
+
         if DELETE_ALL_BELOW_CUTOFF_EVENTS:
             pubkeys_to_delete = [
                 sc.observee
@@ -275,7 +308,23 @@ async def process_nostr_upload_message(message: dict):
                 f"instead of using droppedBelowCutoffPubkeys"
             )
         else:
-            pubkeys_to_delete = grape_rank_result.droppedBelowCutoffPubkeys
+            pubkeys_to_delete = list(grape_rank_result.droppedBelowCutoffPubkeys)
+
+        scorecard_pubkeys = set(grape_rank_result.scorecards.keys())
+        missing_from_scorecards = [
+            pk for pk in previously_published_pubkeys if pk not in scorecard_pubkeys
+        ]
+        if missing_from_scorecards:
+            logger.info(
+                f"adding {len(missing_from_scorecards)} previously-published pubkeys "
+                f"that are no longer in scorecards to the deletion set"
+            )
+            pubkeys_to_delete.extend(missing_from_scorecards)
+
+        zero_score_events = await get_zero_score_events_for_pubkeys(
+            pubkeys=pubkeys_to_delete,
+            nostr_client=nostr_client,
+        )
 
         deletion_events = await get_deletion_events_for_dropped_pubkeys(
             author_pubkey=signing_pubkey,
@@ -283,6 +332,7 @@ async def process_nostr_upload_message(message: dict):
             nostr_client=nostr_client,
         )
 
+        nostr_events.extend(zero_score_events)
         nostr_events.extend(deletion_events)
 
         start_time = time.time()
@@ -311,6 +361,13 @@ async def process_nostr_upload_message(message: dict):
                 db,
                 brainstorm_request_id=message["private_id"],
                 status=BrainstormRequestStatus.SUCCESS,
+            )
+
+            await update_last_published_pubkeys_by_pubkey_on_db(
+                db,
+                pubkey=observer,
+                published_pubkeys=currently_published_pubkeys,
+                graperank_request_id=message["private_id"],
             )
 
             await db.commit()
