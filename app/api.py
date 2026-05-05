@@ -114,9 +114,9 @@ app = FastAPI(
 )
 
 origins = ["*"]
-if settings.deploy_environment != "LOCAL":
-    logger.info("Setting specific CORS origin...")
-    origins = [settings.frontend_url]
+# if settings.deploy_environment != "LOCAL":
+#     logger.info("Setting specific CORS origin...")
+#     origins = [settings.frontend_url]
 
 logger.info("Allowing CORS...")
 app.add_middleware(
