@@ -15,6 +15,7 @@ from app.repos.brainstorm_nostr_transferer import (
 logger = loggr.get_logger(__name__)
 
 PAGE_SIZE = 2000
+PIPELINE_FLUSH_EVERY = 5000
 DONE_MARKER_KEY = "migration:redis_backfill:done"
 
 _RELATIONSHIP_TO_PREFIX = {
@@ -42,55 +43,85 @@ async def _redis_has_relationship_data(redis_client) -> bool:
     return False
 
 
-async def _backfill_relationship(redis_client, relationship: str, prefix: str) -> int:
-    # Each page is a fresh, short-lived neo4j transaction over a contiguous slice
-    # of NostrUser nodes ordered by pubkey (indexed via the unique constraint),
-    # so memory and transaction lifetime stay bounded regardless of total size.
+async def _count_nostr_users() -> int:
+    # Fast: neo4j keeps a label-count store, so this is effectively O(1).
+    async with neo4j_driver.session() as neo4j_session:
+        result = await neo4j_session.run(
+            "MATCH (n:NostrUser) RETURN count(n) AS total"
+        )
+        record = await result.single()
+        return int(record["total"]) if record else 0
+
+
+async def _backfill_relationship(
+    redis_client, relationship: str, prefix: str, total_users: int
+) -> int:
+    # We iterate by source (publisher) rather than by target. Out-degree is bounded
+    # by a user's contact-list / mute-list / report-list size (usually thousands at
+    # most), whereas in-degree can run into the millions for popular pubkeys —
+    # collecting incoming edges per target would force pathological list sizes.
+    # Pages are a fresh, short-lived neo4j transaction over a contiguous slice of
+    # NostrUser nodes ordered by pubkey (indexed via the unique constraint).
     cypher = f"""
-    MATCH (target:NostrUser)
-    WHERE target.pubkey > $cursor
-    WITH target ORDER BY target.pubkey LIMIT $page
-    OPTIONAL MATCH (source:NostrUser)-[:{relationship}]->(target)
-    RETURN target.pubkey AS target, collect(source.pubkey) AS sources
+    MATCH (source:NostrUser)
+    WHERE source.pubkey > $cursor
+    WITH source ORDER BY source.pubkey LIMIT $page
+    OPTIONAL MATCH (source)-[:{relationship}]->(target:NostrUser)
+    RETURN source.pubkey AS source, collect(target.pubkey) AS targets
     """
     cursor = ""
-    users_seen = 0
-    keys_written = 0
+    sources_seen = 0
+    edges_written = 0
     pages_done = 0
     while True:
+        page_max_cursor: str | None = None
+        page_count = 0
+        pipe = redis_client.pipeline(transaction=False)
+        pending = 0
+
         async with neo4j_driver.session() as neo4j_session:
             result = await neo4j_session.run(
                 cypher, cursor=cursor, page=PAGE_SIZE
             )
-            records = await result.data()
-        if not records:
+            async for record in result:
+                source = record["source"]
+                for target in record["targets"]:
+                    pipe.sadd(f"{prefix}{target}", source)
+                    pending += 1
+                    if pending >= PIPELINE_FLUSH_EVERY:
+                        await pipe.execute()
+                        pipe = redis_client.pipeline(transaction=False)
+                        edges_written += pending
+                        pending = 0
+                if page_max_cursor is None or source > page_max_cursor:
+                    page_max_cursor = source
+                page_count += 1
+
+        if pending:
+            await pipe.execute()
+            edges_written += pending
+
+        if page_count == 0:
             break
 
-        pipe = redis_client.pipeline(transaction=False)
-        page_keys = 0
-        for record in records:
-            sources = record["sources"]
-            if sources:
-                pipe.sadd(f"{prefix}{record['target']}", *sources)
-                page_keys += 1
-        if page_keys:
-            await pipe.execute()
-
-        users_seen += len(records)
-        keys_written += page_keys
-        cursor = max(r["target"] for r in records)
+        sources_seen += page_count
+        cursor = page_max_cursor  # type: ignore[assignment]
         pages_done += 1
         if pages_done % 10 == 0:
+            pct = (sources_seen / total_users * 100) if total_users else 0.0
+            remaining = max(total_users - sources_seen, 0)
             logger.info(
-                f"  {relationship}: {users_seen} users scanned, "
-                f"{keys_written} target sets written."
+                f"  {relationship}: {sources_seen}/{total_users} sources "
+                f"({pct:.2f}% done, {remaining} remaining), "
+                f"{edges_written} edges written."
             )
 
+    pct = (sources_seen / total_users * 100) if total_users else 0.0
     logger.info(
-        f"{relationship}: finished. {users_seen} users scanned, "
-        f"{keys_written} target sets written."
+        f"{relationship}: finished. {sources_seen}/{total_users} sources "
+        f"({pct:.2f}%), {edges_written} edges written."
     )
-    return keys_written
+    return edges_written
 
 
 async def backfill_redis_relationships_if_needed() -> None:
@@ -117,12 +148,15 @@ async def backfill_redis_relationships_if_needed() -> None:
             )
             return
 
+        total_users = await _count_nostr_users()
         logger.info(
             "Graph DB populated and Redis empty — starting one-shot backfill "
-            f"from Neo4j (page size {PAGE_SIZE} users)."
+            f"from Neo4j: {total_users} NostrUser nodes, page size {PAGE_SIZE}."
         )
         for relationship, prefix in _RELATIONSHIP_TO_PREFIX.items():
-            await _backfill_relationship(redis_client, relationship, prefix)
+            await _backfill_relationship(
+                redis_client, relationship, prefix, total_users
+            )
 
         await redis_client.set(DONE_MARKER_KEY, "1")
         logger.info(
