@@ -321,10 +321,11 @@ async def process_nostr_upload_message(message: dict):
             )
             pubkeys_to_delete.extend(missing_from_scorecards)
 
-        zero_score_events = await get_zero_score_events_for_pubkeys(
-            pubkeys=pubkeys_to_delete,
-            nostr_client=nostr_client,
-        )
+        # zero_score_events = await get_zero_score_events_for_pubkeys(
+        #     pubkeys=pubkeys_to_delete,
+        #     nostr_client=nostr_client,
+        # )
+        # nostr_events.extend(zero_score_events)
 
         deletion_events = await get_deletion_events_for_dropped_pubkeys(
             author_pubkey=signing_pubkey,
@@ -332,7 +333,6 @@ async def process_nostr_upload_message(message: dict):
             nostr_client=nostr_client,
         )
 
-        nostr_events.extend(zero_score_events)
         nostr_events.extend(deletion_events)
 
         start_time = time.time()
