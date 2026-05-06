@@ -12,6 +12,9 @@ from app.message_queue_tasks.message_queue_consumer import (
     consume_strfry_plugin_messages,
     wait_until_graph_db_is_populated,
 )
+from app.message_queue_tasks.backfill_redis_relationships import (
+    backfill_redis_relationships_if_needed,
+)
 from app.neo4j_db.driver import test_neo4j_driver
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -56,6 +59,10 @@ async def lifespan(app: FastAPI):
 
     # test connectivity with Neo4j
     await test_neo4j_driver()
+
+    # one-shot backwards-compat backfill: populate Redis follow/mute/report sets
+    # from Neo4j on machines whose graph DB was populated before Redis was wired in.
+    await backfill_redis_relationships_if_needed()
 
     consume_strfry_plugin_messages_task = asyncio.create_task(
         consume_strfry_plugin_messages()
