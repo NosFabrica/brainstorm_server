@@ -36,7 +36,7 @@ async def get_recent_users_endpoint(
     search: Optional[str] = None,
     sort: UsersSort = UsersSort.last_triggered,
     order: SortOrder = SortOrder.desc,
-    days: int = Query(30, ge=1, le=365),
+    days: int = Query(30, ge=1),
     db: AsyncDBSession = Depends(dependency=get_db),
 ):
     stmt = build_recent_active_pubkeys_stmt(
