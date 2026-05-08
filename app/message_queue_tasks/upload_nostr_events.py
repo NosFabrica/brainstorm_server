@@ -1,4 +1,3 @@
-import asyncio
 from datetime import timedelta
 from app.core.database import db_session
 from app.core.loggr import loggr
@@ -16,6 +15,7 @@ from app.repos.brainstorm_request_repo import (
 )
 from nostr_sdk import (  # type: ignore
     Client,
+    ClientMessage,
     Event,
     EventBuilder,
     EventId,
@@ -337,23 +337,20 @@ async def process_nostr_upload_message(message: dict):
 
         start_time = time.time()
 
-        # sem = asyncio.Semaphore(5)
-
-        # tasks = [
-        #     asyncio.create_task(
-        #         send_nostr_event_with_limit(nostr_client, nostr_event, index, sem)
-        #     )
-        #     for index, nostr_event in enumerate(nostr_events)
-        # ]
-
-        # await asyncio.gather(*tasks, return_exceptions=True)
-
+        write_relays = list((await nostr_client.relays()).values())
         for index, nostr_event in enumerate(nostr_events):
             if index == 0 or index % 200 == 0:
                 logger.info(
                     f"still sending nostr events for observer {observer}, progress: {index}"
                 )
-            await send_nostr_event_with_limit(nostr_client, nostr_event, index)
+            msg = ClientMessage.event(nostr_event)
+            for relay in write_relays:
+                try:
+                    relay.send_msg(msg)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to enqueue event {index} on {relay.url()}: {e}"
+                    )
 
         async with db_session() as db:
 
@@ -389,19 +386,3 @@ async def process_nostr_upload_message(message: dict):
             )
 
             await db.commit()
-
-
-async def send_nostr_event_with_limit(
-    nostr_client: Client, nostr_event: Event, index: int  # , sem: asyncio.Semaphore
-):
-    # async with sem:
-    # print(f"sending {index}...")
-    # is_connected = [(await nostr_client.relay(x)).is_connected() for x in RELAYS]
-
-    # if not is_connected:
-    #     result = await nostr_client.try_connect(timedelta(seconds=10))
-    #     assert not bool(result.failed)
-
-    sent_event_output = await nostr_client.send_event(nostr_event)
-    if sent_event_output.failed:
-        logger.error(f"Failed to publish event: {sent_event_output.failed}")
