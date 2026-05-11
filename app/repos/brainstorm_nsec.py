@@ -161,6 +161,14 @@ async def update_last_published_pubkeys_by_pubkey_on_db(
     await db.execute(statement)
 
 
+async def brainstorm_nsec_exists_by_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> bool:
+    statement = select(BrainstormNsec.pubkey).where(BrainstormNsec.pubkey == pubkey)
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none() is not None
+
+
 async def select_brainstorm_nsec_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> BrainstormNsec:

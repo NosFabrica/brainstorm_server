@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     cutoff_of_valid_graperank_scores: float = Field(...)
     perform_nostr_full_sync: bool = Field(...)
     frontend_url: str = Field(...)
+    public_base_url: str = Field(...)
     admin_enabled: bool = Field(default=False)
     admin_whitelisted_pubkeys: str = Field(default="")
     stale_ongoing_brainstorm_request_threshold_hours: float = Field(default=7.0)
