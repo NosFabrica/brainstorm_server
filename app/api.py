@@ -43,7 +43,7 @@ docs_url = None
 redoc_url = None
 swagger_ui_oauth2_redirect_url = None
 
-if settings.deploy_environment == DEPLOY_ENVIRONMENT_LOCAL:
+if True:  # settings.deploy_environment == DEPLOY_ENVIRONMENT_LOCAL:
     openapi_url = "/openapi.json"
     docs_url = "/docs"
     redoc_url = "/redoc"
@@ -162,7 +162,7 @@ app.include_router(
     prefix="",
 )
 
-if settings.deploy_environment == "LOCAL":
+if settings.deploy_environment == DEPLOY_ENVIRONMENT_LOCAL:
     add_sql_admin_panel(app)
 
 add_pagination(app)
