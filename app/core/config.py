@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     stale_ongoing_brainstorm_request_check_interval_minutes: float = Field(default=30.0)
     block_frequent_graperank_requests: bool = Field(default=False)
     block_frequent_graperank_requests_minutes: int = Field(default=30)
+    periodic_graperank_pubkey: str = Field(default="")
+    meilisearch_url: str = Field(...)
+    meilisearch_master_key: str = Field(...)
 
     class Config:
         env_file = ".env"

@@ -1,4 +1,7 @@
+import json
+
 from app.core.loggr import loggr
+from app.core.meilisearch import NOSTR_PROFILES_INDEX, upsert_documents
 from app.core.redis_db import redis_client
 from neo4j import AsyncDriver as AsyncNeoDriver
 import time
@@ -11,12 +14,28 @@ FOLLOWED_BY_KEY_PREFIX = "followed_by:"
 MUTED_BY_KEY_PREFIX = "muted_by:"
 REPORTED_BY_KEY_PREFIX = "reported_by:"
 
+KIND_0_PROFILE_FIELDS = (
+    "name",
+    "display_name",
+    "about",
+    "picture",
+    "banner",
+    "nip05",
+    "lud06",
+    "lud16",
+    "website",
+)
+
 logger = loggr.get_logger(__name__)
 
 
 async def process_strfry_event(session: AsyncNeoDriver, event: dict):
 
     kind = event.get("kind")
+
+    if kind == 0:
+        # logger.info("Consuming event of kind 0")
+        return await process_event_kind_0(event)
 
     if kind == 3:
         # logger.info("Consuming event of kind 3")
@@ -29,6 +48,28 @@ async def process_strfry_event(session: AsyncNeoDriver, event: dict):
     if kind == 1984:
         # logger.info("Consuming event of kind 1984")
         return await process_event_kind_1984(session, event)
+
+
+async def process_event_kind_0(event: dict):
+    publisher = event["pubkey"]
+    content_raw = event.get("content") or ""
+
+    try:
+        profile = json.loads(content_raw) if content_raw else {}
+    except json.JSONDecodeError:
+        return
+
+    if not isinstance(profile, dict):
+        return
+
+    # Include every typical kind 0 field so a missing key in the new event
+    # explicitly clears the previous value, while leaving non-kind-0 fields
+    # on the existing Meilisearch document untouched (partial update).
+    document = {"pubkey": publisher}
+    for field in KIND_0_PROFILE_FIELDS:
+        document[field] = profile.get(field)
+
+    await upsert_documents(NOSTR_PROFILES_INDEX, [document])
 
 
 async def create_pubkey_index(session: AsyncNeoDriver):

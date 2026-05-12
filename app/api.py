@@ -33,6 +33,9 @@ from app.nostr_event_transferer.nostr_event_transferer import (
 from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
     fail_stale_ongoing_brainstorm_requests_cronjob,
 )
+from app.cronjobs.periodic_graperank_trigger import (
+    periodic_graperank_trigger_cronjob,
+)
 
 from app.core.admin_whitelist import init_admin_whitelist
 
@@ -95,6 +98,9 @@ async def lifespan(app: FastAPI):
     fail_stale_ongoing_task = asyncio.create_task(
         fail_stale_ongoing_brainstorm_requests_cronjob()
     )
+    periodic_graperank_task = asyncio.create_task(
+        periodic_graperank_trigger_cronjob()
+    )
 
     try:
         yield
@@ -106,6 +112,7 @@ async def lifespan(app: FastAPI):
         listener_ongoing_job_task.cancel()
         consume_strfry_plugin_messages_task.cancel()
         fail_stale_ongoing_task.cancel()
+        periodic_graperank_task.cancel()
         # regular_update_task.cancel()
 
 

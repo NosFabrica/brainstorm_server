@@ -203,6 +203,24 @@ def build_recent_brainstorm_requests_stmt(
     )
 
 
+async def select_latest_non_waiting_brainstorm_request_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> BrainstormRequest | None:
+    statement = (
+        select(BrainstormRequest)
+        .where(BrainstormRequest.pubkey == pubkey)
+        .where(BrainstormRequest.status != BrainstormRequestStatus.WAITING.value)
+        .order_by(desc(BrainstormRequest.created_at))
+        .options(defer(BrainstormRequest.result))
+        .limit(1)
+    )
+
+    existing_data = await execute_db_statement(db, statement, __name__)
+    result: BrainstormRequest | None = existing_data.scalars().first()
+
+    return result
+
+
 async def select_latest_successful_brainstorm_request_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> BrainstormRequest | None:
