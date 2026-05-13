@@ -251,6 +251,13 @@ async def get_deletion_events_for_dropped_pubkeys(
     return deletion_events
 
 
+# When True, push every above-cutoff scorecard to Meilisearch on each run
+# (in addition to the deletions). Use this to backfill an empty / out-of-sync
+# Meilisearch — e.g., when TAs were already published to Nostr before this
+# code existed. When False, only changed scores + deletions are pushed.
+MEILISEARCH_FULL_SYNC = True
+
+
 async def upsert_scores_to_meilisearch(
     grape_rank_result: GrapeRankResult,
     observer: str,
@@ -266,7 +273,7 @@ async def upsert_scores_to_meilisearch(
     documents: list[dict] = []
 
     for pubkey, scorecard in grape_rank_result.scorecards.items():
-        if pubkey not in changed_pubkeys:
+        if not MEILISEARCH_FULL_SYNC and pubkey not in changed_pubkeys:
             continue
         if round(scorecard.influence, 2) < settings.cutoff_of_valid_graperank_scores:
             continue
