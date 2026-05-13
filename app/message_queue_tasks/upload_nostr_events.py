@@ -1,6 +1,7 @@
 from datetime import timedelta
 from app.core.database import db_session
 from app.core.loggr import loggr
+from app.core.meilisearch import NOSTR_PROFILES_INDEX, upsert_documents
 from app.db_models import BrainstormRequestStatus
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
@@ -250,6 +251,35 @@ async def get_deletion_events_for_dropped_pubkeys(
     return deletion_events
 
 
+async def upsert_scores_to_meilisearch(
+    grape_rank_result: GrapeRankResult,
+    pubkeys_to_delete: list[str],
+):
+    # Mirrors the set of (pubkey, score) pairs uploaded to Nostr above:
+    # changed scorecards above the cutoff get their score written; everything
+    # in pubkeys_to_delete gets score=None. Meilisearch PUT is a partial
+    # update, so unknown pubkeys are created with just {pubkey, score} and
+    # the kind 0 upsert will fill in profile fields later.
+    assert grape_rank_result.scorecards is not None
+    changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
+    documents: list[dict] = []
+
+    for pubkey, scorecard in grape_rank_result.scorecards.items():
+        if pubkey not in changed_pubkeys:
+            continue
+        if round(scorecard.influence, 2) < settings.cutoff_of_valid_graperank_scores:
+            continue
+        documents.append({"pubkey": pubkey, "score": round(scorecard.influence * 100)})
+
+    for pubkey in pubkeys_to_delete:
+        documents.append({"pubkey": pubkey, "score": None})
+
+    if not documents:
+        return
+
+    await upsert_documents(NOSTR_PROFILES_INDEX, documents)
+
+
 async def process_nostr_upload_message(message: dict):
 
     # is_success = message["result"]["success"]
@@ -351,6 +381,18 @@ async def process_nostr_upload_message(message: dict):
                     logger.error(
                         f"Failed to enqueue event {index} on {relay.url()}: {e}"
                     )
+
+        try:
+            logger.info(f"Pushing scores to Meilisearch...")
+            await upsert_scores_to_meilisearch(
+                grape_rank_result=grape_rank_result,
+                pubkeys_to_delete=pubkeys_to_delete,
+            )
+            logger.info(f"Done pushing scores to Meilisearch!")
+        except Exception as e:
+            # Don't fail the whole request — Nostr is the source of truth and
+            # has already been written. Meilisearch is a search-side mirror.
+            logger.error(f"Failed to upsert scores to Meilisearch: {e}")
 
         async with db_session() as db:
 
