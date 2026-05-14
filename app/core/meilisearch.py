@@ -7,6 +7,37 @@ NOSTR_PROFILES_INDEX = "nostr_profiles"
 UPSERT_BATCH_SIZE = 5000
 
 
+async def get_document(index: str, document_id: str) -> dict | None:
+    url = f"{settings.meilisearch_url}/indexes/{index}/documents/{document_id}"
+    headers = {"Authorization": f"Bearer {settings.meilisearch_master_key}"}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+        response = await client.get(url, headers=headers)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json()
+
+
+async def search_index(
+    index: str,
+    query: str,
+    attributes_to_search_on: list[str] | None = None,
+    limit: int = 1000,
+) -> list[dict]:
+    url = f"{settings.meilisearch_url}/indexes/{index}/search"
+    headers = {
+        "Authorization": f"Bearer {settings.meilisearch_master_key}",
+        "Content-Type": "application/json",
+    }
+    payload: dict = {"q": query, "limit": limit}
+    if attributes_to_search_on is not None:
+        payload["attributesToSearchOn"] = attributes_to_search_on
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+        response = await client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json().get("hits", [])
+
+
 async def upsert_documents(
     index: str, documents: list[dict], primary_key: str = "pubkey"
 ):

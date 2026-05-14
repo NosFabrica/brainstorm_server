@@ -6,6 +6,7 @@ from app.core.database import get_db
 from app.routers.admin.router import router as admin_router
 from app.routers.auth_challenge.router import router as auth_challenge_router
 from app.routers.graperank.router import router as graperank_router
+from app.routers.search.router import router as search_router
 from app.routers.setup.router import router as setup_router
 from app.routers.user.router import router as user_router
 from app.schemas.request_response_schemas import (
@@ -42,6 +43,14 @@ router.include_router(
     router=setup_router,
     prefix=SETUP_ROUTER_PREFIX,
     tags=["setup"],
+)
+
+SEARCH_ROUTER_PREFIX = "/search"
+
+router.include_router(
+    router=search_router,
+    prefix=SEARCH_ROUTER_PREFIX,
+    tags=["search"],
 )
 
 USER_ROUTER_PREFIX = "/user"

@@ -153,3 +153,29 @@ class AdminPresetHistoryResponse(SuccessfulResponseDataSchema):
     data: AdminPresetHistoryData
 
 
+class SearchProfileResult(BaseModel):
+    pubkey: str
+    name: str | None = None
+    display_name: str | None = None
+    about: str | None = None
+    picture: str | None = None
+    banner: str | None = None
+    nip05: str | None = None
+    lud06: str | None = None
+    lud16: str | None = None
+    website: str | None = None
+    rank: float | None = None
+
+    model_config = {"extra": "ignore"}
+
+
+class SearchResults(BaseModel):
+    query: str
+    numResults: int
+    results: list[SearchProfileResult]
+
+
+class SearchByTextResponse(SuccessfulResponseDataSchema):
+    data: SearchResults
+
+
