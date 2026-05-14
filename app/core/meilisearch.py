@@ -22,7 +22,8 @@ async def search_index(
     index: str,
     query: str,
     attributes_to_search_on: list[str] | None = None,
-    limit: int = 1000,
+    filter: str | None = None,
+    limit: int = 500,
 ) -> list[dict]:
     url = f"{settings.meilisearch_url}/indexes/{index}/search"
     headers = {
@@ -32,6 +33,8 @@ async def search_index(
     payload: dict = {"q": query, "limit": limit}
     if attributes_to_search_on is not None:
         payload["attributesToSearchOn"] = attributes_to_search_on
+    if filter is not None:
+        payload["filter"] = filter
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
@@ -59,9 +62,7 @@ async def upsert_documents(
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         for start in range(0, len(documents), UPSERT_BATCH_SIZE):
             chunk = documents[start : start + UPSERT_BATCH_SIZE]
-            response = await client.put(
-                url, headers=headers, json=chunk, params=params
-            )
+            response = await client.put(url, headers=headers, json=chunk, params=params)
             response.raise_for_status()
             results.append(response.json())
     return results

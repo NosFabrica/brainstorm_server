@@ -17,7 +17,7 @@ router = APIRouter()
 
 RANK_FIELD = "rank_be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
 SEARCH_ATTRIBUTES = ["name", "display_name", "about"]
-SEARCH_LIMIT = 1000
+SEARCH_LIMIT = 500
 RESULTS_LIMIT = 100
 
 HEX_PUBKEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -46,6 +46,10 @@ def _try_resolve_pubkey(text: str) -> str | None:
 )
 async def search_by_text_endpoint(
     text: str = Query(..., min_length=1, max_length=50),
+    onlyRanked: bool = Query(
+        default=True,
+        description="If true, only return profiles that have a rank value.",
+    ),
 ) -> SearchByTextResponse:
     sanitized = _sanitize(text)
 
@@ -58,6 +62,7 @@ async def search_by_text_endpoint(
             NOSTR_PROFILES_INDEX,
             query=sanitized,
             attributes_to_search_on=SEARCH_ATTRIBUTES,
+            filter=f"{RANK_FIELD} EXISTS" if onlyRanked else None,
             limit=SEARCH_LIMIT,
         )
 
