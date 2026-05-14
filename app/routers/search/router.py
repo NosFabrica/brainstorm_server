@@ -16,7 +16,8 @@ from app.schemas.request_response_schemas import (
 router = APIRouter()
 
 RANK_FIELD = "rank_be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
-SEARCH_ATTRIBUTES = ["name", "display_name", "about"]
+# SEARCH_ATTRIBUTES = ["name", "display_name", "about"]
+SEARCH_ATTRIBUTES = ["name", "display_name"]
 SEARCH_LIMIT = 500
 RESULTS_LIMIT = 100
 
@@ -45,7 +46,7 @@ def _try_resolve_pubkey(text: str) -> str | None:
     summary="Search Nostr profiles by free-text, npub, or hex pubkey",
 )
 async def search_by_text_endpoint(
-    text: str = Query(..., min_length=1, max_length=50),
+    text: str = Query(..., min_length=1, max_length=100),
     onlyRanked: bool = Query(
         default=True,
         description="If true, only return profiles that have a rank value.",
