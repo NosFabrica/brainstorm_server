@@ -115,3 +115,51 @@ class UserHistoryInstance(CreatedAndUpdatedAtModel):
 class OwnUserData(BaseModel):
     graph: UserGraphData
     history: UserHistoryInstance
+
+
+class UserConnectionCounts(BaseModel):
+    followed_by: int
+    following: int
+    muted_by: int
+    muting: int
+    reported_by: int
+    reporting: int
+
+
+class UserOverviewData(BaseModel):
+    pubkey: str
+    influence: float | None
+    counts: UserConnectionCounts
+
+
+class ConnectionTierCounts(BaseModel):
+    high: int
+    trusted: int
+    neutral: int
+    low: int
+    unverified: int
+
+
+class ConnectionStats(BaseModel):
+    total: int
+    verified: int
+    tier_counts: ConnectionTierCounts
+
+
+class UserConnectionItem(BaseModel):
+    pubkey: str
+    influence: float | None = None
+
+
+class PaginatedUserConnections(BaseModel):
+    items: list[UserConnectionItem]
+    next_cursor: str | None = None
+
+
+class UserSectionsStats(BaseModel):
+    followed_by: ConnectionStats
+    following: ConnectionStats
+    muted_by: ConnectionStats
+    muting: ConnectionStats
+    reported_by: ConnectionStats
+    reporting: ConnectionStats
