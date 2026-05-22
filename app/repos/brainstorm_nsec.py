@@ -1,5 +1,6 @@
 from datetime import datetime
 from sqlalchemy import select, update
+from sqlalchemy.orm import defer
 from app.core.database import execute_db_statement, handle_no_data
 from app.db_models import BrainstormNsec
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -173,6 +174,32 @@ async def select_brainstorm_nsec_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> BrainstormNsec:
     statement = select(BrainstormNsec).where(BrainstormNsec.pubkey == pubkey)
+
+    existing_data = await execute_db_statement(db, statement, __name__)
+    result: BrainstormNsec | None = existing_data.scalars().first()
+
+    handle_no_data(result)
+    assert result
+
+    result.nsec = _resolve_plaintext_nsec(result)
+    return result
+
+
+async def select_brainstorm_nsec_history_fields_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> BrainstormNsec:
+    # Skip large columns not needed by the user-history converter — most notably
+    # last_published_pubkeys (LargeBinary, can be 100s of KB) and graperank_custom_params (JSONB).
+    statement = (
+        select(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .options(
+            defer(BrainstormNsec.last_published_pubkeys),
+            defer(BrainstormNsec.last_published_graperank_request_id),
+            defer(BrainstormNsec.graperank_preset),
+            defer(BrainstormNsec.graperank_custom_params),
+        )
+    )
 
     existing_data = await execute_db_statement(db, statement, __name__)
     result: BrainstormNsec | None = existing_data.scalars().first()
