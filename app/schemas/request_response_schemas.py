@@ -9,7 +9,10 @@ from app.schemas.schemas import (
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
     OwnUserData,
+    PaginatedUserConnections,
     UserGraphData,
+    UserOverviewData,
+    UserSectionsStats,
 )
 from app.schemas.graperank_schemas import (
     BuiltinPresetTemplate,
@@ -62,6 +65,18 @@ class SubmitNostrAuthChallengeResponse(SuccessfulResponseDataSchema):
 
 class GetUserDataResponse(SuccessfulResponseDataSchema):
     data: UserGraphData
+
+
+class GetUserOverviewResponse(SuccessfulResponseDataSchema):
+    data: UserOverviewData
+
+
+class GetUserConnectionsResponse(SuccessfulResponseDataSchema):
+    data: PaginatedUserConnections
+
+
+class GetUserStatsResponse(SuccessfulResponseDataSchema):
+    data: UserSectionsStats
 
 
 class GetOwnUserDataResponse(SuccessfulResponseDataSchema):
