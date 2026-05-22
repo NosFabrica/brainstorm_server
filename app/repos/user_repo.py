@@ -4,6 +4,7 @@ from app.schemas.schemas import (
     ConnectionStats,
     ConnectionTierCounts,
     UserConnection,
+    UserConnectionItem,
     UserGraphData,
 )
 
@@ -240,7 +241,6 @@ async def get_paginated_section_connections(
     session: AsyncNeoDriver,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
     rel_type: str,
     direction: str,
     limit: int,
@@ -251,7 +251,7 @@ async def get_paginated_section_connections(
     tier_high: float,
     tier_trusted: float,
     tier_neutral: float,
-) -> tuple[list[UserConnection], ConnectionStats | None, tuple[float, str] | None]:
+) -> tuple[list[UserConnectionItem], ConnectionStats | None, tuple[float, str] | None]:
     """Cursor-paginated connection list ordered by (influence DESC, pubkey ASC).
     On first page (no cursor), also returns ConnectionStats in a single query.
 
@@ -262,7 +262,6 @@ async def get_paginated_section_connections(
     params: dict = {
         "pubkey": pubkey,
         "influence_key": influence_key,
-        "trusted_reporters_key": trusted_reporters_key,
         "limit": limit,
         "verified_threshold": verified_threshold,
         "tier_high": tier_high,
@@ -310,22 +309,20 @@ async def get_paginated_section_connections(
         {cursor_clause}
         RETURN other.pubkey AS pubkey,
                other[$influence_key] AS influence,
-               other[$trusted_reporters_key] AS trusted_reporters,
                sort_inf
         ORDER BY sort_inf DESC, other.pubkey ASC
         LIMIT $limit
     }}
-    RETURN pubkey, influence, trusted_reporters, sort_inf{stats_return}
+    RETURN pubkey, influence, sort_inf{stats_return}
     """
 
     result = await session.run(query, **params)
     records = [rec async for rec in result]
 
     items = [
-        UserConnection(
+        UserConnectionItem(
             pubkey=rec["pubkey"],
             influence=rec["influence"],
-            trusted_reporters=rec["trusted_reporters"],
         )
         for rec in records
     ]

@@ -31,8 +31,8 @@ from app.repos.user_repo import (
 from app.schemas.schemas import (
     BrainstormRequestInstance,
     PaginatedUserConnections,
-    UserConnection,
     UserConnectionCounts,
+    UserConnectionItem,
     UserGraphData,
     UserHistoryInstance,
     UserOverviewData,
@@ -233,9 +233,6 @@ async def get_user_connections(
     limit = max(1, min(limit, MAX_PAGE_SIZE))
     rel_type, direction = _KIND_TO_REL[kind]
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
-    trusted_reporters_key = (
-        f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
-    )
 
     cursor_inf, cursor_pk = (None, None)
     if cursor:
@@ -253,7 +250,6 @@ async def get_user_connections(
             session,
             pubkey=pubkey,
             influence_key=influence_key,
-            trusted_reporters_key=trusted_reporters_key,
             rel_type=rel_type,
             direction=direction,
             limit=limit,
@@ -268,10 +264,9 @@ async def get_user_connections(
 
     # Sanitize NaN/Inf floats post-query for safe JSON encoding.
     items = [
-        UserConnection(
+        UserConnectionItem(
             pubkey=it.pubkey,
             influence=_safe_float(it.influence),
-            trusted_reporters=it.trusted_reporters,
         )
         for it in items
     ]

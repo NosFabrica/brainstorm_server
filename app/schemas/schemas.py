@@ -146,8 +146,13 @@ class ConnectionStats(BaseModel):
     tier_counts: ConnectionTierCounts
 
 
+class UserConnectionItem(BaseModel):
+    pubkey: str
+    influence: float | None = None
+
+
 class PaginatedUserConnections(BaseModel):
-    items: list[UserConnection]
+    items: list[UserConnectionItem]
     next_cursor: str | None = None
     stats: ConnectionStats | None = None
 
