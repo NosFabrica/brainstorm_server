@@ -228,7 +228,6 @@ async def get_user_connections(
     kind: ConnectionKind = "following",
     limit: int = DEFAULT_PAGE_SIZE,
     cursor: str | None = None,
-    verified_threshold: float = DEFAULT_VERIFIED_THRESHOLD,
 ) -> PaginatedUserConnections:
     limit = max(1, min(limit, MAX_PAGE_SIZE))
     rel_type, direction = _KIND_TO_REL[kind]
@@ -243,10 +242,9 @@ async def get_user_connections(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="invalid cursor",
             )
-    compute_stats = cursor is None
 
     async with neo4j_driver.session() as session:
-        items, stats, last_cursor = await get_paginated_section_connections(
+        items, last_cursor = await get_paginated_section_connections(
             session,
             pubkey=pubkey,
             influence_key=influence_key,
@@ -255,11 +253,6 @@ async def get_user_connections(
             limit=limit,
             cursor_inf=cursor_inf,
             cursor_pk=cursor_pk,
-            compute_stats=compute_stats,
-            verified_threshold=verified_threshold,
-            tier_high=TIER_HIGH,
-            tier_trusted=TIER_TRUSTED,
-            tier_neutral=TIER_NEUTRAL,
         )
 
     # Sanitize NaN/Inf floats post-query for safe JSON encoding.
@@ -277,9 +270,7 @@ async def get_user_connections(
         if last_sort_inf is not None:
             next_cursor = _encode_cursor(last_sort_inf, last_cursor[1])
 
-    return PaginatedUserConnections(
-        items=items, next_cursor=next_cursor, stats=stats
-    )
+    return PaginatedUserConnections(items=items, next_cursor=next_cursor)
 
 
 async def get_whitelisted_pubkeys_of_observer(

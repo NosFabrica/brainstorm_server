@@ -199,7 +199,6 @@ async def get_user_connections_endpoint(
     kind: ConnectionKind = Query(..., description="Which relationship list to fetch"),
     limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     cursor: str | None = Query(default=None),
-    verified_threshold: float = Query(default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0),
 ) -> GetUserConnectionsResponse:
     jwt_data: JWTData = request.state.jwt_data
     result = await get_user_connections(
@@ -208,7 +207,6 @@ async def get_user_connections_endpoint(
         kind=kind,
         limit=limit,
         cursor=cursor,
-        verified_threshold=verified_threshold,
     )
     return GetUserConnectionsResponse(data=result)
 

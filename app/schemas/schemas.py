@@ -154,7 +154,6 @@ class UserConnectionItem(BaseModel):
 class PaginatedUserConnections(BaseModel):
     items: list[UserConnectionItem]
     next_cursor: str | None = None
-    stats: ConnectionStats | None = None
 
 
 class UserSectionsStats(BaseModel):

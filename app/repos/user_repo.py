@@ -246,16 +246,10 @@ async def get_paginated_section_connections(
     limit: int,
     cursor_inf: float | None,
     cursor_pk: str | None,
-    compute_stats: bool,
-    verified_threshold: float,
-    tier_high: float,
-    tier_trusted: float,
-    tier_neutral: float,
-) -> tuple[list[UserConnectionItem], ConnectionStats | None, tuple[float, str] | None]:
+) -> tuple[list[UserConnectionItem], tuple[float, str] | None]:
     """Cursor-paginated connection list ordered by (influence DESC, pubkey ASC).
-    On first page (no cursor), also returns ConnectionStats in a single query.
 
-    Returns (items, stats_or_none, last_record_cursor_or_none).
+    Returns (items, last_record_cursor_or_none).
     """
     scoped_pattern = _scoped_match_pattern(rel_type, direction)
 
@@ -263,10 +257,6 @@ async def get_paginated_section_connections(
         "pubkey": pubkey,
         "influence_key": influence_key,
         "limit": limit,
-        "verified_threshold": verified_threshold,
-        "tier_high": tier_high,
-        "tier_trusted": tier_trusted,
-        "tier_neutral": tier_neutral,
     }
     cursor_clause = ""
     if cursor_inf is not None and cursor_pk is not None:
@@ -277,32 +267,8 @@ async def get_paginated_section_connections(
             "OR (sort_inf = $cursor_inf AND other.pubkey > $cursor_pk)"
         )
 
-    stats_subquery = (
-        f"""
-        CALL (user) {{
-            MATCH {scoped_pattern}
-            RETURN
-                count(*) AS total,
-                count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $verified_threshold THEN 1 END) AS verified,
-                count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_high THEN 1 END) AS tier_high,
-                count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_trusted AND other[$influence_key] < $tier_high THEN 1 END) AS tier_trusted,
-                count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_neutral AND other[$influence_key] < $tier_trusted THEN 1 END) AS tier_neutral,
-                count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $verified_threshold AND other[$influence_key] < $tier_neutral THEN 1 END) AS tier_low,
-                count(CASE WHEN other[$influence_key] IS NULL OR other[$influence_key] < $verified_threshold THEN 1 END) AS tier_unverified
-        }}
-        """
-        if compute_stats
-        else ""
-    )
-    stats_return = (
-        ", total, verified, tier_high, tier_trusted, tier_neutral, tier_low, tier_unverified"
-        if compute_stats
-        else ""
-    )
-
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}})
-    {stats_subquery}
     CALL (user) {{
         MATCH {scoped_pattern}
         WITH other, coalesce(other[$influence_key], -1.0) AS sort_inf
@@ -313,7 +279,7 @@ async def get_paginated_section_connections(
         ORDER BY sort_inf DESC, other.pubkey ASC
         LIMIT $limit
     }}
-    RETURN pubkey, influence, sort_inf{stats_return}
+    RETURN pubkey, influence, sort_inf
     """
 
     result = await session.run(query, **params)
@@ -332,31 +298,7 @@ async def get_paginated_section_connections(
         last = records[-1]
         last_cursor = (float(last["sort_inf"]), str(last["pubkey"]))
 
-    stats: ConnectionStats | None = None
-    if compute_stats:
-        if records:
-            first = records[0]
-            stats = ConnectionStats(
-                total=int(first["total"] or 0),
-                verified=int(first["verified"] or 0),
-                tier_counts=ConnectionTierCounts(
-                    high=int(first["tier_high"] or 0),
-                    trusted=int(first["tier_trusted"] or 0),
-                    neutral=int(first["tier_neutral"] or 0),
-                    low=int(first["tier_low"] or 0),
-                    unverified=int(first["tier_unverified"] or 0),
-                ),
-            )
-        else:
-            stats = ConnectionStats(
-                total=0,
-                verified=0,
-                tier_counts=ConnectionTierCounts(
-                    high=0, trusted=0, neutral=0, low=0, unverified=0
-                ),
-            )
-
-    return items, stats, last_cursor
+    return items, last_cursor
 
 
 _STATS_KINDS: list[tuple[str, str, str]] = [
