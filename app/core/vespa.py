@@ -11,6 +11,7 @@ The search function uses the `name_and_quality_score_only` rank profile:
 - single combined query + Vespa over-fetch for WAND-resistance
 """
 import asyncio
+import json
 
 import httpx
 
@@ -80,6 +81,29 @@ def _doc_url(pubkey: str) -> str:
     )
 
 
+def _raise_with_context(
+    op: str, pubkey: str, body: dict, response: httpx.Response
+) -> None:
+    """Log Vespa's response body + the request we sent, then raise.
+
+    Vespa's 400/409/5xx bodies carry the actual reason (field-shape mismatch,
+    unknown field, schema rejection). httpx's stock HTTPStatusError doesn't
+    include them, so without this we'd see only "Client error '400 Bad Request'"
+    in the logs. Truncate to keep one bad doc from flooding the log.
+    """
+    if response.status_code < 400:
+        return
+    logger.error(
+        "vespa %s rejected pubkey=%s status=%d body=%s sent=%s",
+        op,
+        pubkey,
+        response.status_code,
+        response.text[:600],
+        json.dumps(body)[:600],
+    )
+    response.raise_for_status()
+
+
 # ---------------------------------------------------------------------------
 # document CRUD
 # ---------------------------------------------------------------------------
@@ -111,10 +135,11 @@ async def upsert_profile(pubkey: str, profile: dict) -> None:
         else:
             fields_payload[f] = {"assign": str(v)}
 
+    body = {"fields": fields_payload}
     r = await _get_client().post(
-        _doc_url(pubkey), params={"create": "true"}, json={"fields": fields_payload}
+        _doc_url(pubkey), params={"create": "true"}, json=body
     )
-    r.raise_for_status()
+    _raise_with_context("upsert_profile", pubkey, body, r)
 
 
 async def upsert_score(pubkey: str, observer: str, score: int) -> None:
@@ -137,7 +162,7 @@ async def upsert_score(pubkey: str, observer: str, score: int) -> None:
     r = await _get_client().post(
         _doc_url(pubkey), params={"create": "true"}, json=body
     )
-    r.raise_for_status()
+    _raise_with_context("upsert_score", pubkey, body, r)
 
 
 async def remove_score(pubkey: str, observer: str) -> None:
@@ -153,7 +178,7 @@ async def remove_score(pubkey: str, observer: str) -> None:
     # 404 is fine — nothing to remove if the doc isn't there yet.
     if r.status_code == 404:
         return
-    r.raise_for_status()
+    _raise_with_context("remove_score", pubkey, body, r)
 
 
 async def batch_upsert_scores(
