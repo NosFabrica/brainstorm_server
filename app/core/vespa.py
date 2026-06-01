@@ -136,7 +136,11 @@ async def upsert_profile(pubkey: str, profile: dict) -> None:
             fields_payload[f] = {"assign": str(v)}
 
     body = {"fields": fields_payload}
-    r = await _get_client().post(
+    # PUT (not POST) is Vespa's partial-update verb: assign/add/remove ops live
+    # under PUT, while POST is full-doc replace with direct values. `?create=true`
+    # creates the doc from the partial update ops if it doesn't exist yet,
+    # which preserves the quality_scores tensor across profile updates.
+    r = await _get_client().put(
         _doc_url(pubkey), params={"create": "true"}, json=body
     )
     _raise_with_context("upsert_profile", pubkey, body, r)
@@ -159,7 +163,7 @@ async def upsert_score(pubkey: str, observer: str, score: int) -> None:
             }
         }
     }
-    r = await _get_client().post(
+    r = await _get_client().put(
         _doc_url(pubkey), params={"create": "true"}, json=body
     )
     _raise_with_context("upsert_score", pubkey, body, r)
@@ -174,7 +178,7 @@ async def remove_score(pubkey: str, observer: str) -> None:
             }
         }
     }
-    r = await _get_client().post(_doc_url(pubkey), json=body)
+    r = await _get_client().put(_doc_url(pubkey), json=body)
     # 404 is fine — nothing to remove if the doc isn't there yet.
     if r.status_code == 404:
         return
