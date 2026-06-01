@@ -23,6 +23,7 @@ from fastapi_pagination import add_pagination
 from app.core.config import settings
 from app.core.loggr import loggr
 from app.core.sql_admin_panel import add_sql_admin_panel
+from app.core.vespa import aclose as vespa_aclose
 from app.routers.router import router as main_router
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
 from app.services.nsec_encryption_service import bootstrap_keys
@@ -114,6 +115,7 @@ async def lifespan(app: FastAPI):
         fail_stale_ongoing_task.cancel()
         periodic_graperank_task.cancel()
         # regular_update_task.cancel()
+        await vespa_aclose()
 
 
 app = FastAPI(

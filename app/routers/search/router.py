@@ -3,11 +3,8 @@ import re
 from fastapi import APIRouter, Query
 from nostr_sdk import PublicKey
 
-from app.core.meilisearch import (
-    NOSTR_PROFILES_INDEX,
-    get_document,
-    search_index,
-)
+from app.core.config import settings
+from app.core.vespa import get_document, search
 from app.schemas.request_response_schemas import (
     SearchByTextResponse,
     SearchResults,
@@ -15,10 +12,11 @@ from app.schemas.request_response_schemas import (
 
 router = APIRouter()
 
-RANK_FIELD = "rank_be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
-# SEARCH_ATTRIBUTES = ["name", "display_name", "about"]
-SEARCH_ATTRIBUTES = ["name", "display_name"]
-SEARCH_LIMIT = 500
+# Hardcoded observer pubkey used as the search perspective when
+# settings.periodic_graperank_pubkey is not set.
+_DEFAULT_OBSERVER_PUBKEY = (
+    "be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
+)
 RESULTS_LIMIT = 100
 
 HEX_PUBKEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -41,6 +39,10 @@ def _try_resolve_pubkey(text: str) -> str | None:
     return None
 
 
+def _observer_pubkey() -> str:
+    return settings.periodic_graperank_pubkey or _DEFAULT_OBSERVER_PUBKEY
+
+
 @router.get(
     path="/byText",
     summary="Search Nostr profiles by free-text, npub, or hex pubkey",
@@ -49,26 +51,25 @@ async def search_by_text_endpoint(
     text: str = Query(..., min_length=1, max_length=100),
     onlyRanked: bool = Query(
         default=True,
-        description="If true, only return profiles that have a rank value.",
+        description="If true, only return profiles that have a non-zero quality_score.",
     ),
 ) -> SearchByTextResponse:
     sanitized = _sanitize(text)
+    observer = _observer_pubkey()
 
     pubkey = _try_resolve_pubkey(sanitized)
     if pubkey is not None:
-        doc = await get_document(NOSTR_PROFILES_INDEX, pubkey)
-        hits = [doc] if doc is not None else []
+        doc = await get_document(pubkey)
+        results = [doc] if doc is not None else []
     else:
-        hits = await search_index(
-            NOSTR_PROFILES_INDEX,
-            query=sanitized,
-            attributes_to_search_on=SEARCH_ATTRIBUTES,
-            filter=f"{RANK_FIELD} EXISTS" if onlyRanked else None,
-            limit=SEARCH_LIMIT,
+        # name_and_quality_score_only already orders by quality_boost-weighted
+        # relevance, so we don't need a client-side rank-based re-sort.
+        results = await search(
+            query_text=sanitized,
+            user_pubkey=observer,
+            hits=RESULTS_LIMIT,
+            include_zero_score_results=not onlyRanked,
         )
-
-    hits.sort(key=lambda h: h.get(RANK_FIELD) or 0, reverse=True)
-    results = hits[:RESULTS_LIMIT]
 
     return SearchByTextResponse(
         data=SearchResults(

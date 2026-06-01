@@ -1,8 +1,9 @@
 import json
 
 from app.core.loggr import loggr
-from app.core.meilisearch import NOSTR_PROFILES_INDEX, upsert_documents
 from app.core.redis_db import redis_client
+from app.core.vespa import PROFILE_FIELDS as KIND_0_PROFILE_FIELDS
+from app.core.vespa import upsert_profile
 from neo4j import AsyncDriver as AsyncNeoDriver
 import time
 from tqdm import tqdm
@@ -13,18 +14,6 @@ BATCH_SIZE = 100  # Adjust as needed
 FOLLOWED_BY_KEY_PREFIX = "followed_by:"
 MUTED_BY_KEY_PREFIX = "muted_by:"
 REPORTED_BY_KEY_PREFIX = "reported_by:"
-
-KIND_0_PROFILE_FIELDS = (
-    "name",
-    "display_name",
-    "about",
-    "picture",
-    "banner",
-    "nip05",
-    "lud06",
-    "lud16",
-    "website",
-)
 
 logger = loggr.get_logger(__name__)
 
@@ -62,14 +51,11 @@ async def process_event_kind_0(event: dict):
     if not isinstance(profile, dict):
         return
 
-    # Include every typical kind 0 field so a missing key in the new event
-    # explicitly clears the previous value, while leaving non-kind-0 fields
-    # on the existing Meilisearch document untouched (partial update).
-    document = {"pubkey": publisher}
-    for field in KIND_0_PROFILE_FIELDS:
-        document[field] = profile.get(field)
-
-    await upsert_documents(NOSTR_PROFILES_INDEX, [document])
+    # Vespa partial update: every standard kind-0 field gets assigned (or
+    # cleared if missing from the new event), leaving non-kind-0 attributes
+    # like quality_scores on the existing document untouched. create=true
+    # handles the new-pubkey case.
+    await upsert_profile(pubkey=publisher, profile=profile)
 
 
 async def create_pubkey_index(session: AsyncNeoDriver):

@@ -1,7 +1,7 @@
 from datetime import timedelta
 from app.core.database import db_session
 from app.core.loggr import loggr
-from app.core.meilisearch import NOSTR_PROFILES_INDEX, upsert_documents
+from app.core.vespa import batch_upsert_scores
 from app.db_models import BrainstormRequestStatus
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
@@ -251,43 +251,44 @@ async def get_deletion_events_for_dropped_pubkeys(
     return deletion_events
 
 
-# When True, push every above-cutoff scorecard to Meilisearch on each run
+# When True, push every above-cutoff scorecard to Vespa on each run
 # (in addition to the deletions). Use this to backfill an empty / out-of-sync
-# Meilisearch — e.g., when TAs were already published to Nostr before this
-# code existed. When False, only changed scores + deletions are pushed.
-MEILISEARCH_FULL_SYNC = True
+# Vespa — e.g., when TAs were already published to Nostr before this code
+# existed. When False, only changed scores + deletions are pushed.
+VESPA_FULL_SYNC = True
 
 
-async def upsert_scores_to_meilisearch(
+async def upsert_scores_to_vespa(
     grape_rank_result: GrapeRankResult,
     observer: str,
     pubkeys_to_delete: list[str],
 ):
-    # Each score depends on the observer, so the rank is stored in a
-    # per-observer column rank_{observer}. Meilisearch PUT is a partial
-    # update, so unknown pubkeys are created with just {pubkey, rank_*}
-    # and the kind 0 upsert will fill in profile fields later.
+    # Each score depends on the observer; the rank lives in a single cell of
+    # the `quality_scores` sparse tensor, keyed by the observer pubkey.
+    # Vespa partial updates (create=true) create the doc if absent, so unknown
+    # pubkeys get a doc carrying just the tensor cell; the kind-0 upsert fills
+    # in profile fields later. All ops are fanned out concurrently so a large
+    # GrapeRank result completes in seconds rather than minutes.
     assert grape_rank_result.scorecards is not None
     changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
-    rank_field = f"rank_{observer}"
-    documents: list[dict] = []
 
+    upserts: list[tuple[str, int]] = []
     for pubkey, scorecard in grape_rank_result.scorecards.items():
-        if not MEILISEARCH_FULL_SYNC and pubkey not in changed_pubkeys:
+        if not VESPA_FULL_SYNC and pubkey not in changed_pubkeys:
             continue
         if round(scorecard.influence, 2) < settings.cutoff_of_valid_graperank_scores:
             continue
-        documents.append(
-            {"pubkey": pubkey, rank_field: round(scorecard.influence * 100)}
-        )
+        upserts.append((pubkey, round(scorecard.influence * 100)))
 
-    for pubkey in pubkeys_to_delete:
-        documents.append({"pubkey": pubkey, rank_field: None})
-
-    if not documents:
-        return
-
-    await upsert_documents(NOSTR_PROFILES_INDEX, documents)
+    n_ok, n_failed = await batch_upsert_scores(
+        upserts=upserts,
+        removes=list(pubkeys_to_delete),
+        observer=observer,
+    )
+    logger.info(
+        f"vespa score batch: ok={n_ok} failed={n_failed} "
+        f"(upserts={len(upserts)} removes={len(pubkeys_to_delete)})"
+    )
 
 
 async def process_nostr_upload_message(message: dict):
@@ -394,18 +395,17 @@ async def process_nostr_upload_message(message: dict):
 
         if observer == settings.periodic_graperank_pubkey:
             try:
-                logger.info(f"Pushing scores to Meilisearch...")
-                await upsert_scores_to_meilisearch(
+                logger.info(f"Pushing scores to Vespa...")
+                await upsert_scores_to_vespa(
                     grape_rank_result=grape_rank_result,
                     observer=observer,
                     pubkeys_to_delete=pubkeys_to_delete,
                 )
-                logger.info(f"Done pushing scores to Meilisearch!")
+                logger.info(f"Done pushing scores to Vespa!")
             except Exception as e:
                 # Don't fail the whole request — Nostr is the source of truth
-                # and has already been written. Meilisearch is a search-side
-                # mirror.
-                logger.error(f"Failed to upsert scores to Meilisearch: {e}")
+                # and has already been written. Vespa is a search-side mirror.
+                logger.error(f"Failed to upsert scores to Vespa: {e}")
 
         async with db_session() as db:
 
