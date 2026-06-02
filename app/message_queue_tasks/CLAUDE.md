@@ -10,7 +10,7 @@ loop forever (`while True: await blpop(...)`) so they're started with
 | Redis queue | Consumer (in `message_queue_consumer.py`) | Per-message handler | Side effects |
 |---|---|---|---|
 | `strfry:events` | `consume_strfry_plugin_messages()` | `process_strfry_event()` in `process_strfry_event.py` | Kind 0 → Vespa profile upsert. Kind 3/10000/1984 → Neo4j relationship updates + Redis reverse-set caches. |
-| `nostr_results_message_queue` | `consume_nostr_upload_messages()` | `process_nostr_upload_message()` in `upload_nostr_events.py` | Sign + publish TA events to Nostr relays. If observer matches `settings.periodic_graperank_pubkey`, also mirror scores into Vespa via `batch_upsert_scores`. |
+| `nostr_results_message_queue` | `consume_nostr_upload_messages()` | `process_nostr_upload_message()` in `upload_nostr_events.py` | Sign + publish TA events to Nostr relays, then mirror scores into Vespa via `batch_upsert_scores` (for any observer, keyed by the observer pubkey). |
 | (other queues, see `message_queue_consumer.py`) | `consume_messages`, `consume_neo4j_write_messages`, `consume_job_started_messages` | … | … |
 
 ## process_strfry_event.py
@@ -33,7 +33,7 @@ The longest module here. The main entry point is `process_nostr_upload_message(m
 2. Resolve the observer's nsec via `get_or_create_brainstorm_observer_nsec_by_pubkey_on_db`.
 3. Build the Nostr events to publish: TA assertions (above-cutoff scorecards) + deletion events for dropped pubkeys.
 4. Publish all events to the configured relays (best-effort per relay).
-5. **Only if `observer == settings.periodic_graperank_pubkey`**, mirror scores to Vespa via `upsert_scores_to_vespa(...)` → `batch_upsert_scores`. Vespa failures are logged but don't fail the request.
+5. Mirror scores to Vespa via `upsert_scores_to_vespa(...)` → `batch_upsert_scores`, keyed by this observer's pubkey in the `quality_scores` tensor (runs for every observer, not just `settings.periodic_graperank_pubkey`). Vespa failures are logged but don't fail the request.
 6. Mark the brainstorm request as `SUCCESS` and persist the published-pubkey list.
 
 ### `upsert_scores_to_vespa` — the score-mirror function

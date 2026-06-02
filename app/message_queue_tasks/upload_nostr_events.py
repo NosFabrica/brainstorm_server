@@ -393,19 +393,18 @@ async def process_nostr_upload_message(message: dict):
                         f"Failed to enqueue event {index} on {relay.url()}: {e}"
                     )
 
-        if observer == settings.periodic_graperank_pubkey:
-            try:
-                logger.info(f"Pushing scores to Vespa...")
-                await upsert_scores_to_vespa(
-                    grape_rank_result=grape_rank_result,
-                    observer=observer,
-                    pubkeys_to_delete=pubkeys_to_delete,
-                )
-                logger.info(f"Done pushing scores to Vespa!")
-            except Exception as e:
-                # Don't fail the whole request — Nostr is the source of truth
-                # and has already been written. Vespa is a search-side mirror.
-                logger.error(f"Failed to upsert scores to Vespa: {e}")
+        try:
+            logger.info(f"Pushing scores to Vespa...")
+            await upsert_scores_to_vespa(
+                grape_rank_result=grape_rank_result,
+                observer=observer,
+                pubkeys_to_delete=pubkeys_to_delete,
+            )
+            logger.info(f"Done pushing scores to Vespa!")
+        except Exception as e:
+            # Don't fail the whole request — Nostr is the source of truth
+            # and has already been written. Vespa is a search-side mirror.
+            logger.error(f"Failed to upsert scores to Vespa: {e}")
 
         async with db_session() as db:
 

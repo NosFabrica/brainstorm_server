@@ -21,12 +21,12 @@ computations, and exposes a profile search backed by Vespa.
 `Redis queue strfry:events` → [`message_queue_consumer.consume_strfry_plugin_messages`](app/message_queue_tasks/message_queue_consumer.py) → [`process_strfry_event`](app/message_queue_tasks/process_strfry_event.py) → for kind 0, [`vespa.upsert_profile(pubkey, profile)`](app/core/vespa.py). Partial update with `create=true`: existing tensor cells (scores) are preserved; missing kind-0 fields are cleared to `""`.
 
 ### 2. GrapeRank score upsert + Nostr publishing
-`Redis queue nostr_results_message_queue` → [`consume_nostr_upload_messages`](app/message_queue_tasks/message_queue_consumer.py) → [`process_nostr_upload_message`](app/message_queue_tasks/upload_nostr_events.py) → signs TA events, publishes to relays, and (only when `observer == settings.periodic_graperank_pubkey`) calls [`upsert_scores_to_vespa`](app/message_queue_tasks/upload_nostr_events.py) → [`vespa.batch_upsert_scores`](app/core/vespa.py) which fans out N concurrent POSTs (bounded at `_BATCH_CONCURRENCY = 32`).
+`Redis queue nostr_results_message_queue` → [`consume_nostr_upload_messages`](app/message_queue_tasks/message_queue_consumer.py) → [`process_nostr_upload_message`](app/message_queue_tasks/upload_nostr_events.py) → signs TA events, publishes to relays, and calls [`upsert_scores_to_vespa`](app/message_queue_tasks/upload_nostr_events.py) → [`vespa.batch_upsert_scores`](app/core/vespa.py) which fans out N concurrent POSTs (bounded at `_BATCH_CONCURRENCY = 32`). Scores are mirrored for **every** observer (keyed by the observer's pubkey in the `quality_scores` tensor), not just `settings.periodic_graperank_pubkey`.
 
 Failure policy: Vespa is a search mirror. The Nostr publish is the source of truth — Vespa failures are logged but never propagate.
 
 ### 3. Profile search
-`GET /search/byText?text=...&onlyRanked=...` → [`router.search_by_text_endpoint`](app/routers/search/router.py) → if input is hex pubkey or npub, direct `vespa.get_document(pubkey)`; otherwise `vespa.search(...)` against the `name_and_quality_score_only` rank profile. Observer perspective = `settings.periodic_graperank_pubkey` (falls back to a hardcoded default in the router if unset).
+`GET /search/byText?text=...&onlyRanked=...&observerPubkey=...` → [`router.search_by_text_endpoint`](app/routers/search/router.py) → if input is hex pubkey or npub, direct `vespa.get_document(pubkey)`; otherwise `vespa.search(...)` against the `name_and_quality_score_only` rank profile. Observer perspective = the optional `observerPubkey` query param (hex or npub; unresolvable values fall back silently), else `settings.periodic_graperank_pubkey` (which itself falls back to a hardcoded default in the router if unset).
 
 ## Directory map
 
@@ -94,7 +94,7 @@ Vespa is **not** in this compose — it lives in `brainstorm_one_click_deploymen
 
 ## Things to know (gotchas)
 
-- **`periodic_graperank_pubkey`** is the special observer pubkey whose scores get mirrored to Vespa. If it's empty, score upserts are skipped silently (see the `if observer == settings.periodic_graperank_pubkey:` gate in `upload_nostr_events.py`) — but search will still work using the hardcoded default in the search router.
+- **`periodic_graperank_pubkey`** is the default observer perspective for `/search/byText` when no `observerPubkey` is passed. Score mirroring to Vespa is **not** gated on it — `upsert_scores_to_vespa` runs for every observer. If `periodic_graperank_pubkey` is empty, search still works using the hardcoded default in the search router.
 - **`MAX_QUERY_WORDS = 6`** in `vespa.py` caps how many words of the search query get treated as separate match groups. Longer queries are truncated.
 - **`VESPA_FULL_SYNC = True`** in `upload_nostr_events.py` re-pushes every above-cutoff scorecard on each graperank run. Flip to `False` once Vespa is in sync to only push changed scores.
 - **Vespa needs `about_gram` to exist in the schema** for partial bio matches ("nosfab" → "nosfabrica") to work. If you wipe the volume and re-deploy, you also need to refeed (or `vespa reindex`) so the derived `about_gram` field gets populated.

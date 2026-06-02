@@ -53,9 +53,20 @@ async def search_by_text_endpoint(
         default=True,
         description="If true, only return profiles that have a non-zero quality_score.",
     ),
+    observerPubkey: str | None = Query(
+        default=None,
+        description=(
+            "Observer perspective for trust scores (hex or npub). "
+            "Defaults to the periodic graperank pubkey."
+        ),
+    ),
 ) -> SearchByTextResponse:
     sanitized = _sanitize(text)
     observer = _observer_pubkey()
+    if observerPubkey is not None:
+        resolved_observer = _try_resolve_pubkey(_sanitize(observerPubkey))
+        if resolved_observer is not None:
+            observer = resolved_observer
 
     pubkey = _try_resolve_pubkey(sanitized)
     if pubkey is not None:
