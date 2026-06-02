@@ -327,7 +327,7 @@ async def search(
     vespa_hits = max(hits, 20)
     if not include_zero_score_results:
         vespa_hits = max(hits * 5, 100)
-    vespa_hits = min(vespa_hits, 400)  # Vespa default max-hits
+    vespa_hits = min(vespa_hits, 1000)  # Vespa max-hits (must match maxHits in the query profile)
 
     params = {
         "yql": _build_yql(words, joined),

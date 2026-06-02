@@ -20,7 +20,7 @@ router = APIRouter()
 _DEFAULT_OBSERVER_PUBKEY = (
     "be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
 )
-RESULTS_LIMIT = 100
+RESULTS_LIMIT = 1000
 
 HEX_PUBKEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 # Strip control characters; keep printable text only.
