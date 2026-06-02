@@ -1,6 +1,7 @@
 import re
+from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from nostr_sdk import PublicKey
 
 from app.core.config import settings
@@ -9,6 +10,8 @@ from app.schemas.request_response_schemas import (
     SearchByTextResponse,
     SearchResults,
 )
+from app.utils.api_validators import verify_token_optional
+from app.utils.auth.auth_models import JWTData
 
 router = APIRouter()
 
@@ -53,20 +56,25 @@ async def search_by_text_endpoint(
         default=True,
         description="If true, only return profiles that have a non-zero quality_score.",
     ),
-    observerPubkey: str | None = Query(
-        default=None,
+    ownPubkey: bool = Query(
+        default=False,
         description=(
-            "Observer perspective for trust scores (hex or npub). "
+            "If true and the caller is authenticated (JWT or NIP-98), use the "
+            "caller's own pubkey as the observer perspective for trust scores. "
             "Defaults to the periodic graperank pubkey."
         ),
     ),
+    jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> SearchByTextResponse:
     sanitized = _sanitize(text)
     observer = _observer_pubkey()
-    if observerPubkey is not None:
-        resolved_observer = _try_resolve_pubkey(_sanitize(observerPubkey))
-        if resolved_observer is not None:
-            observer = resolved_observer
+    if ownPubkey:
+        if jwt_data is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="ownPubkey=true requires a valid authentication token",
+            )
+        observer = jwt_data.nostr_pubkey
 
     pubkey = _try_resolve_pubkey(sanitized)
     if pubkey is not None:

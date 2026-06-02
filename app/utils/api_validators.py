@@ -88,3 +88,25 @@ async def verify_token(
         )
     request.state.jwt_data = jwt_data
     return jwt_data
+
+
+async def verify_token_optional(
+    request: Request,
+    auth_token: Optional[str] = Security(auth_jwt_header),
+    db: AsyncDBSession = Depends(get_db),
+) -> Optional[JWTData]:
+    """Like ``verify_token`` but for public endpoints that can *optionally* act
+    on the caller's identity.
+
+    Returns ``None`` when no credentials are supplied (anonymous request). When
+    credentials *are* supplied they are validated exactly as in ``verify_token``
+    — a malformed/expired token still raises 401 rather than being silently
+    ignored.
+    """
+    auth_header = request.headers.get("authorization", "")
+    has_credentials = auth_header.lower().startswith(("bearer ", "nostr ")) or bool(
+        auth_token
+    )
+    if not has_credentials:
+        return None
+    return await verify_token(request, auth_token, db)
