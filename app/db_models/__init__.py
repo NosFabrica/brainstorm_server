@@ -105,6 +105,9 @@ class BrainstormNsec(TimestampMixin, Base):
         ForeignKey("brainstorm_request.private_id"),
         nullable=True,
     )
+    is_observer_search_available: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
 
 
 # Built-in GrapeRank presets. One row per template (DEFAULT, PERMISSIVE, RESTRICTIVE).

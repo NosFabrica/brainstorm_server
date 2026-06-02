@@ -87,6 +87,10 @@ class GetOwnLatestGraperankResponse(SuccessfulResponseDataSchema):
     data: BrainstormRequestInstance | None
 
 
+class IsSearchObserverResponse(SuccessfulResponseDataSchema):
+    data: bool
+
+
 class WhitelistedPubkeys(BaseModel):
     observerPubkey: str
     numPubkeys: int

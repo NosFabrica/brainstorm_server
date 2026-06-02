@@ -12,8 +12,12 @@ from app.schemas.request_response_schemas import (
     GetUserDataResponse,
     GetUserOverviewResponse,
     GetUserStatsResponse,
+    IsSearchObserverResponse,
     PublishAssistantProfileData,
     PublishAssistantProfileResponse,
+)
+from app.repos.brainstorm_nsec import (
+    get_is_observer_search_available_by_pubkey_on_db,
 )
 from app.core.config import settings
 
@@ -124,6 +128,27 @@ async def get_own_user_data_endpoint(
     )
 
     return GetOwnUserDataResponse(data=OwnUserData(graph=result, history=history))
+
+
+@router.get(
+    path="/isSearchObserver",
+    tags=[],
+    dependencies=[],
+    summary="Whether the caller's pubkey is searchable as an observer on Vespa",
+)
+async def is_search_observer_endpoint(
+    request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> IsSearchObserverResponse:
+
+    jwt_data: JWTData = request.state.jwt_data
+    user_pubkey = jwt_data.nostr_pubkey
+
+    is_available = await get_is_observer_search_available_by_pubkey_on_db(
+        db, pubkey=user_pubkey
+    )
+
+    return IsSearchObserverResponse(data=is_available)
 
 
 @router.post(

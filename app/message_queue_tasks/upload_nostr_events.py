@@ -7,6 +7,7 @@ from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
     get_last_published_pubkeys_by_pubkey_on_db,
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
+    set_is_observer_search_available_by_pubkey_on_db,
     update_last_published_pubkeys_by_pubkey_on_db,
 )
 from app.repos.brainstorm_request_repo import (
@@ -393,6 +394,7 @@ async def process_nostr_upload_message(message: dict):
                         f"Failed to enqueue event {index} on {relay.url()}: {e}"
                     )
 
+        vespa_search_available = False
         try:
             logger.info(f"Pushing scores to Vespa...")
             await upsert_scores_to_vespa(
@@ -400,6 +402,7 @@ async def process_nostr_upload_message(message: dict):
                 observer=observer,
                 pubkeys_to_delete=pubkeys_to_delete,
             )
+            vespa_search_available = True
             logger.info(f"Done pushing scores to Vespa!")
         except Exception as e:
             # Don't fail the whole request — Nostr is the source of truth
@@ -420,6 +423,11 @@ async def process_nostr_upload_message(message: dict):
                 published_pubkeys=currently_published_pubkeys,
                 graperank_request_id=message["private_id"],
             )
+
+            if vespa_search_available:
+                await set_is_observer_search_available_by_pubkey_on_db(
+                    db, pubkey=observer, is_available=True
+                )
 
             await db.commit()
 

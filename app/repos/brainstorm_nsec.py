@@ -162,6 +162,29 @@ async def update_last_published_pubkeys_by_pubkey_on_db(
     await db.execute(statement)
 
 
+async def set_is_observer_search_available_by_pubkey_on_db(
+    db: AsyncDBSession,
+    pubkey: str,
+    is_available: bool = True,
+) -> None:
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(is_observer_search_available=is_available)
+    )
+    await db.execute(statement)
+
+
+async def get_is_observer_search_available_by_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> bool:
+    statement = select(BrainstormNsec.is_observer_search_available).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return bool(result.scalar_one_or_none())
+
+
 async def brainstorm_nsec_exists_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> bool:
