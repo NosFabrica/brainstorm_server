@@ -9,6 +9,7 @@ from app.routers.graperank.router import router as graperank_router
 from app.routers.search.router import router as search_router
 from app.routers.setup.router import router as setup_router
 from app.routers.user.router import router as user_router
+from app.routers.user.router import public_router as public_user_router
 from app.schemas.request_response_schemas import (
     GetWhitelistedPubkeysOfObserverResponse,
     WhitelistedPubkeys,
@@ -58,6 +59,15 @@ USER_ROUTER_PREFIX = "/user"
 router.include_router(
     dependencies=[Depends(verify_token)],
     router=user_router,
+    prefix=USER_ROUTER_PREFIX,
+    tags=["user"],
+)
+
+# Public, optional-auth /user/{pubkey}* lookups. Must be included AFTER the
+# authenticated user_router so its static routes (e.g. /user/self) match before
+# the "/{pubkey}" single-segment catch-all defined here.
+router.include_router(
+    router=public_user_router,
     prefix=USER_ROUTER_PREFIX,
     tags=["user"],
 )

@@ -4,7 +4,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from nostr_sdk import PublicKey
 
-from app.core.config import settings
 from app.core.vespa import get_document, search
 from app.schemas.request_response_schemas import (
     SearchByTextResponse,
@@ -12,14 +11,10 @@ from app.schemas.request_response_schemas import (
 )
 from app.utils.api_validators import verify_token_optional
 from app.utils.auth.auth_models import JWTData
+from app.utils.observer import default_observer_pubkey
 
 router = APIRouter()
 
-# Hardcoded observer pubkey used as the search perspective when
-# settings.periodic_graperank_pubkey is not set.
-_DEFAULT_OBSERVER_PUBKEY = (
-    "be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
-)
 RESULTS_LIMIT = 400
 
 HEX_PUBKEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -40,10 +35,6 @@ def _try_resolve_pubkey(text: str) -> str | None:
         except Exception:
             return None
     return None
-
-
-def _observer_pubkey() -> str:
-    return settings.periodic_graperank_pubkey or _DEFAULT_OBSERVER_PUBKEY
 
 
 @router.get(
@@ -67,7 +58,7 @@ async def search_by_text_endpoint(
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> SearchByTextResponse:
     sanitized = _sanitize(text)
-    observer = _observer_pubkey()
+    observer = default_observer_pubkey()
     if ownPubkey:
         if jwt_data is None:
             raise HTTPException(

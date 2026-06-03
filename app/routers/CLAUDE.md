@@ -22,7 +22,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/authChallenge` | `auth_challenge/` | none (this IS auth) |
 | `/setup` | `setup/` | none |
 | `/search` | `search/` | none — see [search/CLAUDE.md → vespa](../core/CLAUDE.md) |
-| `/user` | `user/` | `verify_token` |
+| `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
 | `/admin` | `admin/` | `verify_token` + `verify_admin_access` |
 | `/admin/brainstormPubkey` | `brainstorm_pubkey/` | (admin, included from `admin/router.py`) |
@@ -76,14 +76,31 @@ Each endpoint's specific response class (e.g. `GetUserDataResponse`) subclasses 
 
 - **GET** `/{nostr_pubkey}` → 30382 relay hints (`list[list[str]]`).
 
-### `user/router.py` — authenticated user
+### `user/router.py` — user endpoints
+
+Two routers in this file: `router` (authenticated, `verify_token` applied at
+include time) and `public_router` (no include-level auth; each handler uses
+`verify_token_optional`). The public router is included **after** the
+authenticated one in `routers/router.py` so static paths like `/self` win over
+the `/{pubkey}` catch-all.
+
+**Authenticated (`router`)** — caller-private, require a token:
 
 | Method | Path | Response | Notes |
 |---|---|---|---|
 | GET | `/graperankResult` | `GetOwnLatestGraperankResponse` | Latest result for caller |
 | POST | `/graperank` | `GetOwnLatestGraperankResponse` | Triggers a run; throttled by `settings.block_frequent_graperank_requests_minutes` |
 | GET | `/self` | `GetOwnUserDataResponse` | Caller's graph + history |
+| GET | `/isSearchObserver` | `IsSearchObserverResponse` | Whether caller is searchable as an observer |
 | POST | `/assistantProfile` | `PublishAssistantProfileResponse` | Publishes kind-0 for the user's brainstorm assistant key |
+
+**Public (`public_router`)** — optional auth. Observer perspective = caller's
+pubkey when authenticated, else `app.utils.observer.default_observer_pubkey()`
+(`settings.periodic_graperank_pubkey` or the hardcoded default). A *malformed*
+token still 401s:
+
+| Method | Path | Response | Notes |
+|---|---|---|---|
 | GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence |
 | GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Tier breakdown; query params: `verified_threshold`, `tier_high/trusted/neutral` |
 | GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor` |
