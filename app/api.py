@@ -23,6 +23,7 @@ from fastapi_pagination import add_pagination
 from app.core.config import settings
 from app.core.loggr import loggr
 from app.core.sql_admin_panel import add_sql_admin_panel
+from app.core.vespa import aclose as vespa_aclose
 from app.routers.router import router as main_router
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
 from app.services.nsec_encryption_service import bootstrap_keys
@@ -32,6 +33,9 @@ from app.nostr_event_transferer.nostr_event_transferer import (
 )
 from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
     fail_stale_ongoing_brainstorm_requests_cronjob,
+)
+from app.cronjobs.periodic_graperank_trigger import (
+    periodic_graperank_trigger_cronjob,
 )
 
 from app.core.admin_whitelist import init_admin_whitelist
@@ -95,6 +99,9 @@ async def lifespan(app: FastAPI):
     fail_stale_ongoing_task = asyncio.create_task(
         fail_stale_ongoing_brainstorm_requests_cronjob()
     )
+    periodic_graperank_task = asyncio.create_task(
+        periodic_graperank_trigger_cronjob()
+    )
 
     try:
         yield
@@ -106,7 +113,9 @@ async def lifespan(app: FastAPI):
         listener_ongoing_job_task.cancel()
         consume_strfry_plugin_messages_task.cancel()
         fail_stale_ongoing_task.cancel()
+        periodic_graperank_task.cancel()
         # regular_update_task.cancel()
+        await vespa_aclose()
 
 
 app = FastAPI(

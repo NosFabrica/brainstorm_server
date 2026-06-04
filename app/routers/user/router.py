@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta
+from typing import Optional
 from app.utils.rate_limiting.rate_limiting import validateIfRequestedTooOftenByIP
 from fastapi import HTTPException
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -12,8 +13,12 @@ from app.schemas.request_response_schemas import (
     GetUserDataResponse,
     GetUserOverviewResponse,
     GetUserStatsResponse,
+    IsSearchObserverResponse,
     PublishAssistantProfileData,
     PublishAssistantProfileResponse,
+)
+from app.repos.brainstorm_nsec import (
+    get_is_observer_search_available_by_pubkey_on_db,
 )
 from app.core.config import settings
 
@@ -37,10 +42,17 @@ from app.services.user_service import (
     get_user_stats,
 )
 from app.utils.auth.auth_models import JWTData
+from app.utils.api_validators import verify_token_optional
+from app.utils.observer import default_observer_pubkey
 
 CHALLENGE_TTL = 120  # seconds (2 minutes)
 
 router = APIRouter()
+
+# Public endpoints (optional auth): looking up a user by pubkey is browsable
+# anonymously. When authenticated, the caller's pubkey is used as the observer
+# perspective; otherwise we fall back to the default observer.
+public_router = APIRouter()
 
 
 @router.get(
@@ -126,6 +138,27 @@ async def get_own_user_data_endpoint(
     return GetOwnUserDataResponse(data=OwnUserData(graph=result, history=history))
 
 
+@router.get(
+    path="/isSearchObserver",
+    tags=[],
+    dependencies=[],
+    summary="Whether the caller's pubkey is searchable as an observer on Vespa",
+)
+async def is_search_observer_endpoint(
+    request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> IsSearchObserverResponse:
+
+    jwt_data: JWTData = request.state.jwt_data
+    user_pubkey = jwt_data.nostr_pubkey
+
+    is_available = await get_is_observer_search_available_by_pubkey_on_db(
+        db, pubkey=user_pubkey
+    )
+
+    return IsSearchObserverResponse(data=is_available)
+
+
 @router.post(
     path="/assistantProfile",
     tags=[],
@@ -152,35 +185,35 @@ async def publish_assistant_profile_endpoint(
     )
 
 
-@router.get(
+@public_router.get(
     path="/{pubkey}/overview",
     summary="Lightweight overview: influence + relationship counts",
 )
 async def get_user_overview_endpoint(
-    request: Request,
     pubkey: str,
+    jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> GetUserOverviewResponse:
-    jwt_data: JWTData = request.state.jwt_data
-    result = await get_user_overview(pubkey=pubkey, observer=jwt_data.nostr_pubkey)
+    observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
+    result = await get_user_overview(pubkey=pubkey, observer=observer)
     return GetUserOverviewResponse(data=result)
 
 
-@router.get(
+@public_router.get(
     path="/{pubkey}/stats",
     summary="Per-section stats: total + verified + tier counts for all 6 relationships",
 )
 async def get_user_stats_endpoint(
-    request: Request,
     pubkey: str,
     verified_threshold: float = Query(default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0),
     tier_high: float = Query(default=TIER_HIGH, ge=0.0, le=1.0),
     tier_trusted: float = Query(default=TIER_TRUSTED, ge=0.0, le=1.0),
     tier_neutral: float = Query(default=TIER_NEUTRAL, ge=0.0, le=1.0),
+    jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> GetUserStatsResponse:
-    jwt_data: JWTData = request.state.jwt_data
+    observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
     result = await get_user_stats(
         pubkey=pubkey,
-        observer=jwt_data.nostr_pubkey,
+        observer=observer,
         verified_threshold=verified_threshold,
         tier_high=tier_high,
         tier_trusted=tier_trusted,
@@ -189,21 +222,21 @@ async def get_user_stats_endpoint(
     return GetUserStatsResponse(data=result)
 
 
-@router.get(
+@public_router.get(
     path="/{pubkey}/connections",
     summary="Paginated connection list for a given kind",
 )
 async def get_user_connections_endpoint(
-    request: Request,
     pubkey: str,
     kind: ConnectionKind = Query(..., description="Which relationship list to fetch"),
     limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     cursor: str | None = Query(default=None),
+    jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> GetUserConnectionsResponse:
-    jwt_data: JWTData = request.state.jwt_data
+    observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
     result = await get_user_connections(
         pubkey=pubkey,
-        observer=jwt_data.nostr_pubkey,
+        observer=observer,
         kind=kind,
         limit=limit,
         cursor=cursor,
@@ -211,19 +244,19 @@ async def get_user_connections_endpoint(
     return GetUserConnectionsResponse(data=result)
 
 
-@router.get(
+@public_router.get(
     path="/{pubkey}",
     tags=[],
     dependencies=[],
     summary="Get user by pubkey data endpoint",
 )
 async def get_user_by_pubkey_data_endpoint(
-    request: Request, pubkey: str
+    pubkey: str,
+    jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> GetUserDataResponse:
 
-    jwt_data: JWTData = request.state.jwt_data
-    user_pubkey = jwt_data.nostr_pubkey
+    observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
 
-    result = await get_user_graph_data(pubkey, user_pubkey)
+    result = await get_user_graph_data(pubkey, observer)
 
     return GetUserDataResponse(data=result)

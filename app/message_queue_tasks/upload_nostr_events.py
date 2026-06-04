@@ -1,11 +1,13 @@
 from datetime import timedelta
 from app.core.database import db_session
 from app.core.loggr import loggr
+from app.core.vespa import batch_upsert_scores
 from app.db_models import BrainstormRequestStatus
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
     get_last_published_pubkeys_by_pubkey_on_db,
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
+    set_is_observer_search_available_by_pubkey_on_db,
     update_last_published_pubkeys_by_pubkey_on_db,
 )
 from app.repos.brainstorm_request_repo import (
@@ -250,6 +252,46 @@ async def get_deletion_events_for_dropped_pubkeys(
     return deletion_events
 
 
+# When True, push every above-cutoff scorecard to Vespa on each run
+# (in addition to the deletions). Use this to backfill an empty / out-of-sync
+# Vespa — e.g., when TAs were already published to Nostr before this code
+# existed. When False, only changed scores + deletions are pushed.
+VESPA_FULL_SYNC = True
+
+
+async def upsert_scores_to_vespa(
+    grape_rank_result: GrapeRankResult,
+    observer: str,
+    pubkeys_to_delete: list[str],
+):
+    # Each score depends on the observer; the rank lives in a single cell of
+    # the `quality_scores` sparse tensor, keyed by the observer pubkey.
+    # Vespa partial updates (create=true) create the doc if absent, so unknown
+    # pubkeys get a doc carrying just the tensor cell; the kind-0 upsert fills
+    # in profile fields later. All ops are fanned out concurrently so a large
+    # GrapeRank result completes in seconds rather than minutes.
+    assert grape_rank_result.scorecards is not None
+    changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
+
+    upserts: list[tuple[str, int]] = []
+    for pubkey, scorecard in grape_rank_result.scorecards.items():
+        if not VESPA_FULL_SYNC and pubkey not in changed_pubkeys:
+            continue
+        if round(scorecard.influence, 2) < settings.cutoff_of_valid_graperank_scores:
+            continue
+        upserts.append((pubkey, round(scorecard.influence * 100)))
+
+    n_ok, n_failed = await batch_upsert_scores(
+        upserts=upserts,
+        removes=list(pubkeys_to_delete),
+        observer=observer,
+    )
+    logger.info(
+        f"vespa score batch: ok={n_ok} failed={n_failed} "
+        f"(upserts={len(upserts)} removes={len(pubkeys_to_delete)})"
+    )
+
+
 async def process_nostr_upload_message(message: dict):
 
     # is_success = message["result"]["success"]
@@ -352,6 +394,21 @@ async def process_nostr_upload_message(message: dict):
                         f"Failed to enqueue event {index} on {relay.url()}: {e}"
                     )
 
+        vespa_search_available = False
+        try:
+            logger.info(f"Pushing scores to Vespa...")
+            await upsert_scores_to_vespa(
+                grape_rank_result=grape_rank_result,
+                observer=observer,
+                pubkeys_to_delete=pubkeys_to_delete,
+            )
+            vespa_search_available = True
+            logger.info(f"Done pushing scores to Vespa!")
+        except Exception as e:
+            # Don't fail the whole request — Nostr is the source of truth
+            # and has already been written. Vespa is a search-side mirror.
+            logger.error(f"Failed to upsert scores to Vespa: {e}")
+
         async with db_session() as db:
 
             await update_brainstorm_request_ta_status_by_id_on_db(
@@ -366,6 +423,11 @@ async def process_nostr_upload_message(message: dict):
                 published_pubkeys=currently_published_pubkeys,
                 graperank_request_id=message["private_id"],
             )
+
+            if vespa_search_available:
+                await set_is_observer_search_available_by_pubkey_on_db(
+                    db, pubkey=observer, is_available=True
+                )
 
             await db.commit()
 

@@ -21,6 +21,7 @@ ev_kinds: list[tuple[Kind, int]] = [
     (Kind(3), 1800000),
     (Kind(10000), 1800000),
     (Kind(1984), 1800000),
+    (Kind(0), 1800000),
 ]
 
 

@@ -1,5 +1,9 @@
+import json
+
 from app.core.loggr import loggr
 from app.core.redis_db import redis_client
+from app.core.vespa import PROFILE_FIELDS as KIND_0_PROFILE_FIELDS
+from app.core.vespa import upsert_profile
 from neo4j import AsyncDriver as AsyncNeoDriver
 import time
 from tqdm import tqdm
@@ -18,6 +22,10 @@ async def process_strfry_event(session: AsyncNeoDriver, event: dict):
 
     kind = event.get("kind")
 
+    if kind == 0:
+        # logger.info("Consuming event of kind 0")
+        return await process_event_kind_0(event)
+
     if kind == 3:
         # logger.info("Consuming event of kind 3")
         return await process_event_kind_3(session, event)
@@ -29,6 +37,25 @@ async def process_strfry_event(session: AsyncNeoDriver, event: dict):
     if kind == 1984:
         # logger.info("Consuming event of kind 1984")
         return await process_event_kind_1984(session, event)
+
+
+async def process_event_kind_0(event: dict):
+    publisher = event["pubkey"]
+    content_raw = event.get("content") or ""
+
+    try:
+        profile = json.loads(content_raw) if content_raw else {}
+    except json.JSONDecodeError:
+        return
+
+    if not isinstance(profile, dict):
+        return
+
+    # Vespa partial update: every standard kind-0 field gets assigned (or
+    # cleared if missing from the new event), leaving non-kind-0 attributes
+    # like quality_scores on the existing document untouched. create=true
+    # handles the new-pubkey case.
+    await upsert_profile(pubkey=publisher, profile=profile)
 
 
 async def create_pubkey_index(session: AsyncNeoDriver):

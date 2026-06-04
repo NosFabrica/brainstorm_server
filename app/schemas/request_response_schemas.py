@@ -87,6 +87,10 @@ class GetOwnLatestGraperankResponse(SuccessfulResponseDataSchema):
     data: BrainstormRequestInstance | None
 
 
+class IsSearchObserverResponse(SuccessfulResponseDataSchema):
+    data: bool
+
+
 class WhitelistedPubkeys(BaseModel):
     observerPubkey: str
     numPubkeys: int
@@ -166,5 +170,15 @@ class AdminPresetHistoryData(BaseModel):
 
 class AdminPresetHistoryResponse(SuccessfulResponseDataSchema):
     data: AdminPresetHistoryData
+
+
+class SearchResults(BaseModel):
+    query: str
+    numResults: int
+    results: list[dict]
+
+
+class SearchByTextResponse(SuccessfulResponseDataSchema):
+    data: SearchResults
 
 
