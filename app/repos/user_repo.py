@@ -1,5 +1,11 @@
 from neo4j import AsyncDriver as AsyncNeoDriver
 
+from app.core.tier_thresholds import (
+    DEFAULT_VERIFIED_THRESHOLD,
+    TIER_HIGH,
+    TIER_MEDIUM,
+    TIER_MEDIUM_HIGH,
+)
 from app.schemas.schemas import (
     ConnectionStats,
     ConnectionTierCounts,
@@ -215,25 +221,84 @@ def _scoped_match_pattern(rel_type: str, direction: str) -> str:
 
 
 async def get_outbound_counts_and_influence(
-    session: AsyncNeoDriver, pubkey: str, influence_key: str
-) -> tuple[float | None, int, int, int]:
-    """One round-trip: user's own influence + counts of following/muting/reporting."""
+    session: AsyncNeoDriver,
+    pubkey: str,
+    influence_key: str,
+    trusted_reporters_key: str,
+    verified_threshold: float,
+) -> tuple[float | None, int, int, int, bool, int]:
+    """One round-trip: user's own influence + outbound counts +
+    flagged_by_observer + DISTINCT flagged_count across all relationships."""
     query = """
     MATCH (user:NostrUser {pubkey: $pubkey})
     CALL (user) { MATCH (user)-[:FOLLOWS]->(o:NostrUser)  RETURN count(o) AS following }
     CALL (user) { MATCH (user)-[:MUTES]->(o:NostrUser)    RETURN count(o) AS muting }
     CALL (user) { MATCH (user)-[:REPORTS]->(o:NostrUser)  RETURN count(o) AS reporting }
-    RETURN user[$influence_key] AS influence, following, muting, reporting
+    CALL (user) {
+        MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
+        WHERE other[$influence_key] IS NOT NULL
+          AND other[$influence_key] < $verified_threshold
+          AND coalesce(other[$trusted_reporters_key], 0) >= 2
+        RETURN count(DISTINCT other) AS flagged_count
+    }
+    RETURN
+        user[$influence_key] AS influence,
+        following,
+        muting,
+        reporting,
+        flagged_count,
+        (
+            user[$influence_key] IS NOT NULL
+            AND user[$influence_key] < $verified_threshold
+            AND coalesce(user[$trusted_reporters_key], 0) >= 2
+        ) AS flagged_by_observer
     """
-    result = await session.run(query, pubkey=pubkey, influence_key=influence_key)
+    result = await session.run(
+        query,
+        pubkey=pubkey,
+        influence_key=influence_key,
+        trusted_reporters_key=trusted_reporters_key,
+        verified_threshold=verified_threshold,
+    )
     record = await result.single()
     if not record:
-        return None, 0, 0, 0
+        return None, 0, 0, 0, False, 0
     return (
         record["influence"],
         int(record["following"] or 0),
         int(record["muting"] or 0),
         int(record["reporting"] or 0),
+        bool(record["flagged_by_observer"]),
+        int(record["flagged_count"] or 0),
+    )
+
+
+_TIER_PREDICATES: dict[str, str] = {
+    # Bucket names match the GR result writer's count_values keys (see
+    # message_queue_consumer.py). Placeholders:
+    #   __INF__ → other[$influence_key]
+    #   __TR__  → coalesce(other[$trusted_reporters_key], 0)
+    # Parameter names $tier_high/$tier_medium_high/$tier_medium are the upper
+    # bounds of high/medium_high/medium respectively — kept stable as API
+    # surface, the semantic boundary value doesn't change with renaming.
+    "high": "__INF__ IS NOT NULL AND __INF__ >= $tier_high",
+    "medium_high": "__INF__ IS NOT NULL AND __INF__ >= $tier_medium_high AND __INF__ < $tier_high",
+    "medium": "__INF__ IS NOT NULL AND __INF__ >= $tier_medium AND __INF__ < $tier_medium_high",
+    "medium_low": "__INF__ IS NOT NULL AND __INF__ >= $vt AND __INF__ < $tier_medium",
+    "low": "(__INF__ IS NULL OR (__INF__ < $vt AND __TR__ < 2))",
+    "low_and_reported_by_2_or_more_trusted_pubkeys": "__INF__ IS NOT NULL AND __INF__ < $vt AND __TR__ >= 2",
+}
+
+
+def _build_tier_predicate(tier: str | None) -> str:
+    if not tier or tier not in _TIER_PREDICATES:
+        return ""
+    return (
+        "("
+        + _TIER_PREDICATES[tier]
+        .replace("__INF__", "other[$influence_key]")
+        .replace("__TR__", "coalesce(other[$trusted_reporters_key], 0)")
+        + ")"
     )
 
 
@@ -241,21 +306,170 @@ async def get_paginated_section_connections(
     session: AsyncNeoDriver,
     pubkey: str,
     influence_key: str,
+    trusted_reporters_key: str,
     rel_type: str,
     direction: str,
     limit: int,
     cursor_inf: float | None,
     cursor_pk: str | None,
-) -> tuple[list[UserConnectionItem], tuple[float, str] | None]:
-    """Cursor-paginated connection list ordered by (influence DESC, pubkey ASC).
+    order: str = "desc",
+    tier: str | None = None,
+    min_influence: float | None = None,
+    verified_threshold: float | None = None,
+    tier_high: float | None = None,
+    tier_medium_high: float | None = None,
+    tier_medium: float | None = None,
+    with_total: bool = False,
+) -> tuple[list[UserConnectionItem], tuple[float, str] | None, int | None]:
+    """Cursor-paginated connection list ordered by (influence <order>, pubkey ASC),
+    optionally filtered to a single tier and/or `min_influence`.
 
-    Returns (items, last_record_cursor_or_none).
+    `order` is "desc" (highest influence first) or "asc" (lowest first).
+    When `with_total` is set, a second `CALL` subquery counts all matches for the
+    same filter (cursor-independent) in the SAME round-trip.
+    Returns (items, last_record_cursor_or_none, total_or_none).
     """
     scoped_pattern = _scoped_match_pattern(rel_type, direction)
+    inf_order = "ASC" if order == "asc" else "DESC"
+    # Cursor predicate must match the sort direction. Secondary sort stays
+    # ASC by pubkey in both cases — cursor compares pubkey with `>` so we
+    # always step "later" in tied groups.
+    inf_cmp = ">" if order == "asc" else "<"
 
     params: dict = {
         "pubkey": pubkey,
         "influence_key": influence_key,
+        "trusted_reporters_key": trusted_reporters_key,
+        "limit": limit,
+    }
+    # Filter predicates (tier / min_influence) are cursor-independent and shared
+    # by the page subquery and the optional count subquery. The cursor predicate
+    # applies to the page only.
+    filter_parts: list[str] = []
+    tier_pred = _build_tier_predicate(tier)
+    if tier_pred:
+        # Bind every threshold the predicate references, defaulting to the
+        # canonical constants so a `tier` passed without explicit bounds can't
+        # leave a Cypher parameter unbound.
+        params["vt"] = (
+            verified_threshold
+            if verified_threshold is not None
+            else DEFAULT_VERIFIED_THRESHOLD
+        )
+        params["tier_high"] = tier_high if tier_high is not None else TIER_HIGH
+        params["tier_medium_high"] = (
+            tier_medium_high if tier_medium_high is not None else TIER_MEDIUM_HIGH
+        )
+        params["tier_medium"] = tier_medium if tier_medium is not None else TIER_MEDIUM
+        filter_parts.append(tier_pred)
+    if min_influence is not None:
+        params["min_influence"] = min_influence
+        filter_parts.append(
+            "(other[$influence_key] IS NOT NULL AND other[$influence_key] >= $min_influence)"
+        )
+
+    page_parts = list(filter_parts)
+    if cursor_inf is not None and cursor_pk is not None:
+        params["cursor_inf"] = cursor_inf
+        params["cursor_pk"] = cursor_pk
+        page_parts.append(
+            f"(sort_inf {inf_cmp} $cursor_inf "
+            "OR (sort_inf = $cursor_inf AND other.pubkey > $cursor_pk))"
+        )
+    page_where = ("WHERE " + " AND ".join(page_parts)) if page_parts else ""
+    count_where = ("WHERE " + " AND ".join(filter_parts)) if filter_parts else ""
+
+    # Both subqueries end in an aggregation (collect / count), so each always
+    # yields exactly one row — even on an empty/last page. A plain row-streaming
+    # CALL returning zero rows would drop the outer row and lose `total`.
+    count_block = (
+        f"""
+    CALL (user) {{
+        MATCH {scoped_pattern}
+        {count_where}
+        RETURN count(other) AS total
+    }}"""
+        if with_total
+        else ""
+    )
+    return_tail = "rows, total" if with_total else "rows"
+
+    query = f"""
+    MATCH (user:NostrUser {{pubkey: $pubkey}})
+    CALL (user) {{
+        MATCH {scoped_pattern}
+        WITH other, coalesce(other[$influence_key], -1.0) AS sort_inf
+        {page_where}
+        WITH other, sort_inf
+        ORDER BY sort_inf {inf_order}, other.pubkey ASC
+        LIMIT $limit
+        RETURN collect({{
+            pubkey: other.pubkey,
+            influence: other[$influence_key],
+            trusted_reporters: other[$trusted_reporters_key],
+            sort_inf: sort_inf
+        }}) AS rows
+    }}{count_block}
+    RETURN {return_tail}
+    """
+
+    result = await session.run(query, **params)
+    record = await result.single()
+    rows = record["rows"] if record else []
+    total = (
+        (int(record["total"]) if record and record["total"] is not None else 0)
+        if with_total
+        else None
+    )
+
+    items = [
+        UserConnectionItem(
+            pubkey=row["pubkey"],
+            influence=row["influence"],
+            trusted_reporters=(
+                int(row["trusted_reporters"])
+                if row["trusted_reporters"] is not None
+                else None
+            ),
+        )
+        for row in rows
+    ]
+
+    last_cursor: tuple[float, str] | None = None
+    if len(rows) == limit and rows:
+        last = rows[-1]
+        last_cursor = (float(last["sort_inf"]), str(last["pubkey"]))
+
+    return items, last_cursor, total
+
+
+async def get_paginated_flagged_connections(
+    session: AsyncNeoDriver,
+    pubkey: str,
+    influence_key: str,
+    trusted_reporters_key: str,
+    verified_threshold: float,
+    limit: int,
+    cursor_inf: float | None,
+    cursor_pk: str | None,
+    order: str = "desc",
+    with_total: bool = False,
+) -> tuple[list[UserConnectionItem], tuple[float, str] | None, int | None]:
+    """DISTINCT flagged users across any relationship to `pubkey`. A user is
+    flagged when (from `pubkey`'s perspective) their influence is below
+    `verified_threshold` AND at least 2 trusted reporters have reported them.
+    Cursor-paginated by (influence <order>, pubkey ASC). Same shape as
+    get_paginated_section_connections so the client can reuse one item type.
+    When `with_total` is set, the DISTINCT flagged count is computed in the same
+    round-trip. Returns (items, last_record_cursor_or_none, total_or_none)."""
+    inf_order = "ASC" if order == "asc" else "DESC"
+    inf_cmp = ">" if order == "asc" else "<"
+
+    params: dict = {
+        "pubkey": pubkey,
+        "influence_key": influence_key,
+        "trusted_reporters_key": trusted_reporters_key,
+        "vt": verified_threshold,
         "limit": limit,
     }
     cursor_clause = ""
@@ -263,42 +477,74 @@ async def get_paginated_section_connections(
         params["cursor_inf"] = cursor_inf
         params["cursor_pk"] = cursor_pk
         cursor_clause = (
-            "WHERE sort_inf < $cursor_inf "
-            "OR (sort_inf = $cursor_inf AND other.pubkey > $cursor_pk)"
+            f"AND (sort_inf {inf_cmp} $cursor_inf "
+            "OR (sort_inf = $cursor_inf AND other.pubkey > $cursor_pk))"
         )
+
+    # Both subqueries end in an aggregation (collect / count) so each always
+    # yields exactly one row, even on an empty/last page.
+    count_block = (
+        """
+    CALL (user) {
+        MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
+        WHERE other[$influence_key] IS NOT NULL
+          AND other[$influence_key] < $vt
+          AND coalesce(other[$trusted_reporters_key], 0) >= 2
+        RETURN count(DISTINCT other) AS total
+    }"""
+        if with_total
+        else ""
+    )
+    return_tail = "rows, total" if with_total else "rows"
 
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}})
     CALL (user) {{
-        MATCH {scoped_pattern}
-        WITH other, coalesce(other[$influence_key], -1.0) AS sort_inf
-        {cursor_clause}
-        RETURN other.pubkey AS pubkey,
-               other[$influence_key] AS influence,
-               sort_inf
-        ORDER BY sort_inf DESC, other.pubkey ASC
+        MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
+        WITH DISTINCT other,
+             coalesce(other[$influence_key], -1.0) AS sort_inf
+        WHERE other[$influence_key] IS NOT NULL
+          AND other[$influence_key] < $vt
+          AND coalesce(other[$trusted_reporters_key], 0) >= 2
+          {cursor_clause}
+        WITH other, sort_inf
+        ORDER BY sort_inf {inf_order}, other.pubkey ASC
         LIMIT $limit
-    }}
-    RETURN pubkey, influence, sort_inf
+        RETURN collect({{
+            pubkey: other.pubkey,
+            influence: other[$influence_key],
+            trusted_reporters: other[$trusted_reporters_key],
+            sort_inf: sort_inf
+        }}) AS rows
+    }}{count_block}
+    RETURN {return_tail}
     """
 
     result = await session.run(query, **params)
-    records = [rec async for rec in result]
-
+    record = await result.single()
+    rows = record["rows"] if record else []
+    total = (
+        (int(record["total"]) if record and record["total"] is not None else 0)
+        if with_total
+        else None
+    )
     items = [
         UserConnectionItem(
-            pubkey=rec["pubkey"],
-            influence=rec["influence"],
+            pubkey=row["pubkey"],
+            influence=row["influence"],
+            trusted_reporters=(
+                int(row["trusted_reporters"])
+                if row["trusted_reporters"] is not None
+                else None
+            ),
         )
-        for rec in records
+        for row in rows
     ]
-
     last_cursor: tuple[float, str] | None = None
-    if len(records) == limit and records:
-        last = records[-1]
+    if len(rows) == limit and rows:
+        last = rows[-1]
         last_cursor = (float(last["sort_inf"]), str(last["pubkey"]))
-
-    return items, last_cursor
+    return items, last_cursor, total
 
 
 _STATS_KINDS: list[tuple[str, str, str]] = [
@@ -315,10 +561,11 @@ async def get_all_section_stats(
     session: AsyncNeoDriver,
     pubkey: str,
     influence_key: str,
+    trusted_reporters_key: str,
     verified_threshold: float,
     tier_high: float,
-    tier_trusted: float,
-    tier_neutral: float,
+    tier_medium_high: float,
+    tier_medium: float,
 ) -> dict[str, ConnectionStats]:
     """Single-query version of get_section_stats covering all 6 relationships.
     ~20% faster than 6 parallel sessions on heavy accounts (1 round-trip)."""
@@ -326,6 +573,8 @@ async def get_all_section_stats(
     return_fields: list[str] = []
     for name, rel_type, direction in _STATS_KINDS:
         pattern = _scoped_match_pattern(rel_type, direction)
+        # `flagged` is its own bucket (influence < vt AND trusted_reporters >= 2);
+        # `unverified` excludes flagged so the buckets sum to `total`.
         blocks.append(
             f"""
         CALL (user) {{
@@ -334,15 +583,16 @@ async def get_all_section_stats(
               count(*) AS {name}_total,
               count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $vt THEN 1 END) AS {name}_verified,
               count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_high THEN 1 END) AS {name}_th,
-              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_trusted AND other[$influence_key] < $tier_high THEN 1 END) AS {name}_tt,
-              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_neutral AND other[$influence_key] < $tier_trusted THEN 1 END) AS {name}_tn,
-              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $vt AND other[$influence_key] < $tier_neutral THEN 1 END) AS {name}_tl,
-              count(CASE WHEN other[$influence_key] IS NULL OR other[$influence_key] < $vt THEN 1 END) AS {name}_tu
+              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_medium_high AND other[$influence_key] < $tier_high THEN 1 END) AS {name}_tt,
+              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_medium AND other[$influence_key] < $tier_medium_high THEN 1 END) AS {name}_tn,
+              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $vt AND other[$influence_key] < $tier_medium THEN 1 END) AS {name}_tl,
+              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] < $vt AND coalesce(other[$trusted_reporters_key], 0) >= 2 THEN 1 END) AS {name}_tf,
+              count(CASE WHEN other[$influence_key] IS NULL OR (other[$influence_key] < $vt AND coalesce(other[$trusted_reporters_key], 0) < 2) THEN 1 END) AS {name}_tu
         }}"""
         )
         return_fields.extend(
             f"{name}_{suffix}"
-            for suffix in ("total", "verified", "th", "tt", "tn", "tl", "tu")
+            for suffix in ("total", "verified", "th", "tt", "tn", "tl", "tf", "tu")
         )
     blocks.append("RETURN " + ", ".join(return_fields))
     query = "\n".join(blocks)
@@ -351,10 +601,11 @@ async def get_all_section_stats(
         query,
         pubkey=pubkey,
         influence_key=influence_key,
+        trusted_reporters_key=trusted_reporters_key,
         vt=verified_threshold,
         tier_high=tier_high,
-        tier_trusted=tier_trusted,
-        tier_neutral=tier_neutral,
+        tier_medium_high=tier_medium_high,
+        tier_medium=tier_medium,
     )
     record = await result.single()
 
@@ -363,7 +614,12 @@ async def get_all_section_stats(
             total=0,
             verified=0,
             tier_counts=ConnectionTierCounts(
-                high=0, trusted=0, neutral=0, low=0, unverified=0
+                high=0,
+                medium_high=0,
+                medium=0,
+                medium_low=0,
+                low=0,
+                low_and_reported_by_2_or_more_trusted_pubkeys=0,
             ),
         )
 
@@ -376,10 +632,11 @@ async def get_all_section_stats(
             verified=int(record[f"{name}_verified"] or 0),
             tier_counts=ConnectionTierCounts(
                 high=int(record[f"{name}_th"] or 0),
-                trusted=int(record[f"{name}_tt"] or 0),
-                neutral=int(record[f"{name}_tn"] or 0),
-                low=int(record[f"{name}_tl"] or 0),
-                unverified=int(record[f"{name}_tu"] or 0),
+                medium_high=int(record[f"{name}_tt"] or 0),
+                medium=int(record[f"{name}_tn"] or 0),
+                medium_low=int(record[f"{name}_tl"] or 0),
+                low=int(record[f"{name}_tu"] or 0),
+                low_and_reported_by_2_or_more_trusted_pubkeys=int(record[f"{name}_tf"] or 0),
             ),
         )
         for name, _, _ in _STATS_KINDS

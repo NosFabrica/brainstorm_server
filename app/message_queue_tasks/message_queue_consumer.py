@@ -13,6 +13,12 @@ from app.message_queue_tasks.set_brainstorm_request_as_ongoing import (
 )
 from app.message_queue_tasks.upload_nostr_events import process_nostr_upload_message
 from app.message_queue_tasks.write_neo4j_results import process_neo4j_write_message
+from app.core.tier_thresholds import (
+    DEFAULT_VERIFIED_THRESHOLD,
+    TIER_HIGH,
+    TIER_MEDIUM,
+    TIER_MEDIUM_HIGH,
+)
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import update_last_time_calculated_graperank_on_db
 from app.repos.brainstorm_request_repo import (
@@ -54,14 +60,17 @@ async def process_message(message: dict):
 
     if grape_rank_result.scorecards:
         for _, scorecard in grape_rank_result.scorecards.items():
+            # Tier band boundaries are the canonical thresholds from
+            # user_service.py — kept in sync so on-the-fly /stats tier counts
+            # match the per-hop counts written here.
             confidence = "high"
-            if scorecard.influence < 0.5:
+            if scorecard.influence < TIER_HIGH:
                 confidence = "medium_high"
-            if scorecard.influence < 0.2:
+            if scorecard.influence < TIER_MEDIUM_HIGH:
                 confidence = "medium"
-            if scorecard.influence < 0.07:
+            if scorecard.influence < TIER_MEDIUM:
                 confidence = "medium_low"
-            if scorecard.influence < 0.02:
+            if scorecard.influence < DEFAULT_VERIFIED_THRESHOLD:
                 if scorecard.trusted_reporters >= 2:
                     confidence = "low_and_reported_by_2_or_more_trusted_pubkeys"
                 else:

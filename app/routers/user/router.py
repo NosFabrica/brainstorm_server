@@ -11,6 +11,7 @@ from app.schemas.request_response_schemas import (
     GetOwnUserDataResponse,
     GetUserConnectionsResponse,
     GetUserDataResponse,
+    GetUserHistoryResponse,
     GetUserOverviewResponse,
     GetUserStatsResponse,
     IsSearchObserverResponse,
@@ -31,8 +32,8 @@ from app.services.user_service import (
     DEFAULT_VERIFIED_THRESHOLD,
     MAX_PAGE_SIZE,
     TIER_HIGH,
-    TIER_NEUTRAL,
-    TIER_TRUSTED,
+    TIER_MEDIUM,
+    TIER_MEDIUM_HIGH,
     ConnectionKind,
     get_own_latest_graperank,
     get_user_connections,
@@ -117,10 +118,31 @@ async def create_graperank_calc_endpoint(
 
 
 @router.get(
+    path="/history",
+    tags=[],
+    dependencies=[],
+    summary="Get own user history (graperank trigger/calculation timestamps, ta_pubkey)",
+)
+async def get_own_user_history_endpoint(
+    request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> GetUserHistoryResponse:
+
+    jwt_data: JWTData = request.state.jwt_data
+    history = await get_user_history_data(db, jwt_data.nostr_pubkey)
+    return GetUserHistoryResponse(data=history)
+
+
+@router.get(
     path="/self",
     tags=[],
     dependencies=[],
-    summary="Get own user data endpoint",
+    summary=(
+        "Get own user data endpoint. DEPRECATED: New callers should use "
+        "/user/{pubkey}/overview, /user/history, /user/{pubkey}/stats, "
+        "and /user/{pubkey}/connections instead."
+    ),
+    deprecated=True,
 )
 async def get_own_user_data_endpoint(
     request: Request,
@@ -130,12 +152,12 @@ async def get_own_user_data_endpoint(
     jwt_data: JWTData = request.state.jwt_data
     user_pubkey = jwt_data.nostr_pubkey
 
-    result, history = await asyncio.gather(
-        get_user_graph_data(user_pubkey),
+    graph, history = await asyncio.gather(
+        get_user_graph_data(user_pubkey, user_pubkey),
         get_user_history_data(db, user_pubkey),
     )
 
-    return GetOwnUserDataResponse(data=OwnUserData(graph=result, history=history))
+    return GetOwnUserDataResponse(data=OwnUserData(graph=graph, history=history))
 
 
 @router.get(
@@ -187,14 +209,19 @@ async def publish_assistant_profile_endpoint(
 
 @public_router.get(
     path="/{pubkey}/overview",
-    summary="Lightweight overview: influence + relationship counts",
+    summary="Lightweight overview: influence + relationship counts + flagged_by_observer",
 )
 async def get_user_overview_endpoint(
     pubkey: str,
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
+    verified_threshold: float = Query(default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0),
 ) -> GetUserOverviewResponse:
     observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
-    result = await get_user_overview(pubkey=pubkey, observer=observer)
+    result = await get_user_overview(
+        pubkey=pubkey,
+        observer=observer,
+        verified_threshold=verified_threshold,
+    )
     return GetUserOverviewResponse(data=result)
 
 
@@ -206,8 +233,8 @@ async def get_user_stats_endpoint(
     pubkey: str,
     verified_threshold: float = Query(default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0),
     tier_high: float = Query(default=TIER_HIGH, ge=0.0, le=1.0),
-    tier_trusted: float = Query(default=TIER_TRUSTED, ge=0.0, le=1.0),
-    tier_neutral: float = Query(default=TIER_NEUTRAL, ge=0.0, le=1.0),
+    tier_medium_high: float = Query(default=TIER_MEDIUM_HIGH, ge=0.0, le=1.0),
+    tier_medium: float = Query(default=TIER_MEDIUM, ge=0.0, le=1.0),
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> GetUserStatsResponse:
     observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
@@ -216,8 +243,8 @@ async def get_user_stats_endpoint(
         observer=observer,
         verified_threshold=verified_threshold,
         tier_high=tier_high,
-        tier_trusted=tier_trusted,
-        tier_neutral=tier_neutral,
+        tier_medium_high=tier_medium_high,
+        tier_medium=tier_medium,
     )
     return GetUserStatsResponse(data=result)
 
@@ -232,6 +259,20 @@ async def get_user_connections_endpoint(
     limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     cursor: str | None = Query(default=None),
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    tier: str | None = Query(
+        default=None,
+        pattern="^(high|medium_high|medium|medium_low|low|low_and_reported_by_2_or_more_trusted_pubkeys)$",
+    ),
+    min_influence: float | None = Query(default=None, ge=0.0, le=1.0),
+    verified_threshold: float = Query(default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0),
+    tier_high: float = Query(default=TIER_HIGH, ge=0.0, le=1.0),
+    tier_medium_high: float = Query(default=TIER_MEDIUM_HIGH, ge=0.0, le=1.0),
+    tier_medium: float = Query(default=TIER_MEDIUM, ge=0.0, le=1.0),
+    with_total: bool = Query(
+        default=False,
+        description="Include the filtered total (extra graph scan); off by default",
+    ),
 ) -> GetUserConnectionsResponse:
     observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
     result = await get_user_connections(
@@ -240,6 +281,14 @@ async def get_user_connections_endpoint(
         kind=kind,
         limit=limit,
         cursor=cursor,
+        order=order,
+        tier=tier,
+        min_influence=min_influence,
+        verified_threshold=verified_threshold,
+        tier_high=tier_high,
+        tier_medium_high=tier_medium_high,
+        tier_medium=tier_medium,
+        with_total=with_total,
     )
     return GetUserConnectionsResponse(data=result)
 

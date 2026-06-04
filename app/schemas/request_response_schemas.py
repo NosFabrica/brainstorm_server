@@ -11,6 +11,7 @@ from app.schemas.schemas import (
     OwnUserData,
     PaginatedUserConnections,
     UserGraphData,
+    UserHistoryInstance,
     UserOverviewData,
     UserSectionsStats,
 )
@@ -77,6 +78,10 @@ class GetUserConnectionsResponse(SuccessfulResponseDataSchema):
 
 class GetUserStatsResponse(SuccessfulResponseDataSchema):
     data: UserSectionsStats
+
+
+class GetUserHistoryResponse(SuccessfulResponseDataSchema):
+    data: UserHistoryInstance
 
 
 class GetOwnUserDataResponse(SuccessfulResponseDataSchema):
