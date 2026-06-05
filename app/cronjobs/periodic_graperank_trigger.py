@@ -75,8 +75,13 @@ async def periodic_graperank_trigger_cronjob() -> None:
             latest = await select_latest_non_waiting_brainstorm_request_on_db(
                 db, pubkey=pubkey
             )
-        latest_str = latest.created_at.isoformat() if latest else "none"
-        if latest is None or latest.created_at < previous_mark:
+        latest_created = latest.created_at if latest else None
+        # created_at may come back tz-aware depending on the driver/column;
+        # normalize to local naive so it's comparable with datetime.now().
+        if latest_created is not None and latest_created.tzinfo is not None:
+            latest_created = latest_created.astimezone().replace(tzinfo=None)
+        latest_str = latest_created.isoformat() if latest_created else "none"
+        if latest_created is None or latest_created < previous_mark:
             logger.info(
                 f"Periodic graperank cronjob: startup catch-up needed "
                 f"(previous_mark={previous_mark.isoformat()}, "
