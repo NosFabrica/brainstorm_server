@@ -16,6 +16,7 @@ from app.utils.observer import default_observer_pubkey
 router = APIRouter()
 
 RESULTS_LIMIT = 400
+RESULTS_DEFAULT = 100
 
 HEX_PUBKEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 # Strip control characters; keep printable text only.
@@ -55,6 +56,14 @@ async def search_by_text_endpoint(
             "Defaults to the periodic graperank pubkey."
         ),
     ),
+    maxHits: int = Query(
+        default=RESULTS_DEFAULT,
+        gt=0,
+        description=(
+            "Maximum number of results to return. Capped at "
+            f"{RESULTS_LIMIT}; larger values are clamped down."
+        ),
+    ),
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> SearchByTextResponse:
     sanitized = _sanitize(text)
@@ -77,7 +86,7 @@ async def search_by_text_endpoint(
         results = await search(
             query_text=sanitized,
             user_pubkey=observer,
-            hits=RESULTS_LIMIT,
+            hits=min(maxHits, RESULTS_LIMIT),
             include_zero_score_results=not onlyRanked,
         )
 
