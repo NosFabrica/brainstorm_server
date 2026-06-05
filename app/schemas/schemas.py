@@ -129,15 +129,21 @@ class UserConnectionCounts(BaseModel):
 class UserOverviewData(BaseModel):
     pubkey: str
     influence: float | None
+    flagged_by_observer: bool
+    flagged_count: int
     counts: UserConnectionCounts
 
 
 class ConnectionTierCounts(BaseModel):
+    """Bucket names match the GR result writer's `count_values` keys
+    (message_queue_consumer.py) so a single mental model applies across
+    /stats, /connections?tier=…, and the GR per-hop count_values."""
     high: int
-    trusted: int
-    neutral: int
+    medium_high: int
+    medium: int
+    medium_low: int
     low: int
-    unverified: int
+    low_and_reported_by_2_or_more_trusted_pubkeys: int
 
 
 class ConnectionStats(BaseModel):
@@ -149,11 +155,17 @@ class ConnectionStats(BaseModel):
 class UserConnectionItem(BaseModel):
     pubkey: str
     influence: float | None = None
+    trusted_reporters: int | None = None
 
 
 class PaginatedUserConnections(BaseModel):
     items: list[UserConnectionItem]
     next_cursor: str | None = None
+    # Total count of items matching the current filter, independent of cursor.
+    # Lets the client render a stable pager total ("page N of M") from page 1
+    # rather than rederiving as more pages stream in. Opt-in: `None` unless the
+    # request passed `with_total=true` (the count is a second graph scan).
+    total: int | None = None
 
 
 class UserSectionsStats(BaseModel):

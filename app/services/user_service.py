@@ -25,6 +25,7 @@ from app.repos.brainstorm_request_repo import (
 from app.repos.user_repo import (
     get_all_section_stats,
     get_outbound_counts_and_influence,
+    get_paginated_flagged_connections,
     get_paginated_section_connections,
     get_user_graph_data as _repo_get_user_graph_data,
 )
@@ -47,16 +48,22 @@ from app.services.brainstorm_request_service import (
 # Tier boundaries match the FE (high ≥ 0.5, trusted ≥ 0.2, neutral ≥ 0.07).
 # The verified_threshold separates "low" from "unverified" — passed per request
 # since it depends on the user's selected trust preset.
-TIER_HIGH = 0.50
-TIER_TRUSTED = 0.20
-TIER_NEUTRAL = 0.07
-DEFAULT_VERIFIED_THRESHOLD = 0.02
+# Re-export so existing call sites that import from user_service keep working.
+# Canonical source: app.core.tier_thresholds.
+from app.core.tier_thresholds import (  # noqa: E402,F401
+    DEFAULT_VERIFIED_THRESHOLD,
+    TIER_HIGH,
+    TIER_MEDIUM,
+    TIER_MEDIUM_HIGH,
+)
 
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 50
 
 ConnectionKind = Literal[
-    "followed_by", "following", "muted_by", "muting", "reported_by", "reporting"
+    "followed_by", "following", "muted_by", "muting", "reported_by", "reporting",
+    # Virtual kind: DISTINCT flagged users across any relationship.
+    "flagged",
 ]
 
 # (relationship_type, direction). direction "in" = other -[r]-> user, "out" = user -[r]-> other.
@@ -100,13 +107,29 @@ async def _redis_inbound_count(prefix: str, pubkey: str) -> int:
 
 
 async def _neo4j_outbound_counts_and_influence(
-    pubkey: str, influence_key: str
-) -> tuple[float | None, int, int, int]:
+    pubkey: str,
+    influence_key: str,
+    trusted_reporters_key: str,
+    verified_threshold: float,
+) -> tuple[float | None, int, int, int, bool, int]:
     async with neo4j_driver.session() as session:
-        influence, following, muting, reporting = (
-            await get_outbound_counts_and_influence(session, pubkey, influence_key)
+        influence, following, muting, reporting, flagged_by_observer, flagged_count = (
+            await get_outbound_counts_and_influence(
+                session,
+                pubkey,
+                influence_key,
+                trusted_reporters_key,
+                verified_threshold,
+            )
         )
-    return _safe_float(influence), following, muting, reporting
+    return (
+        _safe_float(influence),
+        following,
+        muting,
+        reporting,
+        flagged_by_observer,
+        flagged_count,
+    )
 
 
 def brainstorm_nsec_db_obj_to_user_history_schema_converter(
@@ -171,23 +194,32 @@ async def get_user_history_data(db: AsyncDBSession, pubkey: str) -> UserHistoryI
 
 
 async def get_user_overview(
-    pubkey: str, observer: str | None = None
+    pubkey: str,
+    observer: str | None = None,
+    verified_threshold: float = DEFAULT_VERIFIED_THRESHOLD,
 ) -> UserOverviewData:
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
+    trusted_reporters_key = (
+        f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
+    )
 
-    # Redis SCARD for inbound + one Neo4j query for outbound counts + influence,
-    # all in parallel.
+    # Redis SCARD for inbound + one Neo4j query for outbound counts + influence +
+    # flagged_by_observer, all in parallel.
     followed_by, muted_by, reported_by, neo_result = await asyncio.gather(
         _redis_inbound_count(FOLLOWED_BY_KEY_PREFIX, pubkey),
         _redis_inbound_count(MUTED_BY_KEY_PREFIX, pubkey),
         _redis_inbound_count(REPORTED_BY_KEY_PREFIX, pubkey),
-        _neo4j_outbound_counts_and_influence(pubkey, influence_key),
+        _neo4j_outbound_counts_and_influence(
+            pubkey, influence_key, trusted_reporters_key, verified_threshold
+        ),
     )
-    influence, following, muting, reporting = neo_result
+    influence, following, muting, reporting, flagged_by_observer, flagged_count = neo_result
 
     return UserOverviewData(
         pubkey=pubkey,
         influence=influence,
+        flagged_by_observer=flagged_by_observer,
+        flagged_count=flagged_count,
         counts=UserConnectionCounts(
             followed_by=followed_by,
             following=following,
@@ -204,20 +236,24 @@ async def get_user_stats(
     observer: str | None = None,
     verified_threshold: float = DEFAULT_VERIFIED_THRESHOLD,
     tier_high: float = TIER_HIGH,
-    tier_trusted: float = TIER_TRUSTED,
-    tier_neutral: float = TIER_NEUTRAL,
+    tier_medium_high: float = TIER_MEDIUM_HIGH,
+    tier_medium: float = TIER_MEDIUM,
 ) -> UserSectionsStats:
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
+    trusted_reporters_key = (
+        f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
+    )
 
     async with neo4j_driver.session() as session:
         stats_by_kind = await get_all_section_stats(
             session,
             pubkey,
             influence_key,
+            trusted_reporters_key,
             verified_threshold,
             tier_high,
-            tier_trusted,
-            tier_neutral,
+            tier_medium_high,
+            tier_medium,
         )
     return UserSectionsStats(**stats_by_kind)
 
@@ -228,10 +264,20 @@ async def get_user_connections(
     kind: ConnectionKind = "following",
     limit: int = DEFAULT_PAGE_SIZE,
     cursor: str | None = None,
+    order: str = "desc",
+    tier: str | None = None,
+    min_influence: float | None = None,
+    verified_threshold: float = DEFAULT_VERIFIED_THRESHOLD,
+    tier_high: float = TIER_HIGH,
+    tier_medium_high: float = TIER_MEDIUM_HIGH,
+    tier_medium: float = TIER_MEDIUM,
+    with_total: bool = False,
 ) -> PaginatedUserConnections:
     limit = max(1, min(limit, MAX_PAGE_SIZE))
-    rel_type, direction = _KIND_TO_REL[kind]
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
+    trusted_reporters_key = (
+        f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
+    )
 
     cursor_inf, cursor_pk = (None, None)
     if cursor:
@@ -243,23 +289,52 @@ async def get_user_connections(
                 detail="invalid cursor",
             )
 
-    async with neo4j_driver.session() as session:
-        items, last_cursor = await get_paginated_section_connections(
-            session,
-            pubkey=pubkey,
-            influence_key=influence_key,
-            rel_type=rel_type,
-            direction=direction,
-            limit=limit,
-            cursor_inf=cursor_inf,
-            cursor_pk=cursor_pk,
-        )
+    if kind == "flagged":
+        # Virtual kind: DISTINCT flagged users across any relationship type.
+        # Ignores `tier` and `min_influence` — the flagged predicate is fixed.
+        # Page + (optional) total computed in one query / one session.
+        async with neo4j_driver.session() as session:
+            items, last_cursor, total = await get_paginated_flagged_connections(
+                session,
+                pubkey=pubkey,
+                influence_key=influence_key,
+                trusted_reporters_key=trusted_reporters_key,
+                verified_threshold=verified_threshold,
+                limit=limit,
+                cursor_inf=cursor_inf,
+                cursor_pk=cursor_pk,
+                order=order,
+                with_total=with_total,
+            )
+    else:
+        rel_type, direction = _KIND_TO_REL[kind]
+        async with neo4j_driver.session() as session:
+            items, last_cursor, total = await get_paginated_section_connections(
+                session,
+                pubkey=pubkey,
+                influence_key=influence_key,
+                trusted_reporters_key=trusted_reporters_key,
+                rel_type=rel_type,
+                direction=direction,
+                limit=limit,
+                cursor_inf=cursor_inf,
+                cursor_pk=cursor_pk,
+                order=order,
+                tier=tier,
+                min_influence=min_influence,
+                verified_threshold=verified_threshold,
+                tier_high=tier_high,
+                tier_medium_high=tier_medium_high,
+                tier_medium=tier_medium,
+                with_total=with_total,
+            )
 
     # Sanitize NaN/Inf floats post-query for safe JSON encoding.
     items = [
         UserConnectionItem(
             pubkey=it.pubkey,
             influence=_safe_float(it.influence),
+            trusted_reporters=it.trusted_reporters,
         )
         for it in items
     ]
@@ -270,7 +345,7 @@ async def get_user_connections(
         if last_sort_inf is not None:
             next_cursor = _encode_cursor(last_sort_inf, last_cursor[1])
 
-    return PaginatedUserConnections(items=items, next_cursor=next_cursor)
+    return PaginatedUserConnections(items=items, next_cursor=next_cursor, total=total)
 
 
 async def get_whitelisted_pubkeys_of_observer(
