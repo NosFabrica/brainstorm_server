@@ -29,6 +29,7 @@ from nostr_sdk import (  # type: ignore
     Tag,
 )
 import time
+from contextlib import contextmanager
 from app.core.config import settings
 
 logger = loggr.get_logger(__name__)
@@ -41,6 +42,49 @@ RELAYS: list[str] = [
     ]
     if x
 ]
+
+
+@contextmanager
+def _timed(timings: dict[str, float], name: str):
+    """Record wall-clock seconds for a segment into `timings`. Works around an
+    `await` inside the block — __exit__ runs after the awaited call resumes."""
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings[name] = round(time.perf_counter() - start, 3)
+
+
+def _log_publish_timing(
+    run_id, observer: str, timings: dict[str, float], counts: dict[str, int],
+    run_start: float, error: str | None = None,
+) -> None:
+    """One structured per-run summary line attributing the publish wall-clock across
+    segments. Emitted on both the success and failure paths so slow/failed runs are
+    still attributed (completed segments reveal where a failure happened)."""
+    total = round(time.perf_counter() - run_start, 3)
+    seg_str = " ".join(f"{k}={v}s" for k, v in timings.items())
+    cnt_str = " ".join(f"{k}={v}" for k, v in counts.items())
+    extra = {
+        "run_id": run_id,
+        "observer": observer,
+        "total_s": total,
+        **{f"t_{k}": v for k, v in timings.items()},
+        **counts,
+    }
+    if error is not None:
+        extra["error"] = error
+        logger.error(
+            f"TA publish timing (FAILED) run={run_id} observer={observer} "
+            f"total={total}s | {seg_str} | {cnt_str} | error={error}",
+            extra=extra,
+        )
+    else:
+        logger.info(
+            f"TA publish timing run={run_id} observer={observer} "
+            f"total={total}s | {seg_str} | {cnt_str}",
+            extra=extra,
+        )
 
 
 async def init_nostr_client(secret_key_nsec: str) -> Client:
@@ -180,11 +224,8 @@ async def fetch_existing_events_for_dropped_pubkeys(
         for i in range(0, len(dropped_pubkeys), DELETION_FETCH_BATCH_SIZE):
             batch = dropped_pubkeys[i : i + DELETION_FETCH_BATCH_SIZE]
             batch_index = i // DELETION_FETCH_BATCH_SIZE + 1
-            logger.info(
-                f"deletion fetch batch {batch_index}/{total_batches} "
-                f"({len(batch)} identifiers)"
-            )
             flt = Filter().kinds([Kind(30382)]).authors([author]).identifiers(batch)
+            batch_start = time.perf_counter()
             try:
                 events_obj = await fetcher.fetch_events(
                     flt, timeout=timedelta(seconds=30)
@@ -192,6 +233,12 @@ async def fetch_existing_events_for_dropped_pubkeys(
             except Exception as e:
                 logger.error(f"deletion fetch batch {batch_index} failed: {e}")
                 continue
+            # per-batch latency is the direct prod-RTT signal for the sweep
+            logger.info(
+                f"deletion fetch batch {batch_index}/{total_batches} "
+                f"({len(batch)} identifiers) took "
+                f"{round((time.perf_counter() - batch_start) * 1000)}ms"
+            )
             for ev in events_obj.to_vec():
                 eid = ev.id().to_hex()
                 if eid in seen_ids:
@@ -303,65 +350,78 @@ async def process_nostr_upload_message(message: dict):
     if not grape_rank_result.scorecards:
         return
     observer = next(iter(grape_rank_result.scorecards.values())).observer
-    # TODO: generate a new nsec for the observer of the observer
-    async with db_session() as db:
-        nsec_db_obj, _was_created_now = (
-            await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
-                db, pubkey=observer
-            )
-        )
-        assert nsec_db_obj.pubkey == observer
-        await update_brainstorm_request_ta_status_by_id_on_db(
-            db,
-            brainstorm_request_id=message["private_id"],
-            status=BrainstormRequestStatus.ONGOING,
-        )
+    run_id = message["private_id"]
+    timings: dict[str, float] = {}
+    counts: dict[str, int] = {"n_scorecards": len(grape_rank_result.scorecards)}
+    run_start = time.perf_counter()
 
-        await db.commit()
+    # TODO: generate a new nsec for the observer of the observer
+    with _timed(timings, "nsec_lookup"):
+        async with db_session() as db:
+            nsec_db_obj, _was_created_now = (
+                await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
+                    db, pubkey=observer
+                )
+            )
+            assert nsec_db_obj.pubkey == observer
+            await update_brainstorm_request_ta_status_by_id_on_db(
+                db,
+                brainstorm_request_id=run_id,
+                status=BrainstormRequestStatus.ONGOING,
+            )
+
+            await db.commit()
 
     try:
-        nostr_client: Client = await init_nostr_client(nsec_db_obj.nsec)
+        with _timed(timings, "connect"):
+            nostr_client: Client = await init_nostr_client(nsec_db_obj.nsec)
         signing_pubkey = Keys.parse(secret_key=nsec_db_obj.nsec).public_key().to_hex()
 
-        nostr_events = await get_events_from_graperank_result(
-            grape_rank_result, nostr_client
-        )
-
-        async with db_session() as db:
-            previously_published_pubkeys = (
-                await get_last_published_pubkeys_by_pubkey_on_db(db, pubkey=observer)
+        with _timed(timings, "sign"):
+            nostr_events = await get_events_from_graperank_result(
+                grape_rank_result, nostr_client
             )
+        counts["n_signed"] = len(nostr_events)
 
-        currently_published_pubkeys = [
-            sc.observee
-            for sc in grape_rank_result.scorecards.values()
-            if round(sc.influence, 2) >= settings.cutoff_of_valid_graperank_scores
-        ]
+        with _timed(timings, "last_published"):
+            async with db_session() as db:
+                previously_published_pubkeys = (
+                    await get_last_published_pubkeys_by_pubkey_on_db(db, pubkey=observer)
+                )
 
-        if DELETE_ALL_BELOW_CUTOFF_EVENTS:
-            pubkeys_to_delete = [
+        with _timed(timings, "compute_deletes"):
+            currently_published_pubkeys = [
                 sc.observee
                 for sc in grape_rank_result.scorecards.values()
-                if round(sc.influence, 2) < settings.cutoff_of_valid_graperank_scores
+                if round(sc.influence, 2) >= settings.cutoff_of_valid_graperank_scores
             ]
-            logger.info(
-                f"DELETE_ALL_BELOW_CUTOFF_EVENTS=True: sweeping all "
-                f"{len(pubkeys_to_delete)} below-cutoff pubkeys "
-                f"instead of using droppedBelowCutoffPubkeys"
-            )
-        else:
-            pubkeys_to_delete = list(grape_rank_result.droppedBelowCutoffPubkeys)
 
-        scorecard_pubkeys = set(grape_rank_result.scorecards.keys())
-        missing_from_scorecards = [
-            pk for pk in previously_published_pubkeys if pk not in scorecard_pubkeys
-        ]
-        if missing_from_scorecards:
-            logger.info(
-                f"adding {len(missing_from_scorecards)} previously-published pubkeys "
-                f"that are no longer in scorecards to the deletion set"
-            )
-            pubkeys_to_delete.extend(missing_from_scorecards)
+            if DELETE_ALL_BELOW_CUTOFF_EVENTS:
+                pubkeys_to_delete = [
+                    sc.observee
+                    for sc in grape_rank_result.scorecards.values()
+                    if round(sc.influence, 2) < settings.cutoff_of_valid_graperank_scores
+                ]
+                logger.info(
+                    f"DELETE_ALL_BELOW_CUTOFF_EVENTS=True: sweeping all "
+                    f"{len(pubkeys_to_delete)} below-cutoff pubkeys "
+                    f"instead of using droppedBelowCutoffPubkeys"
+                )
+            else:
+                pubkeys_to_delete = list(grape_rank_result.droppedBelowCutoffPubkeys)
+
+            scorecard_pubkeys = set(grape_rank_result.scorecards.keys())
+            missing_from_scorecards = [
+                pk for pk in previously_published_pubkeys if pk not in scorecard_pubkeys
+            ]
+            if missing_from_scorecards:
+                logger.info(
+                    f"adding {len(missing_from_scorecards)} previously-published pubkeys "
+                    f"that are no longer in scorecards to the deletion set"
+                )
+                pubkeys_to_delete.extend(missing_from_scorecards)
+        counts["n_above_cutoff"] = len(currently_published_pubkeys)
+        counts["n_dropped"] = len(pubkeys_to_delete)
 
         # zero_score_events = await get_zero_score_events_for_pubkeys(
         #     pubkeys=pubkeys_to_delete,
@@ -369,39 +429,41 @@ async def process_nostr_upload_message(message: dict):
         # )
         # nostr_events.extend(zero_score_events)
 
-        deletion_events = await get_deletion_events_for_dropped_pubkeys(
-            author_pubkey=signing_pubkey,
-            dropped_pubkeys=pubkeys_to_delete,
-            nostr_client=nostr_client,
-        )
+        with _timed(timings, "deletion_fetch"):
+            deletion_events = await get_deletion_events_for_dropped_pubkeys(
+                author_pubkey=signing_pubkey,
+                dropped_pubkeys=pubkeys_to_delete,
+                nostr_client=nostr_client,
+            )
+        counts["n_deletion_events"] = len(deletion_events)
 
         nostr_events.extend(deletion_events)
 
-        start_time = time.time()
-
-        write_relays = list((await nostr_client.relays()).values())
-        for index, nostr_event in enumerate(nostr_events):
-            if index == 0 or index % 200 == 0:
-                logger.info(
-                    f"still sending nostr events for observer {observer}, progress: {index}"
-                )
-            msg = ClientMessage.event(nostr_event)
-            for relay in write_relays:
-                try:
-                    relay.send_msg(msg)
-                except Exception as e:
-                    logger.error(
-                        f"Failed to enqueue event {index} on {relay.url()}: {e}"
+        with _timed(timings, "send"):
+            write_relays = list((await nostr_client.relays()).values())
+            for index, nostr_event in enumerate(nostr_events):
+                if index == 0 or index % 200 == 0:
+                    logger.info(
+                        f"still sending nostr events for observer {observer}, progress: {index}"
                     )
+                msg = ClientMessage.event(nostr_event)
+                for relay in write_relays:
+                    try:
+                        relay.send_msg(msg)
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to enqueue event {index} on {relay.url()}: {e}"
+                        )
 
         vespa_search_available = False
         try:
-            logger.info(f"Pushing scores to Vespa...")
-            await upsert_scores_to_vespa(
-                grape_rank_result=grape_rank_result,
-                observer=observer,
-                pubkeys_to_delete=pubkeys_to_delete,
-            )
+            with _timed(timings, "vespa"):
+                logger.info(f"Pushing scores to Vespa...")
+                await upsert_scores_to_vespa(
+                    grape_rank_result=grape_rank_result,
+                    observer=observer,
+                    pubkeys_to_delete=pubkeys_to_delete,
+                )
             vespa_search_available = True
             logger.info(f"Done pushing scores to Vespa!")
         except Exception as e:
@@ -409,41 +471,40 @@ async def process_nostr_upload_message(message: dict):
             # and has already been written. Vespa is a search-side mirror.
             logger.error(f"Failed to upsert scores to Vespa: {e}")
 
-        async with db_session() as db:
+        with _timed(timings, "final_db"):
+            async with db_session() as db:
 
-            await update_brainstorm_request_ta_status_by_id_on_db(
-                db,
-                brainstorm_request_id=message["private_id"],
-                status=BrainstormRequestStatus.SUCCESS,
-            )
-
-            await update_last_published_pubkeys_by_pubkey_on_db(
-                db,
-                pubkey=observer,
-                published_pubkeys=currently_published_pubkeys,
-                graperank_request_id=message["private_id"],
-            )
-
-            if vespa_search_available:
-                await set_is_observer_search_available_by_pubkey_on_db(
-                    db, pubkey=observer, is_available=True
+                await update_brainstorm_request_ta_status_by_id_on_db(
+                    db,
+                    brainstorm_request_id=run_id,
+                    status=BrainstormRequestStatus.SUCCESS,
                 )
 
-            await db.commit()
+                await update_last_published_pubkeys_by_pubkey_on_db(
+                    db,
+                    pubkey=observer,
+                    published_pubkeys=currently_published_pubkeys,
+                    graperank_request_id=run_id,
+                )
 
-        final_time = round(time.time() - start_time)
-        logger.info(
-            f"Took {final_time} seconds to process {len(nostr_events)} nostr events"
-        )
+                if vespa_search_available:
+                    await set_is_observer_search_available_by_pubkey_on_db(
+                        db, pubkey=observer, is_available=True
+                    )
+
+                await db.commit()
+
+        _log_publish_timing(run_id, observer, timings, counts, run_start)
         if nostr_events:
             logger.info(f"Check Nostr Event {nostr_events[0].as_json()}")
     except Exception as e:
-        logger.error(f"Error on request {message["private_id"]} , {e}")
+        logger.error(f"Error on request {run_id} , {e}")
+        _log_publish_timing(run_id, observer, timings, counts, run_start, error=str(e))
         async with db_session() as db:
 
             await update_brainstorm_request_ta_status_by_id_on_db(
                 db,
-                brainstorm_request_id=message["private_id"],
+                brainstorm_request_id=run_id,
                 status=BrainstormRequestStatus.FAILURE,
             )
 
