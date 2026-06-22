@@ -303,7 +303,7 @@ async def get_deletion_events_for_dropped_pubkeys(
 # (in addition to the deletions). Use this to backfill an empty / out-of-sync
 # Vespa — e.g., when TAs were already published to Nostr before this code
 # existed. When False, only changed scores + deletions are pushed.
-VESPA_FULL_SYNC = True
+VESPA_FULL_SYNC = False
 
 
 async def upsert_scores_to_vespa(
