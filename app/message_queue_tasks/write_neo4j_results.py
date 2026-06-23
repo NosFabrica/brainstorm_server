@@ -19,13 +19,14 @@ logger = loggr.get_logger(__name__)
 
 
 async def process_neo4j_write_message(message: dict):
+    run_id = message["private_id"]
     is_success = message["result"]["success"]
-    logger.info("neo4j write")
+    logger.info(f"neo4j write run={run_id}")
     logger.info(message["result"]["success"])
     # if not is_success:
     #     return
 
-    logger.info("Writing results to Neo4j...")
+    logger.info(f"Writing results to Neo4j... run={run_id}")
     grape_rank_result = GrapeRankResult.model_validate(message["result"])
     if not grape_rank_result.scorecards:
         return
@@ -72,7 +73,8 @@ async def process_neo4j_write_message(message: dict):
 
     final_time = time.time() - start_time
     logger.info(
-        f"Took {final_time:.2f} seconds to process {len(scorecards)} Neo4j writes"
+        f"Took {final_time:.2f} seconds to process {len(scorecards)} Neo4j writes "
+        f"run={run_id} observer={observer}"
     )
     example_scorecard = next(islice(grape_rank_result.scorecards.values(), 1, 2))
 
