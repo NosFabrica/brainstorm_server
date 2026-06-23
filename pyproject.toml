@@ -27,6 +27,7 @@ redis = "^7.1.0"
 celery = "^5.6.0"
 aioredis = "^2.0.1"
 nostr-sdk = "0.41.0"
+httpx = {version = "^0.28.1", extras = ["http2"]}
 neo4j = "^6.0.3"
 tqdm = "^4.67.1"
 pynacl = "^1.6.2"

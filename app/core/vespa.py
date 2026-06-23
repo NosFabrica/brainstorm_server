@@ -12,6 +12,7 @@ The search function uses the `name_and_quality_score_only` rank profile:
 """
 import asyncio
 import json
+import os
 
 import httpx
 
@@ -39,9 +40,29 @@ PROFILE_FIELDS = (
 # How many query words we label / parametrize at most.
 MAX_QUERY_WORDS = 6
 
-# Bounded concurrency for batch score upserts. Vespa's container can handle a
-# lot more than this — the limit is mostly to keep retry/backoff predictable.
-_BATCH_CONCURRENCY = 32
+# In-flight feed concurrency. Vespa's container advertises
+# SETTINGS_MAX_CONCURRENT_STREAMS=128 per HTTP/2 connection, which is what the
+# official vespa-feed-client uses as its default in-flight window. Over HTTP/2
+# these multiplex onto a couple of pooled connections instead of one TCP
+# connection per request (HTTP/1.1) — that multiplexing is the whole speedup.
+#
+# IMPORTANT — this is PER feeding process. Vespa (a single container) sees the
+# AGGREGATE across all concurrent feeders:
+#   in-flight @ Vespa = server_replicas * uvicorn_workers * VESPA_FEED_CONCURRENCY
+# Today there is exactly one feeder (server: 1 replica, uvicorn with no
+# --workers, MQ consumer feeds serially), so 128 is the aggregate. If the server
+# is ever scaled out (more replicas or --workers N), LOWER this env so the
+# aggregate stays ~128-256 — e.g. set VESPA_FEED_CONCURRENCY=128/feeders. It's
+# an env var precisely so this is a values-file change, no code rebuild.
+_BATCH_CONCURRENCY = int(os.getenv("VESPA_FEED_CONCURRENCY", "128"))
+
+# Use HTTP/2 for the document/feed endpoint (the vespa-feed-client mechanism:
+# stream multiplexing over a couple of pooled connections). Requires
+# httpx[http2] (h2). Escape hatch if an endpoint doesn't accept h2c.
+# No retry layer by design: score feeding is best-effort (failures are logged,
+# never raised) and the next GrapeRank calculation re-feeds everything, so a
+# transient failure self-heals on the following run.
+_HTTP2 = os.getenv("VESPA_HTTP2", "true").lower() not in ("0", "false", "no")
 
 
 # ---------------------------------------------------------------------------
@@ -51,16 +72,35 @@ _BATCH_CONCURRENCY = 32
 _client: httpx.AsyncClient | None = None
 
 
+def _build_client(http2: bool) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        http2=http2,
+        timeout=httpx.Timeout(30.0, connect=5.0),
+        limits=httpx.Limits(
+            # Over HTTP/2 a handful of connections multiplex every in-flight
+            # stream; the pool stays generous so retries/keepalive are healthy.
+            max_connections=200,
+            max_keepalive_connections=100,
+        ),
+    )
+
+
 def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
-        _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=5.0),
-            limits=httpx.Limits(
-                max_connections=200,
-                max_keepalive_connections=100,
-            ),
-        )
+        if _HTTP2:
+            try:
+                _client = _build_client(http2=True)
+            except ImportError:
+                # httpx[http2]/h2 not installed yet (image not rebuilt) —
+                # feeding still works over HTTP/1.1, just slower.
+                logger.warning(
+                    "Vespa HTTP/2 requested but h2 is unavailable "
+                    "(install httpx[http2]); falling back to HTTP/1.1"
+                )
+                _client = _build_client(http2=False)
+        else:
+            _client = _build_client(http2=False)
     return _client
 
 
