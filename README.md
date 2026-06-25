@@ -36,6 +36,36 @@ Access the URL `http://0.0.0.0:8000/admin`
 
 - poe check_all (this is a custom command that runs many checkers)
 
+## How to run the tests
+
+The suite splits into **fast** tests (service-mocked, no external services — the
+app's lifespan never runs) and **integration** tests (marked `integration`,
+require the real local stack: Neo4j + Redis).
+
+Fast tests — the default, run anywhere:
+
+```bash
+poetry run pytest -m "not integration"
+```
+
+Integration tests — bring the local stack up first, then run only that marker:
+
+```bash
+docker-compose up -d            # postgres, redis, neo4j, strfry, neofry
+poetry run pytest -m integration
+```
+
+> Note: in the one-click local stack Neo4j's bolt port is remapped to host
+> **7688** (not 7687). Host-run processes (pytest/uvicorn) need
+> `NEO4J_DB_URL=bolt://localhost:7688` in `.env`. The dockerized server is
+> unaffected — it reaches Neo4j over the compose network at `neo4j:7687`.
+
+Everything together (needs the stack up):
+
+```bash
+poetry run pytest
+```
+
 ## How to run everything with docker
 
 - docker network create brainstorm-network
