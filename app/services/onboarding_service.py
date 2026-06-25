@@ -27,7 +27,16 @@ async def ingest_follow_list(caller_pubkey: str, signed_event: dict) -> int:
     Reuses the normal kind-3 ingest handler so the FOLLOWS edges and the
     ``followed_by:`` Redis reverse-sets land before the request returns.
     """
-    event = Event.from_json(json.dumps(signed_event))
+    try:
+        event = Event.from_json(json.dumps(signed_event))
+    except Exception as exc:
+        # The body already passed NostrEvent schema validation, so this is a
+        # residual nostr_sdk gripe (e.g. canonical-serialization quirk). Surface
+        # it as a clean 400 rather than letting it become an unhandled 500.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Malformed Nostr event",
+        ) from exc
 
     if event.kind().as_u16() != KIND_FOLLOW_LIST:
         raise HTTPException(

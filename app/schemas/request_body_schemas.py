@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 from app.schemas.graperank_schemas import GrapeRankPresetTemplate
+from app.schemas.nostr_event import NostrEvent
 
 
 class CreateBrainstormRequestBody(BaseModel):
@@ -14,7 +15,7 @@ class SubmitNostrAuthChallengeBody(BaseModel):
 
 
 class SubmitFollowListBody(BaseModel):
-    signed_event: dict
+    signed_event: NostrEvent
 
 
 class SetGrapeRankPresetBody(BaseModel):

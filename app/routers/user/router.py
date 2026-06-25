@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from app.core.database import get_db
 from app.schemas.request_body_schemas import SubmitFollowListBody
 from app.schemas.request_response_schemas import (
+    ErrorResponseSchema,
     GetOwnLatestGraperankResponse,
     GetOwnUserDataResponse,
     GetUserConnectionsResponse,
@@ -121,6 +122,24 @@ async def create_graperank_calc_endpoint(
     tags=[],
     dependencies=[],
     summary="Ingest a freshly-signed onboarding follow list synchronously",
+    responses={
+        status.HTTP_400_BAD_REQUEST: {
+            "model": ErrorResponseSchema,
+            "description": "Event is not a kind-3 follow list, or is unparseable.",
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "model": ErrorResponseSchema,
+            "description": "Event signature is invalid.",
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "model": ErrorResponseSchema,
+            "description": "Event author does not match the authenticated user.",
+        },
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "model": ErrorResponseSchema,
+            "description": "Rate limit exceeded for the caller's IP.",
+        },
+    },
 )
 async def submit_follow_list_endpoint(
     request: Request,
@@ -132,7 +151,9 @@ async def submit_follow_list_endpoint(
     if request.client:
         await validateIfRequestedTooOftenByIP(request.client.host)
 
-    follow_count = await ingest_follow_list(user_pubkey, body.signed_event)
+    follow_count = await ingest_follow_list(
+        user_pubkey, body.signed_event.model_dump()
+    )
 
     return SubmitFollowListResponse(
         data=FollowListIngestResult(followCount=follow_count)

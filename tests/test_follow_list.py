@@ -112,3 +112,109 @@ def test_persistent_transient_error_surfaces_and_does_not_return_200(
         client.post("/user/followList", json=body)
 
     assert mock_kind3_write.await_count == 3  # bounded attempts, then gives up
+
+
+# --- Structural validation (NIP-01 envelope) -> 422, never a 500 ---------------
+
+
+def test_missing_sig_is_rejected_422(client, caller, mock_kind3_write):
+    event = signed_kind3(caller.keys, [])
+    del event["sig"]
+
+    response = client.post("/user/followList", json={"signed_event": event})
+
+    assert response.status_code == 422
+    assert mock_kind3_write.await_count == 0
+
+
+def test_bad_hex_pubkey_is_rejected_422(client, caller, mock_kind3_write):
+    event = signed_kind3(caller.keys, [])
+    event["pubkey"] = "zz"  # not 64-hex
+
+    response = client.post("/user/followList", json={"signed_event": event})
+
+    assert response.status_code == 422
+    assert mock_kind3_write.await_count == 0
+
+
+def test_non_int_created_at_is_rejected_422(client, caller, mock_kind3_write):
+    event = signed_kind3(caller.keys, [])
+    event["created_at"] = "not-a-timestamp"
+
+    response = client.post("/user/followList", json={"signed_event": event})
+
+    assert response.status_code == 422
+    assert mock_kind3_write.await_count == 0
+
+
+def test_empty_tag_is_rejected_422(client, caller, mock_kind3_write):
+    event = signed_kind3(caller.keys, [])
+    event["tags"] = [[]]
+
+    response = client.post("/user/followList", json={"signed_event": event})
+
+    assert response.status_code == 422
+    assert mock_kind3_write.await_count == 0
+
+
+def test_p_tag_without_pubkey_is_rejected_422(client, caller, mock_kind3_write):
+    # ["p"] passes nostr_sdk but would IndexError in the shared kind-3 handler.
+    event = signed_kind3(caller.keys, [])
+    event["tags"] = [["p"]]
+
+    response = client.post("/user/followList", json={"signed_event": event})
+
+    assert response.status_code == 422
+    assert mock_kind3_write.await_count == 0
+
+
+def test_p_tag_with_bad_hex_follow_is_rejected_422(client, caller, mock_kind3_write):
+    event = signed_kind3(caller.keys, [])
+    event["tags"] = [["p", "not-a-pubkey"]]
+
+    response = client.post("/user/followList", json={"signed_event": event})
+
+    assert response.status_code == 422
+    assert mock_kind3_write.await_count == 0
+
+
+def test_openapi_documents_event_shape_and_error_contract(client):
+    schema = client.app.openapi()
+
+    # The signed event is documented as a NostrEvent with its NIP-01 fields,
+    # not an opaque object.
+    nostr_event = schema["components"]["schemas"]["NostrEvent"]
+    assert set(nostr_event["properties"]) >= {
+        "id",
+        "pubkey",
+        "created_at",
+        "kind",
+        "tags",
+        "content",
+        "sig",
+    }
+
+    # The route advertises its error contract so consumers see it in Swagger.
+    responses = schema["paths"]["/user/followList"]["post"]["responses"]
+    assert {"400", "401", "403", "422", "429"} <= set(responses)
+
+
+def test_event_that_passes_schema_but_fails_parse_is_400_not_500(
+    client, caller, mock_kind3_write, monkeypatch
+):
+    # Backstop: anything nostr_sdk rejects after Pydantic accepts it (e.g. a
+    # canonical-serialization quirk) must be a clean 400, never an unhandled 500.
+    from nostr_sdk import NostrSdkError
+
+    def _boom(_json: str):
+        raise NostrSdkError.Generic("nope")
+
+    monkeypatch.setattr(
+        "app.services.onboarding_service.Event.from_json", _boom
+    )
+    body = {"signed_event": signed_kind3(caller.keys, [])}
+
+    response = client.post("/user/followList", json=body)
+
+    assert response.status_code == 400
+    assert mock_kind3_write.await_count == 0
