@@ -47,6 +47,13 @@ build-backend = "poetry.core.masonry.api"
 [tool.isort]
 profile = "black"
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "integration: requires real services (Neo4j/Redis/etc); deselect with -m 'not integration'",
+]
+
 
 [tool.poe.tasks]
 test = "pytest ./tests"

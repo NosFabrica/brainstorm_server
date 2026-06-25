@@ -5,7 +5,7 @@ from app.utils.rate_limiting.rate_limiting import validateIfRequestedTooOftenByI
 from fastapi import HTTPException
 from fastapi import APIRouter, Depends, Query, Request, status
 from app.core.database import get_db
-from app.schemas.request_body_schemas import SubmitNostrAuthChallengeBody
+from app.schemas.request_body_schemas import SubmitFollowListBody
 from app.schemas.request_response_schemas import (
     GetOwnLatestGraperankResponse,
     GetOwnUserDataResponse,
@@ -17,6 +17,7 @@ from app.schemas.request_response_schemas import (
     IsSearchObserverResponse,
     PublishAssistantProfileData,
     PublishAssistantProfileResponse,
+    SubmitFollowListResponse,
 )
 from app.repos.brainstorm_nsec import (
     get_is_observer_search_available_by_pubkey_on_db,
@@ -24,8 +25,9 @@ from app.repos.brainstorm_nsec import (
 from app.core.config import settings
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
-from app.schemas.schemas import OwnUserData
+from app.schemas.schemas import FollowListIngestResult, OwnUserData
 from app.services.assistant_profile_service import publish_assistant_kind0_for_user
+from app.services.onboarding_service import ingest_follow_list
 from app.services.brainstorm_request_service import create_brainstorm_request
 from app.services.user_service import (
     DEFAULT_PAGE_SIZE,
@@ -66,7 +68,6 @@ async def get_own_latest_graperank_endpoint(
     request: Request,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GetOwnLatestGraperankResponse:
-
     jwt_data: JWTData = request.state.jwt_data
     user_pubkey = jwt_data.nostr_pubkey
 
@@ -85,7 +86,6 @@ async def create_graperank_calc_endpoint(
     request: Request,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GetOwnLatestGraperankResponse:
-
     jwt_data: JWTData = request.state.jwt_data
     user_pubkey = jwt_data.nostr_pubkey
 
@@ -93,7 +93,6 @@ async def create_graperank_calc_endpoint(
         await validateIfRequestedTooOftenByIP(request.client.host)
 
     if settings.block_frequent_graperank_requests:
-
         latest = await get_own_latest_graperank(db, user_pubkey)
 
         if latest and latest.created_at.replace(
@@ -117,6 +116,29 @@ async def create_graperank_calc_endpoint(
     return GetOwnLatestGraperankResponse(data=result)
 
 
+@router.post(
+    path="/followList",
+    tags=[],
+    dependencies=[],
+    summary="Ingest a freshly-signed onboarding follow list synchronously",
+)
+async def submit_follow_list_endpoint(
+    request: Request,
+    body: SubmitFollowListBody,
+) -> SubmitFollowListResponse:
+    jwt_data: JWTData = request.state.jwt_data
+    user_pubkey = jwt_data.nostr_pubkey
+
+    if request.client:
+        await validateIfRequestedTooOftenByIP(request.client.host)
+
+    follow_count = await ingest_follow_list(user_pubkey, body.signed_event)
+
+    return SubmitFollowListResponse(
+        data=FollowListIngestResult(followCount=follow_count)
+    )
+
+
 @router.get(
     path="/history",
     tags=[],
@@ -127,7 +149,6 @@ async def get_own_user_history_endpoint(
     request: Request,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GetUserHistoryResponse:
-
     jwt_data: JWTData = request.state.jwt_data
     history = await get_user_history_data(db, jwt_data.nostr_pubkey)
     return GetUserHistoryResponse(data=history)
@@ -148,7 +169,6 @@ async def get_own_user_data_endpoint(
     request: Request,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GetOwnUserDataResponse:
-
     jwt_data: JWTData = request.state.jwt_data
     user_pubkey = jwt_data.nostr_pubkey
 
@@ -170,7 +190,6 @@ async def is_search_observer_endpoint(
     request: Request,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> IsSearchObserverResponse:
-
     jwt_data: JWTData = request.state.jwt_data
     user_pubkey = jwt_data.nostr_pubkey
 
@@ -191,13 +210,10 @@ async def publish_assistant_profile_endpoint(
     request: Request,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> PublishAssistantProfileResponse:
-
     jwt_data: JWTData = request.state.jwt_data
     user_pubkey = jwt_data.nostr_pubkey
 
-    event_id, assistant_pubkey = await publish_assistant_kind0_for_user(
-        db, user_pubkey
-    )
+    event_id, assistant_pubkey = await publish_assistant_kind0_for_user(db, user_pubkey)
 
     return PublishAssistantProfileResponse(
         data=PublishAssistantProfileData(
@@ -214,7 +230,9 @@ async def publish_assistant_profile_endpoint(
 async def get_user_overview_endpoint(
     pubkey: str,
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
-    verified_threshold: float = Query(default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0),
+    verified_threshold: float = Query(
+        default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0
+    ),
 ) -> GetUserOverviewResponse:
     observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
     result = await get_user_overview(
@@ -231,7 +249,9 @@ async def get_user_overview_endpoint(
 )
 async def get_user_stats_endpoint(
     pubkey: str,
-    verified_threshold: float = Query(default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0),
+    verified_threshold: float = Query(
+        default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0
+    ),
     tier_high: float = Query(default=TIER_HIGH, ge=0.0, le=1.0),
     tier_medium_high: float = Query(default=TIER_MEDIUM_HIGH, ge=0.0, le=1.0),
     tier_medium: float = Query(default=TIER_MEDIUM, ge=0.0, le=1.0),
@@ -260,12 +280,15 @@ async def get_user_connections_endpoint(
     cursor: str | None = Query(default=None),
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
     order: str = Query(default="desc", pattern="^(asc|desc)$"),
-    tier: str | None = Query(
+    tier: str
+    | None = Query(
         default=None,
         pattern="^(high|medium_high|medium|medium_low|low|low_and_reported_by_2_or_more_trusted_pubkeys)$",
     ),
     min_influence: float | None = Query(default=None, ge=0.0, le=1.0),
-    verified_threshold: float = Query(default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0),
+    verified_threshold: float = Query(
+        default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0
+    ),
     tier_high: float = Query(default=TIER_HIGH, ge=0.0, le=1.0),
     tier_medium_high: float = Query(default=TIER_MEDIUM_HIGH, ge=0.0, le=1.0),
     tier_medium: float = Query(default=TIER_MEDIUM, ge=0.0, le=1.0),
@@ -303,7 +326,6 @@ async def get_user_by_pubkey_data_endpoint(
     pubkey: str,
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> GetUserDataResponse:
-
     observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
 
     result = await get_user_graph_data(pubkey, observer)

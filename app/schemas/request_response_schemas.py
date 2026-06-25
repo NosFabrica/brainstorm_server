@@ -8,6 +8,7 @@ from app.schemas.schemas import (
     AuthSuccessfulToken,
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
+    FollowListIngestResult,
     OwnUserData,
     PaginatedUserConnections,
     UserGraphData,
@@ -62,6 +63,10 @@ class NostrAuthChallengeResponse(SuccessfulResponseDataSchema):
 
 class SubmitNostrAuthChallengeResponse(SuccessfulResponseDataSchema):
     data: AuthSuccessfulToken
+
+
+class SubmitFollowListResponse(SuccessfulResponseDataSchema):
+    data: FollowListIngestResult
 
 
 class GetUserDataResponse(SuccessfulResponseDataSchema):
@@ -185,5 +190,3 @@ class SearchResults(BaseModel):
 
 class SearchByTextResponse(SuccessfulResponseDataSchema):
     data: SearchResults
-
-

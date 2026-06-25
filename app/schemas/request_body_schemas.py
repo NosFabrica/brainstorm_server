@@ -13,5 +13,9 @@ class SubmitNostrAuthChallengeBody(BaseModel):
     signed_event: dict
 
 
+class SubmitFollowListBody(BaseModel):
+    signed_event: dict
+
+
 class SetGrapeRankPresetBody(BaseModel):
     preset: GrapeRankPresetTemplate
