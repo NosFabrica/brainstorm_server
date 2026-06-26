@@ -54,9 +54,24 @@ async def ingest_follow_list(caller_pubkey: str, signed_event: dict) -> int:
             detail="Event author does not match the authenticated user",
         )
 
+    follow_count = sum(
+        1 for tag in signed_event.get("tags", []) if tag and tag[0] == "p"
+    )
+    # Onboarding is additive-only: this endpoint seeds follows ahead of relay
+    # sync. The reused kind-3 handler treats an empty list as "delete all
+    # follows" (replaceable-event semantics) — never the intent here, and a
+    # client submitting empty by accident would silently wipe the graph.
+    # Require at least one follow; an empty kind-3 the user later publishes on
+    # their own relay is the relay consumer's concern, not ours.
+    if follow_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Follow list must contain at least one follow",
+        )
+
     await _write_follows_with_retry(signed_event)
 
-    return sum(1 for tag in signed_event.get("tags", []) if tag and tag[0] == "p")
+    return follow_count
 
 
 async def _write_follows_with_retry(signed_event: dict) -> None:

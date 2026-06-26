@@ -24,16 +24,15 @@ def test_valid_follow_list_returns_200_with_follow_count(
     assert passed_event == body["signed_event"]
 
 
-def test_empty_follow_list_is_accepted_with_zero_count(
-    client, caller, mock_kind3_write
-):
+def test_empty_follow_list_is_rejected_400(client, caller, mock_kind3_write):
+    # Onboarding is additive-only; an empty kind-3 would wipe follows via the
+    # reused relay handler. Reject it before any Neo4j write.
     body = {"signed_event": signed_kind3(caller.keys, [])}
 
     response = client.post("/user/followList", json=body)
 
-    assert response.status_code == 200
-    assert response.json()["data"]["followCount"] == 0
-    assert mock_kind3_write.await_count == 1
+    assert response.status_code == 400
+    assert mock_kind3_write.await_count == 0
 
 
 def test_wrong_kind_is_rejected_400(client, caller, mock_kind3_write):
@@ -106,7 +105,11 @@ def test_persistent_transient_error_surfaces_and_does_not_return_200(
     client, caller, mock_kind3_write
 ):
     mock_kind3_write.side_effect = TransientError("deadlock")
-    body = {"signed_event": signed_kind3(caller.keys, [])}
+    body = {
+        "signed_event": signed_kind3(
+            caller.keys, [Keys.generate().public_key().to_hex()]
+        )
+    }
 
     with pytest.raises(TransientError):
         client.post("/user/followList", json=body)
