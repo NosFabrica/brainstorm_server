@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 from nostr_sdk import PublicKey
 from sqlalchemy import Select, asc, delete, desc, func, select, update
-from sqlalchemy.orm import defer
+from sqlalchemy.orm import defer, undefer
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import execute_db_statement, handle_no_data
@@ -34,8 +34,9 @@ async def select_brainstorm_request_by_id_on_db(
     statement = select(BrainstormRequest).where(
         BrainstormRequest.private_id == brainstorm_request_id,
     )
-    if not include_result:
-        statement = statement.options(defer(BrainstormRequest.result))
+    # `result` is deferred at the mapping level; only load it on explicit request.
+    if include_result:
+        statement = statement.options(undefer(BrainstormRequest.result))
     existing_data = await execute_db_statement(db, statement, __name__)
     result: BrainstormRequest | None = existing_data.scalars().first()
 
@@ -230,6 +231,10 @@ async def select_latest_successful_brainstorm_request_on_db(
         .where(BrainstormRequest.status == BrainstormRequestStatus.SUCCESS.value)
         .order_by(desc(BrainstormRequest.created_at))
         .limit(1)
+        # `result` is deferred at the mapping level; this caller reads it (the
+        # observer whitelist), so undefer it explicitly. (See issue 07 — this
+        # reader is slated to move to Neo4j, after which `result` can be dropped.)
+        .options(undefer(BrainstormRequest.result))
     )
 
     existing_data = await execute_db_statement(db, statement, __name__)

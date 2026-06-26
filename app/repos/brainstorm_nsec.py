@@ -19,7 +19,19 @@ def _resolve_plaintext_nsec(row: BrainstormNsec) -> str:
 async def get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> tuple[BrainstormNsec, bool]:
-    stmt = select(BrainstormNsec).where(BrainstormNsec.pubkey == pubkey)
+    # Defer the heavy columns nobody on this path needs — most notably
+    # last_published_pubkeys (LargeBinary, ~3MB for a big observer). Callers only
+    # read nsec/pubkey/timestamps; deferring keeps the per-call SELECT off the
+    # multi-MB blob. (Mirrors select_brainstorm_nsec_history_fields_on_db.)
+    stmt = (
+        select(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .options(
+            defer(BrainstormNsec.last_published_pubkeys),
+            defer(BrainstormNsec.last_published_graperank_request_id),
+            defer(BrainstormNsec.graperank_custom_params),
+        )
+    )
     existing_data = await execute_db_statement(db, stmt, __name__)
     result: BrainstormNsec | None = existing_data.scalar_one_or_none()
     if result:

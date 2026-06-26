@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     block_frequent_graperank_requests_minutes: int = Field(default=30)
     periodic_graperank_pubkey: str = Field(default="")
     vespa_url: str = Field(...)
+    vespa_full_sync: bool = Field(default=True)
+    delete_all_below_cutoff_events: bool = Field(default=True)
 
 
 settings = Settings()

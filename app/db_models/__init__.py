@@ -64,7 +64,11 @@ class BrainstormRequest(TimestampMixin, Base):
         server_default=BrainstormRequestStatus.WAITING.value,
         nullable=True,
     )
-    result: Mapped[str] = mapped_column(String, nullable=True)
+    # Deferred at the mapping level: this serialized GrapeRank result is huge
+    # (~100MB/row) and must NEVER load by default — an accidental eager load both
+    # bloats the query and blocks the event loop parsing it. The two callers that
+    # genuinely need it undefer() explicitly (see brainstorm_request_repo).
+    result: Mapped[str] = mapped_column(String, nullable=True, deferred=True)
     count_values: Mapped[str] = mapped_column(String, nullable=True)
     error: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     parameters: Mapped[str] = mapped_column(String, nullable=False)

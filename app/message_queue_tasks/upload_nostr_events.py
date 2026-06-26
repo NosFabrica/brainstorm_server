@@ -190,11 +190,6 @@ async def get_zero_score_events_for_pubkeys(
 
 DELETION_FETCH_BATCH_SIZE = 200
 
-# When True, ignore graperank's droppedBelowCutoffPubkeys list and instead
-# delete events for every scorecard whose influence is below the cutoff.
-# Used as a backwards-compat sweep until older results are cleaned up.
-DELETE_ALL_BELOW_CUTOFF_EVENTS = True
-
 
 async def fetch_existing_events_for_dropped_pubkeys(
     author_pubkey: str,
@@ -299,13 +294,6 @@ async def get_deletion_events_for_dropped_pubkeys(
     return deletion_events
 
 
-# When True, push every above-cutoff scorecard to Vespa on each run
-# (in addition to the deletions). Use this to backfill an empty / out-of-sync
-# Vespa — e.g., when TAs were already published to Nostr before this code
-# existed. When False, only changed scores + deletions are pushed.
-VESPA_FULL_SYNC = True
-
-
 async def upsert_scores_to_vespa(
     grape_rank_result: GrapeRankResult,
     observer: str,
@@ -322,7 +310,7 @@ async def upsert_scores_to_vespa(
 
     upserts: list[tuple[str, int]] = []
     for pubkey, scorecard in grape_rank_result.scorecards.items():
-        if not VESPA_FULL_SYNC and pubkey not in changed_pubkeys:
+        if not settings.vespa_full_sync and pubkey not in changed_pubkeys:
             continue
         if round(scorecard.influence, 2) < settings.cutoff_of_valid_graperank_scores:
             continue
@@ -358,19 +346,24 @@ async def process_nostr_upload_message(message: dict):
     # TODO: generate a new nsec for the observer of the observer
     with _timed(timings, "nsec_lookup"):
         async with db_session() as db:
-            nsec_db_obj, _was_created_now = (
-                await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
-                    db, pubkey=observer
+            # Sub-timers to localise the (highly variable, 2-6s) nsec_lookup cost.
+            # Each still carries the _timed blind spot, but together they isolate
+            # which await dominates: the SELECT, the status UPDATE, or the commit.
+            with _timed(timings, "nsec_select"):
+                nsec_db_obj, _was_created_now = (
+                    await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
+                        db, pubkey=observer
+                    )
                 )
-            )
             assert nsec_db_obj.pubkey == observer
-            await update_brainstorm_request_ta_status_by_id_on_db(
-                db,
-                brainstorm_request_id=run_id,
-                status=BrainstormRequestStatus.ONGOING,
-            )
-
-            await db.commit()
+            with _timed(timings, "nsec_ta_update"):
+                await update_brainstorm_request_ta_status_by_id_on_db(
+                    db,
+                    brainstorm_request_id=run_id,
+                    status=BrainstormRequestStatus.ONGOING,
+                )
+            with _timed(timings, "nsec_commit"):
+                await db.commit()
 
     try:
         with _timed(timings, "connect"):
@@ -396,14 +389,14 @@ async def process_nostr_upload_message(message: dict):
                 if round(sc.influence, 2) >= settings.cutoff_of_valid_graperank_scores
             ]
 
-            if DELETE_ALL_BELOW_CUTOFF_EVENTS:
+            if settings.delete_all_below_cutoff_events:
                 pubkeys_to_delete = [
                     sc.observee
                     for sc in grape_rank_result.scorecards.values()
                     if round(sc.influence, 2) < settings.cutoff_of_valid_graperank_scores
                 ]
                 logger.info(
-                    f"DELETE_ALL_BELOW_CUTOFF_EVENTS=True: sweeping all "
+                    f"delete_all_below_cutoff_events=True: sweeping all "
                     f"{len(pubkeys_to_delete)} below-cutoff pubkeys "
                     f"instead of using droppedBelowCutoffPubkeys"
                 )

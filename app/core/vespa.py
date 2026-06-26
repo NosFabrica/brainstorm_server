@@ -40,29 +40,31 @@ PROFILE_FIELDS = (
 # How many query words we label / parametrize at most.
 MAX_QUERY_WORDS = 6
 
-# In-flight feed concurrency. Vespa's container advertises
-# SETTINGS_MAX_CONCURRENT_STREAMS=128 per HTTP/2 connection, which is what the
-# official vespa-feed-client uses as its default in-flight window. Over HTTP/2
-# these multiplex onto a couple of pooled connections instead of one TCP
-# connection per request (HTTP/1.1) — that multiplexing is the whole speedup.
-#
-# IMPORTANT — this is PER feeding process. Vespa (a single container) sees the
-# AGGREGATE across all concurrent feeders:
-#   in-flight @ Vespa = server_replicas * uvicorn_workers * VESPA_FEED_CONCURRENCY
-# Today there is exactly one feeder (server: 1 replica, uvicorn with no
-# --workers, MQ consumer feeds serially), so 128 is the aggregate. If the server
-# is ever scaled out (more replicas or --workers N), LOWER this env so the
-# aggregate stays ~128-256 — e.g. set VESPA_FEED_CONCURRENCY=128/feeders. It's
-# an env var precisely so this is a values-file change, no code rebuild.
-_BATCH_CONCURRENCY = int(os.getenv("VESPA_FEED_CONCURRENCY", "128"))
+# In-flight feed concurrency = number of SIMULTANEOUS connections, because the
+# Vespa cleartext endpoint serves HTTP/1.1 (h2c is not enabled, and httpx only
+# negotiates HTTP/2 via ALPN over TLS — see _HTTP2 below). There is NO stream
+# multiplexing, so each concurrent op needs its own TCP connection. Firing a big
+# burst of COLD connects stampedes Vespa's acceptor and trips the connect timeout:
+# measured locally, 128 cold connects dropped ~25-46% of ops; 32 dropped 0. Keep
+# this modest — within a run connections are reused (keepalive), so 32 pipelines
+# fine. Env-overridable (VESPA_FEED_CONCURRENCY), a values-file change, no rebuild.
+# If the server is scaled out, the aggregate across feeders is
+# replicas * uvicorn_workers * this — lower it accordingly.
+_BATCH_CONCURRENCY = int(os.getenv("VESPA_FEED_CONCURRENCY", "32"))
 
-# Use HTTP/2 for the document/feed endpoint (the vespa-feed-client mechanism:
-# stream multiplexing over a couple of pooled connections). Requires
-# httpx[http2] (h2). Escape hatch if an endpoint doesn't accept h2c.
-# No retry layer by design: score feeding is best-effort (failures are logged,
-# never raised) and the next GrapeRank calculation re-feeds everything, so a
-# transient failure self-heals on the following run.
+# HTTP/2 would let many ops multiplex over one connection (no cold-connect herd),
+# but httpx only negotiates h2 via ALPN over TLS; against the plaintext http://
+# Vespa endpoint it always uses HTTP/1.1 (confirmed empirically). So this toggle
+# is effectively a no-op until Vespa is served over TLS (https). Harmless — httpx
+# falls back to HTTP/1.1 over cleartext regardless of this flag.
 _HTTP2 = os.getenv("VESPA_HTTP2", "true").lower() not in ("0", "false", "no")
+
+# Cold-connect failures (the HTTP/1.1 herd above) are retried rather than dropped —
+# the retry lands on a now-warm connection and succeeds. This is what makes
+# feeding lossless. (Upserts/removes stay best-effort overall — a still-failing op
+# is logged, never raised, and the next GrapeRank run re-feeds it.)
+_CONNECT_RETRIES = int(os.getenv("VESPA_CONNECT_RETRIES", "3"))
+_RETRYABLE = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
 
 
 # ---------------------------------------------------------------------------
@@ -75,10 +77,12 @@ _client: httpx.AsyncClient | None = None
 def _build_client(http2: bool) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         http2=http2,
-        timeout=httpx.Timeout(30.0, connect=5.0),
+        # Short connect timeout: a healthy connect is <100ms, so a cold connect
+        # that stalls past this is abandoned fast and retried (_put_with_retry)
+        # onto a warm connection instead of blocking. Measured: connect=1 + conc=32
+        # + retries=3 = 256 ops lossless in ~0.33s. Read/write stays generous.
+        timeout=httpx.Timeout(30.0, connect=1.0),
         limits=httpx.Limits(
-            # Over HTTP/2 a handful of connections multiplex every in-flight
-            # stream; the pool stays generous so retries/keepalive are healthy.
             max_connections=200,
             max_keepalive_connections=100,
         ),
@@ -144,6 +148,22 @@ def _raise_with_context(
     response.raise_for_status()
 
 
+async def _put_with_retry(
+    url: str, *, params: dict | None = None, json: dict | None = None
+) -> httpx.Response:
+    """PUT, retrying only connect-level failures. 4xx/5xx responses are returned
+    as-is (they carry Vespa's reason and are handled by `_raise_with_context`)."""
+    client = _get_client()
+    for attempt in range(_CONNECT_RETRIES + 1):
+        try:
+            return await client.put(url, params=params, json=json)
+        except _RETRYABLE:
+            if attempt == _CONNECT_RETRIES:
+                raise
+            await asyncio.sleep(0.1 * (attempt + 1))
+    raise AssertionError("unreachable")  # loop either returns or raises
+
+
 # ---------------------------------------------------------------------------
 # document CRUD
 # ---------------------------------------------------------------------------
@@ -180,7 +200,7 @@ async def upsert_profile(pubkey: str, profile: dict) -> None:
     # under PUT, while POST is full-doc replace with direct values. `?create=true`
     # creates the doc from the partial update ops if it doesn't exist yet,
     # which preserves the quality_scores tensor across profile updates.
-    r = await _get_client().put(
+    r = await _put_with_retry(
         _doc_url(pubkey), params={"create": "true"}, json=body
     )
     _raise_with_context("upsert_profile", pubkey, body, r)
@@ -203,7 +223,7 @@ async def upsert_score(pubkey: str, observer: str, score: int) -> None:
             }
         }
     }
-    r = await _get_client().put(
+    r = await _put_with_retry(
         _doc_url(pubkey), params={"create": "true"}, json=body
     )
     _raise_with_context("upsert_score", pubkey, body, r)
@@ -218,7 +238,7 @@ async def remove_score(pubkey: str, observer: str) -> None:
             }
         }
     }
-    r = await _get_client().put(_doc_url(pubkey), json=body)
+    r = await _put_with_retry(_doc_url(pubkey), json=body)
     # 404 is fine — nothing to remove if the doc isn't there yet.
     if r.status_code == 404:
         return
@@ -240,6 +260,9 @@ async def batch_upsert_scores(
     if not upserts and not removes:
         return 0, 0
 
+    # No pre-warm: under HTTP/1.1 it only warms one of the ~conc connections, so it
+    # never prevented the cold-connect herd. Modest VESPA_FEED_CONCURRENCY + the
+    # connect-timeout/retry in _put_with_retry handle that (measured lossless).
     sem = asyncio.Semaphore(_BATCH_CONCURRENCY)
 
     async def _do_upsert(pubkey: str, score: int) -> None:
