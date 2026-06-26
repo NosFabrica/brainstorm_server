@@ -743,3 +743,68 @@ async def get_user_graph_data(
         reported_by=[UserConnection(**x) for x in record["reported_by"]],
         reporting=[UserConnection(**x) for x in record["reporting"]],
     )
+
+
+# ============================================================================
+# Open Ranking (ORE) helpers
+# ============================================================================
+
+
+async def batch_influence_for_pubkeys(
+    session: AsyncNeoDriver,
+    pubkeys: list[str],
+    observer_pubkey: str,
+) -> dict[str, float | None]:
+    """Return {pubkey -> influence_<observer_pubkey>} for every pubkey in
+    `pubkeys`. Unknown pubkeys and pubkeys with no influence property for the
+    given observer are mapped to None. Used by ORE-03 (POST /rank/pubkeys).
+    """
+    if not pubkeys:
+        return {}
+
+    influence_key = f"influence_{observer_pubkey}"
+    query = """
+    UNWIND $pubkeys AS pk
+    OPTIONAL MATCH (user:NostrUser {pubkey: pk})
+    RETURN pk AS pubkey, user[$influence_key] AS influence
+    """
+    result = await session.run(
+        query, pubkeys=pubkeys, influence_key=influence_key
+    )
+    out: dict[str, float | None] = {pk: None for pk in pubkeys}
+    async for record in result:
+        out[record["pubkey"]] = record["influence"]
+    return out
+
+
+async def get_top_inbound_by_influence(
+    session: AsyncNeoDriver,
+    pubkey: str,
+    observer_pubkey: str,
+    relation: str,
+    limit: int,
+) -> list[UserConnection]:
+    """Top `limit` users with an incoming `relation` edge into `pubkey`,
+    sorted by `influence_<observer_pubkey>` DESC, pubkey ASC. Users with no
+    influence property for the observer get sort value -1 (last).
+
+    Used by ORE-06 (relation=FOLLOWS) and ORE-07 (relation=MUTES).
+    """
+    if relation not in ("FOLLOWS", "MUTES", "REPORTS"):
+        raise ValueError(f"Unsupported relation: {relation}")
+
+    influence_key = f"influence_{observer_pubkey}"
+    query = f"""
+    MATCH (other:NostrUser)-[:{relation}]->(user:NostrUser {{pubkey: $pubkey}})
+    WITH other, coalesce(other[$influence_key], -1.0) AS sort_inf
+    RETURN other.pubkey AS pubkey, other[$influence_key] AS influence
+    ORDER BY sort_inf DESC, other.pubkey ASC
+    LIMIT $limit
+    """
+    result = await session.run(
+        query, pubkey=pubkey, influence_key=influence_key, limit=int(limit)
+    )
+    return [
+        UserConnection(pubkey=record["pubkey"], influence=record["influence"])
+        async for record in result
+    ]
