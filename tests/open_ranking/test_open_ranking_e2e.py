@@ -1,0 +1,462 @@
+"""End-to-end tests for the Open Ranking endpoints.
+
+These boot a FastAPI app, route a real HTTP request through ASGI, and verify
+the response per the ORE specs. The Neo4j / Redis / Vespa boundaries are
+patched at import sites in the open_ranking router modules so the suite is
+deterministic and infra-free.
+"""
+
+from __future__ import annotations
+
+import time
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from nostr_sdk import Keys
+
+from tests.conftest import make_nwt
+
+
+VALID_PUBKEY_1 = "a" * 64
+VALID_PUBKEY_2 = "b" * 64
+VALID_PUBKEY_3 = "c" * 64
+POV_PUBKEY = "d" * 64
+INVALID_PUBKEY = "not-a-valid-pubkey"
+
+
+# ===========================================================================
+# ORE-01: Capability document
+# ===========================================================================
+class TestCapabilityDocument:
+    def test_well_known_returns_capability_doc(self, client):
+        r = client.get("/.well-known/open-ranking.json")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/json")
+        body = r.json()
+        # All implemented endpoints MUST be advertised.
+        for path in (
+            "/stats/pubkey",
+            "/rank/pubkeys",
+            "/search/pubkeys",
+            "/followers",
+            "/muters",
+        ):
+            assert path in body, f"capability doc missing {path}"
+            assert isinstance(body[path], list) and body[path]
+            for algo in body[path]:
+                assert "id" in algo
+
+    def test_capability_doc_cors_header_present(self, client):
+        r = client.get(
+            "/.well-known/open-ranking.json",
+            headers={"Origin": "https://nostr.example"},
+        )
+        assert r.headers.get("access-control-allow-origin") == "*"
+
+    def test_options_preflight_on_stats(self, client):
+        r = client.options(
+            "/stats/pubkey",
+            headers={
+                "Origin": "https://nostr.example",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        # Per ORE-00, providers MUST handle OPTIONS preflight with 200.
+        assert r.status_code == 200
+        assert r.headers.get("access-control-allow-origin") == "*"
+
+
+# ===========================================================================
+# ORE-02: /stats/pubkey
+# ===========================================================================
+def _fake_overview(influence: float | None = 0.42):
+    from app.schemas.schemas import UserConnectionCounts, UserOverviewData
+
+    return UserOverviewData(
+        pubkey=VALID_PUBKEY_1,
+        influence=influence,
+        flagged_by_observer=False,
+        flagged_count=0,
+        counts=UserConnectionCounts(
+            followed_by=10, following=20, muted_by=1, muting=2, reported_by=3, reporting=4,
+        ),
+    )
+
+
+class TestStatsPubkey:
+    def test_happy_path_global_algorithm(self, client, auth_headers):
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview",
+            new=AsyncMock(return_value=_fake_overview(0.42)),
+        ):
+            r = client.post(
+                "/stats/pubkey", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["pubkey"] == VALID_PUBKEY_1
+        assert body["rank"] == pytest.approx(0.42)
+        assert body["follows"] == 20
+        assert body["followers"] == 10
+        assert body["mutes"] == 2
+        assert body["muters"] == 1
+        assert body["reports"] == 4
+        assert body["reporters"] == 3
+        assert isinstance(body["ttl"], int) and body["ttl"] > 0
+
+    def test_null_influence_becomes_zero_rank(self, client, auth_headers):
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview",
+            new=AsyncMock(return_value=_fake_overview(None)),
+        ):
+            r = client.post(
+                "/stats/pubkey", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
+            )
+        assert r.status_code == 200
+        assert r.json()["rank"] == 0.0
+
+    def test_invalid_pubkey_returns_422(self, client, auth_headers):
+        r = client.post(
+            "/stats/pubkey", json={"pubkey": INVALID_PUBKEY}, headers=auth_headers,
+        )
+        assert r.status_code == 422
+
+    def test_pov_required_when_algorithm_is_personalized(self, client, auth_headers):
+        # graperank-pov requires a pov pubkey per the capability doc.
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1, "algorithm": "graperank-pov"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+        assert "pov" in r.text.lower()
+
+    def test_unsupported_algorithm_returns_422(self, client, auth_headers):
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1, "algorithm": "made-up-algo"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+
+    def test_personalized_algorithm_uses_pov_as_observer(self, client, auth_headers):
+        observed = {}
+
+        async def _capture(*, pubkey, observer):
+            observed["pubkey"] = pubkey
+            observed["observer"] = observer
+            return _fake_overview(0.9)
+
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={
+                    "pubkey": VALID_PUBKEY_1,
+                    "algorithm": "graperank-pov",
+                    "pov": POV_PUBKEY,
+                },
+                headers=auth_headers,
+            )
+        assert r.status_code == 200
+        assert observed == {"pubkey": VALID_PUBKEY_1, "observer": POV_PUBKEY}
+
+
+# ===========================================================================
+# ORE-03: /rank/pubkeys
+# ===========================================================================
+class TestRankPubkeys:
+    def test_happy_path_default_limit_and_sorting(self, client, auth_headers):
+        async def fake_batch(session, pubkeys, observer):
+            return {
+                VALID_PUBKEY_1: 0.1,
+                VALID_PUBKEY_2: 0.9,
+                VALID_PUBKEY_3: None,  # unknown -> coerced to 0.0
+            }
+
+        with patch(
+            "app.routers.open_ranking.rank.batch_influence_for_pubkeys",
+            new=fake_batch,
+        ), patch("app.routers.open_ranking.rank.neo4j_driver"):
+            r = client.post(
+                "/rank/pubkeys",
+                json={"pubkeys": [VALID_PUBKEY_1, VALID_PUBKEY_2, VALID_PUBKEY_3]},
+                headers=auth_headers,
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        results = body["results"]
+        # Length = number of input pubkeys when no limit given.
+        assert len(results) == 3
+        # Sorted by rank DESC.
+        ranks = [r["rank"] for r in results]
+        assert ranks == sorted(ranks, reverse=True)
+        # Unknown pubkey is present and ranked 0.
+        unknown = next(x for x in results if x["pubkey"] == VALID_PUBKEY_3)
+        assert unknown["rank"] == 0.0
+
+    def test_limit_clamped_to_requested(self, client, auth_headers):
+        async def fake_batch(session, pubkeys, observer):
+            return {pk: 0.5 for pk in pubkeys}
+
+        with patch(
+            "app.routers.open_ranking.rank.batch_influence_for_pubkeys",
+            new=fake_batch,
+        ), patch("app.routers.open_ranking.rank.neo4j_driver"):
+            r = client.post(
+                "/rank/pubkeys",
+                json={
+                    "pubkeys": [VALID_PUBKEY_1, VALID_PUBKEY_2, VALID_PUBKEY_3],
+                    "limit": 2,
+                },
+                headers=auth_headers,
+            )
+        assert r.status_code == 200
+        assert len(r.json()["results"]) == 2
+
+    def test_empty_pubkeys_returns_422(self, client, auth_headers):
+        r = client.post("/rank/pubkeys", json={"pubkeys": []}, headers=auth_headers)
+        assert r.status_code == 422
+
+    def test_invalid_limit_returns_422(self, client, auth_headers):
+        r = client.post(
+            "/rank/pubkeys",
+            json={"pubkeys": [VALID_PUBKEY_1], "limit": 0},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+
+    def test_oversize_batch_returns_413(self, client, auth_headers):
+        big = [f"{i:064x}" for i in range(1001)]
+        r = client.post("/rank/pubkeys", json={"pubkeys": big}, headers=auth_headers)
+        assert r.status_code == 413
+
+    def test_bad_pubkey_in_list_returns_422(self, client, auth_headers):
+        r = client.post(
+            "/rank/pubkeys",
+            json={"pubkeys": [VALID_PUBKEY_1, INVALID_PUBKEY]},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+
+
+# ===========================================================================
+# ORE-05: /search/pubkeys
+# ===========================================================================
+class TestSearchPubkeys:
+    def test_happy_path(self, client, auth_headers):
+        async def fake_search(query_text, user_pubkey, hits, include_zero_score_results):
+            return [
+                {"pubkey": VALID_PUBKEY_1, "_quality_score": 0.91},
+                {"pubkey": VALID_PUBKEY_2, "_quality_score": 0.45},
+            ]
+
+        with patch("app.routers.open_ranking.search.vespa_search", new=fake_search):
+            r = client.post(
+                "/search/pubkeys", json={"query": "jack"}, headers=auth_headers,
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert [x["pubkey"] for x in body["results"]] == [VALID_PUBKEY_1, VALID_PUBKEY_2]
+        assert body["results"][0]["rank"] == pytest.approx(0.91)
+
+    def test_empty_query_returns_422(self, client, auth_headers):
+        r = client.post("/search/pubkeys", json={"query": ""}, headers=auth_headers)
+        assert r.status_code == 422
+
+    def test_query_too_long_returns_422(self, client, auth_headers):
+        r = client.post(
+            "/search/pubkeys", json={"query": "x" * 513}, headers=auth_headers,
+        )
+        assert r.status_code == 422
+
+
+# ===========================================================================
+# ORE-06 / ORE-07: /followers and /muters
+# ===========================================================================
+def _fake_top_inbound():
+    from app.schemas.schemas import UserConnection
+
+    return [
+        UserConnection(pubkey=VALID_PUBKEY_2, influence=0.91),
+        UserConnection(pubkey=VALID_PUBKEY_3, influence=0.50),
+    ]
+
+
+class TestFollowersMuters:
+    def test_followers_happy_path(self, client, auth_headers):
+        with patch(
+            "app.routers.open_ranking.followers_muters.get_top_inbound_by_influence",
+            new=AsyncMock(return_value=_fake_top_inbound()),
+        ), patch(
+            "app.routers.open_ranking.followers_muters.neo4j_driver"
+        ), patch(
+            "app.routers.open_ranking.followers_muters._redis_inbound_count",
+            new=AsyncMock(return_value=1234),
+        ):
+            r = client.post(
+                "/followers", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["total"] == 1234
+        assert [x["pubkey"] for x in body["results"]] == [VALID_PUBKEY_2, VALID_PUBKEY_3]
+        assert body["results"][0]["rank"] == pytest.approx(0.91)
+
+    def test_muters_happy_path(self, client, auth_headers):
+        with patch(
+            "app.routers.open_ranking.followers_muters.get_top_inbound_by_influence",
+            new=AsyncMock(return_value=_fake_top_inbound()),
+        ), patch(
+            "app.routers.open_ranking.followers_muters.neo4j_driver"
+        ), patch(
+            "app.routers.open_ranking.followers_muters._redis_inbound_count",
+            new=AsyncMock(return_value=42),
+        ):
+            r = client.post(
+                "/muters", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
+            )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 42
+
+    def test_invalid_pubkey_returns_422(self, client, auth_headers):
+        r = client.post(
+            "/followers", json={"pubkey": INVALID_PUBKEY}, headers=auth_headers,
+        )
+        assert r.status_code == 422
+
+    def test_invalid_limit_returns_422(self, client, auth_headers):
+        r = client.post(
+            "/followers",
+            json={"pubkey": VALID_PUBKEY_1, "limit": -5},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+
+
+# ===========================================================================
+# ORE-A: NWT authentication
+# ===========================================================================
+class TestNWTAuth:
+    """Auth is now mandatory on every data endpoint; the expected `aud` is
+    derived from settings.public_base_url (set to http://localhost:8000 in
+    the test env, so the audience is `localhost` — see tests.conftest.TEST_AUD).
+    """
+
+    def test_missing_authorization_returns_401(self, client):
+        r = client.post("/stats/pubkey", json={"pubkey": VALID_PUBKEY_1})
+        assert r.status_code == 401
+        assert r.headers.get("x-reason")
+
+    def test_valid_nwt_lets_request_through(self, client):
+        token, _pk = make_nwt()  # aud defaults to TEST_AUD
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview",
+            new=AsyncMock(return_value=_fake_overview(0.5)),
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={"pubkey": VALID_PUBKEY_1},
+                headers={"Authorization": f"Nostr {token}"},
+            )
+        assert r.status_code == 200, r.text
+
+    def test_wrong_audience_rejected(self, client):
+        token, _pk = make_nwt(aud="other-provider.example")
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1},
+            headers={"Authorization": f"Nostr {token}"},
+        )
+        assert r.status_code == 403
+        assert "aud" in r.headers.get("x-reason", "").lower()
+
+    def test_expired_token_rejected(self, client):
+        # Well outside the 60s skew window so the rejection is unambiguous.
+        token, _pk = make_nwt(exp=int(time.time()) - 600)
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1},
+            headers={"Authorization": f"Nostr {token}"},
+        )
+        assert r.status_code == 403
+        assert "exp" in r.headers.get("x-reason", "").lower()
+
+    def test_wrong_kind_rejected(self, client):
+        token, _pk = make_nwt(kind=1)
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1},
+            headers={"Authorization": f"Nostr {token}"},
+        )
+        assert r.status_code == 401
+
+    def test_garbage_token_rejected(self, client):
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1},
+            headers={"Authorization": "Nostr not-base64!@#"},
+        )
+        assert r.status_code == 401
+
+    def test_capability_doc_remains_public(self, client):
+        # ORE-01: discovery MUST work without auth.
+        r = client.get("/.well-known/open-ranking.json")
+        assert r.status_code == 200
+
+    def test_multi_aud_token_accepted_when_one_matches(self, client):
+        from tests.conftest import TEST_AUD
+
+        token, _pk = make_nwt(
+            aud=["other-provider.example", TEST_AUD, "third.example"]
+        )
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview",
+            new=AsyncMock(return_value=_fake_overview(0.5)),
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={"pubkey": VALID_PUBKEY_1},
+                headers={"Authorization": f"Nostr {token}"},
+            )
+        assert r.status_code == 200, r.text
+
+    def test_token_without_aud_rejected(self, client):
+        token, _pk = make_nwt(aud=None)
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1},
+            headers={"Authorization": f"Nostr {token}"},
+        )
+        assert r.status_code == 403
+        assert "aud" in r.headers.get("x-reason", "").lower()
+
+    def test_nbf_in_future_rejected(self, client):
+        # nbf 10 minutes ahead — well outside the 60s clock-skew tolerance.
+        future_nbf = int(time.time()) + 600
+        token, _pk = make_nwt(nbf=future_nbf)
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1},
+            headers={"Authorization": f"Nostr {token}"},
+        )
+        assert r.status_code == 403
+        assert "nbf" in r.headers.get("x-reason", "").lower()
+
+    def test_exp_within_skew_tolerated(self, client):
+        # Token expired 5 seconds ago — inside the 60s allowed skew, so still
+        # accepted. Defends against tight clock drift between client/server.
+        token, _pk = make_nwt(exp=int(time.time()) - 5)
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview",
+            new=AsyncMock(return_value=_fake_overview(0.5)),
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={"pubkey": VALID_PUBKEY_1},
+                headers={"Authorization": f"Nostr {token}"},
+            )
+        assert r.status_code == 200, r.text

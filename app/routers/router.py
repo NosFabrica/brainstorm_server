@@ -6,6 +6,7 @@ from app.core.database import get_db
 from app.routers.admin.router import router as admin_router
 from app.routers.auth_challenge.router import router as auth_challenge_router
 from app.routers.graperank.router import router as graperank_router
+from app.routers.open_ranking.router import router as open_ranking_router
 from app.routers.search.router import router as search_router
 from app.routers.setup.router import router as setup_router
 from app.routers.user.router import router as user_router
@@ -21,6 +22,15 @@ from app.utils.api_validators import verify_token
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 router = APIRouter()
+
+# Open Ranking provider (OREs 01/02/03/05/06/07). Mounted at root because the
+# protocol mandates exact paths (e.g. /.well-known/open-ranking.json,
+# /stats/pubkey, /rank/pubkeys, ...). Authentication is currently optional;
+# ORE-A (NWT) wiring lives in a follow-up phase.
+router.include_router(
+    router=open_ranking_router,
+    tags=["open-ranking"],
+)
 
 ADMIN_ROUTER_PREFIX = "/admin"
 
