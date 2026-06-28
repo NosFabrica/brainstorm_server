@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.user_repo import batch_influence_for_pubkeys
@@ -21,6 +21,7 @@ from app.routers.open_ranking.schemas import (
     RankPubkeysResponse,
     RankResult,
 )
+from app.utils.auth.nwt import optional_nwt_signer
 
 
 router = APIRouter()
@@ -43,7 +44,10 @@ def _safe_rank(value) -> float:
     response_model=RankPubkeysResponse,
     summary="ORE-03: rank a batch of pubkeys",
 )
-async def rank_pubkeys(req: RankPubkeysRequest) -> RankPubkeysResponse:
+async def rank_pubkeys(
+    req: RankPubkeysRequest,
+    signer: str | None = Depends(optional_nwt_signer),
+) -> RankPubkeysResponse:
     # 413 must fire BEFORE per-element validation (avoid 1000+ regex passes
     # for an oversize payload).
     if isinstance(req.pubkeys, list):
@@ -53,7 +57,9 @@ async def rank_pubkeys(req: RankPubkeysRequest) -> RankPubkeysResponse:
     pov = validate_pubkey(req.pov, "pov") if req.pov else None
     limit = validate_positive_limit(req.limit)
 
-    _algo_id, observer = resolve_algorithm("/rank/pubkeys", req.algorithm, pov)
+    _algo_id, observer = resolve_algorithm(
+        "/rank/pubkeys", req.algorithm, pov, forced_observer=signer
+    )
 
     # Default limit = number of pubkeys. Silently clamp larger limits down
     # (per ORE-03 §"limit").

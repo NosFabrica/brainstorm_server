@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.vespa import search as vespa_search
 from app.routers.open_ranking.capabilities import resolve_algorithm
@@ -20,6 +20,7 @@ from app.routers.open_ranking.schemas import (
     SearchPubkeysRequest,
     SearchPubkeysResponse,
 )
+from app.utils.auth.nwt import optional_nwt_signer
 
 
 router = APIRouter()
@@ -49,7 +50,10 @@ def _safe_rank(value) -> float:
     response_model=SearchPubkeysResponse,
     summary="ORE-05: search Nostr profiles by free-form text",
 )
-async def search_pubkeys(req: SearchPubkeysRequest) -> SearchPubkeysResponse:
+async def search_pubkeys(
+    req: SearchPubkeysRequest,
+    signer: str | None = Depends(optional_nwt_signer),
+) -> SearchPubkeysResponse:
     if not isinstance(req.query, str) or not req.query.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -64,7 +68,9 @@ async def search_pubkeys(req: SearchPubkeysRequest) -> SearchPubkeysResponse:
     pov = validate_pubkey(req.pov, "pov") if req.pov else None
     limit = validate_positive_limit(req.limit, max_value=MAX_LIMIT) or DEFAULT_LIMIT
 
-    _algo_id, observer = resolve_algorithm("/search/pubkeys", req.algorithm, pov)
+    _algo_id, observer = resolve_algorithm(
+        "/search/pubkeys", req.algorithm, pov, forced_observer=signer
+    )
     sanitized = _SANITIZE_RE.sub("", req.query).strip()
 
     # Vespa returns documents with `_quality_score` (the observer's score for

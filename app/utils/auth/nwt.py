@@ -177,11 +177,20 @@ def _extract_nwt_from_header(request: Request) -> Optional[str]:
     return token.strip()
 
 
-async def verify_nwt(request: Request) -> str:
-    """FastAPI dependency: REQUIRE a valid NWT, return the signer pubkey.
+async def optional_nwt_signer(request: Request) -> Optional[str]:
+    """FastAPI dependency honouring `settings.open_ranking_require_auth`.
 
-    Every Open Ranking endpoint depends on this — there is no anonymous mode.
+    - Auth enforced (flag True): REQUIRE a valid NWT and return the signer's
+      pubkey. Handlers force the observer perspective to this pubkey, so a
+      caller can only ever query their own scores.
+    - Open mode (flag False): return None. No NWT is required; handlers fall
+      back to the public global observer plus any client-supplied `pov`.
+
+    Returning the signer (or None) lets each handler decide how to resolve the
+    observer without re-reading the header.
     """
+    if not settings.open_ranking_require_auth:
+        return None
     token = _extract_nwt_from_header(request)
     if not token:
         raise _unauthorized("Missing Authorization: Nostr <token> header")

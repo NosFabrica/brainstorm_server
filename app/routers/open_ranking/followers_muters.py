@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import math
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.core.redis_db import redis_client
 from app.message_queue_tasks.process_strfry_event import (
@@ -29,6 +29,7 @@ from app.routers.open_ranking.schemas import (
     FollowersOrMutersResponse,
     RankResult,
 )
+from app.utils.auth.nwt import optional_nwt_signer
 
 
 router = APIRouter()
@@ -58,12 +59,15 @@ async def _top_inbound_response(
     relation: str,
     redis_prefix: str,
     req: FollowersOrMutersRequest,
+    signer: str | None,
 ) -> FollowersOrMutersResponse:
     pubkey = validate_pubkey(req.pubkey, "pubkey")
     pov = validate_pubkey(req.pov, "pov") if req.pov else None
     limit = validate_positive_limit(req.limit) or DEFAULT_LIMIT
 
-    _algo_id, observer = resolve_algorithm(endpoint, req.algorithm, pov)
+    _algo_id, observer = resolve_algorithm(
+        endpoint, req.algorithm, pov, forced_observer=signer
+    )
 
     # Fire the graph query and the Redis total count in parallel.
     async def _fetch_top() -> list:
@@ -94,12 +98,16 @@ async def _top_inbound_response(
     response_model=FollowersOrMutersResponse,
     summary="ORE-06: top-ranked followers of a pubkey",
 )
-async def followers(req: FollowersOrMutersRequest) -> FollowersOrMutersResponse:
+async def followers(
+    req: FollowersOrMutersRequest,
+    signer: str | None = Depends(optional_nwt_signer),
+) -> FollowersOrMutersResponse:
     return await _top_inbound_response(
         endpoint="/followers",
         relation="FOLLOWS",
         redis_prefix=FOLLOWED_BY_KEY_PREFIX,
         req=req,
+        signer=signer,
     )
 
 
@@ -108,10 +116,14 @@ async def followers(req: FollowersOrMutersRequest) -> FollowersOrMutersResponse:
     response_model=FollowersOrMutersResponse,
     summary="ORE-07: top-ranked muters of a pubkey",
 )
-async def muters(req: FollowersOrMutersRequest) -> FollowersOrMutersResponse:
+async def muters(
+    req: FollowersOrMutersRequest,
+    signer: str | None = Depends(optional_nwt_signer),
+) -> FollowersOrMutersResponse:
     return await _top_inbound_response(
         endpoint="/muters",
         relation="MUTES",
         redis_prefix=MUTED_BY_KEY_PREFIX,
         req=req,
+        signer=signer,
     )

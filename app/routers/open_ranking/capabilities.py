@@ -81,6 +81,7 @@ def resolve_algorithm(
     endpoint: str,
     requested: str | None,
     pov: str | None,
+    forced_observer: str | None = None,
 ) -> tuple[str, str]:
     """Apply ORE-01 algorithm-selection rules and return
     `(algorithm_id, observer_pubkey)`.
@@ -89,6 +90,12 @@ def resolve_algorithm(
     - If `requested` is not supported by the endpoint, raise 422.
     - If the chosen algorithm requires a pov and none was provided, raise 422.
     - For global algorithms, the observer is the provider's default observer.
+
+    `forced_observer` is set when the provider runs in authenticated mode
+    (`settings.open_ranking_require_auth`): the observer is ALWAYS the
+    authenticated signer, so `pov` is ignored and a pov-requiring algorithm no
+    longer needs an explicit `pov`. The algorithm id is still validated so an
+    unsupported `algorithm` keeps returning 422.
 
     Errors are signalled per the ORE error tables (HTTP 422 with an X-Reason
     header attached upstream by the router layer).
@@ -113,6 +120,11 @@ def resolve_algorithm(
                     f"Algorithm '{requested}' is not supported by {endpoint}"
                 ),
             )
+
+    # Authenticated mode: the signer's own perspective overrides everything.
+    # pov is ignored and pov-requiring algorithms don't need an explicit pov.
+    if forced_observer is not None:
+        return algo["id"], forced_observer
 
     if algo.get("pov"):
         if not pov:
