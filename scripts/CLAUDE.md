@@ -31,6 +31,34 @@ Smoke test for `/admin/nsec-encryption/rotate` + `/verify`:
 
 Run after touching `app/services/nsec_encryption_service.py` or `app/utils/encryption.py`.
 
+### Search testing helpers (`search_*.sh`, `search_open_ranking.py`)
+
+Ad-hoc tools for poking the three search surfaces against a **deployed** host
+(default: staging). The `.sh` ones are stdlib-only (curl/websocat/python3) and
+need **no `.env`**; override the target via `BRAINSTORM_HTTP` / `BRAINSTORM_WS`.
+
+- **`search_http.sh "<query>" [maxHits] [--all] [--tsv]`** — `GET /search/byText`
+  (the default-observer path the UI uses logged-out). Prints rank order with
+  `_relevance` + `_quality_score` so you can see *why* it ordered that way.
+- **`search_nip50.sh "<search string>" [limit] [--tsv]`** — drives the NIP-50
+  relay over a websocket. Put NIP-50 tokens in the search string to test them:
+  `observer:<hex>` (rank POV), `sort:rank:desc|asc`, `filter:rank:gte:N`.
+- **`search_compare.sh "<query>" [limit]`** — runs the HTTP + NIP-50 paths for
+  the same query and prints them side by side, flagging divergence. Both share
+  `app.core.vespa.search`, so a plain query matches; divergence means the NIP-50
+  side resolved a different observer or a sort/filter profile. See
+  `docs/search-trust-vs-exact-match.md`.
+- **`search_open_ranking.sh "<query>" [limit] [--pov <hex>] [--algo <id>]`** —
+  ORE-05 `POST /search/pubkeys`, **unsigned** (ORE-05 auth is optional and
+  currently off). Stdlib-only. `--pov` only matters with a *personalized*
+  algorithm, so it auto-selects `name-trust-pov` (the default `name-trust` is
+  global and ignores pov per ORE-01).
+- **`search_open_ranking.py --query <q> [--pov <hex>] [--algo <id>] [--sign|--nsec ...]`**
+  — same endpoint, but can **sign** an NWT so the observer = signer. Observer
+  priority: signer (when signed) → `--pov` (auto `name-trust-pov`) → server
+  default. Needs `requests` + `nostr-sdk` (poetry env), like
+  `smoke_open_ranking.py`; no `.env` required.
+
 ## When to add a new script
 
 Add one if:
