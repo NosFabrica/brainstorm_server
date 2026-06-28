@@ -258,8 +258,16 @@ def _about_gram_clause_for_word(word: str, gram_size: int = 3) -> str:
 
 
 def _word_max_edits(word: str) -> int:
-    """Per-word fuzzy budget — 0 for very short words, up to 2 for longer ones."""
-    return 0 if len(word) < 3 else (1 if len(word) < 6 else 2)
+    """Per-word fuzzy budget. Capped at a single edit, and only for words long
+    enough that a 1-char typo is plausible rather than a different word.
+
+    We deliberately do NOT allow 2 edits: at distance 2 the candidate set
+    explodes (an 8-char name matches hundreds of unrelated names) and, because
+    Vespa's matchCount() counts a fuzzy match the same as an exact one, those
+    neighbours score identically to genuine matches — which is what made exact
+    matching "suffer". See docs/search-precision-and-filtering.md (Problem 1).
+    """
+    return 1 if len(word) >= 4 else 0
 
 
 def _field_clauses(field: str, var: str, max_edits: int) -> list[str]:
@@ -269,7 +277,7 @@ def _field_clauses(field: str, var: str, max_edits: int) -> list[str]:
     ]
     if max_edits > 0:
         parts.append(
-            f'({{defaultIndex:"{field}",fuzzy:{{maxEditDistance:{max_edits},prefixLength:1}}}}userInput({var}))'
+            f'({{defaultIndex:"{field}",fuzzy:{{maxEditDistance:{max_edits},prefixLength:2}}}}userInput({var}))'
         )
     return parts
 
@@ -277,6 +285,9 @@ def _field_clauses(field: str, var: str, max_edits: int) -> list[str]:
 def _word_group(var: str, literal: str, with_grams: bool = True) -> str:
     """All match clauses for one query word across name/display_name/about + grams."""
     me = _word_max_edits(literal)
+        # prefixLength:2 — the first two characters must match exactly, so a
+        # typo in char >=3 is corrected but a wrong first/second letter no
+        # longer drags in unrelated names. See the precision doc (Problem 1).
     clauses: list[str] = []
     for field in ("name", "display_name", "about"):
         clauses += _field_clauses(field, var, me)
@@ -322,7 +333,11 @@ async def search(
     words = query_text.split()[:MAX_QUERY_WORDS]
     joined = "".join(words) if len(words) >= 2 else None
     shortest = min((len(w) for w in words), default=len(query_text))
-    w_gram = 20.0 if shortest <= 3 else 5.0
+    # Trigrams are a recall safety-net + tie-breaker, not a primary ranker.
+    # Keep them meaningful for very short queries (where token matching barely
+    # fires) but well below an exact token match otherwise. The schema also
+    # caps the per-field gram contribution via query(gram_cap). See Problem 1.
+    w_gram = 8.0 if shortest <= 3 else 2.0
 
     vespa_hits = max(hits, 20)
     if not include_zero_score_results:
