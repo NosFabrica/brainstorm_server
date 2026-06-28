@@ -341,10 +341,20 @@ class TestFollowersMuters:
 # ORE-A: NWT authentication
 # ===========================================================================
 class TestNWTAuth:
-    """Auth is now mandatory on every data endpoint; the expected `aud` is
-    derived from settings.public_base_url (set to http://localhost:8000 in
-    the test env, so the audience is `localhost` — see tests.conftest.TEST_AUD).
+    """NWT enforcement when `settings.open_ranking_require_auth` is True. The
+    expected `aud` is derived from settings.public_base_url (set to
+    http://localhost:8000 in the test env, so the audience is `localhost` —
+    see tests.conftest.TEST_AUD).
+
+    The provider default is OPEN (auth off); this class flips the flag on for
+    its lifetime via the autouse fixture below.
     """
+
+    @pytest.fixture(autouse=True)
+    def _enable_auth(self, monkeypatch):
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "open_ranking_require_auth", True)
 
     def test_missing_authorization_returns_401(self, client):
         r = client.post("/stats/pubkey", json={"pubkey": VALID_PUBKEY_1})
@@ -460,3 +470,139 @@ class TestNWTAuth:
                 headers={"Authorization": f"Nostr {token}"},
             )
         assert r.status_code == 200, r.text
+
+
+# Default observer = PERIODIC_GRAPERANK_PUBKEY in the test env (conftest).
+DEFAULT_OBSERVER = "be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
+
+
+# ===========================================================================
+# Open mode (settings.open_ranking_require_auth is False — the provider default)
+# ===========================================================================
+class TestOpenModeNoAuth:
+    """With auth disabled (the default), data endpoints are reachable without
+    any NWT and resolve the observer per ORE-01 (global -> default observer,
+    personalized -> client `pov`).
+    """
+
+    def test_request_without_token_succeeds(self, client):
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview",
+            new=AsyncMock(return_value=_fake_overview(0.5)),
+        ):
+            r = client.post("/stats/pubkey", json={"pubkey": VALID_PUBKEY_1})
+        assert r.status_code == 200, r.text
+
+    def test_open_mode_uses_default_observer_for_global_algorithm(self, client):
+        observed = {}
+
+        async def _capture(*, pubkey, observer):
+            observed["observer"] = observer
+            return _fake_overview(0.5)
+
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+        ):
+            r = client.post("/stats/pubkey", json={"pubkey": VALID_PUBKEY_1})
+        assert r.status_code == 200, r.text
+        assert observed["observer"] == DEFAULT_OBSERVER
+
+    def test_open_mode_honours_client_pov(self, client):
+        observed = {}
+
+        async def _capture(*, pubkey, observer):
+            observed["observer"] = observer
+            return _fake_overview(0.5)
+
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={
+                    "pubkey": VALID_PUBKEY_1,
+                    "algorithm": "graperank-pov",
+                    "pov": POV_PUBKEY,
+                },
+            )
+        assert r.status_code == 200, r.text
+        assert observed["observer"] == POV_PUBKEY
+
+
+# ===========================================================================
+# Auth mode: the observer is ALWAYS the signer (own-scores-only guarantee)
+# ===========================================================================
+class TestAuthModeForcesOwnObserver:
+    """When auth is enabled, the signer's own pubkey is forced as the observer
+    for every query — a client-supplied `pov` cannot be used to read another
+    observer's scores.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _enable_auth(self, monkeypatch):
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "open_ranking_require_auth", True)
+
+    def test_pov_is_ignored_and_observer_is_signer(self, client):
+        token, signer = make_nwt()
+        observed = {}
+
+        async def _capture(*, pubkey, observer):
+            observed["observer"] = observer
+            return _fake_overview(0.5)
+
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={
+                    "pubkey": VALID_PUBKEY_1,
+                    "algorithm": "graperank-pov",
+                    "pov": POV_PUBKEY,
+                },
+                headers={"Authorization": f"Nostr {token}"},
+            )
+        assert r.status_code == 200, r.text
+        # pov (POV_PUBKEY) is ignored — the signer is the observer.
+        assert observed["observer"] == signer
+
+    def test_global_algorithm_also_forced_to_signer(self, client):
+        token, signer = make_nwt()
+        observed = {}
+
+        async def _capture(*, pubkey, observer):
+            observed["observer"] = observer
+            return _fake_overview(0.5)
+
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={"pubkey": VALID_PUBKEY_1},  # default (global) algorithm
+                headers={"Authorization": f"Nostr {token}"},
+            )
+        assert r.status_code == 200, r.text
+        assert observed["observer"] == signer
+
+    def test_pov_algorithm_without_pov_is_accepted(self, client):
+        # In auth mode the pov requirement is moot — the signer is the observer.
+        token, signer = make_nwt()
+        observed = {}
+
+        async def _capture(*, pubkey, observer):
+            observed["observer"] = observer
+            return _fake_overview(0.5)
+
+        with patch(
+            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={"pubkey": VALID_PUBKEY_1, "algorithm": "graperank-pov"},
+                headers={"Authorization": f"Nostr {token}"},
+            )
+        assert r.status_code == 200, r.text
+        assert observed["observer"] == signer
