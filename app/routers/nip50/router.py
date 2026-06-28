@@ -28,8 +28,16 @@ from fastapi import APIRouter, Header, Request, Response, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from app.core.config import settings
+from app.core.database import db_session
 from app.core.loggr import loggr
+from app.core.redis_db import get_redis_client
+from app.core.vespa import (
+    RANK_PROFILE_FILTERED,
+    RANK_PROFILE_SORT_ASC,
+    RANK_PROFILE_SORT_DESC,
+)
 from app.core.vespa import search as vespa_search
+from app.services.brainstorm_pubkey_service import get_or_create_brainstorm_pubkey
 from app.utils.observer import default_observer_pubkey
 
 logger = loggr.get_logger(__name__)
@@ -46,9 +54,45 @@ DEFAULT_HITS = 100
 
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
-# Tokens the client can embed in the search string. Inspired by tapestry's
-# NIP-50 extensions but kept minimal — only ``observer:<hex>`` for now.
+# Tokens the client can embed in the search string. Mirrors tapestry's
+# NIP-50 extensions, restricted to what brainstorm's Vespa schema can back
+# today (one per-observer metric: ``rank`` == quality_score, 0..100).
 _OBSERVER_TOKEN_RE = re.compile(r"(?:^|\s)observer:([0-9a-fA-F]{64})(?=\s|$)")
+_SORT_TOKEN_RE = re.compile(
+    r"(?:^|\s)sort:([a-zA-Z_]+):(asc|desc)(?=\s|$)", re.IGNORECASE
+)
+_FILTER_TOKEN_RE = re.compile(
+    r"(?:^|\s)filter:([a-zA-Z_]+):(gte|lte|gt|lt|eq):(-?\d+(?:\.\d+)?)(?=\s|$)",
+    re.IGNORECASE,
+)
+
+# Per-observer metrics we can sort / filter on. Map of NIP-50 metric name →
+# the field in the dict returned by vespa.search(). Adding more metrics later
+# (when the Vespa schema grows additional sparse tensors) is a matter of
+# extending this mapping, the rank profiles in doc.sd, and the NIP-11
+# advertisement below.
+_METRIC_FIELDS: dict[str, str] = {
+    "rank": "_quality_score",
+}
+
+# Filter operators we can push into Vespa. The rank_* profiles gate on
+# query(min_rank) via Vespa's rank-score-drop-limit, which is a lower-bound
+# (>=) mechanism — so only gte/gt map natively. lte/lt/eq would need the score
+# stored as a range-queryable attribute (a schema re-model + re-feed); they are
+# intentionally unsupported and the relay NOTICEs the client. See
+# docs/search-precision-and-filtering.md (Problem 2).
+_FILTER_OPS: tuple[str, ...] = ("gte", "gt")
+
+# gt:N is pushed down as min_rank = N + epsilon (a >= gate that excludes N).
+# rank is an integer 0..100, so any epsilon in (0, 1) is exact.
+_GT_EPSILON = 1e-6
+
+# Cold-start dedup: once we've provisioned graperank for an observer we don't
+# want to re-fire it on every search. The Redis NX key auto-expires so a
+# stale observer (e.g. one whose scores never landed because graperank
+# errored) eventually gets re-attempted.
+PROVISION_DEDUP_KEY_FMT = "nip50:provisioned:{pubkey}"
+PROVISION_DEDUP_TTL_SECONDS = 3600
 
 
 # ---------------------------------------------------------------------------
@@ -75,10 +119,40 @@ def _nip11_document() -> dict[str, Any]:
             "extensions": {
                 "observer": {
                     "description": (
-                        "Hex pubkey for WoT point of view. Falls back to the "
-                        "instance's default observer when omitted."
+                        "Hex pubkey for WoT point of view. The first time a "
+                        "new observer is used the relay enqueues a GrapeRank "
+                        "computation in the background; meanwhile the search "
+                        "falls back to the instance's default observer."
                     ),
                     "format": "observer:<hex-pubkey>",
+                },
+                "sort": {
+                    "description": (
+                        "Sort hits by a WoT metric. When omitted, the relay's "
+                        "default rank profile (text relevance \u00d7 quality "
+                        "boost from the observer's perspective) is used."
+                    ),
+                    "format": "sort:<metric>:<asc|desc>",
+                    "metrics": sorted(_METRIC_FIELDS.keys()),
+                },
+                "filter": {
+                    "description": (
+                        "Drop hits whose metric value fails the given "
+                        "comparison. Only lower-bound operators are supported "
+                        "(the relay pushes them into Vespa as a minimum-rank "
+                        "cut-off); other operators are ignored with a NOTICE. "
+                        "Multiple filter tokens are AND-ed (the most "
+                        "restrictive lower bound wins)."
+                    ),
+                    "format": "filter:<metric>:<op>:<value>",
+                    "metrics": sorted(_METRIC_FIELDS.keys()),
+                    "operators": sorted(_FILTER_OPS),
+                    "scales": {
+                        "rank": (
+                            "0-100 integer; the observer's GrapeRank "
+                            "influence score (round(influence * 100))."
+                        ),
+                    },
                 },
             },
         },
@@ -118,18 +192,120 @@ async def relay_info(
 # ---------------------------------------------------------------------------
 # Search string parsing
 # ---------------------------------------------------------------------------
-def _parse_search(raw: str) -> tuple[str, str | None]:
-    """Pull ``observer:<hex>`` out of the search string, return clean query.
+def _parse_search(
+    raw: str,
+) -> tuple[
+    str,
+    str | None,
+    tuple[str, str] | None,
+    list[tuple[str, str, float]],
+    list[str],
+]:
+    """Strip NIP-50 extensions out of the search string.
 
-    Unknown ``key:value`` tokens are left untouched so Vespa can still match
-    them as plain text (NIP-50 says relays MAY ignore unknown extensions).
+    Returns ``(clean_query, observer, sort_spec, filters, notices)`` where
+    ``sort_spec`` is ``(metric, direction)`` or ``None``, ``filters`` is a
+    list of ``(metric, op, value)`` triples (AND-ed at apply time), and
+    ``notices`` collects human-readable strings describing tokens we parsed
+    but had to drop (unknown metric, unsupported op, etc.) so the caller can
+    relay them to the client via NIP-01 ``NOTICE`` frames.
+
+    Unknown ``key:value`` tokens that don't match any of our extension
+    regexes are left in the query — NIP-50 allows relays to treat unknown
+    extensions as plain text (and Vespa's text matcher will simply ignore
+    them if they don't match any indexed term).
     """
     observer: str | None = None
+    sort_spec: tuple[str, str] | None = None
+    filters: list[tuple[str, str, float]] = []
+    notices: list[str] = []
+
+    def _strip(text: str, start: int, end: int) -> str:
+        return (text[:start] + " " + text[end:]).strip()
+
     m = _OBSERVER_TOKEN_RE.search(raw)
     if m:
         observer = m.group(1).lower()
-        raw = (raw[: m.start()] + " " + raw[m.end() :]).strip()
-    return raw.strip(), observer
+        raw = _strip(raw, m.start(), m.end())
+
+    # Only the LAST sort token wins if multiple are supplied; same as how
+    # most query languages handle conflicting order-by clauses.
+    for m in list(_SORT_TOKEN_RE.finditer(raw)):
+        metric = m.group(1).lower()
+        direction = m.group(2).lower()
+        if metric not in _METRIC_FIELDS:
+            notices.append(
+                f"sort metric {metric!r} not supported; ignoring (supported: "
+                f"{', '.join(sorted(_METRIC_FIELDS))})"
+            )
+        else:
+            sort_spec = (metric, direction)
+    raw = _SORT_TOKEN_RE.sub(" ", raw).strip()
+
+    for m in list(_FILTER_TOKEN_RE.finditer(raw)):
+        metric = m.group(1).lower()
+        op = m.group(2).lower()
+        try:
+            value = float(m.group(3))
+        except ValueError:
+            notices.append(f"filter value {m.group(3)!r} not numeric; ignoring")
+            continue
+        if metric not in _METRIC_FIELDS:
+            notices.append(
+                f"filter metric {metric!r} not supported; ignoring "
+                f"(supported: {', '.join(sorted(_METRIC_FIELDS))})"
+            )
+            continue
+        if op not in _FILTER_OPS:
+            notices.append(
+                f"filter op {op!r} not supported; ignoring "
+                f"(supported: {', '.join(sorted(_FILTER_OPS))})"
+            )
+            continue
+        filters.append((metric, op, value))
+    raw = _FILTER_TOKEN_RE.sub(" ", raw).strip()
+
+    return raw, observer, sort_spec, filters, notices
+
+
+def _select_ranking(
+    sort_spec: tuple[str, str] | None,
+    filters: list[tuple[str, str, float]],
+) -> tuple[str | None, float | None]:
+    """Map parsed sort/filter tokens to a Vespa rank profile + min_rank.
+
+    Returns ``(ranking_profile, min_rank)`` to hand to ``vespa.search``:
+
+      * ``ranking_profile`` is ``None`` (use the default profile) when there's
+        neither a sort nor a filter; otherwise one of the ``RANK_PROFILE_*``
+        names. The sort direction picks asc/desc; a filter with no sort uses the
+        filtered profile (default relevance order, low-trust hits dropped).
+      * ``min_rank`` is the most restrictive lower bound across all filter
+        tokens (``gte`` → value, ``gt`` → value + epsilon), or ``None`` when
+        there's no filter. Vespa drops hits scoring below it.
+
+    All sort/filter happens inside Vespa now — there is no Python post-pass.
+    Only the per-observer ``rank`` metric exists today, so every token's metric
+    is ``rank``; the structure leaves room for more metrics later.
+    """
+    min_rank: float | None = None
+    for _metric, op, value in filters:
+        threshold = value if op == "gte" else value + _GT_EPSILON
+        min_rank = threshold if min_rank is None else max(min_rank, threshold)
+
+    if sort_spec is not None:
+        _metric, direction = sort_spec
+        profile = (
+            RANK_PROFILE_SORT_ASC
+            if direction == "asc"
+            else RANK_PROFILE_SORT_DESC
+        )
+    elif min_rank is not None:
+        profile = RANK_PROFILE_FILTERED
+    else:
+        profile = None
+
+    return profile, min_rank
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +418,14 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
         return
 
     raw_search: str = search_filter["search"]
-    query, observer_override = _parse_search(raw_search)
+    query, observer_override, sort_spec, filters, parse_notices = _parse_search(
+        raw_search
+    )
+    for note in parse_notices:
+        await _send_json(ws, ["NOTICE", note])
+
     if not query:
-        # Pure ``observer:<hex>`` with no actual query text — nothing to search.
+        # Pure extension tokens with no actual query text — nothing to search.
         await _send_json(ws, ["EOSE", sub_id])
         return
 
@@ -254,14 +435,32 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
     else:
         hits = DEFAULT_HITS
 
+    # Sort + filter are pushed into Vespa via a dedicated rank profile and a
+    # query(min_rank) cut-off, so Vespa's top-N IS the answer — no over-fetch,
+    # no Python re-ranking. See docs/search-precision-and-filtering.md.
+    ranking_profile, min_rank = _select_ranking(sort_spec, filters)
+
+    # Ascending sort by trust wants the lowest-scoring docs first; the default
+    # "drop zero-score hits" would hide exactly those, so allow them here only.
+    ascending_sort = sort_spec is not None and sort_spec[1] == "asc"
+
     observer = observer_override or default_observer_pubkey()
+
+    # Fire cold-start provisioning before running the search — it's a
+    # fire-and-forget background coroutine so it never delays the response.
+    # Only triggered for explicit observers (the default observer is always
+    # provisioned by the periodic graperank cronjob).
+    if observer_override:
+        asyncio.create_task(_maybe_provision_observer(observer_override))
 
     try:
         results = await vespa_search(
             query_text=query,
             user_pubkey=observer,
             hits=hits,
-            include_zero_score_results=False,
+            include_zero_score_results=ascending_sort,
+            ranking_profile=ranking_profile,
+            min_rank=min_rank,
         )
     except Exception as exc:
         logger.exception("nip50: vespa search failed: %r", exc)
@@ -269,7 +468,7 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
         await _send_json(ws, ["EOSE", sub_id])
         return
 
-    # Preserve Vespa's rank order when emitting events.
+    # Results already arrive in Vespa rank order, filtered + sorted as asked.
     ranked_pubkeys: list[str] = []
     seen: set[str] = set()
     for hit in results:
@@ -290,13 +489,74 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
 
     await _send_json(ws, ["EOSE", sub_id])
     logger.info(
-        "nip50: sub=%s query=%r observer=%s hits=%d emitted=%d",
+        "nip50: sub=%s query=%r observer=%s profile=%s min_rank=%s "
+        "returned=%d emitted=%d",
         sub_id,
         query,
         observer[:12],
-        len(ranked_pubkeys),
+        ranking_profile or "default",
+        min_rank,
+        len(results),
         emitted,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cold-start: trigger graperank for a fresh observer on first use
+# ---------------------------------------------------------------------------
+async def _maybe_provision_observer(observer: str) -> None:
+    """Fire-and-forget GrapeRank provisioning for a new observer.
+
+    First search for an observer the relay hasn't seen before triggers a
+    GrapeRank job for that observer; the search itself returns whatever
+    Vespa has now (typically a mix of the default observer's scores plus
+    zero-score hits) and subsequent searches will see the personalized
+    scores once the job completes.
+
+    Dedup is via a Redis NX key so a burst of searches for the same
+    just-arrived observer fires exactly one GrapeRank job. The key expires
+    after an hour so a job that errored gets re-attempted.
+
+    This function never raises — every failure mode is logged-and-swallowed
+    because the search itself has already returned (or is about to). The
+    user-visible behavior is at worst \"first few searches not personalized
+    yet\" rather than a search error.
+    """
+    redis_client = get_redis_client()
+    key = PROVISION_DEDUP_KEY_FMT.format(pubkey=observer)
+    try:
+        # SET key val NX EX ttl — returns truthy only the first time.
+        first = await redis_client.set(
+            key, "1", nx=True, ex=PROVISION_DEDUP_TTL_SECONDS
+        )
+    except Exception as exc:
+        # Redis unhealthy — log and skip rather than spamming GrapeRank.
+        logger.warning("nip50: redis dedup check failed for %s: %r", observer[:12], exc)
+        return
+    if not first:
+        return
+    try:
+        async with db_session() as db:
+            result = await get_or_create_brainstorm_pubkey(
+                db, nostr_pubkey=observer
+            )
+            await db.commit()
+        logger.info(
+            "nip50: cold-start provisioning for observer=%s triggered=%s",
+            observer[:12],
+            bool(result.triggered_graperank),
+        )
+    except Exception as exc:
+        # Drop the dedup key so the next search can retry.
+        try:
+            await redis_client.delete(key)
+        except Exception:
+            pass
+        logger.warning(
+            "nip50: cold-start provisioning failed for %s: %r",
+            observer[:12],
+            exc,
+        )
 
 
 @router.websocket("/relay")

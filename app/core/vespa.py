@@ -39,6 +39,15 @@ PROFILE_FIELDS = (
 # How many query words we label / parametrize at most.
 MAX_QUERY_WORDS = 6
 
+# Rank-profile names defined in the Vespa schema (doc.sd). The default profile
+# blends text relevance with the observer's quality boost; the rank_* profiles
+# order by / filter on the observer's quality score for the NIP-50 sort:/filter:
+# extensions. See docs/search-precision-and-filtering.md (Problem 2).
+DEFAULT_RANK_PROFILE = "name_and_quality_score_only"
+RANK_PROFILE_FILTERED = "rank_filtered"
+RANK_PROFILE_SORT_DESC = "rank_desc"
+RANK_PROFILE_SORT_ASC = "rank_asc"
+
 # Bounded concurrency for batch score upserts. Vespa's container can handle a
 # lot more than this — the limit is mostly to keep retry/backoff predictable.
 _BATCH_CONCURRENCY = 32
@@ -276,6 +285,9 @@ def _field_clauses(field: str, var: str, max_edits: int) -> list[str]:
         f'({{defaultIndex:"{field}",prefix:true}}userInput({var}))',
     ]
     if max_edits > 0:
+        # prefixLength:2 — the first two characters must match exactly, so a
+        # typo in char >=3 is corrected but a wrong first/second letter no
+        # longer drags in unrelated names. See the precision doc (Problem 1).
         parts.append(
             f'({{defaultIndex:"{field}",fuzzy:{{maxEditDistance:{max_edits},prefixLength:2}}}}userInput({var}))'
         )
@@ -285,9 +297,6 @@ def _field_clauses(field: str, var: str, max_edits: int) -> list[str]:
 def _word_group(var: str, literal: str, with_grams: bool = True) -> str:
     """All match clauses for one query word across name/display_name/about + grams."""
     me = _word_max_edits(literal)
-        # prefixLength:2 — the first two characters must match exactly, so a
-        # typo in char >=3 is corrected but a wrong first/second letter no
-        # longer drags in unrelated names. See the precision doc (Problem 1).
     clauses: list[str] = []
     for field in ("name", "display_name", "about"):
         clauses += _field_clauses(field, var, me)
@@ -323,12 +332,22 @@ async def search(
     user_pubkey: str,
     hits: int = 100,
     include_zero_score_results: bool = True,
+    *,
+    ranking_profile: str | None = None,
+    min_rank: float | None = None,
 ) -> list[dict]:
-    """Multi-field search using the `name_and_quality_score_only` rank profile.
+    """Multi-field search against a quality-score rank profile.
 
     `user_pubkey` is the observer perspective whose quality_score is used for
     ranking. Returns a list of dicts, each merging the doc's stored fields with
     `_relevance` and a `_quality_score` (the observer's score for that doc).
+
+    `ranking_profile` selects the Vespa rank profile (defaults to
+    `DEFAULT_RANK_PROFILE`); pass one of the `RANK_PROFILE_*` constants to order
+    by / filter on the observer's quality score. `min_rank`, when set, is passed
+    as `query(min_rank)` so the rank_* profiles drop hits whose quality score is
+    below it (the NIP-50 `filter:rank:gte/gt` push-down). Both are no-ops on the
+    default profile. See docs/search-precision-and-filtering.md (Problem 2).
     """
     words = query_text.split()[:MAX_QUERY_WORDS]
     joined = "".join(words) if len(words) >= 2 else None
@@ -346,13 +365,15 @@ async def search(
 
     params = {
         "yql": _build_yql(words, joined),
-        "ranking": "name_and_quality_score_only",
+        "ranking": ranking_profile or DEFAULT_RANK_PROFILE,
         "ranking.features.query(user_q)": "{" + user_pubkey + ":1.0}",
         "ranking.features.query(w_gram)": w_gram,
         "ranking.features.query(w_about)": 0.5,
         "ranking.features.query(w_about_bonus)": 0.0,
         "hits": vespa_hits,
     }
+    if min_rank is not None:
+        params["ranking.features.query(min_rank)"] = min_rank
     for i, w in enumerate(words):
         params[f"w{i}"] = w
     if joined:
