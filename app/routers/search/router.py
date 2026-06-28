@@ -56,6 +56,16 @@ async def search_by_text_endpoint(
             "Defaults to the periodic graperank pubkey."
         ),
     ),
+    observerPubkey: Optional[str] = Query(
+        default=None,
+        description=(
+            "Observer perspective (hex or npub) for trust scores. Unauthenticated "
+            "and unverified — the caller is not required to control this key. "
+            "Unresolvable values fall back silently to the default observer. "
+            "Ignored when ownPubkey=true (the authenticated caller's own pubkey "
+            "wins)."
+        ),
+    ),
     maxHits: int = Query(
         default=RESULTS_DEFAULT,
         gt=0,
@@ -68,6 +78,13 @@ async def search_by_text_endpoint(
 ) -> SearchByTextResponse:
     sanitized = _sanitize(text)
     observer = default_observer_pubkey()
+    # observerPubkey is an explicit, unauthenticated perspective hint. A value we
+    # can't resolve to a hex pubkey falls back silently to the default observer.
+    if observerPubkey:
+        resolved = _try_resolve_pubkey(observerPubkey.strip())
+        if resolved is not None:
+            observer = resolved
+    # ownPubkey is the authenticated self-perspective and overrides observerPubkey.
     if ownPubkey:
         if jwt_data is None:
             raise HTTPException(
