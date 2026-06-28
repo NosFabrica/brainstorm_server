@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     block_frequent_graperank_requests_minutes: int = Field(default=30)
     periodic_graperank_pubkey: str = Field(default="")
     vespa_url: str = Field(...)
+    # Internal strfry relay used as the source of original signed kind-0 events
+    # for the NIP-50 /relay endpoint. Not exposed externally — the FastAPI
+    # /relay handler proxies search results out, never raw client traffic.
+    nip50_backing_relay_url: str = Field(default="ws://localhost:7777")
+    nip50_strfry_timeout_seconds: float = Field(default=3.0)
 
 
 settings = Settings()
