@@ -81,8 +81,9 @@ async def search_by_text_endpoint(
         doc = await get_document(pubkey)
         results = [doc] if doc is not None else []
     else:
-        # name_and_quality_score_only already orders by quality_boost-weighted
-        # relevance, so we don't need a client-side rank-based re-sort.
+        # The default text_relevance profile orders by PURE TEXT relevance
+        # (P0, docs/search-vs-tapestry.md §6) — trust is no longer blended in —
+        # so we don't need a client-side rank-based re-sort.
         results = await search(
             query_text=sanitized,
             user_pubkey=observer,

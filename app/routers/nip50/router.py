@@ -276,10 +276,12 @@ def _select_ranking(
 
     Returns ``(ranking_profile, min_rank)`` to hand to ``vespa.search``:
 
-      * ``ranking_profile`` is ``None`` (use the default profile) when there's
-        neither a sort nor a filter; otherwise one of the ``RANK_PROFILE_*``
-        names. The sort direction picks asc/desc; a filter with no sort uses the
-        filtered profile (default relevance order, low-trust hits dropped).
+      * ``ranking_profile`` is always one of the ``RANK_PROFILE_*`` names — the
+        NIP-50 relay is TRUST-SORTED-WITHIN-TEXT by default (docs/search-vs-tapestry.md
+        §6), so with no sort token we use ``rank_desc`` rather than the
+        pure-text default profile that ``/search/byText`` uses. The sort
+        direction picks asc/desc; a filter with no sort uses the filtered
+        profile (pure-text order, low-trust hits dropped).
       * ``min_rank`` is the most restrictive lower bound across all filter
         tokens (``gte`` → value, ``gt`` → value + epsilon), or ``None`` when
         there's no filter. Vespa drops hits scoring below it.
@@ -303,7 +305,9 @@ def _select_ranking(
     elif min_rank is not None:
         profile = RANK_PROFILE_FILTERED
     else:
-        profile = None
+        # No sort, no filter: the NIP-50 default is trust-sorted-within-text,
+        # so default to rank_desc (NOT the pure-text /search/byText profile).
+        profile = RANK_PROFILE_SORT_DESC
 
     return profile, min_rank
 
@@ -440,9 +444,11 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
     # no Python re-ranking. See docs/search-precision-and-filtering.md.
     ranking_profile, min_rank = _select_ranking(sort_spec, filters)
 
-    # Ascending sort by trust wants the lowest-scoring docs first; the default
-    # "drop zero-score hits" would hide exactly those, so allow them here only.
-    ascending_sort = sort_spec is not None and sort_spec[1] == "asc"
+    # Trust-sorted-within-text INCLUDES unscored hits — they backfill below the
+    # trusted ones (mirroring tapestry's phase-2 backfill, docs/search-vs-tapestry.md
+    # §6). The only time we drop zero-score hits is when an explicit filter:rank
+    # cut-off is set, which means "only trusted profiles".
+    backfill_unscored = min_rank is None
 
     observer = observer_override or default_observer_pubkey()
 
@@ -458,7 +464,7 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
             query_text=query,
             user_pubkey=observer,
             hits=hits,
-            include_zero_score_results=ascending_sort,
+            include_zero_score_results=backfill_unscored,
             ranking_profile=ranking_profile,
             min_rank=min_rank,
         )

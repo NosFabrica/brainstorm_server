@@ -510,8 +510,9 @@ def test_unknown_sort_metric_emits_notice_and_falls_back(
     notice = next((f for f in frames if f[0] == "NOTICE"), None)
     assert notice is not None
     assert "followers" in notice[1].lower()
-    # Default profile (no override) when the sort is rejected, order preserved.
-    assert calls[-1]["ranking_profile"] is None
+    # A rejected sort falls back to the NIP-50 default ordering, which is
+    # trust-sorted-within-text = rank_desc (P0, docs/search-vs-tapestry.md §6).
+    assert calls[-1]["ranking_profile"] == "rank_desc"
     event_pks = [f[2]["pubkey"] for f in frames if f[0] == "EVENT"]
     assert event_pks == [pk_a, pk_b]
 
@@ -537,7 +538,9 @@ def test_unsupported_filter_op_emits_notice_and_applies_no_filter(
     notice = next((f for f in frames if f[0] == "NOTICE"), None)
     assert notice is not None
     assert "lte" in notice[1].lower()
-    assert calls[-1]["ranking_profile"] is None
+    # Unsupported op → no filter pushed (min_rank stays None); the relay still
+    # uses its trust-sorted default order (rank_desc) per P0 (§6).
+    assert calls[-1]["ranking_profile"] == "rank_desc"
     assert calls[-1]["min_rank"] is None
 
 

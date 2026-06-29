@@ -26,7 +26,7 @@ This is the **only** module that should talk to Vespa. Everything else imports f
 | `upsert_score(pubkey, observer, score)` | Insert/replace one cell of the `quality_scores` tensor. |
 | `remove_score(pubkey, observer)` | Delete one tensor cell. 404s are silently ignored. |
 | `batch_upsert_scores(upserts, removes, observer)` | Fan out many `upsert_score`/`remove_score` calls concurrently (bounded by `_BATCH_CONCURRENCY = 32`). Returns `(n_ok, n_failed)`. Individual exceptions are caught + logged, never propagate. |
-| `search(query_text, user_pubkey, hits, include_zero_score_results)` | Multi-field search with the `name_and_quality_score_only` rank profile. `user_pubkey` is the observer perspective. |
+| `search(query_text, user_pubkey, hits, include_zero_score_results)` | Multi-field search with the `text_relevance` (pure-text) rank profile. `user_pubkey` is the observer perspective (used by the trust-sorted rank_* profiles, not by the default). |
 | `aclose()` | Close the shared httpx client. **Called from FastAPI lifespan shutdown** in `app/api.py`. |
 
 ### Shared client

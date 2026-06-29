@@ -5,10 +5,12 @@ brainstorm_one_click_deployment/vespa-app) and uses a sparse tensor
 (`quality_scores`, keyed by observer pubkey) so each observer's ranking lives
 in its own cell of that tensor.
 
-The search function uses the `name_and_quality_score_only` rank profile:
+The search function uses the `text_relevance` rank profile (PURE TEXT — trust
+is not blended in; see docs/search-vs-tapestry.md §6):
 - name + display_name + about are searched
 - about partial matches via `about_gram` (trigrams)
 - single combined query + Vespa over-fetch for WAND-resistance
+The NIP-50 relay adds trust via the rank_* profiles (defaulting to rank_desc).
 """
 import asyncio
 import json
@@ -40,10 +42,11 @@ PROFILE_FIELDS = (
 MAX_QUERY_WORDS = 6
 
 # Rank-profile names defined in the Vespa schema (doc.sd). The default profile
-# blends text relevance with the observer's quality boost; the rank_* profiles
-# order by / filter on the observer's quality score for the NIP-50 sort:/filter:
-# extensions. See docs/search-precision-and-filtering.md (Problem 2).
-DEFAULT_RANK_PROFILE = "name_and_quality_score_only"
+# is PURE TEXT relevance (trust is not blended in) — /search/byText ranks on
+# text, mirroring tapestry/Meilisearch. The rank_* profiles add trust as a
+# sort/filter for the NIP-50 relay (which defaults to rank_desc). See
+# docs/search-vs-tapestry.md (§6) and docs/search-trust-vs-exact-match.md.
+DEFAULT_RANK_PROFILE = "text_relevance"
 RANK_PROFILE_FILTERED = "rank_filtered"
 RANK_PROFILE_SORT_DESC = "rank_desc"
 RANK_PROFILE_SORT_ASC = "rank_asc"
