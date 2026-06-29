@@ -272,6 +272,34 @@ so indexing it only adds marginal partial-match value.
 - `username` is not in Vespa at all → ingest change (extract from kind-0
   content) **+ a kind-0 re-feed** from strfry.
 
+#### 8.4.1 kind-0 ingest robustness — read BOTH content and tags
+
+We currently ingest kind-0 at `process_strfry_event.py:process_event_kind_0`,
+which parses **only `event["content"]` (the JSON-encoded field) and ignores
+`event["tags"]`**. Newer clients mirror the same profile fields as tags
+(`["name", …]`, `["display_name", …]`, `["nip05", …]`, …) — sometimes *in
+addition to* content, sometimes as the primary source.
+
+Two concrete bugs this creates:
+
+1. **Wipe risk (correctness, not just recall).** `upsert_profile` is a *replace*
+   that assigns `""` to any `PROFILE_FIELDS` key missing from the new event. A
+   tag-only kind-0 with empty/minimal `content` parses to `{}` and would
+   **blank out** that profile's searchable fields in Vespa instead of being
+   ignored.
+2. **camelCase variants dropped.** Clients send `displayName` (camelCase) and
+   `username`; we only read `display_name` and don't read `username` at all.
+
+Fix (build with P1, not a JSON-only `username` add):
+- Merge sources: build the profile dict from `content` JSON **and** from the
+  `[key, value]` profile tags, with a precedence rule (content wins; tags fill
+  gaps).
+- Normalize aliases: `displayName` → `display_name`, etc.
+- **Don't-clear guard:** never overwrite an existing non-empty field with `""`
+  from a *less-complete* event, so a sparse tag-only update can't wipe a good
+  profile.
+- Then extract the expanded `PROFILE_FIELDS` (now including `username`).
+
 ### 8.5 Backfill / deploy — one maintenance window
 
 These are independent datasets but batch into one window:
