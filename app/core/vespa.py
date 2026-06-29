@@ -29,6 +29,7 @@ DOCTYPE = "doc"
 PROFILE_FIELDS = (
     "name",
     "display_name",
+    "username",
     "about",
     "picture",
     "banner",
@@ -41,15 +42,31 @@ PROFILE_FIELDS = (
 # How many query words we label / parametrize at most.
 MAX_QUERY_WORDS = 6
 
-# Rank-profile names defined in the Vespa schema (doc.sd). The default profile
-# is PURE TEXT relevance (trust is not blended in) — /search/byText ranks on
-# text, mirroring tapestry/Meilisearch. The rank_* profiles add trust as a
-# sort/filter for the NIP-50 relay (which defaults to rank_desc). See
-# docs/search-vs-tapestry.md (§6) and docs/search-trust-vs-exact-match.md.
-DEFAULT_RANK_PROFILE = "text_relevance"
+# Rank-profile names defined in the Vespa schema (doc.sd). The DEFAULT is
+# `sort_followers`: text match, filter rank >= query(min_rank), sort by the
+# observer's verified-follower count (popular-first). The other profiles are
+# the configurable sort alternates (rank / text). All gate on query(min_rank)
+# except text_relevance. See docs/search-vs-tapestry.md §8.
+DEFAULT_RANK_PROFILE = "sort_followers"
+RANK_PROFILE_SORT_FOLLOWERS = "sort_followers"
 RANK_PROFILE_FILTERED = "rank_filtered"
 RANK_PROFILE_SORT_DESC = "rank_desc"
 RANK_PROFILE_SORT_ASC = "rank_asc"
+RANK_PROFILE_TEXT = "text_relevance"
+
+# Maps a public `sort=` value (byText) / NIP-50 sort metric to a rank profile.
+# `followers` is the default; `rank` orders by trust; `text` is pure relevance.
+SORT_PROFILES = {
+    "followers": RANK_PROFILE_SORT_FOLLOWERS,
+    "rank": RANK_PROFILE_SORT_DESC,
+    "text": RANK_PROFILE_FILTERED,
+}
+
+# Default query-time trust filter: exclude rank < this (rank = influence*100).
+# Product default is "exclude based on rank 2" (docs/search-vs-tapestry.md §8.1);
+# configurable per request. The sort_followers/rank_* profiles gate on
+# query(min_rank); text_relevance ignores it.
+DEFAULT_MIN_RANK = 2.0
 
 # Bounded concurrency for batch score upserts. Vespa's container can handle a
 # lot more than this — the limit is mostly to keep retry/backoff predictable.
@@ -158,11 +175,15 @@ async def upsert_profile(pubkey: str, profile: dict) -> None:
     _raise_with_context("upsert_profile", pubkey, body, r)
 
 
-async def upsert_score(pubkey: str, observer: str, score: int) -> None:
-    """Set the score for `observer` on the doc identified by `pubkey`.
+async def upsert_score(
+    pubkey: str, observer: str, score: int, followers: int = 0
+) -> None:
+    """Set the observer's score + verified-follower count on the doc.
 
-    `add` upserts the cell — inserts a new one or replaces the existing one
-    for that observer.
+    `score` is the rank (influence*100, 0..100) → `quality_scores` tensor;
+    `followers` is the verified-follower count (scorecard.trusted_followers) →
+    `follower_counts` tensor. Both `add` ops upsert the observer's cell (insert
+    or replace). Written in one partial update so the two stay consistent.
     """
     body = {
         "fields": {
@@ -172,7 +193,14 @@ async def upsert_score(pubkey: str, observer: str, score: int) -> None:
                         {"address": {"user": observer}, "value": int(score)}
                     ]
                 }
-            }
+            },
+            "follower_counts": {
+                "add": {
+                    "cells": [
+                        {"address": {"user": observer}, "value": float(followers)}
+                    ]
+                }
+            },
         }
     }
     r = await _get_client().put(
@@ -182,12 +210,15 @@ async def upsert_score(pubkey: str, observer: str, score: int) -> None:
 
 
 async def remove_score(pubkey: str, observer: str) -> None:
-    """Remove the observer's score from the doc's tensor."""
+    """Remove the observer's score + follower count from the doc's tensors."""
     body = {
         "fields": {
             "quality_scores": {
                 "remove": {"addresses": [{"user": observer}]}
-            }
+            },
+            "follower_counts": {
+                "remove": {"addresses": [{"user": observer}]}
+            },
         }
     }
     r = await _get_client().put(_doc_url(pubkey), json=body)
@@ -198,31 +229,31 @@ async def remove_score(pubkey: str, observer: str) -> None:
 
 
 async def batch_upsert_scores(
-    upserts: list[tuple[str, int]],
+    upserts: list[tuple[str, int, int]],
     removes: list[str],
     observer: str,
 ) -> tuple[int, int]:
     """Run many score upserts + removes concurrently against Vespa.
 
-    `upserts` is a list of (pubkey, score) tuples; `removes` is a list of
-    pubkeys whose score for `observer` should be deleted. Returns (n_success,
-    n_failed). Individual failures are logged but never raised — the caller
-    treats scores as best-effort search mirror, not source of truth.
+    `upserts` is a list of (pubkey, score, followers) tuples; `removes` is a
+    list of pubkeys whose score for `observer` should be deleted. Returns
+    (n_success, n_failed). Individual failures are logged but never raised — the
+    caller treats scores as best-effort search mirror, not source of truth.
     """
     if not upserts and not removes:
         return 0, 0
 
     sem = asyncio.Semaphore(_BATCH_CONCURRENCY)
 
-    async def _do_upsert(pubkey: str, score: int) -> None:
+    async def _do_upsert(pubkey: str, score: int, followers: int) -> None:
         async with sem:
-            await upsert_score(pubkey, observer, score)
+            await upsert_score(pubkey, observer, score, followers)
 
     async def _do_remove(pubkey: str) -> None:
         async with sem:
             await remove_score(pubkey, observer)
 
-    tasks: list = [_do_upsert(pk, sc) for pk, sc in upserts]
+    tasks: list = [_do_upsert(pk, sc, fc) for pk, sc, fc in upserts]
     tasks += [_do_remove(pk) for pk in removes]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -298,10 +329,16 @@ def _field_clauses(field: str, var: str, max_edits: int) -> list[str]:
 
 
 def _word_group(var: str, literal: str, with_grams: bool = True) -> str:
-    """All match clauses for one query word across name/display_name/about + grams."""
+    """All match clauses for one query word across the searchable fields + grams.
+
+    name/display_name/about are the primary text signal (and feed the rank
+    profile's text functions). username/nip05 also feed the match-quality tier
+    (has_token_match in doc.sd). lud16/website are recall-only (P1). See
+    docs/search-vs-tapestry.md §8.4.
+    """
     me = _word_max_edits(literal)
     clauses: list[str] = []
-    for field in ("name", "display_name", "about"):
+    for field in ("name", "display_name", "about", "username", "nip05", "lud16", "website"):
         clauses += _field_clauses(field, var, me)
     if with_grams:
         for gram_field in ("name_gram", "display_name_gram"):
@@ -401,5 +438,8 @@ async def search(
         mf = fields.pop("matchfeatures", None) or {}
         fields["_relevance"] = h.get("relevance")
         fields["_quality_score"] = mf.get("user_score")
+        # verified_followers is only in match-features for the sort_followers
+        # profile; other profiles leave it None.
+        fields["_followers"] = mf.get("verified_followers")
         out.append(fields)
     return out

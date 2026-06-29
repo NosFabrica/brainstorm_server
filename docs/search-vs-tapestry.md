@@ -295,9 +295,13 @@ Fix (build with P1, not a JSON-only `username` add):
   `[key, value]` profile tags, with a precedence rule (content wins; tags fill
   gaps).
 - Normalize aliases: `displayName` → `display_name`, etc.
-- **Don't-clear guard:** never overwrite an existing non-empty field with `""`
-  from a *less-complete* event, so a sparse tag-only update can't wipe a good
-  profile.
+- **Skip-empty guard:** if the merged result has *no* recognized profile fields
+  (truly empty/malformed event), skip the upsert entirely — `upsert_profile`
+  clears missing fields to `""`, so an empty event would otherwise wipe a good
+  profile. (We deliberately do *not* do a per-field "don't clear" guard: kind-0
+  is a replaceable full-profile event in Nostr, so a field genuinely omitted by
+  a complete event *should* clear. The merge makes tag-only events non-empty, so
+  they no longer trigger the wipe.)
 - Then extract the expanded `PROFILE_FIELDS` (now including `username`).
 
 ### 8.5 Backfill / deploy — one maintenance window

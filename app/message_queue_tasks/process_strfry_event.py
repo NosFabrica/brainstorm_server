@@ -39,16 +39,52 @@ async def process_strfry_event(session: AsyncNeoDriver, event: dict):
         return await process_event_kind_1984(session, event)
 
 
+# Some clients mirror profile fields as kind-0 *tags* in addition to (or
+# instead of) the JSON `content`, and use camelCase variants. We merge both and
+# normalize aliases so neither scheme is missed. See docs/search-vs-tapestry.md §8.4.1.
+_KIND0_TAG_ALIASES = {"displayName": "display_name"}
+
+
+def _extract_kind0_profile(event: dict) -> dict:
+    """Merge a kind-0 event's `content` JSON and profile `tags` into one dict.
+
+    `content` is the base; profile `tags` fill in any keys content didn't
+    provide (content wins on conflict). camelCase aliases (e.g. ``displayName``)
+    are normalized, and only recognized ``PROFILE_FIELDS`` are kept.
+    """
+    merged: dict = {}
+
+    content_raw = event.get("content") or ""
+    if content_raw:
+        try:
+            parsed = json.loads(content_raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            merged.update(parsed)
+
+    for tag in event.get("tags") or []:
+        if isinstance(tag, list) and len(tag) >= 2 and isinstance(tag[0], str):
+            key, value = tag[0], tag[1]
+            # Tags only FILL gaps — content (above) wins on conflict.
+            if key not in merged and isinstance(value, str):
+                merged[key] = value
+
+    for alias, canonical in _KIND0_TAG_ALIASES.items():
+        if merged.get(alias) and not merged.get(canonical):
+            merged[canonical] = merged[alias]
+
+    return {k: v for k, v in merged.items() if k in KIND_0_PROFILE_FIELDS}
+
+
 async def process_event_kind_0(event: dict):
     publisher = event["pubkey"]
-    content_raw = event.get("content") or ""
+    profile = _extract_kind0_profile(event)
 
-    try:
-        profile = json.loads(content_raw) if content_raw else {}
-    except json.JSONDecodeError:
-        return
-
-    if not isinstance(profile, dict):
+    # Skip a kind-0 carrying NO recognized profile fields (empty/malformed): the
+    # upsert clears missing fields to "", so an empty event would wipe an
+    # existing good profile. See docs/search-vs-tapestry.md §8.4.1.
+    if not profile:
         return
 
     # Vespa partial update: every standard kind-0 field gets assigned (or

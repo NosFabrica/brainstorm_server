@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from nostr_sdk import PublicKey
 
-from app.core.vespa import get_document, search
+from app.core.vespa import DEFAULT_MIN_RANK, SORT_PROFILES, get_document, search
 from app.schemas.request_response_schemas import (
     SearchByTextResponse,
     SearchResults,
@@ -64,9 +64,31 @@ async def search_by_text_endpoint(
             f"{RESULTS_LIMIT}; larger values are clamped down."
         ),
     ),
+    sort: str = Query(
+        default="followers",
+        description=(
+            "Sort order: 'followers' (default — verified-follower count, "
+            "popular-first), 'rank' (observer trust), or 'text' (pure text "
+            "relevance). All apply the rank>=minRank filter. See "
+            "docs/search-vs-tapestry.md §8.1."
+        ),
+    ),
+    minRank: float = Query(
+        default=DEFAULT_MIN_RANK,
+        ge=0,
+        description=(
+            "Exclude profiles whose observer rank (influence*100) is below this. "
+            f"Default {int(DEFAULT_MIN_RANK)}."
+        ),
+    ),
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> SearchByTextResponse:
     sanitized = _sanitize(text)
+    if sort not in SORT_PROFILES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"sort must be one of {sorted(SORT_PROFILES)}",
+        )
     observer = default_observer_pubkey()
     if ownPubkey:
         if jwt_data is None:
@@ -81,14 +103,16 @@ async def search_by_text_endpoint(
         doc = await get_document(pubkey)
         results = [doc] if doc is not None else []
     else:
-        # The default text_relevance profile orders by PURE TEXT relevance
-        # (P0, docs/search-vs-tapestry.md §6) — trust is no longer blended in —
-        # so we don't need a client-side rank-based re-sort.
+        # Default: text match -> filter rank>=minRank -> sort by verified
+        # followers (docs/search-vs-tapestry.md §8.1). `sort` picks the profile;
+        # the rank filter is applied via min_rank for every sort mode.
         results = await search(
             query_text=sanitized,
             user_pubkey=observer,
             hits=min(maxHits, RESULTS_LIMIT),
             include_zero_score_results=not onlyRanked,
+            ranking_profile=SORT_PROFILES[sort],
+            min_rank=minRank,
         )
 
     return SearchByTextResponse(

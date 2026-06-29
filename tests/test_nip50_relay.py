@@ -354,7 +354,7 @@ def test_sort_rank_desc_selects_profile_and_preserves_vespa_order(
         frames = _drain_until_eose(ws, "s")
 
     assert calls[-1]["ranking_profile"] == "rank_desc"
-    assert calls[-1]["min_rank"] is None
+    assert calls[-1]["min_rank"] == 2.0  # default rank>=2 floor (§8.1)
     event_pks = [f[2]["pubkey"] for f in frames if f[0] == "EVENT"]
     assert event_pks == [pk_c, pk_b, pk_a]
 
@@ -362,8 +362,9 @@ def test_sort_rank_desc_selects_profile_and_preserves_vespa_order(
 def test_sort_rank_asc_selects_profile_and_includes_zero_scores(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``sort:rank:asc`` uses the ``rank_asc`` profile and — unlike every other
-    path — keeps zero-score hits, since those are exactly what asc surfaces.
+    """``sort:rank:asc`` uses the ``rank_asc`` profile. The default rank>=2
+    filter still applies (Vespa drops sub-threshold hits in the gate), so the
+    Python zero-score include is off. See docs/search-vs-tapestry.md §8.1.
     """
     pk_low, pk_high = "a" * 64, "b" * 64
     calls: list[dict] = []
@@ -384,7 +385,8 @@ def test_sort_rank_asc_selects_profile_and_includes_zero_scores(
         frames = _drain_until_eose(ws, "s")
 
     assert calls[-1]["ranking_profile"] == "rank_asc"
-    assert calls[-1]["include_zero_score_results"] is True
+    assert calls[-1]["include_zero_score_results"] is False
+    assert calls[-1]["min_rank"] == 2.0
     event_pks = [f[2]["pubkey"] for f in frames if f[0] == "EVENT"]
     assert event_pks == [pk_low, pk_high]
 
@@ -408,7 +410,7 @@ def test_filter_rank_gte_pushes_min_rank_to_vespa(
         )
         _drain_until_eose(ws, "s")
 
-    assert calls[-1]["ranking_profile"] == "rank_filtered"
+    assert calls[-1]["ranking_profile"] == "sort_followers"
     assert calls[-1]["min_rank"] == 50.0
 
 
@@ -428,7 +430,7 @@ def test_filter_rank_gt_uses_strict_lower_bound(
         )
         _drain_until_eose(ws, "s")
 
-    assert calls[-1]["ranking_profile"] == "rank_filtered"
+    assert calls[-1]["ranking_profile"] == "sort_followers"
     assert 50.0 < calls[-1]["min_rank"] < 51.0
 
 
@@ -500,19 +502,20 @@ def test_unknown_sort_metric_emits_notice_and_falls_back(
     )
     client = TestClient(app)
     with client.websocket_connect("/relay") as ws:
+        # `zaps` is not a supported sort metric (rank / followers are).
         ws.send_text(
             json.dumps(
-                ["REQ", "s", {"kinds": [0], "search": "x sort:followers:desc"}]
+                ["REQ", "s", {"kinds": [0], "search": "x sort:zaps:desc"}]
             )
         )
         frames = _drain_until_eose(ws, "s")
 
     notice = next((f for f in frames if f[0] == "NOTICE"), None)
     assert notice is not None
-    assert "followers" in notice[1].lower()
-    # A rejected sort falls back to the NIP-50 default ordering, which is
-    # trust-sorted-within-text = rank_desc (P0, docs/search-vs-tapestry.md §6).
-    assert calls[-1]["ranking_profile"] == "rank_desc"
+    assert "zaps" in notice[1].lower()
+    # A rejected sort falls back to the NIP-50 default = sort_followers
+    # (docs/search-vs-tapestry.md §8.1).
+    assert calls[-1]["ranking_profile"] == "sort_followers"
     event_pks = [f[2]["pubkey"] for f in frames if f[0] == "EVENT"]
     assert event_pks == [pk_a, pk_b]
 
@@ -538,10 +541,10 @@ def test_unsupported_filter_op_emits_notice_and_applies_no_filter(
     notice = next((f for f in frames if f[0] == "NOTICE"), None)
     assert notice is not None
     assert "lte" in notice[1].lower()
-    # Unsupported op → no filter pushed (min_rank stays None); the relay still
-    # uses its trust-sorted default order (rank_desc) per P0 (§6).
-    assert calls[-1]["ranking_profile"] == "rank_desc"
-    assert calls[-1]["min_rank"] is None
+    # Unsupported op → no explicit filter; min_rank falls back to the default
+    # rank>=2 floor, and the relay uses its default sort_followers order (§8.1).
+    assert calls[-1]["ranking_profile"] == "sort_followers"
+    assert calls[-1]["min_rank"] == 2.0
 
 
 def test_cold_start_provisioning_fires_on_first_observer_search(

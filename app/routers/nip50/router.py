@@ -32,9 +32,10 @@ from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import get_redis_client
 from app.core.vespa import (
-    RANK_PROFILE_FILTERED,
+    DEFAULT_MIN_RANK,
     RANK_PROFILE_SORT_ASC,
     RANK_PROFILE_SORT_DESC,
+    RANK_PROFILE_SORT_FOLLOWERS,
 )
 from app.core.vespa import search as vespa_search
 from app.services.brainstorm_pubkey_service import get_or_create_brainstorm_pubkey
@@ -73,7 +74,14 @@ _FILTER_TOKEN_RE = re.compile(
 # advertisement below.
 _METRIC_FIELDS: dict[str, str] = {
     "rank": "_quality_score",
+    "followers": "_followers",
 }
+
+# Sort can use either metric (`followers` is the default order). Filter can
+# currently only use `rank` — Vespa gates on query(min_rank) over the rank
+# tensor; there's no follower-count gate yet. See docs/search-vs-tapestry.md §8.
+_SORT_METRICS: frozenset = frozenset({"rank", "followers"})
+_FILTER_METRICS: frozenset = frozenset({"rank"})
 
 # Filter operators we can push into Vespa. The rank_* profiles gate on
 # query(min_rank) via Vespa's rank-score-drop-limit, which is a lower-bound
@@ -233,10 +241,10 @@ def _parse_search(
     for m in list(_SORT_TOKEN_RE.finditer(raw)):
         metric = m.group(1).lower()
         direction = m.group(2).lower()
-        if metric not in _METRIC_FIELDS:
+        if metric not in _SORT_METRICS:
             notices.append(
                 f"sort metric {metric!r} not supported; ignoring (supported: "
-                f"{', '.join(sorted(_METRIC_FIELDS))})"
+                f"{', '.join(sorted(_SORT_METRICS))})"
             )
         else:
             sort_spec = (metric, direction)
@@ -250,10 +258,10 @@ def _parse_search(
         except ValueError:
             notices.append(f"filter value {m.group(3)!r} not numeric; ignoring")
             continue
-        if metric not in _METRIC_FIELDS:
+        if metric not in _FILTER_METRICS:
             notices.append(
                 f"filter metric {metric!r} not supported; ignoring "
-                f"(supported: {', '.join(sorted(_METRIC_FIELDS))})"
+                f"(supported: {', '.join(sorted(_FILTER_METRICS))})"
             )
             continue
         if op not in _FILTER_OPS:
@@ -276,38 +284,38 @@ def _select_ranking(
 
     Returns ``(ranking_profile, min_rank)`` to hand to ``vespa.search``:
 
-      * ``ranking_profile`` is always one of the ``RANK_PROFILE_*`` names — the
-        NIP-50 relay is TRUST-SORTED-WITHIN-TEXT by default (docs/search-vs-tapestry.md
-        §6), so with no sort token we use ``rank_desc`` rather than the
-        pure-text default profile that ``/search/byText`` uses. The sort
-        direction picks asc/desc; a filter with no sort uses the filtered
-        profile (pure-text order, low-trust hits dropped).
-      * ``min_rank`` is the most restrictive lower bound across all filter
-        tokens (``gte`` → value, ``gt`` → value + epsilon), or ``None`` when
-        there's no filter. Vespa drops hits scoring below it.
+      * ``ranking_profile`` is always one of the ``RANK_PROFILE_*`` names. The
+        NIP-50 default (no sort token) is ``sort_followers`` — text match, sorted
+        by verified-follower count (docs/search-vs-tapestry.md §8.1).
+        ``sort:followers`` keeps that; ``sort:rank:desc/asc`` orders by trust.
+      * ``min_rank`` is the rank>=N filter floor: the most restrictive
+        ``filter:rank`` lower bound if any (``gte`` → value, ``gt`` → value +
+        epsilon), otherwise the product default ``DEFAULT_MIN_RANK`` (rank>=2).
+        Vespa drops hits scoring below it.
 
-    All sort/filter happens inside Vespa now — there is no Python post-pass.
-    Only the per-observer ``rank`` metric exists today, so every token's metric
-    is ``rank``; the structure leaves room for more metrics later.
+    All sort/filter happens inside Vespa — there is no Python post-pass. Sort
+    supports ``rank`` and ``followers``; filter supports ``rank`` only.
     """
     min_rank: float | None = None
     for _metric, op, value in filters:
         threshold = value if op == "gte" else value + _GT_EPSILON
         min_rank = threshold if min_rank is None else max(min_rank, threshold)
+    # No explicit filter → apply the default rank>=2 floor (§8.1). An explicit
+    # filter:rank overrides it (even lower), since that's the caller configuring.
+    if min_rank is None:
+        min_rank = DEFAULT_MIN_RANK
 
     if sort_spec is not None:
-        _metric, direction = sort_spec
-        profile = (
-            RANK_PROFILE_SORT_ASC
-            if direction == "asc"
-            else RANK_PROFILE_SORT_DESC
-        )
-    elif min_rank is not None:
-        profile = RANK_PROFILE_FILTERED
+        metric, direction = sort_spec
+        if metric == "followers":
+            profile = RANK_PROFILE_SORT_FOLLOWERS  # followers is desc-only
+        elif direction == "asc":
+            profile = RANK_PROFILE_SORT_ASC
+        else:
+            profile = RANK_PROFILE_SORT_DESC
     else:
-        # No sort, no filter: the NIP-50 default is trust-sorted-within-text,
-        # so default to rank_desc (NOT the pure-text /search/byText profile).
-        profile = RANK_PROFILE_SORT_DESC
+        # No sort: the popular-first default.
+        profile = RANK_PROFILE_SORT_FOLLOWERS
 
     return profile, min_rank
 
@@ -444,11 +452,9 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
     # no Python re-ranking. See docs/search-precision-and-filtering.md.
     ranking_profile, min_rank = _select_ranking(sort_spec, filters)
 
-    # Trust-sorted-within-text INCLUDES unscored hits — they backfill below the
-    # trusted ones (mirroring tapestry's phase-2 backfill, docs/search-vs-tapestry.md
-    # §6). The only time we drop zero-score hits is when an explicit filter:rank
-    # cut-off is set, which means "only trusted profiles".
-    backfill_unscored = min_rank is None
+    # Vespa already drops hits below query(min_rank) (default rank>=2, §8.1), so
+    # the Python zero-score post-filter is redundant here — leave it off.
+    include_unscored = False
 
     observer = observer_override or default_observer_pubkey()
 
@@ -464,7 +470,7 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
             query_text=query,
             user_pubkey=observer,
             hits=hits,
-            include_zero_score_results=backfill_unscored,
+            include_zero_score_results=include_unscored,
             ranking_profile=ranking_profile,
             min_rank=min_rank,
         )

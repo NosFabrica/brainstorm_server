@@ -23,7 +23,7 @@ This is the **only** module that should talk to Vespa. Everything else imports f
 |---|---|
 | `get_document(pubkey)` | Fetch a doc's fields by pubkey; `None` if 404. |
 | `upsert_profile(pubkey, profile)` | Partial-update kind-0 profile fields (`PROFILE_FIELDS`). Creates the doc if absent. Missing fields are cleared to `""`. |
-| `upsert_score(pubkey, observer, score)` | Insert/replace one cell of the `quality_scores` tensor. |
+| `upsert_score(pubkey, observer, score, followers)` | Insert/replace the observer's cell in BOTH the `quality_scores` (rank) and `follower_counts` (verified-follower count) tensors. |
 | `remove_score(pubkey, observer)` | Delete one tensor cell. 404s are silently ignored. |
 | `batch_upsert_scores(upserts, removes, observer)` | Fan out many `upsert_score`/`remove_score` calls concurrently (bounded by `_BATCH_CONCURRENCY = 32`). Returns `(n_ok, n_failed)`. Individual exceptions are caught + logged, never propagate. |
 | `search(query_text, user_pubkey, hits, include_zero_score_results)` | Multi-field search with the `text_relevance` (pure-text) rank profile. `user_pubkey` is the observer perspective (used by the trust-sorted rank_* profiles, not by the default). |

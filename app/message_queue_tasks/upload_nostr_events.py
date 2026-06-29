@@ -273,17 +273,29 @@ async def upsert_scores_to_vespa(
     assert grape_rank_result.scorecards is not None
     changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
 
-    upserts: list[tuple[str, int]] = []
+    # Vespa ingest threshold is DECOUPLED from the Nostr TA publish cutoff
+    # (`cutoff_of_valid_graperank_scores`): we index every profile whose rank is
+    # > 0 so it's searchable, and the rank>=2 *default filter* (set per query)
+    # decides visibility at search time. A scorecard whose rank rounds to 0 is
+    # removed from Vespa here (its cell is stale), NOT kept. The cutoff-based
+    # `pubkeys_to_delete` (gone / dropped-from-scorecards) is honored too.
+    # See docs/search-vs-tapestry.md §8.3.
+    upserts: list[tuple[str, int, int]] = []
+    vespa_removes: set[str] = set(pubkeys_to_delete)
     for pubkey, scorecard in grape_rank_result.scorecards.items():
-        if not VESPA_FULL_SYNC and pubkey not in changed_pubkeys:
-            continue
-        if round(scorecard.influence, 2) < settings.cutoff_of_valid_graperank_scores:
-            continue
-        upserts.append((pubkey, round(scorecard.influence * 100)))
+        rank = round(scorecard.influence * 100)
+        if rank > 0:
+            # Alive in Vespa — never remove it, even if FULL_SYNC is off and we
+            # skip re-pushing it below.
+            vespa_removes.discard(pubkey)
+            if VESPA_FULL_SYNC or pubkey in changed_pubkeys:
+                upserts.append((pubkey, rank, round(scorecard.trusted_followers)))
+        else:
+            vespa_removes.add(pubkey)  # rank rounds to 0 → drop from the index
 
     n_ok, n_failed = await batch_upsert_scores(
         upserts=upserts,
-        removes=list(pubkeys_to_delete),
+        removes=list(vespa_removes),
         observer=observer,
     )
     logger.info(
