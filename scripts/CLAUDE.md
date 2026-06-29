@@ -59,6 +59,23 @@ need **no `.env`**; override the target via `BRAINSTORM_HTTP` / `BRAINSTORM_WS`.
   default. Needs `requests` + `nostr-sdk` (poetry env), like
   `smoke_open_ranking.py`; no `.env` required.
 
+### `trigger_graperank_all.py`
+
+Bulk-re-runs GrapeRank for **every** observer in `brainstorm_nsec` — the backfill
+lever for repopulating per-observer Vespa tensors (e.g. the new `follower_counts`,
+docs/search-vs-tapestry.md §8/§9). GrapeRank is expensive per observer, so:
+
+- `--rate N` enqueues/min, `--limit N` cap per run — tune to the worker's throughput.
+- Resumable + observable via the `brainstorm_request` table (no fragile state):
+  a campaign starts at time T (stored in `--state-file`); an observer is
+  *triggered* if it has a `graperank` request since T and *completed* when that
+  request hits `success`. Re-running skips already-triggered observers.
+- `--status` (counts, no writes), `--dry-run` (preview). Run **inside a
+  brainstorm-server pod** (needs `.env` + DB + the graperank worker consuming).
+
+Note: the default observer alone covers anonymous/default search; this is for
+populating ALL personalized perspectives at once. See §8.5/§9.
+
 ## When to add a new script
 
 Add one if:
