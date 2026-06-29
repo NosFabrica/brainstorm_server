@@ -194,3 +194,105 @@ NIP-50 relay** — matching tapestry exactly. This decides whether P0 means "dro
 | NIP-05 verify + dedup | `src/api/search/profiles/meili/index.js:26-46, 209-214` |
 | NIP-50 parse / execute | `nip50-proxy/src/search.js:25-62, 111-166` |
 | Design rationale | `nostr-search/BIBLE.md:201, 305-318`; `engineering-team/epics/search-quality.md` |
+
+---
+
+## 8. Agreed implementation plan (team decisions, 2026-06-29)
+
+We are proceeding with **P0 + P1**. The default behavior below **supersedes §6's
+"pure-text default for /search/byText"** — the team chose a popularity-first
+default ("first-time users expect popular accounts at the top").
+
+### 8.1 Default ranking — `text → filter rank≥2 → sort by verified followers`
+
+The SAME default for both `/search/byText` (UI) and the NIP-50 relay:
+
+1. **Text match** (existing recall + the `has_token_match` tier so genuine
+   matches beat trigram noise).
+2. **Filter `rank ≥ 2`** at query time via `query(min_rank)=2` (configurable
+   per query). `rank` = the observer's GrapeRank score (`influence×100`, 0..100),
+   i.e. the existing `quality_scores` tensor.
+3. **Sort by verified-follower count** (`trusted_followers`), descending.
+
+"Order by rank" was considered; verified-follower count was chosen as the
+default because it maps to "popular" more intuitively. **Sorting is
+configurable** via a `sort=` param (byText) / `sort:` token (NIP-50):
+
+| `sort=` | profile | sort key (filter is always `rank ≥ min_rank`) |
+|---|---|---|
+| `followers` (default) | `sort_followers` | `has_token_match*1100 + verified_followers()` |
+| `rank` | `rank_desc` | `has_token_match*1100 + user_score()` |
+| `text` | `text_relevance` (the P0 profile) | `relevance()` (pure text) |
+
+So **P0 isn't discarded** — `text_relevance` becomes the `sort=text` option, and
+P0's architecture (text & trust as separate dimensions, the match-quality tier)
+is what makes this clean. `DEFAULT_RANK_PROFILE` moves from `text_relevance` to
+`sort_followers`.
+
+### 8.2 New metric: verified-follower count in Vespa
+
+`scorecard.trusted_followers` is already computed and **already published in the
+kind-30382 TA events** (`upload_nostr_events.py:105`) — it's just never sent to
+Vespa. To sort on it:
+
+- **Schema:** add `field follower_counts type tensor<float>(user{})` (per-observer,
+  same shape as `quality_scores`). Must be `float`, not `int8` — counts exceed
+  int8's 127 ceiling; Vespa tensors only support int8/bfloat16/float/double.
+- **Pipeline:** `upsert_scores_to_vespa` pushes a second cell
+  (`trusted_followers`) alongside the existing rank cell.
+- **Rank profile:** `verified_followers() = sum(query(user_q) * attribute(follower_counts))`.
+
+### 8.3 Vespa ingest threshold — index scores **> 0** (not `== 0`)
+
+Decouple the **Vespa** ingest/removal threshold from the **Nostr TA publish**
+cutoff (`cutoff_of_valid_graperank_scores`, 0.05). The TA publish/delete cutoff
+stays as-is (0.05); Vespa indexes **everything with rank > 0** so it's all
+searchable, and the `rank ≥ 2` *default filter* (§8.1) decides visibility at
+query time.
+
+Implementation note — the cutoff currently drives THREE things
+(`upload_nostr_events.py`): TA publish (line 98), Vespa ingest (line 280), and
+the deletion set (lines 341-346) which feeds BOTH Nostr kind-5 deletes and Vespa
+`removes`. So ">0 ingest" requires:
+
+- **Ingest:** line 280 gate → `round(influence*100) <= 0: continue` (was `< cutoff`).
+- **Removal:** split the single `pubkeys_to_delete` set. Nostr deletes stay
+  cutoff-based; the **Vespa remove set must be rank==0 / gone-from-scorecards
+  only**, or rank 1-4 profiles get ingested then immediately swept out.
+
+### 8.4 P1 — more searchable fields
+
+Add searchable: `username`, `nip05`, `lud16`, `website`. **Skip `npub`** — the
+router already resolves npub/hex to a direct doc fetch (`_try_resolve_pubkey`),
+so indexing it only adds marginal partial-match value.
+
+- `nip05`, `lud16`, `website` are already stored (`indexing: summary`) → flip to
+  `index | summary` → **Vespa reindex** (rebuilds from the doc store, no strfry
+  re-feed).
+- `username` is not in Vespa at all → ingest change (extract from kind-0
+  content) **+ a kind-0 re-feed** from strfry.
+
+### 8.5 Backfill / deploy — one maintenance window
+
+These are independent datasets but batch into one window:
+
+| Work | Backfill | Mechanism |
+|---|---|---|
+| follower_counts tensor (§8.2) + >0 ingest (§8.3) | score re-sync | GrapeRank `VESPA_FULL_SYNC=True` |
+| P1: username (§8.4) | profile re-feed | replay kind-0 from strfry (also rebuilds nip05/lud16/website indexes) |
+| P1: nip05/lud16/website only (if skipping username) | reindex | Vespa `reindex` |
+
+Deploy schema (follower_counts + P1 index fields) **with** the server change
+together — `DEFAULT_RANK_PROFILE = "sort_followers"` references a profile the
+running Vespa must already have.
+
+### 8.6 Build order
+
+1. Schema: `follower_counts` tensor + `sort_followers` profile + P1 `index`
+   fields (doc.sd, nosfabrica-kube).
+2. Pipeline: push `trusted_followers`; change ingest/removal to >0 (split the
+   delete set).
+3. API: `DEFAULT_RANK_PROFILE = "sort_followers"`; add `sort=` to `/search/byText`;
+   add `followers` metric to the NIP-50 `sort:`/`filter:` map.
+4. P1 ingest: extract `username`; add the new searchable fields to the YQL groups.
+5. Tests + A/B on staging with `scripts/search_*.sh`; then the §8.5 backfill.
