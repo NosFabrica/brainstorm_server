@@ -76,6 +76,22 @@ docs/search-vs-tapestry.md §8/§9). GrapeRank is expensive per observer, so:
 Note: the default observer alone covers anonymous/default search; this is for
 populating ALL personalized perspectives at once. See §8.5/§9.
 
+### `refeed_kind0_to_vespa.py`
+
+Re-feeds every kind-0 profile from the internal strfry into Vespa via the SAME
+ingest path the live consumer uses (`process_event_kind_0` → content/tags merge →
+`upsert_profile`). The backfill for P1 (docs/search-vs-tapestry.md §8.4/§9):
+populates the new `username` field and rebuilds the newly-indexed
+`nip05`/`lud16`/`website` fields for existing docs. The transferer only handles
+kinds 3/10000/1984, so this is the only kind-0 → Vespa re-feed path.
+
+- **Requires the schema changes deployed first** (username + indexed fields) —
+  else every `upsert_profile` fails on an unknown field.
+- Walks kind-0 newest→oldest by `until` cursor, dedups by pubkey, writes the
+  cursor to `--state-file` after each page → resumable.
+- `--concurrency` (parallel Vespa writes), `--page`, `--limit`, `--status`,
+  `--dry-run`. Run inside a brainstorm-server pod (needs `.env` + strfry + Vespa).
+
 ## When to add a new script
 
 Add one if:
