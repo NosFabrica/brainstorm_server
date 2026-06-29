@@ -328,3 +328,87 @@ running Vespa must already have.
    add `followers` metric to the NIP-50 `sort:`/`filter:` map.
 4. P1 ingest: extract `username`; add the new searchable fields to the YQL groups.
 5. Tests + A/B on staging with `scripts/search_*.sh`; then the §8.5 backfill.
+
+---
+
+## 9. Deploy runbook
+
+**Status: the code (server + tests) is committed; the schema (`doc.sd`) is
+edited but uncommitted in nosfabrica-kube. Nothing is live yet.**
+
+### 9.0 What each change does to Vespa (and whether it needs a backfill)
+
+| Schema change | Vespa behavior | Populated by |
+|---|---|---|
+| New rank profiles (`sort_followers`, edited `rank_*`) | online, instant; no data impact | — |
+| Extended `has_token_match` (matchCount username/nip05) | online (rank expr) | — |
+| New attribute `follower_counts` (tensor) | online; **empty** for existing docs | **score re-sync** (GrapeRank) |
+| New field `username` (indexed) | online; **empty** for existing docs | **kind-0 re-feed** (source data not in Vespa) |
+| `nip05`/`lud16`/`website` `summary` → `index\|summary` | indexing change; index **empty** for existing docs until rewritten | **kind-0 re-feed** (rewrites docs through the new pipeline) |
+
+No change here drops data or requires a full reindex-from-scratch. **No
+downtime** at any step — schema changes are online and backfills are background.
+
+### 9.1 Known unknowns to settle ON STAGING FIRST
+
+1. **Does `prepareandactivate` accept the `summary→index` change?** There is no
+   `validation-overrides.xml` in the app package, so if Vespa classifies this as
+   a change needing an override, the post-upgrade Job **fails loudly** (non-zero,
+   visible in `kubectl logs job/<release>-brainstorm-vespa-app-<rev>`). Fix:
+   add `vespa-app/validation-overrides.xml` allowing the flagged change, or split
+   the index-field change into its own later deploy.
+2. **There is no kind-0 re-feed tool.** `nostr_event_transferer` only re-syncs
+   kinds 3/10000/1984 — **not kind 0**. Populating `username` (and rewriting the
+   nip05/lud16/website indexes) needs a NEW small script: read kind-0 from the
+   internal strfry and call `vespa.upsert_profile` for each. Until that runs,
+   those fields stay empty for existing profiles (new/updated profiles fill in
+   organically as their kind-0 flows through `process_strfry_event`).
+
+### 9.2 Sequence (run on staging, verify, then repeat on prod off-peak)
+
+1. **Pre-flight:** confirm a recent `brainstorm-backups-vespa` CronJob run; confirm
+   `vespa.appPackage.enabled=true`.
+2. **Deploy schema + server together** (`helm upgrade`, per `charts/brainstorm/VESPA.md`).
+   The post-upgrade hook zips `vespa-app/` and POSTs it to
+   `:19071/.../prepareandactivate`. **Watch the Job log** (§9.1 item 1).
+   - *Impact now:* byText/NIP-50 immediately use `sort_followers`, but
+     `follower_counts` is empty → all same-tier hits tie at 0 followers → ordering
+     within a tier is flat until step 3. The `rank≥2` filter works immediately
+     (it reads the existing `quality_scores`). General name/display/about search
+     is unaffected. **Brief window:** if the server pod is ready before the
+     app-package Job activates, byText returns errors ("unknown rank profile
+     sort_followers") for a few seconds — re-run is harmless; the Job retries
+     config-server readiness.
+3. **Score re-sync** (populates `follower_counts` + applies `>0` ingest):
+   trigger GrapeRank for the default observer — admin
+   `POST /admin/brainstormPubkey/{pubkey}/trigger_graperank`, or wait for
+   `periodic_graperank_trigger`. `VESPA_FULL_SYNC=True` (already set) pushes every
+   rank>0 scorecard with its `trusted_followers`.
+   - *Impact:* a large bounded (`_BATCH_CONCURRENCY=32`) burst of partial-update
+     writes to Vespa; more rows than before (>0 vs ≥0.05). Search stays up; minor
+     latency bump under heavy feed. After it completes, follower-sort is live.
+4. **kind-0 re-feed** (populates `username`; rewrites nip05/lud16/website indexes)
+   — run the new re-feed script (§9.1 item 2). Bounded throughput; online.
+   - *Impact:* one partial-update per profile. `quality_scores`/`follower_counts`
+     tensors are preserved (partial update doesn't touch them). The skip-empty +
+     content/tags merge means no profile gets wiped.
+5. **Verify** with `scripts/search_http.sh` / `search_compare.sh` / `search_nip50.sh`:
+   popular-first ordering, `rank≥2` exclusion, `username`/`nip05` matches, and
+   `sort=rank` / `sort=text` alternates.
+
+### 9.3 Rollback
+
+`helm rollback` (or redeploy the prior chart) reverts the rank profiles and the
+server. The added `follower_counts`/`username` fields and any written cells are
+**harmless to leave** — the previous profiles simply don't read them, and no data
+is lost. The `summary→index` change is the only one that isn't a clean auto-revert
+(removing an index may need an override); prefer rolling *forward* (fix + redeploy)
+over rolling back that specific field.
+
+### 9.4 Degraded-but-functional windows (summary)
+
+| Between… | Search still works? | What's missing |
+|---|---|---|
+| schema deploy → score re-sync | yes | follower ordering is flat (ties at 0) |
+| schema deploy → kind-0 re-feed | yes | username / nip05 / lud16 / website matches on existing profiles |
+| server ready → app-package active | ~no (seconds) | byText errors on unknown profile until the Job activates |
