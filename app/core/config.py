@@ -1,8 +1,10 @@
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
     db_url: str = Field(...)
     deploy_environment: str = Field(...)
     auth_algorithm: str = Field(...)
@@ -33,10 +35,6 @@ class Settings(BaseSettings):
     block_frequent_graperank_requests_minutes: int = Field(default=30)
     periodic_graperank_pubkey: str = Field(default="")
     vespa_url: str = Field(...)
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 
 settings = Settings()

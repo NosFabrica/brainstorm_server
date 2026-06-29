@@ -16,6 +16,10 @@ class AuthSuccessfulToken(BaseModel):
     token: str
 
 
+class FollowListIngestResult(BaseModel):
+    followCount: int
+
+
 ##########################
 
 # Business specific data #
@@ -37,7 +41,10 @@ class GrapeRankError(BaseModel):
     def bucket_unknown_code(cls, data):
         if isinstance(data, dict):
             raw_code = data.get("code")
-            if isinstance(raw_code, str) and raw_code not in ErrorCode._value2member_map_:
+            if (
+                isinstance(raw_code, str)
+                and raw_code not in ErrorCode._value2member_map_
+            ):
                 existing = data.get("message")
                 data = {
                     **data,
@@ -138,6 +145,7 @@ class ConnectionTierCounts(BaseModel):
     """Bucket names match the GR result writer's `count_values` keys
     (message_queue_consumer.py) so a single mental model applies across
     /stats, /connections?tier=…, and the GR per-hop count_values."""
+
     high: int
     medium_high: int
     medium: int
