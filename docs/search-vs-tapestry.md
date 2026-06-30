@@ -98,7 +98,7 @@ still mixing the two signals on one axis.
 | Exact-match priority | `exactness` ranking rule (structural) | `has_token_match()*1100` tier (manual) |
 | Field priority | `searchableAttributes` order (name>…>about) | `primary_text = max(name,display_name)`, about gated |
 | Searchable fields | name, display_name, username, **nip05, npub**, about, **lud16, website** | name, display_name, about (+ `*_gram`) |
-| Typo tolerance | Length-gated: ≥3→1 typo, ≥6→2 | Fuzzy `maxEditDistance:1, prefixLength:2` + **trigram OR firehose** |
+| Typo tolerance (deep-dive: §10) | Length-gated: ≥3→1 typo, ≥6→2 | Fuzzy `maxEditDistance:1, prefixLength:2` + **trigram OR firehose** |
 | Prefix / search-as-you-type | On by default | `prefix:true` userInput clause |
 | Proximity (multi-word) | `proximity` ranking rule | None (per-word OR groups + CamelCase-join variant) |
 | NIP-05 verification | Parallel `.well-known/nostr.json` lookup + surface verified hit | None |
@@ -487,3 +487,149 @@ stage, avoid on a large one):
 POD=$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=brainstorm-server -o jsonpath='{.items[0].metadata.name}')
 kubectl -n "$NS" exec "$POD" -- sh -c 'cd /app && poetry run python -m scripts.refeed_kind0_to_vespa --status'
 ```
+
+---
+
+## 10. Typo handling: Vespa vs Meilisearch (deep-dive)
+
+_Added 2026-06-30. Reference for team questions on why our results differ from
+Meilisearch on misspelled / partial queries. Mechanics confirmed against
+Meilisearch's docs (typo-tolerance internals + ranking rules)._
+
+### 10.1 What typo compensation we have (Vespa)
+
+Three mechanisms, OR'd per query word in `app/core/vespa.py`:
+
+| Mechanism | Config | Catches |
+|---|---|---|
+| Fuzzy (Levenshtein) | `maxEditDistance:1, prefixLength:2`, words **≥4 chars** (`_word_max_edits`) | 1 edit in char ≥3 (`nosfabrcia`→`nosfabrica`) |
+| Prefix | `prefix:true` userInput, on **every** word (`_field_clauses`) | partial / search-as-you-type (`nosfab`→`nosfabrica`) |
+| Trigram n-grams | `name_gram`/`display_name_gram` (OR of 3-grams), `about_gram` (AND) | infix/substring + fuzzy-ish recall (`fabrica`→`nosfabrica`) |
+
+Plus whole-string CamelCase concat (`@wj`) and Vespa linguistics (lowercase +
+accent-fold). Key properties:
+
+- `prefixLength:2` hard-blocks any typo in the **first two characters**.
+- Fuzzy budget is **flat: ≥4 chars → 1 edit, never 2**.
+- Vespa fuzzy is **plain Levenshtein** → a transposition (`Alcie`→`Alice`) is 2
+  edits and won't match at budget 1. *(Verify — not Damerau by default.)*
+- `matchCount()` scores exact, prefix, and fuzzy hits **identically** — we have
+  no exact>typo tier (only `has_token_match` separates token hits from
+  trigram-only noise).
+
+### 10.2 What Meilisearch does
+
+- **FST + Damerau-Levenshtein automaton** (no n-grams). Damerau → a transposition
+  is **1 edit** (`teh`→`the`).
+- **Length-gated budget** (defaults): 1–4 → 0 (prefix only); 5–8 → 1; 9+ → 2;
+  hard cap 2. *(Tapestry overrode to `oneTypo:3, twoTypos:6`.)*
+- **First-char typo costs 2** (so only correctable on 9+ char words; stops
+  `caturday`→`saturday`).
+- **Prefix + typo unified, on the LAST word only** (search-as-you-type).
+- **Word split & concat as typos** (`any way`↔`anyway`; `newspaper`→`news`+`paper`,
+  frequency-chosen), each costing 1 typo.
+- **`typo` is a ranking BUCKET** in `words→typo→proximity→attribute→sort→exactness`:
+  0-typo > 1-typo > 2-typo, deterministically, and above `attribute`. No score
+  blending.
+
+### 10.3 Differences that cause mismatches (ranked)
+
+1. **Exact-vs-typo ordering** — Meili buckets exact above any typo/prefix; we
+   flatten all into `matchCount`, so a fuzzy/prefix hit can tie/outrank an exact
+   name. (= the deferred "Option B" in `search-precision-and-filtering.md`.)
+2. **Transpositions** — Meili (Damerau) catches at cost 1; we (Levenshtein) need
+   2 → missed at our budget of 1 (trigrams only partly cover it).
+3. **Budget by length** — ours flat ≥4→1; Meili 5→1 / 9→2. We're looser on
+   4-char words (noise) but miss double-typos on 9+ names.
+4. **First/second-char typos** — our `prefixLength:2` blocks them; Meili corrects
+   a char-2 typo on a 5+ word.
+5. **Word boundaries** — Meili splits/concats both directions; we only do one
+   whole-string `@wj` concat.
+6. **Proximity** — Meili rewards multi-word closeness; we have none.
+7. **Trigram firehose** — our any-shared-3-gram recall (capped in ranking but
+   widens the candidate set); Meili has nothing like it.
+8. **Stemming** — we default `stemming: best` on names (conflates proper nouns,
+   `Daniels`→`daniel`); Meili doesn't.
+
+### 10.4 Tuning options + deploy impact
+
+**No new data (no kind-0 re-feed / no GrapeRank re-sync) is needed for any of
+these.** Only #3 touches the index; everything else is rank-config and/or server
+query-code (online).
+
+| # | Change | Where | Deploy impact |
+|---|---|---|---|
+| 1 | Exactness ladder (query `{label}` + `itemRawScore` tiers: exact>prefix>fuzzy) | `_word_group`/`_field_clauses` + doc.sd rank profile | **rank-config + server code** — online redeploy, **no reindex, no data** |
+| 2 | Length-gated 2-typo (≥9), once #1 is in | `_word_max_edits` | **server code only** — no reindex, no data |
+| 3 | `stemming: none` on `name`/`display_name`/`username` | doc.sd `document doc {}` | **index change → reindex from doc store** (text already stored, **no re-feed / no new data**); likely needs a `validation-overrides.xml` `indexing-change` allow (cf. §9.1) |
+| 4 | Proximity (`fieldMatch`/`nativeProximity`) | doc.sd rank profile | **rank-config only** — uses the existing positional index, no reindex/data |
+| 5 | Damerau/transposition (if Vespa fuzzy supports it) | query annotation in `_field_clauses` | **server code only** — no reindex/data |
+| 6 | Per-adjacent-pair concat / splitting | `_build_yql` | **server code only** — no reindex/data |
+
+> **Confirm against live data only after the kind-0 backfill completes** (§9.6) —
+> until then "Meili found X, we didn't" may be un-indexed docs, not a typo gap.
+> And our trigram net is a real capability Meili lacks (true infix/substring); the
+> aim is to demote it under a proper exactness tier, not delete it.
+
+### 10.5 Status (implemented 2026-06-30) + staging validation
+
+Implemented: **#1** exactness ladder, **#2** length-gated 2-typo, **#3** stemming,
+**#4** proximity, **#6** adjacent-pair concat.
+
+- **#5 (Damerau/transpositions) is NOT implementable** — Vespa fuzzy is plain
+  Levenshtein with no transposition option. The trigram net is our only cover.
+- **#6 word *splitting* deferred** — Meili splits by index term-frequency; we
+  have no cheap frequency source, so we ship concatenation only.
+
+Where:
+- `app/core/vespa.py` — `_field_clauses` labels exact/prefix/`fz1`/`fz2` on the
+  primary fields (name/display_name/username/nip05); `_word_max_edits` gate
+  (<4→0, ≥4→1, ≥9→2); `_build_yql`/`search` add adjacent-pair concats (`@wp{i}`);
+  `search()` surfaces `_match_quality`/`_match_tier` per hit.
+- `doc.sd` `text_relevance` — `match_quality()` (itemRawScore ladder) +
+  `proximity()` (fieldMatch) folded into `relevance()`; `stemming: none` on
+  name/display_name/username; itemRawScores + `match_quality` in match-features.
+- `doc.sd` **popularity/trust profiles** (`sort_followers` default, `rank_desc`,
+  `rank_asc`) — the match tier now sits ABOVE the follower/trust sort via two
+  inputs: `query(w_pop_token_tier)` (token vs gram, always on — also fixes the
+  old `*1100`-too-small-vs-followers weakness) and `query(w_pop_match_step)`
+  (exact>prefix>1-typo>2-typo above followers; **set 0 to revert to pure
+  popularity-within-token**). So the DEFAULT search keeps "popular accounts on
+  top" but a genuine name match never loses to a more-popular typo/substring hit
+  (Meili's `typo`-over-`sort`). `scripts/search_http.sh` prints `tier=`/`flw=`
+  per hit so you can see this.
+
+**The ladder is additive on `has_token_match`** — if `itemRawScore` is not
+populated for plain text terms, `match_quality()` is 0 everywhere and ordering
+falls back to today's behavior (no regression). So the staging deploy MUST confirm
+itemRawScore fires before #2 (wider fuzzy) is worth anything.
+
+Easiest check — `/search/byText` now surfaces the tier per hit (`_match_quality`
+0–4 + `_match_tier` "exact"/"prefix"/"1-typo"/"2-typo"/"gram"), so after deploying
+**both** the schema and the server:
+
+```bash
+curl -s "https://<stage-api>/search/byText?text=<exact-name>&maxHits=5" \
+  | grep -o '"_match_tier":"[^"]*"'
+```
+
+An exact-name query should report `"_match_tier":"exact"` on the matching hit. If
+every hit is `"gram"`, `itemRawScore` isn't firing for text terms. Raw-Vespa
+equivalent (URL-encode the YQL):
+
+```bash
+# exact "jack" against a labeled name clause — expect itemRawScore(mtch_exact) > 0
+kubectl -n <ns> exec brainstorm-vespa-0 -- curl -s \
+  'http://localhost:8080/search/?ranking=text_relevance&hits=1&q=jack&yql=' \
+  'select * from doc where ({label:"mtch_exact",defaultIndex:"name"}userInput(@q))' \
+  | grep -o '"itemRawScore(mtch_exact)":[0-9.]*'
+```
+
+If that is `0` on a known exact match, the ladder isn't firing — pivot the
+exact-detection mechanism (e.g. a dedicated exact-only field, or `rank()` with a
+separately-scored clause) before trusting the tiers.
+
+**Deploy ordering:** everything is rank-config / server-code EXCEPT `stemming:
+none`, which forces a reindex + a `validation-overrides.xml` `indexing-change`
+allow (§9.1). Sequence the stemming deploy **after** the in-flight kind-0 backfill
+so the reindex doesn't contend with the re-feed.

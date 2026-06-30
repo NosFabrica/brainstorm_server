@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Test the HTTP profile search (GET /search/byText) from the command line.
 #
-# Prints results in Vespa rank order with the relevance score and the observer's
-# quality score (_quality_score) so you can see WHY they're ordered that way.
+# Prints results in Vespa rank order with the relevance score, the match tier
+# (_match_tier: exact/prefix/1-typo/2-typo/gram — the §10 typo ladder), the
+# observer's verified-follower count (_followers) and quality score
+# (_quality_score) so you can see WHY they're ordered that way.
 # This is the anonymous / default-observer path (the same one the UI uses when
 # logged out). onlyRanked defaults to true (drops zero-trust hits); pass
 # --all to include them.
@@ -55,11 +57,14 @@ for i, r in enumerate(res):
     nm = r.get("display_name") or r.get("name") or "?"
     rel = r.get("_relevance")
     qs = r.get("_quality_score")
+    tier = r.get("_match_tier")
+    flw = r.get("_followers")
     if tsv:
-        print(f"{i}\t{pk}\t{nm}\t{rel}\t{qs}")
+        print(f"{i}\t{pk}\t{nm}\t{rel}\t{qs}\t{tier}\t{flw}")
     else:
         rel_s = f"{rel:.1f}" if isinstance(rel, (int, float)) else str(rel)
-        print(f"{i:2}  {nm[:28]:28}  rel={rel_s:>9}  qs={qs}  {pk[:16]}")
+        flw_s = f"{flw:.0f}" if isinstance(flw, (int, float)) else str(flw)
+        print(f"{i:2}  {nm[:26]:26}  tier={str(tier):7}  flw={flw_s:>6}  rel={rel_s:>9}  qs={qs}  {pk[:12]}")
 if not res and not tsv:
     print("(no results)", file=sys.stderr)
 '

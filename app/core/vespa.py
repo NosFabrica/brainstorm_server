@@ -42,6 +42,11 @@ PROFILE_FIELDS = (
 # How many query words we label / parametrize at most.
 MAX_QUERY_WORDS = 6
 
+# Maps the doc.sd match_quality() tier (0..4) to a human label surfaced in the
+# search response as `_match_tier`, so the team can eyeball exact-vs-typo tiers
+# without raw Vespa queries. See docs/search-vs-tapestry.md §10.
+_MATCH_TIERS = {4: "exact", 3: "prefix", 2: "1-typo", 1: "2-typo", 0: "gram"}
+
 # Rank-profile names defined in the Vespa schema (doc.sd). The DEFAULT is
 # `sort_followers`: text match, filter rank >= query(min_rank), sort by the
 # observer's verified-follower count (popular-first). The other profiles are
@@ -318,31 +323,58 @@ def _about_gram_clause_for_word(word: str, gram_size: int = 3) -> str:
 
 
 def _word_max_edits(word: str) -> int:
-    """Per-word fuzzy budget. Capped at a single edit, and only for words long
-    enough that a 1-char typo is plausible rather than a different word.
+    """Per-word fuzzy budget, length-gated like Meilisearch: <4 → exact/prefix
+    only, ≥4 → 1 edit, ≥9 → 2 edits.
 
-    We deliberately do NOT allow 2 edits: at distance 2 the candidate set
-    explodes (an 8-char name matches hundreds of unrelated names) and, because
-    Vespa's matchCount() counts a fuzzy match the same as an exact one, those
-    neighbours score identically to genuine matches — which is what made exact
-    matching "suffer". See docs/search-precision-and-filtering.md (Problem 1).
+    Two edits is safe now that the rank profile tiers exact > prefix > 1-typo >
+    2-typo (match_quality in doc.sd, via the labels added in `_field_clauses`):
+    a 2-edit neighbour lands in the lowest match tier instead of scoring like an
+    exact hit, which is what made wider fuzzy "suffer" before. See
+    docs/search-precision-and-filtering.md (Problem 1) and the §10 typo
+    deep-dive in docs/search-vs-tapestry.md.
     """
-    return 1 if len(word) >= 4 else 0
+    if len(word) >= 9:
+        return 2
+    if len(word) >= 4:
+        return 1
+    return 0
 
 
-def _field_clauses(field: str, var: str, max_edits: int) -> list[str]:
-    parts = [
-        f'({{defaultIndex:"{field}"}}userInput({var}))',
-        f'({{defaultIndex:"{field}",prefix:true}}userInput({var}))',
+# Fields whose exact/prefix/fuzzy match feeds the match-quality tier
+# (match_quality / has_token_match in doc.sd). Bios + payment/website fields are
+# recall-only, so a hit there must NOT promote a doc into the name-match tier.
+_PRIMARY_FIELDS = ("name", "display_name", "username", "nip05")
+
+
+def _field_clauses(field: str, var: str, max_edits: int, primary: bool) -> list[str]:
+    """Match clauses for one (field, word): exact, prefix, and up to two fuzzy
+    tiers. On PRIMARY fields each variant is labeled so the rank profile can
+    build an exact > prefix > 1-typo > 2-typo ladder via itemRawScore()
+    (match_quality, doc.sd) — mirroring Meilisearch's `typo` ranking bucket.
+    Recall-only fields stay unlabeled so a bio/website hit doesn't jump tiers.
+    """
+    def _ann(extra: list[str], label: str) -> str:
+        ann = [f'defaultIndex:"{field}"'] + extra
+        if primary:
+            ann.append(f'label:"{label}"')
+        return "{" + ",".join(ann) + "}"
+
+    clauses = [
+        f"({_ann([], 'mtch_exact')}userInput({var}))",
+        f"({_ann(['prefix:true'], 'mtch_prefix')}userInput({var}))",
     ]
-    if max_edits > 0:
-        # prefixLength:2 — the first two characters must match exactly, so a
-        # typo in char >=3 is corrected but a wrong first/second letter no
-        # longer drags in unrelated names. See the precision doc (Problem 1).
-        parts.append(
-            f'({{defaultIndex:"{field}",fuzzy:{{maxEditDistance:{max_edits},prefixLength:2}}}}userInput({var}))'
+    # prefixLength:2 — the first two characters must match exactly, so a typo in
+    # char >=3 is corrected but a wrong first/second letter no longer drags in
+    # unrelated names. Separate fz1/fz2 labels so 1-typo outranks 2-typo.
+    if max_edits >= 1:
+        clauses.append(
+            f"({_ann(['fuzzy:{maxEditDistance:1,prefixLength:2}'], 'mtch_fz1')}userInput({var}))"
         )
-    return parts
+    if max_edits >= 2:
+        clauses.append(
+            f"({_ann(['fuzzy:{maxEditDistance:2,prefixLength:2}'], 'mtch_fz2')}userInput({var}))"
+        )
+    return clauses
 
 
 def _word_group(var: str, literal: str, with_grams: bool = True) -> str:
@@ -350,13 +382,13 @@ def _word_group(var: str, literal: str, with_grams: bool = True) -> str:
 
     name/display_name/about are the primary text signal (and feed the rank
     profile's text functions). username/nip05 also feed the match-quality tier
-    (has_token_match in doc.sd). lud16/website are recall-only (P1). See
+    (match_quality in doc.sd). lud16/website are recall-only (P1). See
     docs/search-vs-tapestry.md §8.4.
     """
     me = _word_max_edits(literal)
     clauses: list[str] = []
     for field in ("name", "display_name", "about", "username", "nip05", "lud16", "website"):
-        clauses += _field_clauses(field, var, me)
+        clauses += _field_clauses(field, var, me, field in _PRIMARY_FIELDS)
     if with_grams:
         for gram_field in ("name_gram", "display_name_gram"):
             gc = _gram_clause(literal, gram_field)
@@ -368,16 +400,18 @@ def _word_group(var: str, literal: str, with_grams: bool = True) -> str:
     return "(" + " or ".join(clauses) + ")"
 
 
-def _build_yql(words: list[str], joined: str | None) -> str:
+def _build_yql(words: list[str], joined: str | None, pairs: list[str]) -> str:
     """Per-word groups OR'd together, plus an optional joined-CamelCase variant
     (whole-token only) so a query like 'vitor pamplona' still hits a doc named
-    'VitorPamplona'."""
+    'VitorPamplona', plus adjacent-pair concatenations for >2-word queries."""
     parts = [
         _word_group(f"@w{i}", w)
         for i, w in enumerate(words[:MAX_QUERY_WORDS])
     ]
     if joined:
         parts.append(_word_group("@wj", joined, with_grams=False))
+    for i, _ in enumerate(pairs):
+        parts.append(_word_group(f"@wp{i}", pairs[i], with_grams=False))
     return f"select * from doc where {' or '.join(parts)}"
 
 
@@ -408,6 +442,15 @@ async def search(
     """
     words = query_text.split()[:MAX_QUERY_WORDS]
     joined = "".join(words) if len(words) >= 2 else None
+    # Adjacent-pair concatenations ("nos fabrica" -> "nosfabrica") for queries
+    # with >2 words, where the whole-string join (`joined`) wouldn't match a
+    # 2-token name. 2-word queries are already covered by `joined`. Whole-token
+    # only (no grams). See the §10 typo deep-dive (word-boundary handling).
+    pairs = (
+        ["".join(words[i:i + 2]) for i in range(len(words) - 1)]
+        if len(words) >= 3
+        else []
+    )
     shortest = min((len(w) for w in words), default=len(query_text))
     # Trigrams are a recall safety-net + tie-breaker, not a primary ranker.
     # Keep them meaningful for very short queries (where token matching barely
@@ -421,7 +464,7 @@ async def search(
     vespa_hits = min(vespa_hits, 400)  # Vespa default max-hits
 
     params = {
-        "yql": _build_yql(words, joined),
+        "yql": _build_yql(words, joined, pairs),
         "ranking": ranking_profile or DEFAULT_RANK_PROFILE,
         "ranking.features.query(user_q)": "{" + user_pubkey + ":1.0}",
         "ranking.features.query(w_gram)": w_gram,
@@ -435,6 +478,8 @@ async def search(
         params[f"w{i}"] = w
     if joined:
         params["wj"] = joined
+    for i, p in enumerate(pairs):
+        params[f"wp{i}"] = p
 
     r = await _get_client().get(f"{settings.vespa_url}/search/", params=params)
     r.raise_for_status()
@@ -458,5 +503,12 @@ async def search(
         # verified_followers is only in match-features for the sort_followers
         # profile; other profiles leave it None.
         fields["_followers"] = mf.get("verified_followers")
+        # match_quality is the exact>prefix>1-typo>2-typo tier (doc.sd, §10);
+        # surface the raw int + a human label so the team can eyeball why a hit
+        # ranked where it did. None on the npub/hex direct-fetch path.
+        mq = mf.get("match_quality")
+        fields["_match_quality"] = mq
+        if mq is not None:
+            fields["_match_tier"] = _MATCH_TIERS.get(int(mq), str(mq))
         out.append(fields)
     return out
