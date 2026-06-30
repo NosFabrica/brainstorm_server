@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import paginate
 from nostr_sdk import Keys
@@ -12,10 +12,13 @@ from app.repos.brainstorm_request_repo import (
     build_recent_brainstorm_requests_stmt,
 )
 from app.schemas.admin_sort import SortOrder, UsersSort
+from app.schemas.request_response_schemas import BrainstormRequestResponse
 from app.schemas.schemas import AdminUserListItem, BrainstormRequestInstance
 from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
+    create_brainstorm_request,
 )
+from app.services.publish_drift import resync_target_to_flags
 
 router = APIRouter()
 
@@ -68,7 +71,40 @@ async def get_user_history_endpoint(
         db,
         stmt,
         transformer=lambda rows: [
-            brainstorm_request_db_obj_to_schema_converter(r, include_result=False, is_admin=True)
+            brainstorm_request_db_obj_to_schema_converter(
+                r, include_result=False, is_admin=True
+            )
             for r in rows
         ],
     )
+
+
+@router.post(
+    path="/{pubkey}/resync",
+    response_model=BrainstormRequestResponse,
+    summary="Admin: force a full re-assert (resync) of one observer's published state",
+)
+async def resync_observer_endpoint(
+    pubkey: str,
+    target: str = Query(
+        "both", description="Which sink(s) to force full: relay|vespa|both"
+    ),
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> BrainstormRequestResponse:
+    # Enqueue a normal single-observer recompute with the matching force_full_*
+    # set. Never fans out — it's one request for this pubkey; the consumer reads
+    # the flags off the row and re-asserts that sink's full above-cutoff state.
+    try:
+        force_full_relay, force_full_vespa = resync_target_to_flags(target)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    result = await create_brainstorm_request(
+        db=db,
+        algorithm="graperank",
+        parameters=pubkey,
+        pubkey=pubkey,
+        force_full_relay=force_full_relay,
+        force_full_vespa=force_full_vespa,
+    )
+    return BrainstormRequestResponse(data=result)

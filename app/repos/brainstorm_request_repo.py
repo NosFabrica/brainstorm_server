@@ -2,8 +2,8 @@ from datetime import datetime, timedelta
 
 from nostr_sdk import PublicKey
 from sqlalchemy import Select, asc, delete, desc, func, select, update
-from sqlalchemy.orm import defer, undefer
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+from sqlalchemy.orm import defer, undefer
 
 from app.core.database import execute_db_statement, handle_no_data
 from app.core.loggr import loggr
@@ -334,6 +334,8 @@ async def create_brainstorm_request_on_db(
     pubkey: str,
     graperank_preset_used: str | None = None,
     graperank_params: dict | None = None,
+    force_full_relay: bool = False,
+    force_full_vespa: bool = False,
 ) -> BrainstormRequest:
     new_brainstorm_request_obj = BrainstormRequest(
         algorithm=algorithm,
@@ -341,6 +343,8 @@ async def create_brainstorm_request_on_db(
         pubkey=pubkey,
         graperank_preset_used=graperank_preset_used,
         graperank_params=graperank_params,
+        force_full_relay=force_full_relay,
+        force_full_vespa=force_full_vespa,
     )
 
     db.add(new_brainstorm_request_obj)

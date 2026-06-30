@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # off the event loop so concurrent requests aren't starved.
     sign_parallel_threshold: int = Field(default=10_000)
     sign_parallel_max_workers: int | None = Field(default=None)
+    # Published-state-drift backstop: every Nth *scheduled* run for an observer
+    # forces a full re-assert on both sinks (delta can drift without self-repair).
+    # <= 0 disables the backstop (the per-run force_full_* overrides still work).
+    # Scheduled cadence is every 2h (12 runs/observer/day), so N=12 ≈ daily. The
+    # full run is the expensive path, so keep it infrequent: bump toward N=84
+    # (~weekly) once scheduling fans out to many observers.
+    full_sync_every_n_runs: int = Field(default=12)
 
 
 settings = Settings()

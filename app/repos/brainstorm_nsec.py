@@ -1,10 +1,11 @@
 from datetime import datetime
+
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from sqlalchemy.orm import defer
+
 from app.core.database import execute_db_statement, handle_no_data
 from app.db_models import BrainstormNsec
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
-
 from app.utils.encryption import decrypt_nsec, encrypt_nsec
 from app.utils.nostr import generate_random_nsec
 
@@ -142,8 +143,7 @@ def _unpack_pubkeys(blob: bytes | None) -> list[str]:
     if not blob:
         return []
     return [
-        blob[i : i + _PUBKEY_BYTES].hex()
-        for i in range(0, len(blob), _PUBKEY_BYTES)
+        blob[i : i + _PUBKEY_BYTES].hex() for i in range(0, len(blob), _PUBKEY_BYTES)
     ]
 
 
@@ -183,6 +183,26 @@ async def set_is_observer_search_available_by_pubkey_on_db(
         update(BrainstormNsec)
         .where(BrainstormNsec.pubkey == pubkey)
         .values(is_observer_search_available=is_available)
+    )
+    await db.execute(statement)
+
+
+async def increment_runs_since_full_on_db(db: AsyncDBSession, pubkey: str) -> None:
+    """Count one more scheduled delta toward the every-Nth full backstop."""
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(runs_since_full=BrainstormNsec.runs_since_full + 1)
+    )
+    await db.execute(statement)
+
+
+async def reset_runs_since_full_on_db(db: AsyncDBSession, pubkey: str) -> None:
+    """Clear the backstop counter after a successful full run (sink in sync)."""
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(runs_since_full=0)
     )
     await db.execute(statement)
 

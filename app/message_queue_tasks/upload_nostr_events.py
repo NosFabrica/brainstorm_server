@@ -30,6 +30,7 @@ from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
     get_last_published_pubkeys_by_pubkey_on_db,
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
+    reset_runs_since_full_on_db,
     set_is_observer_search_available_by_pubkey_on_db,
     update_last_published_pubkeys_by_pubkey_on_db,
 )
@@ -38,6 +39,7 @@ from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_status_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
 )
+from app.services.publish_drift import resolve_full_sync
 
 logger = loggr.get_logger(__name__)
 
@@ -250,15 +252,22 @@ async def _sign_ta_events_sequential(
 
 
 async def get_events_from_graperank_result(
-    grape_rank_result: GrapeRankResult, nostr_client: Client, nsec: str
+    grape_rank_result: GrapeRankResult,
+    nostr_client: Client,
+    nsec: str,
+    relay_full_sync: bool | None = None,
 ) -> list[Event]:
     assert grape_rank_result.scorecards is not None
+    # Resolved per-run mode (settings default OR a per-run force_full override);
+    # callers without an override pass None and get the env default.
+    if relay_full_sync is None:
+        relay_full_sync = settings.relay_full_sync
     changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
     # relay_full_sync=True republishes every above-cutoff TA (reconciliation /
     # drift correction); False publishes only changed scores (steady state).
     logger.info(
-        f"relay_full_sync={settings.relay_full_sync}: publishing "
-        f"{'all above-cutoff' if settings.relay_full_sync else f'{len(changed_pubkeys)} changed-score'} "
+        f"relay_full_sync={relay_full_sync}: publishing "
+        f"{'all above-cutoff' if relay_full_sync else f'{len(changed_pubkeys)} changed-score'} "
         f"pubkeys out of {len(grape_rank_result.scorecards)} scorecards"
     )
     start_time_sort = time.time()
@@ -266,7 +275,7 @@ async def get_events_from_graperank_result(
     inputs = prepare_ta_inputs(
         grape_rank_result,
         cutoff=settings.cutoff_of_valid_graperank_scores,
-        full_sync=settings.relay_full_sync,
+        full_sync=relay_full_sync,
     )
     logger.info(f"sorted scorecards! took {round(time.time() - start_time_sort, 2)}s")
 
@@ -386,6 +395,16 @@ async def process_nostr_upload_message(message: dict):
                     db, pubkey=observer
                 )
             assert nsec_db_obj.pubkey == observer
+            # Read this run's per-sink force-full overrides off the request row
+            # (drift repair) — folded into the existing status-update session, so
+            # no extra round-trip. settings default OR the per-run override.
+            request_row = await select_brainstorm_request_by_id_on_db(db, run_id)
+            relay_full_sync = resolve_full_sync(
+                settings.relay_full_sync, request_row.force_full_relay
+            )
+            vespa_full_sync = resolve_full_sync(
+                settings.vespa_full_sync, request_row.force_full_vespa
+            )
             with _timed(timings, "nsec_ta_update"):
                 await update_brainstorm_request_ta_status_by_id_on_db(
                     db,
@@ -402,7 +421,10 @@ async def process_nostr_upload_message(message: dict):
 
         with _timed(timings, "sign"):
             nostr_events = await get_events_from_graperank_result(
-                grape_rank_result, nostr_client, nsec_db_obj.nsec
+                grape_rank_result,
+                nostr_client,
+                nsec_db_obj.nsec,
+                relay_full_sync=relay_full_sync,
             )
         counts["n_signed"] = len(nostr_events)
 
@@ -423,8 +445,8 @@ async def process_nostr_upload_message(message: dict):
                 grape_rank_result,
                 previously_published=previously_published_pubkeys,
                 cutoff=settings.cutoff_of_valid_graperank_scores,
-                relay_full_sync=settings.relay_full_sync,
-                vespa_full_sync=settings.vespa_full_sync,
+                relay_full_sync=relay_full_sync,
+                vespa_full_sync=vespa_full_sync,
             )
             currently_published_pubkeys = plan.currently_published
             relay_pubkeys_to_delete = plan.relay_deletes
@@ -515,6 +537,12 @@ async def process_nostr_upload_message(message: dict):
                     await set_is_observer_search_available_by_pubkey_on_db(
                         db, pubkey=observer, is_available=True
                     )
+
+                # A successful full run on BOTH sinks brings the observer fully in
+                # sync → clear the every-Nth backstop counter (any full run counts,
+                # incl. an admin resync). Piggybacks on this existing Nsec write.
+                if relay_full_sync and vespa_full_sync:
+                    await reset_runs_since_full_on_db(db, pubkey=observer)
 
                 await db.commit()
 

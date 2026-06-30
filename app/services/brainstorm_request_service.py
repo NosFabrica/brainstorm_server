@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
-from app.core.redis_db import redis_client
 
+from app.core.redis_db import redis_client
 from app.db_models import BrainstormRequest, BrainstormRequestStatus
 from app.repos.brainstorm_nsec import (
     get_graperank_preset_by_pubkey_on_db,
@@ -13,8 +13,7 @@ from app.repos.brainstorm_request_repo import (
     delete_brainstorm_request_by_id_on_db,
     select_brainstorm_request_by_id_on_db,
 )
-
-from app.schemas.schemas import GrapeRankError, BrainstormRequestInstance
+from app.schemas.schemas import BrainstormRequestInstance, GrapeRankError
 from app.services.graperank_preset_service import (
     normalize_preset,
     resolve_preset_params,
@@ -115,8 +114,9 @@ async def create_brainstorm_request(
     parameters: str,
     pubkey: str,
     nsec_exists: bool = False,
+    force_full_relay: bool = False,
+    force_full_vespa: bool = False,
 ) -> BrainstormRequestInstance:
-
     stored_preset = await get_graperank_preset_by_pubkey_on_db(db, parameters)
     requested_preset = normalize_preset(stored_preset)
     effective_preset, params = await resolve_preset_params(
@@ -131,6 +131,8 @@ async def create_brainstorm_request(
             pubkey=pubkey,
             graperank_preset_used=effective_preset.value,
             graperank_params=params.model_dump(),
+            force_full_relay=force_full_relay,
+            force_full_vespa=force_full_vespa,
         )
     )
 

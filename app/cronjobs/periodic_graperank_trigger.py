@@ -6,11 +6,13 @@ from app.core.database import db_session
 from app.core.loggr import loggr
 from app.repos.brainstorm_nsec import (
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
+    increment_runs_since_full_on_db,
 )
 from app.repos.brainstorm_request_repo import (
     select_latest_non_waiting_brainstorm_request_on_db,
 )
 from app.services.brainstorm_request_service import create_brainstorm_request
+from app.services.publish_drift import backstop_due
 
 logger = loggr.get_logger(__name__)
 
@@ -28,16 +30,30 @@ def _next_aligned_mark(now: datetime) -> datetime:
 
 async def _trigger_graperank(pubkey: str, reason: str) -> None:
     async with db_session() as db:
+        # Every-Nth full backstop: this is a scheduled run, so consult the
+        # per-observer counter. When the backstop is due, force full on BOTH
+        # sinks for this run (the consumer resets the counter on success);
+        # otherwise count this scheduled delta toward the next backstop.
+        nsec_obj, _ = await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
+            db, pubkey=pubkey
+        )
+        due = backstop_due(nsec_obj.runs_since_full, settings.full_sync_every_n_runs)
+        if not due:
+            await increment_runs_since_full_on_db(db, pubkey=pubkey)
+
         triggered = await create_brainstorm_request(
             db=db,
             algorithm="graperank",
             parameters=pubkey,
             pubkey=pubkey,
             nsec_exists=True,
+            force_full_relay=due,
+            force_full_vespa=due,
         )
     logger.info(
         f"Periodic graperank cronjob: triggered graperank "
-        f"(reason={reason}, pubkey={pubkey}, request_id={triggered.private_id})"
+        f"(reason={reason}, pubkey={pubkey}, request_id={triggered.private_id}, "
+        f"backstop_full={due}, runs_since_full={nsec_obj.runs_since_full})"
     )
 
 

@@ -1,14 +1,15 @@
 import enum
+
 from sqlalchemy import (
+    Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
-    Float,
     LargeBinary,
     String,
-    func,
-    Boolean,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs
@@ -76,6 +77,16 @@ class BrainstormRequest(TimestampMixin, Base):
     pubkey: Mapped[str] = mapped_column(String, nullable=True)
     graperank_preset_used: Mapped[str] = mapped_column(String, nullable=True)
     graperank_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Per-run, per-sink "force a full re-assert" overrides (published-state-drift
+    # repair). Nullable: NULL/false = no override (delta as usual); true = this
+    # run re-asserts that sink's full above-cutoff state. Set by the admin resync
+    # endpoint and the every-Nth scheduled backstop.
+    force_full_relay: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, server_default="false"
+    )
+    force_full_vespa: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, server_default="false"
+    )
 
 
 class BrainstormNostrRelayTransfer(TimestampMixin, Base):
@@ -111,6 +122,12 @@ class BrainstormNsec(TimestampMixin, Base):
     )
     is_observer_search_available: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
+    )
+    # Scheduled deltas published since this observer's last successful full run.
+    # Drives the every-Nth full backstop (FULL_SYNC_EVERY_N_RUNS). Counts
+    # scheduled runs only; reset to 0 after a successful full run.
+    runs_since_full: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
     )
 
 
