@@ -32,8 +32,43 @@ import asyncio
 import time
 from contextlib import contextmanager
 from app.core.config import settings
+from app.message_queue_tasks.ta_signing import (
+    TaInput,
+    build_ta_event_builder,
+    sign_ta_events_parallel,
+)
 
 logger = loggr.get_logger(__name__)
+
+
+def prepare_ta_inputs(
+    grape_rank_result: GrapeRankResult,
+    cutoff: float,
+    full_sync: bool,
+) -> list[TaInput]:
+    """The above-cutoff scorecards to assert, as picklable
+    `(observee, rank, followers)` tuples — sorted by influence descending.
+
+    Replicates the two filters of the original sign loop: the full-sync /
+    changed-score gate (which scorecards to consider this run), then the
+    per-scorecard influence cutoff."""
+    assert grape_rank_result.scorecards is not None
+    changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
+    selected = sorted(
+        (
+            sc
+            for pubkey, sc in grape_rank_result.scorecards.items()
+            if full_sync or pubkey in changed_pubkeys
+        ),
+        key=lambda sc: sc.influence,
+        reverse=True,
+    )
+    return [
+        (sc.observee, round(sc.influence * 100), sc.trusted_followers)
+        for sc in selected
+        if round(sc.influence, 2) >= cutoff
+    ]
+
 
 RELAYS: list[str] = [
     x
@@ -65,8 +100,12 @@ def _timed(timings: dict[str, float], name: str):
 
 
 def _log_publish_timing(
-    run_id, observer: str, timings: dict[str, float], counts: dict[str, int],
-    run_start: float, error: str | None = None,
+    run_id,
+    observer: str,
+    timings: dict[str, float],
+    counts: dict[str, int],
+    run_start: float,
+    error: str | None = None,
 ) -> None:
     """One structured per-run summary line attributing the publish wall-clock across
     segments. Emitted on both the success and failure paths so slow/failed runs are
@@ -120,12 +159,21 @@ async def init_nostr_client(secret_key_nsec: str) -> Client:
     return client
 
 
-async def get_events_from_graperank_result(
-    grape_rank_result: GrapeRankResult, nostr_client: Client
+async def _sign_ta_events_sequential(
+    inputs: list[TaInput],
+    nostr_client: Client,
 ) -> list[Event]:
-
+    """Sign each TA via the relay-connected client, one await at a time."""
     events: list[Event] = []
-    logger.info(f"{bool(grape_rank_result.scorecards)}")
+    for d_tag, rank, followers in inputs:
+        builder = build_ta_event_builder(d_tag, rank, followers)
+        events.append(await nostr_client.sign_event_builder(builder))
+    return events
+
+
+async def get_events_from_graperank_result(
+    grape_rank_result: GrapeRankResult, nostr_client: Client, nsec: str
+) -> list[Event]:
     assert grape_rank_result.scorecards is not None
     changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
     # relay_full_sync=True republishes every above-cutoff TA (reconciliation /
@@ -137,45 +185,24 @@ async def get_events_from_graperank_result(
     )
     start_time_sort = time.time()
     logger.info("sorting scorecards...")
-    sorted_scorecards = sorted(
-        (
-            sc
-            for pubkey, sc in grape_rank_result.scorecards.items()
-            if settings.relay_full_sync or pubkey in changed_pubkeys
-        ),
-        key=lambda sc: sc.influence,
-        reverse=True,
+    inputs = prepare_ta_inputs(
+        grape_rank_result,
+        cutoff=settings.cutoff_of_valid_graperank_scores,
+        full_sync=settings.relay_full_sync,
     )
-    end_time_sort = time.time() - start_time_sort
-    logger.info(f"sorted scorecards! took {round(end_time_sort,2)}s")
+    logger.info(f"sorted scorecards! took {round(time.time() - start_time_sort, 2)}s")
 
-    for scorecard in sorted_scorecards:
-
-        if round(scorecard.influence, 2) < settings.cutoff_of_valid_graperank_scores:
-            continue
-
-        d_tag = scorecard.observee
-
-        rank_tag = round(scorecard.influence * 100)
-
-        trusted_followers_count = scorecard.trusted_followers
-
-        tags = [
-            Tag.parse(["d", d_tag]),
-            Tag.parse(["rank", str(rank_tag)]),
-            Tag.parse(["followers", str(trusted_followers_count)]),
-        ]
-
-        event_builder = EventBuilder(
-            kind=Kind(30382),
-            content="",
+    # Count-gated signing: small (common) runs keep the simple sequential client
+    # loop; only a large burst pays for the process pool. Offloading the large
+    # sign to child processes both ~10×-speeds it and keeps the GIL-holding
+    # nostr-sdk signing off the event loop so concurrent requests aren't starved.
+    if len(inputs) <= settings.sign_parallel_threshold:
+        events = await _sign_ta_events_sequential(inputs, nostr_client)
+    else:
+        logger.info(f"large sign ({len(inputs)} events): parallel process pool")
+        events = await sign_ta_events_parallel(
+            inputs, nsec, max_workers=settings.sign_parallel_max_workers
         )
-
-        event_builder = event_builder.tags(tags)
-
-        signed_event = await nostr_client.sign_event_builder(event_builder)
-
-        events.append(signed_event)
     logger.info(f"publishing change results. total number: {len(events)} ")
     return events
 
@@ -207,7 +234,6 @@ async def fetch_existing_events_for_dropped_pubkeys(
     author_pubkey: str,
     dropped_pubkeys: list[str],
 ) -> list[Event]:
-
     fetcher = Client()
     added = 0
     for relay in RELAYS:
@@ -265,7 +291,6 @@ async def get_deletion_events_for_dropped_pubkeys(
     dropped_pubkeys: list[str],
     nostr_client: Client,
 ) -> list[Event]:
-
     if not dropped_pubkeys:
         logger.info(
             f"zero pubkeys that moved below the threshold. no events will be deleted"
@@ -340,7 +365,6 @@ async def upsert_scores_to_vespa(
 
 
 async def process_nostr_upload_message(message: dict):
-
     # is_success = message["result"]["success"]
 
     # if not is_success:
@@ -362,10 +386,11 @@ async def process_nostr_upload_message(message: dict):
             # Each still carries the _timed blind spot, but together they isolate
             # which await dominates: the SELECT, the status UPDATE, or the commit.
             with _timed(timings, "nsec_select"):
-                nsec_db_obj, _was_created_now = (
-                    await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
-                        db, pubkey=observer
-                    )
+                (
+                    nsec_db_obj,
+                    _was_created_now,
+                ) = await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
+                    db, pubkey=observer
                 )
             assert nsec_db_obj.pubkey == observer
             with _timed(timings, "nsec_ta_update"):
@@ -384,14 +409,16 @@ async def process_nostr_upload_message(message: dict):
 
         with _timed(timings, "sign"):
             nostr_events = await get_events_from_graperank_result(
-                grape_rank_result, nostr_client
+                grape_rank_result, nostr_client, nsec_db_obj.nsec
             )
         counts["n_signed"] = len(nostr_events)
 
         with _timed(timings, "last_published"):
             async with db_session() as db:
                 previously_published_pubkeys = (
-                    await get_last_published_pubkeys_by_pubkey_on_db(db, pubkey=observer)
+                    await get_last_published_pubkeys_by_pubkey_on_db(
+                        db, pubkey=observer
+                    )
                 )
 
         with _timed(timings, "compute_deletes"):
@@ -506,7 +533,6 @@ async def process_nostr_upload_message(message: dict):
 
         with _timed(timings, "final_db"):
             async with db_session() as db:
-
                 await update_brainstorm_request_ta_status_by_id_on_db(
                     db,
                     brainstorm_request_id=run_id,
@@ -534,7 +560,6 @@ async def process_nostr_upload_message(message: dict):
         logger.error(f"Error on request {run_id} , {e}")
         _log_publish_timing(run_id, observer, timings, counts, run_start, error=str(e))
         async with db_session() as db:
-
             await update_brainstorm_request_ta_status_by_id_on_db(
                 db,
                 brainstorm_request_id=run_id,

@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     # (the relay has no other reconciliation lever).
     vespa_full_sync: bool = Field(default=True)
     relay_full_sync: bool = Field(default=True)
+    # Count-gated parallel signing. At/below the threshold a publish run signs
+    # via the simple sequential client loop (zero pool overhead — the common,
+    # steady-state case). Above it, a *large* burst (first publish for an
+    # Observer, big graph shift) shards signing across a ProcessPoolExecutor,
+    # which both ~10×-speeds the sign and keeps the GIL-holding nostr-sdk signing
+    # off the event loop so concurrent requests aren't starved.
+    sign_parallel_threshold: int = Field(default=10_000)
+    sign_parallel_max_workers: int | None = Field(default=None)
 
 
 settings = Settings()

@@ -1,0 +1,82 @@
+"""Pure, process-safe Trusted-Assertion signing.
+
+Deliberately depends on **nostr-sdk only** (no settings/db/vespa/redis): the
+functions here are the worker bodies for a `ProcessPoolExecutor`, so on a
+`spawn` platform the child re-imports this module and we want that import to be
+cheap and side-effect-free. The orchestration that *reads settings* and decides
+whether to parallelise lives in `upload_nostr_events.py`.
+
+`sign_ta_shard` signs locally from a `Keys` parsed from the Observer's nsec, so
+no relay-connected client is involved and the nsec never leaves the process
+tree.
+"""
+
+import asyncio
+import os
+from concurrent.futures import ProcessPoolExecutor
+
+from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag  # type: ignore
+
+# (observee/d-tag, rank, trusted-followers) — the only per-event inputs, as
+# plain picklable tuples so a shard ships cheaply across the process boundary.
+TaInput = tuple[str, int, int]
+
+
+def build_ta_event_builder(d_tag: str, rank: int, followers: int) -> EventBuilder:
+    """The single source of truth for a TA's kind/tags, shared by the sequential
+    and parallel paths so both branches produce content-equivalent events."""
+    tags = [
+        Tag.parse(["d", d_tag]),
+        Tag.parse(["rank", str(rank)]),
+        Tag.parse(["followers", str(followers)]),
+    ]
+    return EventBuilder(kind=Kind(30382), content="").tags(tags)
+
+
+def sign_ta_shard(inputs: list[TaInput], nsec: str) -> list[str]:
+    """Build + locally sign a shard of TAs. Returns signed-event JSON strings
+    (JSON, not `Event`, so results pickle back from a worker process)."""
+    keys = Keys.parse(secret_key=nsec)
+    return [
+        build_ta_event_builder(d_tag, rank, followers).sign_with_keys(keys).as_json()
+        for d_tag, rank, followers in inputs
+    ]
+
+
+def _shard(inputs: list[TaInput], n_shards: int) -> list[list[TaInput]]:
+    """Split into at most `n_shards` contiguous, near-equal chunks (no empties)."""
+    n_shards = max(1, min(n_shards, len(inputs)))
+    size, extra = divmod(len(inputs), n_shards)
+    shards: list[list[TaInput]] = []
+    start = 0
+    for i in range(n_shards):
+        end = start + size + (1 if i < extra else 0)
+        shards.append(inputs[start:end])
+        start = end
+    return shards
+
+
+async def sign_ta_events_parallel(
+    inputs: list[TaInput],
+    nsec: str,
+    max_workers: int | None = None,
+) -> list[Event]:
+    """Sign a large batch by sharding across a `ProcessPoolExecutor`.
+
+    Each worker locally signs its shard (nsec stays inside the server's child
+    processes — no secret over the network). Offloading to processes keeps the
+    GIL-holding nostr-sdk signing off the event loop, so concurrent requests are
+    not starved during a big sign."""
+    if not inputs:
+        return []
+    workers = max(1, max_workers or os.cpu_count() or 1)
+    shards = _shard(inputs, workers)
+    loop = asyncio.get_running_loop()
+    with ProcessPoolExecutor(max_workers=len(shards)) as pool:
+        signed_per_shard = await asyncio.gather(
+            *(
+                loop.run_in_executor(pool, sign_ta_shard, shard, nsec)
+                for shard in shards
+            )
+        )
+    return [Event.from_json(j) for shard in signed_per_shard for j in shard]
