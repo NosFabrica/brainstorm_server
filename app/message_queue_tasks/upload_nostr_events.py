@@ -28,6 +28,7 @@ from nostr_sdk import (  # type: ignore
     PublicKey,
     Tag,
 )
+import asyncio
 import time
 from contextlib import contextmanager
 from app.core.config import settings
@@ -42,6 +43,14 @@ RELAYS: list[str] = [
     ]
     if x
 ]
+
+# `relay.send_msg` only *enqueues* onto nostr-sdk's bounded per-relay channel; it
+# raises ("can't send message to the ... channel") when that channel is transiently
+# full while the SDK's writer drains the socket. Under a flood (~24k events in <1s)
+# this surfaces as short bursts of failures. Retry with a small backoff so the
+# writer can catch up; `await asyncio.sleep` yields the loop so the channel drains.
+SEND_MSG_MAX_ATTEMPTS = 5
+SEND_MSG_RETRY_BASE_DELAY_S = 0.01
 
 
 @contextmanager
@@ -450,6 +459,7 @@ async def process_nostr_upload_message(message: dict):
 
         with _timed(timings, "send"):
             write_relays = list((await nostr_client.relays()).values())
+            send_failures = 0
             for index, nostr_event in enumerate(nostr_events):
                 if index == 0 or index % 200 == 0:
                     logger.info(
@@ -457,12 +467,26 @@ async def process_nostr_upload_message(message: dict):
                     )
                 msg = ClientMessage.event(nostr_event)
                 for relay in write_relays:
-                    try:
-                        relay.send_msg(msg)
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to enqueue event {index} on {relay.url()}: {e}"
-                        )
+                    for attempt in range(SEND_MSG_MAX_ATTEMPTS):
+                        try:
+                            relay.send_msg(msg)
+                            break
+                        except Exception as e:
+                            if attempt + 1 >= SEND_MSG_MAX_ATTEMPTS:
+                                send_failures += 1
+                                logger.error(
+                                    f"Failed to enqueue event {index} on {relay.url()} "
+                                    f"after {SEND_MSG_MAX_ATTEMPTS} attempts: {e}"
+                                )
+                            else:
+                                await asyncio.sleep(
+                                    SEND_MSG_RETRY_BASE_DELAY_S * (2**attempt)
+                                )
+            if send_failures:
+                logger.error(
+                    f"TA publish: {send_failures} events failed to enqueue after "
+                    f"{SEND_MSG_MAX_ATTEMPTS} attempts (run={run_id} observer={observer})"
+                )
 
         vespa_search_available = False
         try:
