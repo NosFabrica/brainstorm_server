@@ -127,6 +127,7 @@ async def main() -> int:
     sem = asyncio.Semaphore(args.concurrency)
     seen: set[str] = set()
     processed_this_run = 0
+    failed_this_run = 0
     cursor = state["cursor"]
 
     async def _process(ev: dict) -> None:
@@ -148,7 +149,20 @@ async def main() -> int:
                     fresh.append(ev)
 
             if not args.dry_run and fresh:
-                await asyncio.gather(*(_process(ev) for ev in fresh))
+                # return_exceptions=True so one malformed profile (e.g. Vespa
+                # rejecting a leftover control char in `name`) is logged and
+                # skipped instead of aborting the whole backfill. The page still
+                # completes, so the cursor advances past the bad doc on resume.
+                results = await asyncio.gather(
+                    *(_process(ev) for ev in fresh), return_exceptions=True
+                )
+                errs = [r for r in results if isinstance(r, BaseException)]
+                if errs:
+                    failed_this_run += len(errs)
+                    for e in errs[:3]:
+                        print(f"  skip (upsert failed): {e!r}")
+                    if len(errs) > 3:
+                        print(f"  ... +{len(errs) - 3} more upsert failures this page")
 
             processed_this_run += len(fresh)
             state["processed"] += len(fresh)
@@ -176,8 +190,9 @@ async def main() -> int:
     finally:
         await vespa_aclose()
 
+    skipped = f", {failed_this_run} skipped (upsert errors)" if failed_this_run else ""
     print(f"done: processed {processed_this_run} profile(s) this run "
-          f"({state['processed']} total).")
+          f"({state['processed']} total){skipped}.")
     return 0
 
 

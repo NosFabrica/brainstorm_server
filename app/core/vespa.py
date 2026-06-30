@@ -145,12 +145,29 @@ async def get_document(pubkey: str) -> dict | None:
     return r.json().get("fields")
 
 
+# Vespa string fields reject control characters — a kind-0 whose name is a
+# literal NUL (\x00) gets a 400 ("illegal code point 0x0"). Strip the C0 control set
+# (and DEL) except tab/newline/CR so the profile indexes cleaned instead of
+# failing the upsert. Applies to BOTH the live ingest path and the kind-0
+# re-feed backfill (scripts/refeed_kind0_to_vespa.py).
+_BAD_CHARS: dict[int, None] = {
+    c: None for c in range(0x20) if c not in (0x09, 0x0A, 0x0D)
+}
+_BAD_CHARS[0x7F] = None
+
+
+def _clean(value: str) -> str:
+    """Drop control characters Vespa string fields reject."""
+    return value.translate(_BAD_CHARS)
+
+
 async def upsert_profile(pubkey: str, profile: dict) -> None:
     """Partial-update profile fields for a doc, creating it if absent.
 
     For every standard kind-0 field we either assign the provided value or
     clear it with an empty string when the new event doesn't include it, so
-    the prior value is replaced rather than left stale.
+    the prior value is replaced rather than left stale. String values are
+    stripped of control characters Vespa rejects (see `_clean`).
     """
     fields_payload: dict = {"pubkey": {"assign": pubkey}}
     for f in PROFILE_FIELDS:
@@ -160,9 +177,9 @@ async def upsert_profile(pubkey: str, profile: dict) -> None:
         if v is None:
             fields_payload[f] = {"assign": ""}
         elif isinstance(v, str):
-            fields_payload[f] = {"assign": v}
+            fields_payload[f] = {"assign": _clean(v)}
         else:
-            fields_payload[f] = {"assign": str(v)}
+            fields_payload[f] = {"assign": _clean(str(v))}
 
     body = {"fields": fields_payload}
     # PUT (not POST) is Vespa's partial-update verb: assign/add/remove ops live

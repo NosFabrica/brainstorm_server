@@ -448,3 +448,42 @@ lost. The `summary→index` change is the only one that isn't a clean auto-rever
 - Once the index is in steady state, consider flipping `VESPA_FULL_SYNC` to
   `False` (`upload_nostr_events.py`) so routine GrapeRank runs only push *changed*
   scores instead of the full set.
+
+### 9.6 kind-0 repopulation on an already-running namespace
+
+Pulls the new P1 fields (`username`, indexed `nip05`/`lud16`/`website`) into Vespa
+for existing docs via `scripts/refeed_kind0_to_vespa.py`. **Schema must already be
+deployed** (§9.2 step 2) or every upsert fails on an unknown field.
+
+Runs as the suspended `vespa-kind0-refeed` CronJob (chart:
+`templates/vespa-kind0-refeed.yaml`) in its own pod — own resources, durable
+logs, no load on the live API server. Trigger on demand and tail the logs
+(the script prints per-page progress):
+
+```bash
+export KUBECONFIG=~/.kube/configs/<stage>.conf   # e.g. arrowhead-admin.conf
+NS=<namespace>                                    # e.g. staging | arrowheadstaging
+
+kubectl -n "$NS" create job vespa-kind0-refeed-now \
+  --from=cronjob/brainstorm-vespa-kind0-refeed
+kubectl -n "$NS" logs -f job/vespa-kind0-refeed-now
+```
+
+Knobs: `vespaKind0Refeed.concurrency` / `.page` in values. Idempotent; a retry
+restarts from newest (the resume cursor is pod-local, lost on restart). Trust /
+follower-count backfill is separate (`trigger_graperank_all.py`, §9.2 step 4).
+
+Verify (expect ≥1 hit where there were none before):
+
+```bash
+kubectl -n "$NS" exec brainstorm-vespa-0 -- curl -s \
+  'http://localhost:8080/search/?yql=select%20pubkey%2Cusername%20from%20doc%20where%20username%20contains%20%22<username>%22&hits=5'
+```
+
+Quick one-off without the Job (runs inside the live server pod — fine for a small
+stage, avoid on a large one):
+
+```bash
+POD=$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=brainstorm-server -o jsonpath='{.items[0].metadata.name}')
+kubectl -n "$NS" exec "$POD" -- sh -c 'cd /app && poetry run python -m scripts.refeed_kind0_to_vespa --status'
+```
