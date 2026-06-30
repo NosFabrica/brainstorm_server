@@ -17,6 +17,13 @@ from concurrent.futures import ProcessPoolExecutor
 
 from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag  # type: ignore
 
+# Trusted Assertions are kind-30382 parameterized-replaceable events, keyed by
+# the Observee in the `d` tag.
+TA_KIND = 30382
+# Coordinates per kind-5 deletion event. strfry's maxEventSize is generous, but
+# bounding the tag count keeps each deletion event well under any relay limit.
+DELETION_COORDS_PER_EVENT = 200
+
 # (observee/d-tag, rank, trusted-followers) — the only per-event inputs, as
 # plain picklable tuples so a shard ships cheaply across the process boundary.
 TaInput = tuple[str, int, int]
@@ -30,7 +37,30 @@ def build_ta_event_builder(d_tag: str, rank: int, followers: int) -> EventBuilde
         Tag.parse(["rank", str(rank)]),
         Tag.parse(["followers", str(followers)]),
     ]
-    return EventBuilder(kind=Kind(30382), content="").tags(tags)
+    return EventBuilder(kind=Kind(TA_KIND), content="").tags(tags)
+
+
+def build_atag_deletion_builders(
+    observees: list[str],
+    signing_pubkey: str,
+    chunk_size: int = DELETION_COORDS_PER_EVENT,
+) -> list[EventBuilder]:
+    """Kind-5 deletion events that remove each Observee's TA by `a`-tag
+    coordinate `30382:<signing_pubkey>:<observee>` — no relay fetch for event ids.
+
+    `signing_pubkey` MUST be the pubkey the deletion is signed with: strfry only
+    honours an `a`-tag delete when the coordinate's pubkey equals the deletion
+    event's author. One builder per `chunk_size` coordinates."""
+    builders: list[EventBuilder] = []
+    for i in range(0, len(observees), chunk_size):
+        tags = [
+            Tag.parse(["a", f"{TA_KIND}:{signing_pubkey}:{observee}"])
+            for observee in observees[i : i + chunk_size]
+        ]
+        builders.append(
+            EventBuilder(kind=Kind(5), content="dropped below cutoff").tags(tags)
+        )
+    return builders
 
 
 def sign_ta_shard(inputs: list[TaInput], nsec: str) -> list[str]:

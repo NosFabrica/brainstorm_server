@@ -1,8 +1,31 @@
+import asyncio
+import time
+from contextlib import contextmanager
 from datetime import timedelta
+from typing import NamedTuple
+
+from nostr_sdk import (  # type: ignore
+    Client,
+    ClientMessage,
+    Event,
+    EventBuilder,
+    Keys,
+    Kind,
+    NostrSigner,
+    Tag,
+)
+
+from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.vespa import batch_upsert_scores
 from app.db_models import BrainstormRequestStatus
+from app.message_queue_tasks.ta_signing import (
+    TaInput,
+    build_atag_deletion_builders,
+    build_ta_event_builder,
+    sign_ta_events_parallel,
+)
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
     get_last_published_pubkeys_by_pubkey_on_db,
@@ -14,28 +37,6 @@ from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
     update_brainstorm_request_status_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
-)
-from nostr_sdk import (  # type: ignore
-    Client,
-    ClientMessage,
-    Event,
-    EventBuilder,
-    EventId,
-    Filter,
-    Keys,
-    Kind,
-    NostrSigner,
-    PublicKey,
-    Tag,
-)
-import asyncio
-import time
-from contextlib import contextmanager
-from app.core.config import settings
-from app.message_queue_tasks.ta_signing import (
-    TaInput,
-    build_ta_event_builder,
-    sign_ta_events_parallel,
 )
 
 logger = loggr.get_logger(__name__)
@@ -68,6 +69,83 @@ def prepare_ta_inputs(
         for sc in selected
         if round(sc.influence, 2) >= cutoff
     ]
+
+
+def _delete_from_sets(
+    fell_off: set[str], below_cutoff: set[str], full_sync: bool
+) -> list[str]:
+    """The delete set from pre-built sets: Observees that fell off
+    (`previously - currently`), plus the full below-cutoff sweep on full-sync."""
+    return sorted(fell_off | below_cutoff if full_sync else fell_off)
+
+
+def compute_delete_observees(
+    previously_published: list[str],
+    currently_published: list[str],
+    below_cutoff: list[str],
+    full_sync: bool,
+) -> list[str]:
+    """Observees whose score should be deleted this run — computed from a local
+    diff, no relay read. Sink-agnostic: relay and Vespa mirror the same logical
+    set (above-cutoff scores for the Observer), so both delete the same Observees,
+    differing only by their per-sink `full_sync` flag.
+
+    Incremental: `previously_published - currently_published` (everything we'd
+    published that is no longer above cutoff; this subsumes both genuine removals
+    and below-cutoff drops, including ones never reported in
+    `droppedBelowCutoffPubkeys`). Full-sync additionally sweeps every below-cutoff
+    Observee to reconcile drift."""
+    return _delete_from_sets(
+        set(previously_published) - set(currently_published),
+        set(below_cutoff),
+        full_sync,
+    )
+
+
+class PublishPlan(NamedTuple):
+    """What one publish run does with an algo result, decided up front.
+
+    `currently_published` is every above-cutoff Observee (the new published-state
+    to persist). `relay_deletes` / `vespa_deletes` are each sink's delete set."""
+
+    currently_published: list[str]
+    relay_deletes: list[str]
+    vespa_deletes: list[str]
+
+
+def plan_publish(
+    grape_rank_result: GrapeRankResult,
+    previously_published: list[str],
+    cutoff: float,
+    relay_full_sync: bool,
+    vespa_full_sync: bool,
+) -> PublishPlan:
+    """Decide the per-sink delete sets + the new published-state from one algo
+    result, with no relay read. Pure, so the whole publish decision is testable
+    against algo results without DB/relay/signing.
+
+    Partitions scorecards into above/below cutoff in a single pass, builds each
+    set once, and reuses them across both sinks — when the two `full_sync` flags
+    match (the common case) the delete set is computed once and shared."""
+    assert grape_rank_result.scorecards is not None
+    currently_published: list[str] = []
+    above: set[str] = set()
+    below: set[str] = set()
+    for sc in grape_rank_result.scorecards.values():
+        if round(sc.influence, 2) >= cutoff:
+            currently_published.append(sc.observee)
+            above.add(sc.observee)
+        else:
+            below.add(sc.observee)
+
+    fell_off = set(previously_published) - above
+    relay_deletes = _delete_from_sets(fell_off, below, relay_full_sync)
+    vespa_deletes = (
+        relay_deletes
+        if relay_full_sync == vespa_full_sync
+        else _delete_from_sets(fell_off, below, vespa_full_sync)
+    )
+    return PublishPlan(currently_published, relay_deletes, vespa_deletes)
 
 
 RELAYS: list[str] = [
@@ -227,108 +305,23 @@ async def get_zero_score_events_for_pubkeys(
     return events
 
 
-DELETION_FETCH_BATCH_SIZE = 200
-
-
-async def fetch_existing_events_for_dropped_pubkeys(
-    author_pubkey: str,
-    dropped_pubkeys: list[str],
-) -> list[Event]:
-    fetcher = Client()
-    added = 0
-    for relay in RELAYS:
-        try:
-            await fetcher.add_relay(relay)
-            added += 1
-        except Exception as e:
-            logger.error(f"deletion fetch: bad relay {relay}: {e}")
-    if added == 0:
-        logger.error("deletion fetch: no relays available, skipping")
-        return []
-
-    await fetcher.connect()
-    try:
-        author = PublicKey.parse(author_pubkey)
-        all_events: list[Event] = []
-        seen_ids: set[str] = set()
-        total_batches = (
-            len(dropped_pubkeys) + DELETION_FETCH_BATCH_SIZE - 1
-        ) // DELETION_FETCH_BATCH_SIZE
-        for i in range(0, len(dropped_pubkeys), DELETION_FETCH_BATCH_SIZE):
-            batch = dropped_pubkeys[i : i + DELETION_FETCH_BATCH_SIZE]
-            batch_index = i // DELETION_FETCH_BATCH_SIZE + 1
-            flt = Filter().kinds([Kind(30382)]).authors([author]).identifiers(batch)
-            batch_start = time.perf_counter()
-            try:
-                events_obj = await fetcher.fetch_events(
-                    flt, timeout=timedelta(seconds=30)
-                )
-            except Exception as e:
-                logger.error(f"deletion fetch batch {batch_index} failed: {e}")
-                continue
-            # per-batch latency is the direct prod-RTT signal for the sweep
-            logger.info(
-                f"deletion fetch batch {batch_index}/{total_batches} "
-                f"({len(batch)} identifiers) took "
-                f"{round((time.perf_counter() - batch_start) * 1000)}ms"
-            )
-            for ev in events_obj.to_vec():
-                eid = ev.id().to_hex()
-                if eid in seen_ids:
-                    continue
-                seen_ids.add(eid)
-                all_events.append(ev)
-        return all_events
-    finally:
-        try:
-            await fetcher.disconnect()
-        except Exception as e:
-            logger.error(f"deletion fetch: disconnect failed: {e}")
-
-
 async def get_deletion_events_for_dropped_pubkeys(
-    author_pubkey: str,
-    dropped_pubkeys: list[str],
+    observees: list[str],
+    signing_pubkey: str,
     nostr_client: Client,
 ) -> list[Event]:
-    if not dropped_pubkeys:
-        logger.info(
-            f"zero pubkeys that moved below the threshold. no events will be deleted"
-        )
+    """Signed kind-5 deletions that remove each dropped Observee's TA by `a`-tag
+    coordinate — no relay fetch (the coordinate `30382:<signing_pubkey>:<observee>`
+    is reconstructable, so we never look up the existing event ids)."""
+    if not observees:
+        logger.info("zero dropped Observees. no events will be deleted")
         return []
 
     logger.info(
-        f"fetching existing kind 30382 events for {len(dropped_pubkeys)} "
-        f"dropped pubkeys to build deletion events"
+        f"building a-tag kind-5 deletions for {len(observees)} dropped Observees"
     )
-
-    existing_events = await fetch_existing_events_for_dropped_pubkeys(
-        author_pubkey=author_pubkey,
-        dropped_pubkeys=dropped_pubkeys,
-    )
-    logger.info(f"found {len(existing_events)} existing kind 30382 events to delete")
-
-    event_ids_by_d_tag: dict[str, list[EventId]] = {}
-    for ev in existing_events:
-        d_tag: str | None = None
-        for tag in ev.tags().to_vec():
-            tag_vec = tag.as_vec()
-            if len(tag_vec) >= 2 and tag_vec[0] == "d":
-                d_tag = tag_vec[1]
-                break
-        if d_tag is None:
-            continue
-        event_ids_by_d_tag.setdefault(d_tag, []).append(ev.id())
-
-    deletion_events: list[Event] = []
-    for d_tag, event_ids in event_ids_by_d_tag.items():
-        tags = [Tag.parse(["e", eid.to_hex()]) for eid in event_ids]
-        builder = EventBuilder(kind=Kind(5), content="dropped below cutoff")
-        builder = builder.tags(tags)
-        signed_event = await nostr_client.sign_event_builder(builder)
-        deletion_events.append(signed_event)
-
-    return deletion_events
+    builders = build_atag_deletion_builders(observees, signing_pubkey)
+    return [await nostr_client.sign_event_builder(b) for b in builders]
 
 
 async def upsert_scores_to_vespa(
@@ -422,48 +415,20 @@ async def process_nostr_upload_message(message: dict):
                 )
 
         with _timed(timings, "compute_deletes"):
-            currently_published_pubkeys = [
-                sc.observee
-                for sc in grape_rank_result.scorecards.values()
-                if round(sc.influence, 2) >= settings.cutoff_of_valid_graperank_scores
-            ]
-
-            # Full-sync (per sink) sweeps ALL below-cutoff pubkeys for deletion
-            # (reconciliation); incremental deletes only this run's reported drops.
-            below_cutoff = [
-                sc.observee
-                for sc in grape_rank_result.scorecards.values()
-                if round(sc.influence, 2) < settings.cutoff_of_valid_graperank_scores
-            ]
-            dropped = list(grape_rank_result.droppedBelowCutoffPubkeys)
-
-            # Previously-published pubkeys no longer in the scorecards are genuine
-            # removals — always deleted from both sinks regardless of full/incremental.
-            scorecard_pubkeys = set(grape_rank_result.scorecards.keys())
-            missing_from_scorecards = [
-                pk for pk in previously_published_pubkeys if pk not in scorecard_pubkeys
-            ]
-            if missing_from_scorecards:
-                logger.info(
-                    f"adding {len(missing_from_scorecards)} previously-published pubkeys "
-                    f"that are no longer in scorecards to both deletion sets"
-                )
-
-            # When both sinks use the same mode (the common case) the delete sets
-            # are identical — share one list instead of materialising a second
-            # ~N-element copy. They differ only when reconciling one sink alone.
-            if settings.relay_full_sync == settings.vespa_full_sync:
-                base = below_cutoff if settings.relay_full_sync else dropped
-                relay_pubkeys_to_delete = vespa_pubkeys_to_delete = (
-                    base + missing_from_scorecards
-                )
-            else:
-                relay_pubkeys_to_delete = (
-                    below_cutoff if settings.relay_full_sync else dropped
-                ) + missing_from_scorecards
-                vespa_pubkeys_to_delete = (
-                    below_cutoff if settings.vespa_full_sync else dropped
-                ) + missing_from_scorecards
+            # One pass partitions scorecards into above/below cutoff and decides
+            # both sinks' fetch-free local-diff delete sets (shared when the two
+            # full_sync modes match). The local diff subsumes the old
+            # dropped+missing set and catches drops the algo never reported.
+            plan = plan_publish(
+                grape_rank_result,
+                previously_published=previously_published_pubkeys,
+                cutoff=settings.cutoff_of_valid_graperank_scores,
+                relay_full_sync=settings.relay_full_sync,
+                vespa_full_sync=settings.vespa_full_sync,
+            )
+            currently_published_pubkeys = plan.currently_published
+            relay_pubkeys_to_delete = plan.relay_deletes
+            vespa_pubkeys_to_delete = plan.vespa_deletes
         counts["n_above_cutoff"] = len(currently_published_pubkeys)
         counts["n_relay_deletes"] = len(relay_pubkeys_to_delete)
         counts["n_vespa_deletes"] = len(vespa_pubkeys_to_delete)
@@ -474,10 +439,10 @@ async def process_nostr_upload_message(message: dict):
         # )
         # nostr_events.extend(zero_score_events)
 
-        with _timed(timings, "deletion_fetch"):
+        with _timed(timings, "deletion_build"):
             deletion_events = await get_deletion_events_for_dropped_pubkeys(
-                author_pubkey=signing_pubkey,
-                dropped_pubkeys=relay_pubkeys_to_delete,
+                observees=relay_pubkeys_to_delete,
+                signing_pubkey=signing_pubkey,
                 nostr_client=nostr_client,
             )
         counts["n_deletion_events"] = len(deletion_events)
