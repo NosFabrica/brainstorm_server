@@ -35,8 +35,15 @@ class Settings(BaseSettings):
     block_frequent_graperank_requests_minutes: int = Field(default=30)
     periodic_graperank_pubkey: str = Field(default="")
     vespa_url: str = Field(...)
+    # Per-sink "fully re-assert state vs incremental" levers. Default True =
+    # current behavior (re-feed all above-cutoff + sweep all below-cutoff each
+    # run); False = incremental (changed scores + reported drops only).
+    #   vespa_full_sync → Vespa mirror (upserts + removes)
+    #   relay_full_sync → Nostr relay (kind-30382 TA republish + kind-5 deletes)
+    # When incremental, run a sink's flag True periodically to reconcile drift
+    # (the relay has no other reconciliation lever).
     vespa_full_sync: bool = Field(default=True)
-    delete_all_below_cutoff_events: bool = Field(default=True)
+    relay_full_sync: bool = Field(default=True)
 
 
 settings = Settings()

@@ -119,9 +119,12 @@ async def get_events_from_graperank_result(
     logger.info(f"{bool(grape_rank_result.scorecards)}")
     assert grape_rank_result.scorecards is not None
     changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
+    # relay_full_sync=True republishes every above-cutoff TA (reconciliation /
+    # drift correction); False publishes only changed scores (steady state).
     logger.info(
-        f"filtering to {len(changed_pubkeys)} changed-score pubkeys "
-        f"out of {len(grape_rank_result.scorecards)} scorecards"
+        f"relay_full_sync={settings.relay_full_sync}: publishing "
+        f"{'all above-cutoff' if settings.relay_full_sync else f'{len(changed_pubkeys)} changed-score'} "
+        f"pubkeys out of {len(grape_rank_result.scorecards)} scorecards"
     )
     start_time_sort = time.time()
     logger.info("sorting scorecards...")
@@ -129,7 +132,7 @@ async def get_events_from_graperank_result(
         (
             sc
             for pubkey, sc in grape_rank_result.scorecards.items()
-            if pubkey in changed_pubkeys
+            if settings.relay_full_sync or pubkey in changed_pubkeys
         ),
         key=lambda sc: sc.influence,
         reverse=True,
@@ -389,20 +392,17 @@ async def process_nostr_upload_message(message: dict):
                 if round(sc.influence, 2) >= settings.cutoff_of_valid_graperank_scores
             ]
 
-            if settings.delete_all_below_cutoff_events:
-                pubkeys_to_delete = [
-                    sc.observee
-                    for sc in grape_rank_result.scorecards.values()
-                    if round(sc.influence, 2) < settings.cutoff_of_valid_graperank_scores
-                ]
-                logger.info(
-                    f"delete_all_below_cutoff_events=True: sweeping all "
-                    f"{len(pubkeys_to_delete)} below-cutoff pubkeys "
-                    f"instead of using droppedBelowCutoffPubkeys"
-                )
-            else:
-                pubkeys_to_delete = list(grape_rank_result.droppedBelowCutoffPubkeys)
+            # Full-sync (per sink) sweeps ALL below-cutoff pubkeys for deletion
+            # (reconciliation); incremental deletes only this run's reported drops.
+            below_cutoff = [
+                sc.observee
+                for sc in grape_rank_result.scorecards.values()
+                if round(sc.influence, 2) < settings.cutoff_of_valid_graperank_scores
+            ]
+            dropped = list(grape_rank_result.droppedBelowCutoffPubkeys)
 
+            # Previously-published pubkeys no longer in the scorecards are genuine
+            # removals — always deleted from both sinks regardless of full/incremental.
             scorecard_pubkeys = set(grape_rank_result.scorecards.keys())
             missing_from_scorecards = [
                 pk for pk in previously_published_pubkeys if pk not in scorecard_pubkeys
@@ -410,11 +410,27 @@ async def process_nostr_upload_message(message: dict):
             if missing_from_scorecards:
                 logger.info(
                     f"adding {len(missing_from_scorecards)} previously-published pubkeys "
-                    f"that are no longer in scorecards to the deletion set"
+                    f"that are no longer in scorecards to both deletion sets"
                 )
-                pubkeys_to_delete.extend(missing_from_scorecards)
+
+            # When both sinks use the same mode (the common case) the delete sets
+            # are identical — share one list instead of materialising a second
+            # ~N-element copy. They differ only when reconciling one sink alone.
+            if settings.relay_full_sync == settings.vespa_full_sync:
+                base = below_cutoff if settings.relay_full_sync else dropped
+                relay_pubkeys_to_delete = vespa_pubkeys_to_delete = (
+                    base + missing_from_scorecards
+                )
+            else:
+                relay_pubkeys_to_delete = (
+                    below_cutoff if settings.relay_full_sync else dropped
+                ) + missing_from_scorecards
+                vespa_pubkeys_to_delete = (
+                    below_cutoff if settings.vespa_full_sync else dropped
+                ) + missing_from_scorecards
         counts["n_above_cutoff"] = len(currently_published_pubkeys)
-        counts["n_dropped"] = len(pubkeys_to_delete)
+        counts["n_relay_deletes"] = len(relay_pubkeys_to_delete)
+        counts["n_vespa_deletes"] = len(vespa_pubkeys_to_delete)
 
         # zero_score_events = await get_zero_score_events_for_pubkeys(
         #     pubkeys=pubkeys_to_delete,
@@ -425,7 +441,7 @@ async def process_nostr_upload_message(message: dict):
         with _timed(timings, "deletion_fetch"):
             deletion_events = await get_deletion_events_for_dropped_pubkeys(
                 author_pubkey=signing_pubkey,
-                dropped_pubkeys=pubkeys_to_delete,
+                dropped_pubkeys=relay_pubkeys_to_delete,
                 nostr_client=nostr_client,
             )
         counts["n_deletion_events"] = len(deletion_events)
@@ -455,7 +471,7 @@ async def process_nostr_upload_message(message: dict):
                 await upsert_scores_to_vespa(
                     grape_rank_result=grape_rank_result,
                     observer=observer,
-                    pubkeys_to_delete=pubkeys_to_delete,
+                    pubkeys_to_delete=vespa_pubkeys_to_delete,
                 )
             vespa_search_available = True
             logger.info(f"Done pushing scores to Vespa!")
