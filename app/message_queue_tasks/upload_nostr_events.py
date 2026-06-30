@@ -1,6 +1,5 @@
 import asyncio
 import time
-from contextlib import contextmanager
 from datetime import timedelta
 from typing import NamedTuple
 
@@ -40,6 +39,7 @@ from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_ta_status_by_id_on_db,
 )
 from app.services.publish_drift import resolve_full_sync
+from app.utils.timing import timed
 
 logger = loggr.get_logger(__name__)
 
@@ -168,15 +168,9 @@ SEND_MSG_MAX_ATTEMPTS = 5
 SEND_MSG_RETRY_BASE_DELAY_S = 0.01
 
 
-@contextmanager
-def _timed(timings: dict[str, float], name: str):
-    """Record wall-clock seconds for a segment into `timings`. Works around an
-    `await` inside the block — __exit__ runs after the awaited call resumes."""
-    start = time.perf_counter()
-    try:
-        yield
-    finally:
-        timings[name] = round(time.perf_counter() - start, 3)
+# Per-segment timing is the shared `timed` util; aliased so existing `_timed(...)`
+# call sites (and the reconcile service) record into the same dict shape.
+_timed = timed
 
 
 def _log_publish_timing(

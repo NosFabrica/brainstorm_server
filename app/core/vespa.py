@@ -120,9 +120,7 @@ async def aclose() -> None:
 # document URLs
 # ---------------------------------------------------------------------------
 def _doc_url(pubkey: str) -> str:
-    return (
-        f"{settings.vespa_url}/document/v1/{NAMESPACE}/{DOCTYPE}/docid/{pubkey}"
-    )
+    return f"{settings.vespa_url}/document/v1/{NAMESPACE}/{DOCTYPE}/docid/{pubkey}"
 
 
 def _raise_with_context(
@@ -176,6 +174,34 @@ async def get_document(pubkey: str) -> dict | None:
     return r.json().get("fields")
 
 
+def _read_quality_score(fields: dict, observer: str) -> int | None:
+    """Extract one observer's cell from a doc's `quality_scores` tensor.
+    Tolerates Vespa's `{"cells": [{"address": {"user": ...}, "value": ...}]}`
+    long form and the `{"<observer>": value}` short form."""
+    tensor = (fields or {}).get("quality_scores")
+    if not tensor:
+        return None
+    cells = tensor.get("cells") if isinstance(tensor, dict) else None
+    if isinstance(cells, list):
+        for cell in cells:
+            if cell.get("address", {}).get("user") == observer:
+                return int(cell["value"])
+        return None
+    if isinstance(tensor, dict):
+        value = tensor.get(observer)
+        return int(value) if value is not None else None
+    return None
+
+
+async def get_observer_score(pubkey: str, observer: str) -> int | None:
+    """The observer's score cell on `pubkey`'s doc, or None if the doc/cell is
+    absent. Used by the admin reconcile to diff Vespa against the desired state."""
+    fields = await get_document(pubkey)
+    if fields is None:
+        return None
+    return _read_quality_score(fields, observer)
+
+
 async def upsert_profile(pubkey: str, profile: dict) -> None:
     """Partial-update profile fields for a doc, creating it if absent.
 
@@ -200,9 +226,7 @@ async def upsert_profile(pubkey: str, profile: dict) -> None:
     # under PUT, while POST is full-doc replace with direct values. `?create=true`
     # creates the doc from the partial update ops if it doesn't exist yet,
     # which preserves the quality_scores tensor across profile updates.
-    r = await _put_with_retry(
-        _doc_url(pubkey), params={"create": "true"}, json=body
-    )
+    r = await _put_with_retry(_doc_url(pubkey), params={"create": "true"}, json=body)
     _raise_with_context("upsert_profile", pubkey, body, r)
 
 
@@ -215,28 +239,18 @@ async def upsert_score(pubkey: str, observer: str, score: int) -> None:
     body = {
         "fields": {
             "quality_scores": {
-                "add": {
-                    "cells": [
-                        {"address": {"user": observer}, "value": int(score)}
-                    ]
-                }
+                "add": {"cells": [{"address": {"user": observer}, "value": int(score)}]}
             }
         }
     }
-    r = await _put_with_retry(
-        _doc_url(pubkey), params={"create": "true"}, json=body
-    )
+    r = await _put_with_retry(_doc_url(pubkey), params={"create": "true"}, json=body)
     _raise_with_context("upsert_score", pubkey, body, r)
 
 
 async def remove_score(pubkey: str, observer: str) -> None:
     """Remove the observer's score from the doc's tensor."""
     body = {
-        "fields": {
-            "quality_scores": {
-                "remove": {"addresses": [{"user": observer}]}
-            }
-        }
+        "fields": {"quality_scores": {"remove": {"addresses": [{"user": observer}]}}}
     }
     r = await _put_with_retry(_doc_url(pubkey), json=body)
     # 404 is fine — nothing to remove if the doc isn't there yet.
@@ -283,9 +297,7 @@ async def batch_upsert_scores(
         for exc in failed[:5]:
             logger.warning(f"vespa score-batch op failed: {exc!r}")
         if len(failed) > 5:
-            logger.warning(
-                f"... and {len(failed) - 5} more vespa score-batch failures"
-            )
+            logger.warning(f"... and {len(failed) - 5} more vespa score-batch failures")
     return len(results) - len(failed), len(failed)
 
 
@@ -358,10 +370,7 @@ def _build_yql(words: list[str], joined: str | None) -> str:
     """Per-word groups OR'd together, plus an optional joined-CamelCase variant
     (whole-token only) so a query like 'vitor pamplona' still hits a doc named
     'VitorPamplona'."""
-    parts = [
-        _word_group(f"@w{i}", w)
-        for i, w in enumerate(words[:MAX_QUERY_WORDS])
-    ]
+    parts = [_word_group(f"@w{i}", w) for i, w in enumerate(words[:MAX_QUERY_WORDS])]
     if joined:
         parts.append(_word_group("@wj", joined, with_grams=False))
     return f"select * from doc where {' or '.join(parts)}"
@@ -415,7 +424,8 @@ async def search(
         children = [
             h
             for h in children
-            if (h.get("fields", {}).get("matchfeatures", {}).get("user_score", 0) or 0) > 0
+            if (h.get("fields", {}).get("matchfeatures", {}).get("user_score", 0) or 0)
+            > 0
         ]
     children = children[:hits]
 

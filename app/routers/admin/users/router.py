@@ -19,6 +19,7 @@ from app.services.brainstorm_request_service import (
     create_brainstorm_request,
 )
 from app.services.publish_drift import resync_target_to_flags
+from app.services.reconcile_service import reconcile_observer
 
 router = APIRouter()
 
@@ -108,3 +109,28 @@ async def resync_observer_endpoint(
         force_full_vespa=force_full_vespa,
     )
     return BrainstormRequestResponse(data=result)
+
+
+@router.post(
+    path="/{pubkey}/reconcile",
+    summary="Admin: diff actual published state vs Neo4j desired; repair only deltas",
+)
+async def reconcile_observer_endpoint(
+    pubkey: str,
+    target: str = Query("both", description="Sink(s) to reconcile: relay|vespa|both"),
+    apply: bool = Query(False, description="false = report only; true = repair deltas"),
+    full: bool = Query(
+        False, description="true = list every mismatch, not just first 100"
+    ),
+):
+    # On-demand diagnosis (apply=false) + surgical repair (apply=true) for one
+    # observer. Streams actual vs the live Neo4j desired state and corrects only
+    # the drift — not a full re-push.
+    if target not in ("relay", "vespa", "both"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"invalid target {target!r}; expected relay|vespa|both",
+        )
+    return await reconcile_observer(
+        observer=pubkey, target=target, apply=apply, full=full
+    )
