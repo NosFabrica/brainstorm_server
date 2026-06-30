@@ -33,7 +33,7 @@ This is the **only** module that should talk to Vespa. Everything else imports f
 
 A module-level `_client: httpx.AsyncClient` is created lazily on first use and re-used for every Vespa request. Connection pool: 200 max, 100 keep-alive. **Don't open ad-hoc `httpx.AsyncClient()` for Vespa calls elsewhere** — reuse this client.
 
-### The YQL builders (`_word_group`, `_gram_clause`, `_about_gram_clause_for_word`, `_build_yql`)
+### The YQL builders (`_word_group`, `_gram_and_clause`, `_build_yql`)
 
 Internal. They construct the OR-of-per-word-groups YQL used by `search()`. Port from the original `vespa_proj/api/main.py` prototype. The rank profile expects:
 - one `@w{i}` query parameter per word (up to `MAX_QUERY_WORDS = 6`)

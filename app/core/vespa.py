@@ -229,37 +229,33 @@ async def batch_upsert_scores(
 # ---------------------------------------------------------------------------
 # YQL builders (ported from the search_quality prototype)
 # ---------------------------------------------------------------------------
-def _gram_clause(text: str, gram_field: str, gram_size: int = 3) -> str:
-    """OR of every trigram in `text` against `gram_field`."""
-    grams = set()
-    for word in text.lower().split():
-        for i in range(max(1, len(word) - gram_size + 1)):
-            g = word[i : i + gram_size]
-            if len(g) == gram_size and g.isalnum():
-                grams.add(g)
-    if not grams:
-        return ""
-    return (
-        "(" + " or ".join(f'{gram_field} contains "{g}"' for g in sorted(grams)) + ")"
-    )
+def _gram_and_clause(word: str, gram_field: str, gram_size: int = 3) -> str:
+    """AND of one word's trigrams against a `*_gram` field (discriminative).
 
-
-def _about_gram_clause_for_word(word: str, gram_size: int = 3) -> str:
-    """AND of one word's trigrams against `about_gram` (discriminative)."""
+    Requiring *every* trigram to be present (rather than any single shared one)
+    is what keeps the near-miss long tail out: a doc only matches on grams when
+    the whole query word occurs as a substring, mirroring the partial-bio
+    behaviour `about_gram` already had ("nosfab" -> "nosfabrica"). Real typos
+    are still caught by the fuzzy/prefix `userInput` clauses on the text fields
+    themselves, so this only drops the one-shared-trigram noise.
+    """
+    w = word.lower()
     grams = [
-        word[i : i + gram_size]
-        for i in range(len(word) - gram_size + 1)
-        if word[i : i + gram_size].isalnum()
-        and len(word[i : i + gram_size]) == gram_size
+        w[i : i + gram_size]
+        for i in range(len(w) - gram_size + 1)
+        if len(w[i : i + gram_size]) == gram_size and w[i : i + gram_size].isalnum()
     ]
     if not grams:
         return ""
-    return "(" + " and ".join(f'about_gram contains "{g}"' for g in grams) + ")"
+    return "(" + " and ".join(f'{gram_field} contains "{g}"' for g in grams) + ")"
 
 
 def _word_max_edits(word: str) -> int:
-    """Per-word fuzzy budget — 0 for very short words, up to 2 for longer ones."""
-    return 0 if len(word) < 3 else (1 if len(word) < 6 else 2)
+    """Per-word fuzzy budget. Capped at 1 edit and disabled below 4 chars:
+    2-edit fuzzy and short-word fuzzy are the biggest sources of typo noise
+    (a 2-edit match on a 6-char word sharing only its first letter pulls in a
+    lot of unrelated names)."""
+    return 0 if len(word) < 4 else 1
 
 
 def _field_clauses(field: str, var: str, max_edits: int) -> list[str]:
@@ -268,8 +264,11 @@ def _field_clauses(field: str, var: str, max_edits: int) -> list[str]:
         f'({{defaultIndex:"{field}",prefix:true}}userInput({var}))',
     ]
     if max_edits > 0:
+        # prefixLength:2 anchors the first two characters so a typo has to be
+        # *inside* the word — a near-match that disagrees on the opening letters
+        # no longer qualifies, which is most of the fuzzy garbage.
         parts.append(
-            f'({{defaultIndex:"{field}",fuzzy:{{maxEditDistance:{max_edits},prefixLength:1}}}}userInput({var}))'
+            f'({{defaultIndex:"{field}",fuzzy:{{maxEditDistance:{max_edits},prefixLength:2}}}}userInput({var}))'
         )
     return parts
 
@@ -281,13 +280,10 @@ def _word_group(var: str, literal: str, with_grams: bool = True) -> str:
     for field in ("name", "display_name", "about"):
         clauses += _field_clauses(field, var, me)
     if with_grams:
-        for gram_field in ("name_gram", "display_name_gram"):
-            gc = _gram_clause(literal, gram_field)
+        for gram_field in ("name_gram", "display_name_gram", "about_gram"):
+            gc = _gram_and_clause(literal, gram_field)
             if gc:
                 clauses.append(gc)
-        agc = _about_gram_clause_for_word(literal)
-        if agc:
-            clauses.append(agc)
     return "(" + " or ".join(clauses) + ")"
 
 
