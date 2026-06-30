@@ -306,17 +306,21 @@ Fix (build with P1, not a JSON-only `username` add):
 
 ### 8.5 Backfill / deploy — one maintenance window
 
-These are independent datasets but batch into one window:
+The schema + server deploy together; then two independent backfills (tooling now
+exists for both):
 
 | Work | Backfill | Mechanism |
 |---|---|---|
-| follower_counts tensor (§8.2) + >0 ingest (§8.3) | score re-sync | GrapeRank `VESPA_FULL_SYNC=True` |
-| P1: username (§8.4) | profile re-feed | replay kind-0 from strfry (also rebuilds nip05/lud16/website indexes) |
-| P1: nip05/lud16/website only (if skipping username) | reindex | Vespa `reindex` |
+| follower_counts tensor (§8.2) + >0 ingest (§8.3) | score re-sync | `scripts/trigger_graperank_all.py` (all observers, paced) — or just the default observer for anonymous search |
+| P1: username (§8.4) + the nip05/lud16/website indexes | profile re-feed | `scripts/refeed_kind0_to_vespa.py` (replays kind-0 through the live ingest path) |
 
-Deploy schema (follower_counts + P1 index fields) **with** the server change
-together — `DEFAULT_RANK_PROFILE = "sort_followers"` references a profile the
-running Vespa must already have.
+The `summary→index` change on nip05/lud16/website requires
+`vespa-app/validation-overrides.xml` (`indexing-change`) — see §9.1. Once the
+change is accepted, Vespa can also reindex those three from its doc store, but
+the kind-0 re-feed (run for `username` anyway) rebuilds them regardless.
+
+Deploy schema **with** the server — `DEFAULT_RANK_PROFILE = "sort_followers"`
+references a profile the running Vespa must already have.
 
 ### 8.6 Build order
 
@@ -333,82 +337,114 @@ running Vespa must already have.
 
 ## 9. Deploy runbook
 
-**Status: the code (server + tests) is committed; the schema (`doc.sd`) is
-edited but uncommitted in nosfabrica-kube. Nothing is live yet.**
+**Status (2026-06-30):** server code + tests committed; the two backfill scripts
+(`scripts/trigger_graperank_all.py`, `scripts/refeed_kind0_to_vespa.py`)
+committed. In nosfabrica-kube (uncommitted, deploy-time): `doc.sd` **and**
+`vespa-app/validation-overrides.xml`. Validated on an alternate staging that the
+`summary→index` change is rejected without the override (now added — §9.1). No
+downtime at any step; schema changes are online, backfills are background.
 
-### 9.0 What each change does to Vespa (and whether it needs a backfill)
+### 9.0 What each change does to Vespa (and how it's populated)
 
 | Schema change | Vespa behavior | Populated by |
 |---|---|---|
-| New rank profiles (`sort_followers`, edited `rank_*`) | online, instant; no data impact | — |
-| Extended `has_token_match` (matchCount username/nip05) | online (rank expr) | — |
-| New attribute `follower_counts` (tensor) | online; **empty** for existing docs | **score re-sync** (GrapeRank) |
-| New field `username` (indexed) | online; **empty** for existing docs | **kind-0 re-feed** (source data not in Vespa) |
-| `nip05`/`lud16`/`website` `summary` → `index\|summary` | indexing change; index **empty** for existing docs until rewritten | **kind-0 re-feed** (rewrites docs through the new pipeline) |
+| New rank profiles (`sort_followers`, edited `rank_*`, `text_relevance`) | online, instant | — |
+| Extended `has_token_match` / `secondary_active` (matchCount username/nip05) | online (rank expr) | — |
+| New attribute `follower_counts` (tensor<float>) | online; **empty** for existing docs | **score re-sync** (§9.2 step 4) |
+| New field `username` (indexed) | online; **empty** for existing docs | **kind-0 re-feed** (§9.2 step 5) |
+| `nip05`/`lud16`/`website` `summary` → `index\|summary` | **`indexing-change`** — rejected without `validation-overrides.xml`; index empty for existing docs until reindexed/re-fed | reindex from doc store and/or kind-0 re-feed |
 
-No change here drops data or requires a full reindex-from-scratch. **No
-downtime** at any step — schema changes are online and backfills are background.
+No change drops data or needs a reindex-from-scratch.
 
-### 9.1 Known unknowns to settle ON STAGING FIRST
+### 9.1 Prerequisite: the `indexing-change` override (validated, now in place)
 
-1. **Does `prepareandactivate` accept the `summary→index` change?** There is no
-   `validation-overrides.xml` in the app package, so if Vespa classifies this as
-   a change needing an override, the post-upgrade Job **fails loudly** (non-zero,
-   visible in `kubectl logs job/<release>-brainstorm-vespa-app-<rev>`). Fix:
-   add `vespa-app/validation-overrides.xml` allowing the flagged change, or split
-   the index-field change into its own later deploy.
-2. **There is no kind-0 re-feed tool.** `nostr_event_transferer` only re-syncs
-   kinds 3/10000/1984 — **not kind 0**. Populating `username` (and rewriting the
-   nip05/lud16/website indexes) needs a NEW small script: read kind-0 from the
-   internal strfry and call `vespa.upsert_profile` for each. Until that runs,
-   those fields stay empty for existing profiles (new/updated profiles fill in
-   organically as their kind-0 flows through `process_strfry_event`).
+The first deploy attempt to staging failed with:
 
-### 9.2 Sequence (run on staging, verify, then repeat on prod off-peak)
+```
+INVALID_APPLICATION_PACKAGE  indexing-change:
+  Field 'nip05'/'lud16'/'website' changed: add index aspect
+  ... To allow this add <allow until='yyyy-mm-dd'>indexing-change</allow> to validation-overrides.xml
+```
 
-1. **Pre-flight:** confirm a recent `brainstorm-backups-vespa` CronJob run; confirm
-   `vespa.appPackage.enabled=true`.
+This is Vespa's guardrail for turning a `summary` field into an indexed one (it
+implies reindexing), **not** a schema bug. Fix, added at
+`charts/brainstorm/vespa-app/validation-overrides.xml`:
+
+```xml
+<validation-overrides>
+    <allow until="2026-07-14">indexing-change</allow>
+</validation-overrides>
+```
+
+- **Auto-included** via the ConfigMap's `.Files.Glob "vespa-app/**"`
+  (`templates/vespa-app-deploy.yaml`) — no template change; lands at the package
+  root where Vespa expects it.
+- `until` must be **≤ 30 days** out; bump it if you deploy later than that.
+- **Remove it (or let it expire) once the change is live everywhere** — a
+  lingering override would silently wave through *future* accidental indexing
+  changes. Treat removal as a post-deploy cleanup task.
+
+The other schema changes (new `follower_counts`/`username` fields, new rank
+profiles) are additive and need no override.
+
+### 9.2 Sequence (staging first, verify, then prod off-peak)
+
+1. **Pre-flight:** recent `brainstorm-backups-vespa` run; `vespa.appPackage.enabled=true`;
+   `vespa-app/` contains both `doc.sd` and `validation-overrides.xml`.
 2. **Deploy schema + server together** (`helm upgrade`, per `charts/brainstorm/VESPA.md`).
-   The post-upgrade hook zips `vespa-app/` and POSTs it to
-   `:19071/.../prepareandactivate`. **Watch the Job log** (§9.1 item 1).
-   - *Impact now:* byText/NIP-50 immediately use `sort_followers`, but
-     `follower_counts` is empty → all same-tier hits tie at 0 followers → ordering
-     within a tier is flat until step 3. The `rank≥2` filter works immediately
-     (it reads the existing `quality_scores`). General name/display/about search
-     is unaffected. **Brief window:** if the server pod is ready before the
-     app-package Job activates, byText returns errors ("unknown rank profile
-     sort_followers") for a few seconds — re-run is harmless; the Job retries
-     config-server readiness.
-3. **Score re-sync** (populates `follower_counts` + applies `>0` ingest):
-   trigger GrapeRank for the default observer — admin
-   `POST /admin/brainstormPubkey/{pubkey}/trigger_graperank`, or wait for
-   `periodic_graperank_trigger`. `VESPA_FULL_SYNC=True` (already set) pushes every
-   rank>0 scorecard with its `trusted_followers`.
-   - *Impact:* a large bounded (`_BATCH_CONCURRENCY=32`) burst of partial-update
-     writes to Vespa; more rows than before (>0 vs ≥0.05). Search stays up; minor
-     latency bump under heavy feed. After it completes, follower-sort is live.
-4. **kind-0 re-feed** (populates `username`; rewrites nip05/lud16/website indexes)
-   — run the new re-feed script (§9.1 item 2). Bounded throughput; online.
-   - *Impact:* one partial-update per profile. `quality_scores`/`follower_counts`
-     tensors are preserved (partial update doesn't touch them). The skip-empty +
-     content/tags merge means no profile gets wiped.
-5. **Verify** with `scripts/search_http.sh` / `search_compare.sh` / `search_nip50.sh`:
-   popular-first ordering, `rank≥2` exclusion, `username`/`nip05` matches, and
+   The post-upgrade hook zips `vespa-app/` (now incl. the override) and POSTs to
+   `:19071/.../prepareandactivate`. **Watch**
+   `kubectl logs job/<release>-brainstorm-vespa-app-<rev>` — it should now activate.
+   - *Impact:* byText/NIP-50 immediately use `sort_followers`, but
+     `follower_counts` is empty → ordering within a tier is flat (ties at 0) until
+     step 4. The `rank≥2` filter works immediately (reads existing
+     `quality_scores`). name/display/about search is unaffected.
+   - **Seconds-long window:** if the server pod is ready before the app-package
+     activates, byText errors on "unknown rank profile `sort_followers`" — it
+     self-heals when the Job activates. To avoid it entirely, activate the schema
+     *before* rolling the server (manual `prepareandactivate`, then the upgrade).
+3. **(Optional) confirm reindex** of nip05/lud16/website from the doc store via the
+   config server's reindexing status. Step 5's re-feed rebuilds them regardless,
+   so this is belt-and-suspenders.
+4. **Score re-sync** → populates `follower_counts` + applies `>0` ingest:
+   - *Default experience (enough for anonymous/popular-first):* trigger the
+     default observer — `POST /admin/brainstormPubkey/{pubkey}/trigger_graperank`
+     or the periodic cronjob.
+   - *All personalized perspectives:* `python -m scripts.trigger_graperank_all
+     --status`, then `--rate N [--limit N]` (paced/resumable; tracks done via the
+     `brainstorm_request` table).
+   - *Impact:* bounded burst of partial-update writes (more rows: >0 vs ≥0.05);
+     GrapeRank itself is the heavy part — pace it. Search stays up.
+5. **kind-0 re-feed** → populates `username` + rebuilds nip05/lud16/website:
+   `python -m scripts.refeed_kind0_to_vespa --status`, then `--concurrency N
+   [--limit N]` (resumable via its cursor).
+   - *Impact:* one partial-update per profile; `quality_scores`/`follower_counts`
+     tensors are preserved; skip-empty + content/tags merge means nothing gets wiped.
+6. **Verify** with `scripts/search_http.sh` / `search_compare.sh` / `search_nip50.sh`:
+   popular-first ordering, `rank≥2` exclusion, `username`/`nip05` matches, and the
    `sort=rank` / `sort=text` alternates.
 
 ### 9.3 Rollback
 
 `helm rollback` (or redeploy the prior chart) reverts the rank profiles and the
 server. The added `follower_counts`/`username` fields and any written cells are
-**harmless to leave** — the previous profiles simply don't read them, and no data
-is lost. The `summary→index` change is the only one that isn't a clean auto-revert
-(removing an index may need an override); prefer rolling *forward* (fix + redeploy)
-over rolling back that specific field.
+**harmless to leave** — the previous profiles don't read them, and no data is
+lost. The `summary→index` change is the only one that isn't a clean auto-revert
+(removing an index aspect would itself need an override); prefer rolling *forward*
+(fix + redeploy) over reverting that specific field.
 
 ### 9.4 Degraded-but-functional windows (summary)
 
 | Between… | Search still works? | What's missing |
 |---|---|---|
-| schema deploy → score re-sync | yes | follower ordering is flat (ties at 0) |
-| schema deploy → kind-0 re-feed | yes | username / nip05 / lud16 / website matches on existing profiles |
+| schema deploy → score re-sync | yes | follower ordering is flat (ties at 0); `rank≥2` filter already works |
+| schema deploy → reindex/re-feed | yes | `nip05`/`lud16`/`website` matches (reindex from store), `username` matches (re-feed) on existing profiles |
 | server ready → app-package active | ~no (seconds) | byText errors on unknown profile until the Job activates |
+
+### 9.5 Post-deploy cleanup
+
+- Remove `vespa-app/validation-overrides.xml` (§9.1) once the indexing change is
+  activated everywhere it needs to be, and redeploy.
+- Once the index is in steady state, consider flipping `VESPA_FULL_SYNC` to
+  `False` (`upload_nostr_events.py`) so routine GrapeRank runs only push *changed*
+  scores instead of the full set.
