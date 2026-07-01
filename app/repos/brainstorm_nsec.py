@@ -187,20 +187,6 @@ async def set_is_observer_search_available_by_pubkey_on_db(
     await db.execute(statement)
 
 
-async def update_last_published_pubkeys_blob_on_db(
-    db: AsyncDBSession, pubkey: str, published_pubkeys: list[str]
-) -> None:
-    """Update only the published-pubkeys blob (leaving the
-    `last_published_graperank_request_id` back-link as-is). Used by the admin
-    reconcile, which is not a run and so has no request id to attribute."""
-    statement = (
-        update(BrainstormNsec)
-        .where(BrainstormNsec.pubkey == pubkey)
-        .values(last_published_pubkeys=_pack_pubkeys(published_pubkeys))
-    )
-    await db.execute(statement)
-
-
 async def increment_runs_since_full_on_db(db: AsyncDBSession, pubkey: str) -> None:
     """Count one more scheduled delta toward the every-Nth full backstop."""
     statement = (

@@ -14,6 +14,7 @@ from app.schemas.schemas import (
     UserGraphData,
 )
 
+
 # ----------------- Helper Function -----------------
 
 
@@ -182,23 +183,6 @@ async def count_user_reports(session: AsyncNeoDriver, pubkey: str) -> int:
     result = await session.run(query, pubkey=pubkey)
     record = await result.single()
     return record["count"] if record else 0
-
-
-async def get_all_observer_influence(
-    session: AsyncNeoDriver, observer_pubkey: str
-) -> list[tuple[str, float | None]]:
-    """Batch read of every NostrUser scored by `observer_pubkey`:
-    `[(observee_pubkey, influence_<observer>)]`. Live desired-state source for the
-    admin reconcile — no recompute, no dependence on the dropped `result` column.
-    Read-only, so it does not contend with the serialized GrapeRank writes."""
-    property_name = f"influence_{observer_pubkey}"
-    query = """
-    MATCH (user:NostrUser)
-    WHERE user[$property_name] IS NOT NULL
-    RETURN user.pubkey AS pubkey, user[$property_name] AS influence
-    """
-    result = await session.run(query, property_name=property_name)
-    return [(record["pubkey"], record["influence"]) async for record in result]
 
 
 async def get_influence_for_observer(
@@ -652,9 +636,7 @@ async def get_all_section_stats(
                 medium=int(record[f"{name}_tn"] or 0),
                 medium_low=int(record[f"{name}_tl"] or 0),
                 low=int(record[f"{name}_tu"] or 0),
-                low_and_reported_by_2_or_more_trusted_pubkeys=int(
-                    record[f"{name}_tf"] or 0
-                ),
+                low_and_reported_by_2_or_more_trusted_pubkeys=int(record[f"{name}_tf"] or 0),
             ),
         )
         for name, _, _ in _STATS_KINDS
