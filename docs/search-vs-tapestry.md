@@ -671,8 +671,38 @@ gram / recall noise                              ← neither
 - `_match_tier` (API + `search_http.sh`) now reports `about` for these hits, so
   the tier is visible per result.
 
-**Scope:** only the bio (`about`) feeds this tier; `lud16`/`website` stay pure
-recall. Extend `_field_role` in `app/core/vespa.py` if payment/website
-affiliation should also count. Note impersonators *named* the query stay in the
-name tier — verified-follower ordering within that tier (once ingest completes)
-is what sinks them beneath the real account.
+**Scope:** the bio (`about`) and the account's own `website` domain feed this
+tier; `lud16` stays pure recall. Extend `_field_role` in `app/core/vespa.py` if
+lud16 affiliation should also count. Note impersonators *named* the query stay in
+the name tier — verified-follower ordering within that tier (once ingest
+completes) is what sinks them beneath the real account.
+
+### 11.1 itemRawScore doesn't work for text terms — the exactness ladder is deferred
+
+**Confirmed on staging (2026-06-30):** after deploy, `itemRawScore(mtch_exact)`
+and `itemRawScore(mtch_affil)` are **`0.0` even on an exact "ODELL" name match**.
+Vespa only populates `itemRawScore` for operators that compute a raw score
+(`dotProduct`/`wand`/`weightedSet`/`nearestNeighbor`) — **not** plain indexed
+`userInput` text terms. So the entire label-based design (§10 `match_quality`,
+the exact>prefix>1-typo>2-typo ladder) is **inert** — `match_quality()` is always
+0. The safe-degrade held (nothing broke: `has_token_match` via `matchCount` still
+tiers name matches above noise), but the fine ladder never activated.
+
+**What we changed in response:**
+- `affiliation_match()` repointed to **`matchCount(about) || matchCount(website)`**
+  (gated on `!has_token_match`) — `matchCount` is reliable, so the affiliation
+  tier now actually fires (CITADEL DISPATCH → tier `affiliation`).
+- `_match_tier` now reports **`name` > `affiliation` > `gram`** (from
+  `has_token_match` / `affiliation_match` / neither). The `exact/prefix/1-typo/
+  2-typo` labels are retained only for if/when the ladder is revived.
+- The `mtch_*` query labels + `match_quality()` are left in place but **inert**
+  (0 contribution) as scaffolding.
+
+**To revive the fine name ladder (exact > prefix > typo)** — the only reliable
+Vespa mechanism for plain text is to make the match types land in **separate
+matchable fields** so `matchCount` can tell them apart, e.g. a verbatim
+`name_exact` field (`match: word`, no fuzzy) that the exact clause targets, then
+`matchCount(name_exact)` = exact-only. That's a **new field + reindex**, so it's
+deferred. In practice the coarse `name`-tier + **verified-follower ordering**
+already floats the real account above impersonators once ingest completes, so the
+fine ladder is a refinement, not a blocker.

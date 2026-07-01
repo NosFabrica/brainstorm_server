@@ -524,16 +524,21 @@ async def search(
         # verified_followers is only in match-features for the sort_followers
         # profile; other profiles leave it None.
         fields["_followers"] = mf.get("verified_followers")
-        # match tier (doc.sd, §10/§11): name ladder exact>prefix>1-typo>2-typo,
-        # then "affiliation" (bio/website match) above "gram" (trigram/recall
-        # noise). Surfaced so the team can eyeball why a hit ranked where it did.
-        # None on the npub/hex direct-fetch path.
+        # match tier (doc.sd, §11): "name" (name/display/username/nip05 token
+        # match) > "affiliation" (about/website match) > "gram" (trigram/recall
+        # noise). The finer exact>prefix>typo name ladder (match_quality) is
+        # DEFERRED — itemRawScore doesn't populate for text terms, so it's always
+        # 0; we fall back to the reliable matchCount-based signals. `mf` is empty
+        # on the npub/hex direct-fetch path (no ranking ran).
         mq = mf.get("match_quality")
+        htm = mf.get("has_token_match")
         am = mf.get("affiliation_match")
         fields["_match_quality"] = mq
-        if mq is not None:
-            if int(mq) > 0:
+        if mf:
+            if mq and int(mq) > 0:
                 fields["_match_tier"] = _MATCH_TIERS.get(int(mq), str(mq))
+            elif htm:
+                fields["_match_tier"] = "name"
             elif am:
                 fields["_match_tier"] = "affiliation"
             else:
