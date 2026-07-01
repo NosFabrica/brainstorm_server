@@ -20,3 +20,7 @@ class SubmitFollowListBody(BaseModel):
 
 class SetGrapeRankPresetBody(BaseModel):
     preset: GrapeRankPresetTemplate
+
+
+class SetUserSchedulingBody(BaseModel):
+    scheduling_id: int

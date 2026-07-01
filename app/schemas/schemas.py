@@ -88,6 +88,14 @@ class AdminUserListItem(BaseModel):
     latest_status: str | None
     latest_ta_status: str | None
     latest_algorithm: str | None
+    scheduling_id: int | None
+    scheduling_name: str
+
+
+class AdminUserDetail(BaseModel):
+    pubkey: str
+    scheduling_id: int | None
+    scheduling_name: str
 
 
 class BrainstormPubkeyInstance(CreatedAndUpdatedAtModel):

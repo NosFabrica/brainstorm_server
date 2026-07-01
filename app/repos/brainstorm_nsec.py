@@ -5,7 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from sqlalchemy.orm import defer
 
 from app.core.database import execute_db_statement, handle_no_data
-from app.db_models import BrainstormNsec
+from app.db_models import BrainstormNsec, Scheduling
+from app.repos.scheduling_repo import (
+    get_default_scheduling_on_db,
+    get_scheduling_on_db,
+)
 from app.utils.encryption import decrypt_nsec, encrypt_nsec
 from app.utils.nostr import generate_random_nsec
 
@@ -170,6 +174,41 @@ async def update_last_published_pubkeys_by_pubkey_on_db(
             last_published_pubkeys=_pack_pubkeys(published_pubkeys),
             last_published_graperank_request_id=graperank_request_id,
         )
+    )
+    await db.execute(statement)
+
+
+async def get_scheduling_for_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> Scheduling | None:
+    """The scheduling policy in effect for a user: their explicit assignment,
+    else the default policy. Unset / pre-existing users resolve to the default.
+    """
+    statement = select(BrainstormNsec.scheduling_id).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    scheduling_id = result.scalar_one_or_none()
+    if scheduling_id is not None:
+        row = await get_scheduling_on_db(db, scheduling_id)
+        if row is not None:
+            return row
+    return await get_default_scheduling_on_db(db)
+
+
+async def set_scheduling_for_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str, scheduling_id: int
+) -> None:
+    """Assign a user to a scheduling policy (auto-creating the row if absent).
+
+    This is the single seam a future admin-CRUD or external service would reuse
+    to move a user between policies.
+    """
+    await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey)
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(scheduling_id=scheduling_id)
     )
     await db.execute(statement)
 

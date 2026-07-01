@@ -11,9 +11,23 @@ from app.repos.brainstorm_request_repo import (
     build_recent_active_pubkeys_stmt,
     build_recent_brainstorm_requests_stmt,
 )
+from app.repos.brainstorm_nsec import (
+    get_scheduling_for_pubkey_on_db,
+    set_scheduling_for_pubkey_on_db,
+)
+from app.repos.scheduling_repo import (
+    get_default_scheduling_on_db,
+    get_scheduling_on_db,
+    scheduling_exists_on_db,
+)
 from app.schemas.admin_sort import SortOrder, UsersSort
+from app.schemas.request_body_schemas import SetUserSchedulingBody
 from app.schemas.request_response_schemas import BrainstormRequestResponse
-from app.schemas.schemas import AdminUserListItem, BrainstormRequestInstance
+from app.schemas.schemas import (
+    AdminUserDetail,
+    AdminUserListItem,
+    BrainstormRequestInstance,
+)
 from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
     create_brainstorm_request,
@@ -23,10 +37,13 @@ from app.services.publish_drift import resync_target_to_flags
 router = APIRouter()
 
 
-def _row_to_user_item(row) -> AdminUserListItem:
+def _row_to_user_item(row, default_scheduling_name: str) -> AdminUserListItem:
     d = dict(row._mapping)
     nsec = d.pop("nsec", None)
     ta_pubkey = Keys.parse(secret_key=nsec).public_key().to_hex() if nsec else None
+    # NULL scheduling_id = the user is on the default policy; show its name.
+    if d.get("scheduling_name") is None:
+        d["scheduling_name"] = default_scheduling_name
     return AdminUserListItem(ta_pubkey=ta_pubkey, **d)
 
 
@@ -45,10 +62,55 @@ async def get_recent_users_endpoint(
     stmt = build_recent_active_pubkeys_stmt(
         days=days, search=search, sort=sort, order=order
     )
+    default = await get_default_scheduling_on_db(db)
+    default_name = default.name if default else ""
     return await paginate(
         db,
         stmt,
-        transformer=lambda rows: [_row_to_user_item(r) for r in rows],
+        transformer=lambda rows: [
+            _row_to_user_item(r, default_name) for r in rows
+        ],
+    )
+
+
+@router.get(
+    path="/{pubkey}",
+    response_model=AdminUserDetail,
+    summary="Admin: per-user detail (effective scheduling policy, ...)",
+)
+async def get_user_detail_endpoint(
+    pubkey: str,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    scheduling = await get_scheduling_for_pubkey_on_db(db, pubkey)
+    return AdminUserDetail(
+        pubkey=pubkey,
+        scheduling_id=scheduling.id if scheduling else None,
+        scheduling_name=scheduling.name if scheduling else "",
+    )
+
+
+@router.put(
+    path="/{pubkey}/scheduling",
+    response_model=AdminUserDetail,
+    summary="Admin: assign a user to a scheduling policy",
+)
+async def set_user_scheduling_endpoint(
+    pubkey: str,
+    body: SetUserSchedulingBody,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    if not await scheduling_exists_on_db(db, body.scheduling_id):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown scheduling policy id {body.scheduling_id}",
+        )
+    await set_scheduling_for_pubkey_on_db(db, pubkey, body.scheduling_id)
+    scheduling = await get_scheduling_on_db(db, body.scheduling_id)
+    return AdminUserDetail(
+        pubkey=pubkey,
+        scheduling_id=body.scheduling_id,
+        scheduling_name=scheduling.name if scheduling else "",
     )
 
 

@@ -19,6 +19,7 @@ services:
       - NEO4J_PASSWORD=password
       - ADMIN_ENABLED=${ADMIN_ENABLED:-false}
       - ADMIN_WHITELISTED_PUBKEYS=${ADMIN_WHITELISTED_PUBKEYS:-}
+      - SCHEDULER_ENABLED=${SCHEDULER_ENABLED:-true}
     depends_on:
       brainstorm-database:
         condition: service_healthy

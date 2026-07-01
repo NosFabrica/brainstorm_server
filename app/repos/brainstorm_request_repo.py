@@ -7,7 +7,12 @@ from sqlalchemy.orm import defer, undefer
 
 from app.core.database import execute_db_statement, handle_no_data
 from app.core.loggr import loggr
-from app.db_models import BrainstormNsec, BrainstormRequest, BrainstormRequestStatus
+from app.db_models import (
+    BrainstormNsec,
+    BrainstormRequest,
+    BrainstormRequestStatus,
+    Scheduling,
+)
 from app.schemas.admin_sort import SortOrder, UsersSort
 
 logger = loggr.get_logger(__name__)
@@ -174,9 +179,14 @@ def build_recent_active_pubkeys_stmt(
             br_latest.c.status_ta_publication.label("latest_ta_status"),
             br_latest.c.algorithm.label("latest_algorithm"),
             BrainstormNsec.nsec.label("nsec"),
+            # Effective policy: the user's explicit assignment, else NULL (the
+            # router fills NULL with the default policy's name in one lookup).
+            Scheduling.id.label("scheduling_id"),
+            Scheduling.name.label("scheduling_name"),
         )
         .join(br_latest, br_latest.c.private_id == latest_subq.c.latest_id)
         .outerjoin(BrainstormNsec, BrainstormNsec.pubkey == latest_subq.c.pubkey)
+        .outerjoin(Scheduling, Scheduling.id == BrainstormNsec.scheduling_id)
         .order_by(direction(sort_col))
     )
 

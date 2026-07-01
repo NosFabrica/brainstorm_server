@@ -5,11 +5,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs
@@ -128,6 +130,55 @@ class BrainstormNsec(TimestampMixin, Base):
     # scheduled runs only; reset to 0 after a successful full run.
     runs_since_full: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
+    )
+    # The scheduling policy this user is assigned to (see the Scheduling table).
+    # NULL = the default policy (is_default row). Assigned by admins / a future
+    # service; NULL avoids any backfill for pre-existing users.
+    scheduling_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("scheduling.id"),
+        nullable=True,
+    )
+
+
+# Scheduling policies ("tiers"). DB-driven so policies (and their config) can be
+# added/renamed/retuned without a code change — full admin CRUD later, or an
+# external service writing rows. Referenced by BrainstormNsec.scheduling_id.
+# The interactive lanes (Admin / Manual / House) are hardcoded and higher
+# priority than anything here — they never live in this table.
+class Scheduling(TimestampMixin, Base):
+    __tablename__ = "scheduling"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # How often a user on this policy is recalculated (consumed by the
+    # scheduler, issue 03). Stored in seconds for uniform, sub-day granularity.
+    schedule_interval_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    # Scheduling priority; higher is served first. Policies sharing a priority
+    # share a lane (issue 02/03 routing).
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    # Per-policy on/off. Disabled = users on this policy are not auto-scheduled
+    # (honored by the scheduler in issue 03); admins can pause a policy without
+    # deleting it. Separate from the global SCHEDULER_ENABLED kill-switch.
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true", default=True
+    )
+    # Exactly one row is the default, used for users with no explicit assignment.
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+
+    __table_args__ = (
+        # At most one default policy: partial unique index over the truthy rows.
+        Index(
+            "uq_scheduling_single_default",
+            "is_default",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
     )
 
 
