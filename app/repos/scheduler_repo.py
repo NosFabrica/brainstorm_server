@@ -6,7 +6,7 @@ platform observer and anyone with a run in flight. The pure ranking/eligibility
 decisions live in app/services/scheduler.py.
 """
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import execute_db_statement
@@ -16,12 +16,8 @@ from app.db_models import (
     BrainstormRequestStatus,
     Scheduling,
 )
+from app.repos.brainstorm_request_repo import in_pipeline_condition
 from app.services.scheduler import SchedulerCandidate
-
-_NON_TERMINAL = [
-    BrainstormRequestStatus.WAITING.value,
-    BrainstormRequestStatus.ONGOING.value,
-]
 
 
 async def load_scheduler_candidates_on_db(
@@ -29,6 +25,7 @@ async def load_scheduler_candidates_on_db(
     platform_pubkey: str,
     default_priority: int,
     default_interval_seconds: int,
+    default_enabled: bool,
 ) -> list[SchedulerCandidate]:
     last_failed_at = (
         select(func.max(BrainstormRequest.updated_at))
@@ -43,10 +40,7 @@ async def load_scheduler_candidates_on_db(
         select(BrainstormRequest.private_id)
         .where(
             BrainstormRequest.pubkey == BrainstormNsec.pubkey,
-            or_(
-                BrainstormRequest.status.in_(_NON_TERMINAL),
-                BrainstormRequest.status_ta_publication.in_(_NON_TERMINAL),
-            ),
+            in_pipeline_condition(),
         )
         .correlate(BrainstormNsec)
         .exists()
@@ -58,6 +52,7 @@ async def load_scheduler_candidates_on_db(
             func.coalesce(
                 Scheduling.schedule_interval_seconds, default_interval_seconds
             ).label("interval_seconds"),
+            func.coalesce(Scheduling.enabled, default_enabled).label("enabled"),
             BrainstormNsec.last_time_published_graperank.label("last_published"),
             last_failed_at.label("last_failed_at"),
         )
@@ -70,6 +65,7 @@ async def load_scheduler_candidates_on_db(
             pubkey=row.pubkey,
             priority=int(row.priority),
             interval_seconds=int(row.interval_seconds),
+            enabled=bool(row.enabled),
             last_published=row.last_published,
             last_failed_at=row.last_failed_at,
         )

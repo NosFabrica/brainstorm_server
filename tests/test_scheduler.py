@@ -13,6 +13,7 @@ from app.services.scheduler import (
     admission_budget,
     is_overdue,
     rank_overdue_candidates,
+    request_in_pipeline,
 )
 from app.services.scheduler_lock import acquire_or_renew_leader
 
@@ -39,13 +40,15 @@ NOW = datetime(2026, 1, 1, 12, 0, 0)
 DAY = 86400
 
 
-def _cand(pubkey="a", priority=0, interval=DAY, last_published=None, last_failed_at=None):
+def _cand(pubkey="a", priority=0, interval=DAY, last_published=None,
+          last_failed_at=None, enabled=True):
     return SchedulerCandidate(
         pubkey=pubkey,
         priority=priority,
         interval_seconds=interval,
         last_published=last_published,
         last_failed_at=last_failed_at,
+        enabled=enabled,
     )
 
 
@@ -75,6 +78,13 @@ def test_rank_most_overdue_first_within_a_tier():
     assert [c.pubkey for c in ranked] == ["never", "ancient", "recent"]
 
 
+def test_disabled_policy_candidate_is_excluded():
+    on = _cand(pubkey="on", last_published=None)
+    off = _cand(pubkey="off", last_published=None, enabled=False)
+    ranked = rank_overdue_candidates([on, off], NOW)
+    assert [c.pubkey for c in ranked] == ["on"]
+
+
 def test_recently_failed_user_excluded_until_backoff_elapses():
     just_failed = _cand(pubkey="just", last_published=None,
                         last_failed_at=NOW - timedelta(minutes=10))
@@ -94,6 +104,18 @@ def test_admission_budget_is_target_minus_inflight():
 
 def test_admission_yields_entirely_while_interactive_in_flight():
     assert admission_budget(target=5, inflight=0, interactive_in_flight=True) == 0
+
+
+def test_request_in_pipeline_excludes_terminal_runs():
+    # Still working -> in pipeline.
+    assert request_in_pipeline("waiting", "waiting") is True
+    assert request_in_pipeline("ongoing", "waiting") is True
+    assert request_in_pipeline("success", "waiting") is True   # publish pending
+    assert request_in_pipeline("success", "ongoing") is True   # publishing
+    # Terminal -> not in pipeline.
+    assert request_in_pipeline("success", "success") is False
+    assert request_in_pipeline("failure", "waiting") is False  # dead calc must not block
+    assert request_in_pipeline("success", "failure") is False  # publish failed = done
 
 
 def test_only_one_instance_holds_the_leader_lock():

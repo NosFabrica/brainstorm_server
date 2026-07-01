@@ -22,7 +22,9 @@ from app.core.tier_thresholds import (
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import update_last_time_calculated_graperank_on_db
 from app.repos.brainstorm_request_repo import (
+    update_brainstorm_request_internal_publication_status_by_id_on_db,
     update_brainstorm_request_result_by_id_on_db,
+    update_brainstorm_request_ta_status_by_id_on_db,
 )
 from app.neo4j_db.driver import driver as neo4j_driver
 
@@ -90,6 +92,19 @@ async def process_message(message: dict):
             count_values=json.dumps(number_by_confidence_by_hops),
             error=grape_rank_result.error.model_dump() if grape_rank_result.error else None,
         )
+        if status == BrainstormRequestStatus.FAILURE:
+            # Calc failed -> the publish + neo4j-write stages never run; mark
+            # them terminal so the row isn't forever "in pipeline".
+            await update_brainstorm_request_ta_status_by_id_on_db(
+                db,
+                brainstorm_request_id=message["private_id"],
+                status=BrainstormRequestStatus.FAILURE,
+            )
+            await update_brainstorm_request_internal_publication_status_by_id_on_db(
+                db,
+                brainstorm_request_id=message["private_id"],
+                status=BrainstormRequestStatus.FAILURE,
+            )
         if pubkey:
             await update_last_time_calculated_graperank_on_db(db, pubkey)
         await db.commit()

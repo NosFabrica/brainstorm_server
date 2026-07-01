@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from nostr_sdk import PublicKey
-from sqlalchemy import Select, asc, delete, desc, func, or_, select, update
+from sqlalchemy import Select, and_, asc, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from sqlalchemy.orm import defer, undefer
 
@@ -344,11 +344,25 @@ _NON_TERMINAL = [
 ]
 
 
+def in_pipeline_condition():
+    """A run is still in the pipeline while its calc is pending/running, or its
+    calc succeeded and publishing is pending/running. A failed calc is terminal
+    even though its ta_publication may still sit at the default 'waiting'.
+    Mirrors app.services.scheduler.request_in_pipeline."""
+    return or_(
+        BrainstormRequest.status.in_(_NON_TERMINAL),
+        and_(
+            BrainstormRequest.status == BrainstormRequestStatus.SUCCESS.value,
+            BrainstormRequest.status_ta_publication.in_(_NON_TERMINAL),
+        ),
+    )
+
+
 async def count_scheduled_publishing_inflight_on_db(db: AsyncDBSession) -> int:
-    """Scheduled runs whose TA publishing is not yet terminal (the backpressure signal)."""
+    """Scheduled runs still in the pipeline (the backpressure signal)."""
     statement = select(func.count()).where(
         BrainstormRequest.trigger_source == TriggerSource.SCHEDULED.value,
-        BrainstormRequest.status_ta_publication.in_(_NON_TERMINAL),
+        in_pipeline_condition(),
     )
     result = await execute_db_statement(db, statement, __name__)
     return int(result.scalar_one())
@@ -360,10 +374,7 @@ async def any_interactive_in_pipeline_on_db(db: AsyncDBSession) -> bool:
         BrainstormRequest.trigger_source.in_(
             [TriggerSource.MANUAL.value, TriggerSource.ADMIN.value]
         ),
-        or_(
-            BrainstormRequest.status.in_(_NON_TERMINAL),
-            BrainstormRequest.status_ta_publication.in_(_NON_TERMINAL),
-        ),
+        in_pipeline_condition(),
     )
     result = await execute_db_statement(db, statement, __name__)
     return int(result.scalar_one()) > 0
@@ -372,14 +383,13 @@ async def any_interactive_in_pipeline_on_db(db: AsyncDBSession) -> bool:
 async def fail_stale_publishing_brainstorm_requests_on_db(
     db: AsyncDBSession, stale_threshold: timedelta
 ) -> int:
-    """Fail hung publishes (status_ta_publication ONGOING past the cutoff) so a
+    """Fail hung publishes (ta_publication non-terminal past the cutoff) so a
     stuck job can't permanently block scheduler admission."""
     cutoff = datetime.now() - stale_threshold
     statement = (
         update(BrainstormRequest)
         .where(
-            BrainstormRequest.status_ta_publication
-            == BrainstormRequestStatus.ONGOING.value,
+            BrainstormRequest.status_ta_publication.in_(_NON_TERMINAL),
             BrainstormRequest.updated_at < cutoff,
         )
         .values(

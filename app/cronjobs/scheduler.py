@@ -41,6 +41,9 @@ async def _run_cycle(db) -> None:
         settings.scheduler_inflight_target, inflight, interactive
     )
     if budget <= 0:
+        logger.info(
+            f"Scheduler: admission paused (inflight={inflight}, interactive={interactive})."
+        )
         return
 
     default = await get_default_scheduling_on_db(db)
@@ -53,6 +56,7 @@ async def _run_cycle(db) -> None:
         platform_pubkey=settings.periodic_graperank_pubkey,
         default_priority=default.priority,
         default_interval_seconds=default.schedule_interval_seconds,
+        default_enabled=default.enabled,
     )
     ranked = rank_overdue_candidates(candidates, datetime.now())
 
@@ -73,8 +77,10 @@ async def _run_cycle(db) -> None:
         )
         enqueued += 1
 
-    if enqueued:
-        logger.info(f"Scheduler enqueued {enqueued} scheduled run(s).")
+    if ranked:
+        logger.info(
+            f"Scheduler: {len(ranked)} overdue, enqueued {enqueued}/{budget}."
+        )
 
 
 async def scheduler_cronjob() -> None:

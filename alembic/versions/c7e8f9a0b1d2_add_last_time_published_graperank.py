@@ -20,6 +20,23 @@ def upgrade() -> None:
         'brainstorm_nsec',
         sa.Column('last_time_published_graperank', sa.DateTime(), nullable=True),
     )
+    # Seed the freshness clock from each user's last successful TA publish so the
+    # scheduler doesn't treat every existing user as never-published (which would
+    # recalc the entire base on first enable). Idempotent. Users with no
+    # successful publish stay NULL (correctly overdue).
+    op.execute(
+        """
+        UPDATE brainstorm_nsec n
+        SET last_time_published_graperank = sub.last_pub
+        FROM (
+            SELECT pubkey, MAX(updated_at) AS last_pub
+            FROM brainstorm_request
+            WHERE status_ta_publication = 'success'
+            GROUP BY pubkey
+        ) sub
+        WHERE n.pubkey = sub.pubkey;
+        """
+    )
 
 
 def downgrade() -> None:

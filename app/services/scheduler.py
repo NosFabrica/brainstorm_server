@@ -16,10 +16,23 @@ class SchedulerCandidate:
     interval_seconds: int
     last_published: datetime | None
     last_failed_at: datetime | None = None
+    enabled: bool = True
 
 
 # Hardcoded: a user whose last run failed is skipped for this long before retry.
 RETRY_BACKOFF_SECONDS = 3600  # 1 hour
+
+
+_NON_TERMINAL_STATUSES = ("waiting", "ongoing")
+
+
+def request_in_pipeline(status: str, ta_status: str) -> bool:
+    """True while a run is still progressing: calc pending/running, or calc done
+    and publishing pending/running. A failed calc (status=failure) is terminal
+    even though its ta_status may sit at the default 'waiting'."""
+    if status in _NON_TERMINAL_STATUSES:
+        return True
+    return status == "success" and ta_status in _NON_TERMINAL_STATUSES
 
 
 def admission_budget(target: int, inflight: int, interactive_in_flight: bool) -> int:
@@ -60,7 +73,8 @@ def rank_overdue_candidates(
     eligible = [
         c
         for c in candidates
-        if is_overdue(c, now)
+        if c.enabled
+        and is_overdue(c, now)
         and not _in_retry_backoff(c, now, retry_backoff_seconds)
     ]
     return sorted(
