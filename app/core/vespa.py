@@ -42,10 +42,10 @@ PROFILE_FIELDS = (
 # How many query words we label / parametrize at most.
 MAX_QUERY_WORDS = 6
 
-# Maps the doc.sd match_quality() tier (0..4) to a human label surfaced in the
-# search response as `_match_tier`, so the team can eyeball exact-vs-typo tiers
-# without raw Vespa queries. See docs/search-vs-tapestry.md §10.
-_MATCH_TIERS = {4: "exact", 3: "prefix", 2: "1-typo", 1: "2-typo", 0: "gram"}
+# Maps the doc.sd match_quality() name tier (1..4) to a human label surfaced in
+# the search response as `_match_tier`. Tier 0 resolves to "affiliation" (bio or
+# website domain match) or "gram" (trigram/recall noise). See §10 / §11.
+_MATCH_TIERS = {4: "exact", 3: "prefix", 2: "1-typo", 1: "2-typo"}
 
 # Rank-profile names defined in the Vespa schema (doc.sd). The DEFAULT is
 # `sort_followers`: text match, filter rank >= query(min_rank), sort by the
@@ -340,39 +340,60 @@ def _word_max_edits(word: str) -> int:
     return 0
 
 
-# Fields whose exact/prefix/fuzzy match feeds the match-quality tier
-# (match_quality / has_token_match in doc.sd). Bios + payment/website fields are
-# recall-only, so a hit there must NOT promote a doc into the name-match tier.
+# Field roles for match labeling (consumed by match_quality / affiliation_match
+# in doc.sd via itemRawScore):
+#   primary     — name/display_name/username/nip05 → exact>prefix>1-typo>2-typo
+#   affiliation — bio + website → only the EXACT-token match is labeled
+#                 (mtch_affil), driving the affiliation tier (below name matches,
+#                 above gram noise). "related to X" signals: a bio mentioning X,
+#                 or an account whose own website domain is X.
+#   recall      — lud16 → unlabeled, pure recall
+# NB website is a URL: default linguistics splits "odell.com" -> [odell, com]
+# (exact "odell" hits) but "citadeldispatch.com" -> [citadeldispatch, com]
+# (exact "citadel" misses — would need prefix). See §11.
 _PRIMARY_FIELDS = ("name", "display_name", "username", "nip05")
+_AFFILIATION_FIELDS = ("about", "website")
 
 
-def _field_clauses(field: str, var: str, max_edits: int, primary: bool) -> list[str]:
+def _field_role(field: str) -> str:
+    if field in _PRIMARY_FIELDS:
+        return "primary"
+    if field in _AFFILIATION_FIELDS:
+        return "affiliation"
+    return "recall"
+
+
+def _field_clauses(field: str, var: str, max_edits: int, role: str) -> list[str]:
     """Match clauses for one (field, word): exact, prefix, and up to two fuzzy
-    tiers. On PRIMARY fields each variant is labeled so the rank profile can
-    build an exact > prefix > 1-typo > 2-typo ladder via itemRawScore()
-    (match_quality, doc.sd) — mirroring Meilisearch's `typo` ranking bucket.
-    Recall-only fields stay unlabeled so a bio/website hit doesn't jump tiers.
+    tiers. Labels depend on the field `role` so the rank profile can build the
+    exact>prefix>1-typo>2-typo name ladder (match_quality) AND the affiliation
+    tier (affiliation_match), both via itemRawScore(). Recall fields stay
+    unlabeled so a hit there can't jump tiers. See docs §10 / §11.
     """
-    def _ann(extra: list[str], label: str) -> str:
+    def _ann(extra: list[str], label: str | None) -> str:
         ann = [f'defaultIndex:"{field}"'] + extra
-        if primary:
+        if label:
             ann.append(f'label:"{label}"')
         return "{" + ",".join(ann) + "}"
 
+    ex_label = {"primary": "mtch_exact", "affiliation": "mtch_affil"}.get(role)
+    pf_label = "mtch_prefix" if role == "primary" else None
     clauses = [
-        f"({_ann([], 'mtch_exact')}userInput({var}))",
-        f"({_ann(['prefix:true'], 'mtch_prefix')}userInput({var}))",
+        f"({_ann([], ex_label)}userInput({var}))",
+        f"({_ann(['prefix:true'], pf_label)}userInput({var}))",
     ]
     # prefixLength:2 — the first two characters must match exactly, so a typo in
     # char >=3 is corrected but a wrong first/second letter no longer drags in
     # unrelated names. Separate fz1/fz2 labels so 1-typo outranks 2-typo.
     if max_edits >= 1:
+        fz1 = "mtch_fz1" if role == "primary" else None
         clauses.append(
-            f"({_ann(['fuzzy:{maxEditDistance:1,prefixLength:2}'], 'mtch_fz1')}userInput({var}))"
+            f"({_ann(['fuzzy:{maxEditDistance:1,prefixLength:2}'], fz1)}userInput({var}))"
         )
     if max_edits >= 2:
+        fz2 = "mtch_fz2" if role == "primary" else None
         clauses.append(
-            f"({_ann(['fuzzy:{maxEditDistance:2,prefixLength:2}'], 'mtch_fz2')}userInput({var}))"
+            f"({_ann(['fuzzy:{maxEditDistance:2,prefixLength:2}'], fz2)}userInput({var}))"
         )
     return clauses
 
@@ -388,7 +409,7 @@ def _word_group(var: str, literal: str, with_grams: bool = True) -> str:
     me = _word_max_edits(literal)
     clauses: list[str] = []
     for field in ("name", "display_name", "about", "username", "nip05", "lud16", "website"):
-        clauses += _field_clauses(field, var, me, field in _PRIMARY_FIELDS)
+        clauses += _field_clauses(field, var, me, _field_role(field))
     if with_grams:
         for gram_field in ("name_gram", "display_name_gram"):
             gc = _gram_clause(literal, gram_field)
@@ -503,12 +524,19 @@ async def search(
         # verified_followers is only in match-features for the sort_followers
         # profile; other profiles leave it None.
         fields["_followers"] = mf.get("verified_followers")
-        # match_quality is the exact>prefix>1-typo>2-typo tier (doc.sd, §10);
-        # surface the raw int + a human label so the team can eyeball why a hit
-        # ranked where it did. None on the npub/hex direct-fetch path.
+        # match tier (doc.sd, §10/§11): name ladder exact>prefix>1-typo>2-typo,
+        # then "affiliation" (bio/website match) above "gram" (trigram/recall
+        # noise). Surfaced so the team can eyeball why a hit ranked where it did.
+        # None on the npub/hex direct-fetch path.
         mq = mf.get("match_quality")
+        am = mf.get("affiliation_match")
         fields["_match_quality"] = mq
         if mq is not None:
-            fields["_match_tier"] = _MATCH_TIERS.get(int(mq), str(mq))
+            if int(mq) > 0:
+                fields["_match_tier"] = _MATCH_TIERS.get(int(mq), str(mq))
+            elif am:
+                fields["_match_tier"] = "affiliation"
+            else:
+                fields["_match_tier"] = "gram"
         out.append(fields)
     return out

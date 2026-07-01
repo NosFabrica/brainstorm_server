@@ -633,3 +633,46 @@ separately-scored clause) before trusting the tiers.
 none`, which forces a reindex + a `validation-overrides.xml` `indexing-change`
 allow (§9.1). Sequence the stemming deploy **after** the in-flight kind-0 backfill
 so the reindex doesn't contend with the re-feed.
+
+---
+
+## 11. About-affiliation tier (2026-06-30)
+
+**Motivation** (found live on `odell`): impersonators and trigram collisions
+(accounts sharing `ell`/`del`/`ode`) outranked genuinely-related accounts.
+**Citadel Dispatch** — Odell's show, bio "hosted by ODELL" — sat at rank ~14: it
+matches `odell` only in `about`, and `about` matches earn no ranking tier
+(`has_token_match` excludes `about`), so it was ordered purely by follower count
+beneath higher-follower noise.
+
+**Fix** — a middle tier between name matches and gram noise:
+
+```
+name match (exact > prefix > 1-typo > 2-typo)   ← has_token_match + match_quality
+about affiliation (genuine bio token match)      ← about_match   (NEW)
+gram / recall noise                              ← neither
+```
+
+- **Query** (`_field_clauses`): the `about` **exact** clause is labeled
+  `mtch_about`; prefix/fuzzy on `about` stay unlabeled (pure recall, no tier).
+- **Rank** (`about_match()` = `itemRawScore(mtch_about) > 0`) adds a band:
+  - popularity/trust profiles: `about_match() * query(w_about_tier)` (1e7 — above
+    followers, below the 1e9 name band).
+  - text profile: `about_match() * query(w_about_tier_text)` (400 — below the
+    1100 name band, above gram/primary_text).
+- Within every band the existing sort applies (verified followers on the
+  default), so: **real ODELL on top (name+followers), related accounts like
+  Citadel Dispatch next (about+followers), coincidental substring hits last.**
+
+**Tunable / safe:**
+- `w_about_tier` / `w_about_tier_text` = 0 disables the tier (pure name > gram).
+- `about_match()` is itemRawScore-driven → degrades to 0 (gram behavior) if
+  itemRawScore isn't populated; same safety net as `match_quality` (§10.5).
+- `_match_tier` (API + `search_http.sh`) now reports `about` for these hits, so
+  the tier is visible per result.
+
+**Scope:** only the bio (`about`) feeds this tier; `lud16`/`website` stay pure
+recall. Extend `_field_role` in `app/core/vespa.py` if payment/website
+affiliation should also count. Note impersonators *named* the query stay in the
+name tier — verified-follower ordering within that tier (once ingest completes)
+is what sinks them beneath the real account.
