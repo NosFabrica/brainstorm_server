@@ -707,3 +707,60 @@ matchable fields** so `matchCount` can tell them apart, e.g. a verbatim
 deferred. In practice the coarse `name`-tier + **verified-follower ordering**
 already floats the real account above impersonators once ingest completes, so the
 fine ladder is a refinement, not a blocker.
+
+---
+
+## 12. Default rewrite: IDF-diluted text × multiplicative trust (2026-07-01)
+
+Team feedback raised two distinct problems with the default (`sort_followers`):
+
+1. **Common tokens flood.** `primal` returned *everyone* with a `primal.net`
+   `nip05`, because `nip05`/`lud16` matches fed the flat `has_token_match` tier
+   (a binary count) — completely IDF-blind, so a token in thousands of docs got
+   the same boost as a unique one. But a `nip05` that *is* the person's handle
+   (`vitorpamplona.com`) should surface.
+2. **Trust was added, not multiplied.** The additive tier + follower model (and
+   the earlier `quality_boost`) let trust *swamp* text. The team asked to
+   **multiply** text by a rank function instead — with a cutoff and a modest,
+   concave curve.
+
+### 12.1 IDF (the "primal" fix)
+
+**IDF = inverse document frequency** — rare words score high, common words low
+(`≈ log(total_docs / docs_with_word)`). `bm25()` is `tf × IDF` built in, and
+`about` already used it. The fix: give `nip05`/`lud16` the same treatment.
+
+- `identity_text() = bm25(nip05) + bm25(lud16)` — `primal`/`gmail`/`com` → ~0
+  (common), `vitorpamplona` → high (unique).
+- `name_match()` = name/display_name/username **only** (nip05/lud16 removed from
+  the name tier — they now score via `identity_text`).
+- New tier order: **name > identity > affiliation > gram**.
+
+### 12.2 Multiplicative trust (NOT additive)
+
+```
+first-phase = text_score() * wot_mult()          # MULTIPLY, never +
+wot_mult()  = if(rank < cutoff, 0, 1 + w_wot * log(1 + rank - cutoff))
+```
+- `rank` = `user_score()` (observer influence×100). `cutoff` = `query(min_rank)`
+  (server passes 2) — the old hard step becomes "0 below, concave-increasing above".
+- Multiplying means text relevance is always the driver — zero text × any trust
+  is still zero, so trust can't manufacture relevance (avoids the swamping in §
+  `search-trust-vs-exact-match.md`).
+- `log` = **modest, diminishing-returns** boost (~1× to ~5.6× across rank 2–100
+  at `w_wot=1`), vs raw `rank` which would be a 50× swing.
+
+### 12.3 Scope, tuning, deploy
+
+- **Default only.** `sort_followers` is rewritten; `sort=text`/`sort=rank`
+  (`text_relevance`/`rank_desc`/`rank_asc`) are untouched. `verified_followers`
+  is kept only as a surfaced signal — it's **no longer the sort key** (supersedes
+  §8.1's popularity-first). Confirm that's the intended default.
+- **All rank-config** — `query()` inputs (`w_wot`, `w_identity`, `w_name_tier`,
+  `min_rank`) tune it **live, no redeploy**. Defaults are starting points; tune on
+  staging. The **inspector** exposes a `w_wot` knob + a `×wot` column + the
+  `identity` tier so you can watch it.
+- **Three places** move together: `doc.sd` (the ranking), `brainstorm_server`
+  (`vespa.py` tier/signal surfacing), and `search-inspector` (`app.py` mirror).
+  The query builder (`vespa_query.py`) does **not** change — nip05/lud16 are still
+  *matched*, only *scored* differently.

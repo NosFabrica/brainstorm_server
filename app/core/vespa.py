@@ -370,22 +370,28 @@ async def search(
         # verified_followers is only in match-features for the sort_followers
         # profile; other profiles leave it None.
         fields["_followers"] = mf.get("verified_followers")
-        # match tier (doc.sd, §11): "name" (name/display/username/nip05 token
-        # match) > "affiliation" (about/website match) > "gram" (trigram/recall
-        # noise). The finer exact>prefix>typo name ladder (match_quality) is
-        # DEFERRED — itemRawScore doesn't populate for text terms, so it's always
-        # 0; we fall back to the reliable matchCount-based signals. `mf` is empty
-        # on the npub/hex direct-fetch path (no ranking ran).
+        # match tier (doc.sd §11/§12): "name" (name/display/username token match) >
+        # "identity" (nip05/lud16, IDF-scored — the "primal" dilution) >
+        # "affiliation" (about/website) > "gram" (trigram/recall noise). The
+        # default profile also multiplies text by trust (wot_mult) and IDF-scores
+        # identity fields (identity_text) — both surfaced below for the inspector.
+        # `mf` is empty on the npub/hex direct-fetch path (no ranking ran).
         mq = mf.get("match_quality")
-        htm = mf.get("has_token_match")
-        am = mf.get("affiliation_match")
         fields["_match_quality"] = mq
+        fields["_identity_text"] = mf.get("identity_text")
+        fields["_text_score"] = mf.get("text_score")
+        fields["_wot_mult"] = mf.get("wot_mult")
         if mf:
             if mq and int(mq) > 0:
                 fields["_match_tier"] = _MATCH_TIERS.get(int(mq), str(mq))
-            elif htm:
+            elif mf.get("name_match"):
                 fields["_match_tier"] = "name"
-            elif am:
+            elif mf.get("identity_match"):
+                fields["_match_tier"] = "identity"
+            elif mf.get("has_token_match"):
+                # older profiles fold nip05/lud16 into has_token_match
+                fields["_match_tier"] = "name"
+            elif mf.get("affiliation_match"):
                 fields["_match_tier"] = "affiliation"
             else:
                 fields["_match_tier"] = "gram"
