@@ -20,6 +20,7 @@ services:
       - ADMIN_ENABLED=${ADMIN_ENABLED:-false}
       - ADMIN_WHITELISTED_PUBKEYS=${ADMIN_WHITELISTED_PUBKEYS:-}
       - SCHEDULER_ENABLED=${SCHEDULER_ENABLED:-true}
+      - SCHEDULER_INFLIGHT_TARGET=${SCHEDULER_INFLIGHT_TARGET:-1}
     depends_on:
       brainstorm-database:
         condition: service_healthy

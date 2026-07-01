@@ -91,6 +91,20 @@ async def update_last_time_calculated_graperank_on_db(
     await db.execute(statement)
 
 
+async def update_last_time_published_graperank_on_db(
+    db: AsyncDBSession,
+    pubkey: str,
+    when: datetime | None = None,
+) -> None:
+    when = when or datetime.now()
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(last_time_published_graperank=when)
+    )
+    await db.execute(statement)
+
+
 async def get_graperank_preset_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> str | None:

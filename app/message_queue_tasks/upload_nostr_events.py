@@ -33,6 +33,7 @@ from app.repos.brainstorm_nsec import (
     reset_runs_since_full_on_db,
     set_is_observer_search_available_by_pubkey_on_db,
     update_last_published_pubkeys_by_pubkey_on_db,
+    update_last_time_published_graperank_on_db,
 )
 from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
@@ -532,6 +533,9 @@ async def process_nostr_upload_message(message: dict):
                     published_pubkeys=currently_published_pubkeys,
                     graperank_request_id=run_id,
                 )
+
+                # Freshness clock for the scheduler — advanced only on success.
+                await update_last_time_published_graperank_on_db(db, pubkey=observer)
 
                 if vespa_search_available:
                     await set_is_observer_search_available_by_pubkey_on_db(

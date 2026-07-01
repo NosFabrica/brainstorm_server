@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     block_frequent_graperank_requests_minutes: int = Field(default=30)
     # Global kill-switch for the tier scheduler. Default off; enable per environment
     scheduler_enabled: bool = Field(default=False)
+    # Max scheduled runs whose publishing may be in flight before admission pauses.
+    scheduler_inflight_target: int = Field(default=1)
     periodic_graperank_pubkey: str = Field(default="")
     vespa_url: str = Field(...)
     # Per-sink "fully re-assert state vs incremental" levers. Default True =

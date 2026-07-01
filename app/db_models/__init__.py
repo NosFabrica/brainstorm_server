@@ -126,6 +126,8 @@ class BrainstormNsec(TimestampMixin, Base):
     pubkey: Mapped[str] = mapped_column(String, primary_key=True)
     last_time_triggered_graperank = mapped_column(DateTime, nullable=True)
     last_time_calculated_graperank = mapped_column(DateTime, nullable=True)
+    # Freshness clock: set only on a successful TA publish. Drives scheduling.
+    last_time_published_graperank = mapped_column(DateTime, nullable=True)
     graperank_preset: Mapped[str] = mapped_column(String, nullable=True)
     graperank_custom_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     last_published_pubkeys: Mapped[bytes | None] = mapped_column(
