@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
+from app.db_models import TriggerSource
 from app.repos.brainstorm_nsec import (
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
     increment_runs_since_full_on_db,
@@ -49,6 +50,7 @@ async def _trigger_graperank(pubkey: str, reason: str) -> None:
             nsec_exists=True,
             force_full_relay=due,
             force_full_vespa=due,
+            trigger_source=TriggerSource.PERIODIC.value,
         )
     logger.info(
         f"Periodic graperank cronjob: triggered graperank "

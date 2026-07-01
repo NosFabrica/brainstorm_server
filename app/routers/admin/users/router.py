@@ -7,6 +7,7 @@ from nostr_sdk import Keys
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
+from app.db_models import TriggerSource
 from app.repos.brainstorm_request_repo import (
     build_recent_active_pubkeys_stmt,
     build_recent_brainstorm_requests_stmt,
@@ -168,5 +169,6 @@ async def resync_observer_endpoint(
         pubkey=pubkey,
         force_full_relay=force_full_relay,
         force_full_vespa=force_full_vespa,
+        trigger_source=TriggerSource.ADMIN.value,
     )
     return BrainstormRequestResponse(data=result)

@@ -28,6 +28,13 @@ class BrainstormRequestStatus(enum.Enum):
     FAILURE = "failure"
 
 
+class TriggerSource(enum.Enum):
+    MANUAL = "manual"
+    SCHEDULED = "scheduled"
+    ADMIN = "admin"
+    PERIODIC = "periodic"
+
+
 class Base(DeclarativeBase, AsyncAttrs):
     pass
 
@@ -79,6 +86,13 @@ class BrainstormRequest(TimestampMixin, Base):
     pubkey: Mapped[str] = mapped_column(String, nullable=True)
     graperank_preset_used: Mapped[str] = mapped_column(String, nullable=True)
     graperank_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # manual/scheduled/admin/periodic — drives priority-lane routing.
+    trigger_source: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        server_default=TriggerSource.MANUAL.value,
+        default=TriggerSource.MANUAL.value,
+    )
     # Per-run, per-sink "force a full re-assert" overrides (published-state-drift
     # repair). Nullable: NULL/false = no override (delta as usual); true = this
     # run re-asserts that sink's full above-cutoff state. Set by the admin resync

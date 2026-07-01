@@ -1,7 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
-from app.core.redis_db import redis_client
-from app.db_models import BrainstormRequest, BrainstormRequestStatus
+from app.db_models import BrainstormRequest, BrainstormRequestStatus, TriggerSource
 from app.repos.brainstorm_nsec import (
     get_graperank_preset_by_pubkey_on_db,
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
@@ -14,6 +13,7 @@ from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
 )
 from app.schemas.schemas import BrainstormRequestInstance, GrapeRankError
+from app.services.scheduler_lanes import enqueue_calc_request
 from app.services.graperank_preset_service import (
     normalize_preset,
     resolve_preset_params,
@@ -116,6 +116,7 @@ async def create_brainstorm_request(
     nsec_exists: bool = False,
     force_full_relay: bool = False,
     force_full_vespa: bool = False,
+    trigger_source: str = TriggerSource.MANUAL.value,
 ) -> BrainstormRequestInstance:
     stored_preset = await get_graperank_preset_by_pubkey_on_db(db, parameters)
     requested_preset = normalize_preset(stored_preset)
@@ -133,6 +134,7 @@ async def create_brainstorm_request(
             graperank_params=params.model_dump(),
             force_full_relay=force_full_relay,
             force_full_vespa=force_full_vespa,
+            trigger_source=trigger_source,
         )
     )
 
@@ -154,6 +156,6 @@ async def create_brainstorm_request(
 
     await update_last_time_triggered_graperank_on_db(db, parameters)
 
-    await redis_client.rpush("message_queue", instance.model_dump_json())
+    await enqueue_calc_request(db, instance, parameters, trigger_source)
 
     return instance
