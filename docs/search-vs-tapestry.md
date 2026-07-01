@@ -672,9 +672,10 @@ gram / recall noise                              ← neither
   the tier is visible per result.
 
 **Scope:** the bio (`about`) and the account's own `website` domain feed this
-tier; `lud16` stays pure recall. Extend `_field_role` in `app/core/vespa.py` if
-lud16 affiliation should also count. Note impersonators *named* the query stay in
-the name tier — verified-follower ordering within that tier (once ingest
+tier. `lud16` is treated like `nip05` — both are `@`-address identity fields, so
+it's a **primary/name-tier** field (`_PRIMARY_FIELDS` + `matchCount(lud16)` in
+`has_token_match()`), not affiliation. Note impersonators *named* the query stay
+in the name tier — verified-follower ordering within that tier (once ingest
 completes) is what sinks them beneath the real account.
 
 ### 11.1 itemRawScore doesn't work for text terms — the exactness ladder is deferred

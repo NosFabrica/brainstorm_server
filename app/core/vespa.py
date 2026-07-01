@@ -19,6 +19,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.loggr import loggr
+from app.core.vespa_query import MAX_QUERY_WORDS, build_query
 
 logger = loggr.get_logger(__name__)
 
@@ -38,9 +39,6 @@ PROFILE_FIELDS = (
     "lud16",
     "website",
 )
-
-# How many query words we label / parametrize at most.
-MAX_QUERY_WORDS = 6
 
 # Maps the doc.sd match_quality() name tier (1..4) to a human label surfaced in
 # the search response as `_match_tier`. Tier 0 resolves to "affiliation" (bio or
@@ -292,148 +290,10 @@ async def batch_upsert_scores(
 
 
 # ---------------------------------------------------------------------------
-# YQL builders (ported from the search_quality prototype)
+# YQL builders live in app/core/vespa_query.py (stdlib-only) so diagnostic
+# tooling (scripts/analyze_pubkey.py) can build the EXACT same query without
+# importing settings/httpx. search() below calls build_query() from there.
 # ---------------------------------------------------------------------------
-def _gram_clause(text: str, gram_field: str, gram_size: int = 3) -> str:
-    """OR of every trigram in `text` against `gram_field`."""
-    grams = set()
-    for word in text.lower().split():
-        for i in range(max(1, len(word) - gram_size + 1)):
-            g = word[i : i + gram_size]
-            if len(g) == gram_size and g.isalnum():
-                grams.add(g)
-    if not grams:
-        return ""
-    return (
-        "(" + " or ".join(f'{gram_field} contains "{g}"' for g in sorted(grams)) + ")"
-    )
-
-
-def _about_gram_clause_for_word(word: str, gram_size: int = 3) -> str:
-    """AND of one word's trigrams against `about_gram` (discriminative)."""
-    grams = [
-        word[i : i + gram_size]
-        for i in range(len(word) - gram_size + 1)
-        if word[i : i + gram_size].isalnum()
-        and len(word[i : i + gram_size]) == gram_size
-    ]
-    if not grams:
-        return ""
-    return "(" + " and ".join(f'about_gram contains "{g}"' for g in grams) + ")"
-
-
-def _word_max_edits(word: str) -> int:
-    """Per-word fuzzy budget, length-gated like Meilisearch: <4 → exact/prefix
-    only, ≥4 → 1 edit, ≥9 → 2 edits.
-
-    Two edits is safe now that the rank profile tiers exact > prefix > 1-typo >
-    2-typo (match_quality in doc.sd, via the labels added in `_field_clauses`):
-    a 2-edit neighbour lands in the lowest match tier instead of scoring like an
-    exact hit, which is what made wider fuzzy "suffer" before. See
-    docs/search-precision-and-filtering.md (Problem 1) and the §10 typo
-    deep-dive in docs/search-vs-tapestry.md.
-    """
-    if len(word) >= 9:
-        return 2
-    if len(word) >= 4:
-        return 1
-    return 0
-
-
-# Field roles for match labeling (consumed by match_quality / affiliation_match
-# in doc.sd via itemRawScore):
-#   primary     — name/display_name/username/nip05 → exact>prefix>1-typo>2-typo
-#   affiliation — bio + website → only the EXACT-token match is labeled
-#                 (mtch_affil), driving the affiliation tier (below name matches,
-#                 above gram noise). "related to X" signals: a bio mentioning X,
-#                 or an account whose own website domain is X.
-#   recall      — lud16 → unlabeled, pure recall
-# NB website is a URL: default linguistics splits "odell.com" -> [odell, com]
-# (exact "odell" hits) but "citadeldispatch.com" -> [citadeldispatch, com]
-# (exact "citadel" misses — would need prefix). See §11.
-_PRIMARY_FIELDS = ("name", "display_name", "username", "nip05")
-_AFFILIATION_FIELDS = ("about", "website")
-
-
-def _field_role(field: str) -> str:
-    if field in _PRIMARY_FIELDS:
-        return "primary"
-    if field in _AFFILIATION_FIELDS:
-        return "affiliation"
-    return "recall"
-
-
-def _field_clauses(field: str, var: str, max_edits: int, role: str) -> list[str]:
-    """Match clauses for one (field, word): exact, prefix, and up to two fuzzy
-    tiers. Labels depend on the field `role` so the rank profile can build the
-    exact>prefix>1-typo>2-typo name ladder (match_quality) AND the affiliation
-    tier (affiliation_match), both via itemRawScore(). Recall fields stay
-    unlabeled so a hit there can't jump tiers. See docs §10 / §11.
-    """
-    def _ann(extra: list[str], label: str | None) -> str:
-        ann = [f'defaultIndex:"{field}"'] + extra
-        if label:
-            ann.append(f'label:"{label}"')
-        return "{" + ",".join(ann) + "}"
-
-    ex_label = {"primary": "mtch_exact", "affiliation": "mtch_affil"}.get(role)
-    pf_label = "mtch_prefix" if role == "primary" else None
-    clauses = [
-        f"({_ann([], ex_label)}userInput({var}))",
-        f"({_ann(['prefix:true'], pf_label)}userInput({var}))",
-    ]
-    # prefixLength:2 — the first two characters must match exactly, so a typo in
-    # char >=3 is corrected but a wrong first/second letter no longer drags in
-    # unrelated names. Separate fz1/fz2 labels so 1-typo outranks 2-typo.
-    if max_edits >= 1:
-        fz1 = "mtch_fz1" if role == "primary" else None
-        clauses.append(
-            f"({_ann(['fuzzy:{maxEditDistance:1,prefixLength:2}'], fz1)}userInput({var}))"
-        )
-    if max_edits >= 2:
-        fz2 = "mtch_fz2" if role == "primary" else None
-        clauses.append(
-            f"({_ann(['fuzzy:{maxEditDistance:2,prefixLength:2}'], fz2)}userInput({var}))"
-        )
-    return clauses
-
-
-def _word_group(var: str, literal: str, with_grams: bool = True) -> str:
-    """All match clauses for one query word across the searchable fields + grams.
-
-    name/display_name/about are the primary text signal (and feed the rank
-    profile's text functions). username/nip05 also feed the match-quality tier
-    (match_quality in doc.sd). lud16/website are recall-only (P1). See
-    docs/search-vs-tapestry.md §8.4.
-    """
-    me = _word_max_edits(literal)
-    clauses: list[str] = []
-    for field in ("name", "display_name", "about", "username", "nip05", "lud16", "website"):
-        clauses += _field_clauses(field, var, me, _field_role(field))
-    if with_grams:
-        for gram_field in ("name_gram", "display_name_gram"):
-            gc = _gram_clause(literal, gram_field)
-            if gc:
-                clauses.append(gc)
-        agc = _about_gram_clause_for_word(literal)
-        if agc:
-            clauses.append(agc)
-    return "(" + " or ".join(clauses) + ")"
-
-
-def _build_yql(words: list[str], joined: str | None, pairs: list[str]) -> str:
-    """Per-word groups OR'd together, plus an optional joined-CamelCase variant
-    (whole-token only) so a query like 'vitor pamplona' still hits a doc named
-    'VitorPamplona', plus adjacent-pair concatenations for >2-word queries."""
-    parts = [
-        _word_group(f"@w{i}", w)
-        for i, w in enumerate(words[:MAX_QUERY_WORDS])
-    ]
-    if joined:
-        parts.append(_word_group("@wj", joined, with_grams=False))
-    for i, _ in enumerate(pairs):
-        parts.append(_word_group(f"@wp{i}", pairs[i], with_grams=False))
-    return f"select * from doc where {' or '.join(parts)}"
 
 
 # ---------------------------------------------------------------------------
@@ -461,17 +321,8 @@ async def search(
     below it (the NIP-50 `filter:rank:gte/gt` push-down). Both are no-ops on the
     default profile. See docs/search-precision-and-filtering.md (Problem 2).
     """
-    words = query_text.split()[:MAX_QUERY_WORDS]
-    joined = "".join(words) if len(words) >= 2 else None
-    # Adjacent-pair concatenations ("nos fabrica" -> "nosfabrica") for queries
-    # with >2 words, where the whole-string join (`joined`) wouldn't match a
-    # 2-token name. 2-word queries are already covered by `joined`. Whole-token
-    # only (no grams). See the §10 typo deep-dive (word-boundary handling).
-    pairs = (
-        ["".join(words[i:i + 2]) for i in range(len(words) - 1)]
-        if len(words) >= 3
-        else []
-    )
+    # Build the YQL + per-word params (shared with scripts/analyze_pubkey.py).
+    words, yql, word_params = build_query(query_text)
     shortest = min((len(w) for w in words), default=len(query_text))
     # Trigrams are a recall safety-net + tie-breaker, not a primary ranker.
     # Keep them meaningful for very short queries (where token matching barely
@@ -485,7 +336,7 @@ async def search(
     vespa_hits = min(vespa_hits, 400)  # Vespa default max-hits
 
     params = {
-        "yql": _build_yql(words, joined, pairs),
+        "yql": yql,
         "ranking": ranking_profile or DEFAULT_RANK_PROFILE,
         "ranking.features.query(user_q)": "{" + user_pubkey + ":1.0}",
         "ranking.features.query(w_gram)": w_gram,
@@ -495,12 +346,7 @@ async def search(
     }
     if min_rank is not None:
         params["ranking.features.query(min_rank)"] = min_rank
-    for i, w in enumerate(words):
-        params[f"w{i}"] = w
-    if joined:
-        params["wj"] = joined
-    for i, p in enumerate(pairs):
-        params[f"wp{i}"] = p
+    params.update(word_params)
 
     r = await _get_client().get(f"{settings.vespa_url}/search/", params=params)
     r.raise_for_status()
