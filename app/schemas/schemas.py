@@ -106,6 +106,24 @@ class AdminUserDetail(BaseModel):
     scheduling_name: str
 
 
+class SchedulingItem(BaseModel):
+    id: int
+    name: str
+    schedule_interval_seconds: int
+    priority: int
+    enabled: bool
+    is_default: bool
+    manual_quota_limit: int
+    manual_quota_window_seconds: int
+
+    model_config = {"from_attributes": True}
+
+
+class SchedulingUserItem(BaseModel):
+    pubkey: str
+    last_time_published_graperank: datetime | None
+
+
 class BrainstormPubkeyInstance(CreatedAndUpdatedAtModel):
     global_pubkey: str
     brainstorm_pubkey: str

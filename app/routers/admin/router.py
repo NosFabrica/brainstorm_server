@@ -8,6 +8,7 @@ from app.routers.admin.activity.router import router as activity_router
 from app.routers.admin.graperank.router import router as graperank_router
 from app.routers.admin.nsec_encryption.router import router as nsec_encryption_router
 from app.routers.admin.stats.router import router as stats_router
+from app.routers.admin.scheduling.router import router as scheduling_router
 from app.routers.admin.users.router import router as users_router
 from app.routers.brainstorm_pubkey.router import router as brainstorm_pubkey_router
 from app.routers.brainstorm_request.router import router as brainstorm_request_router
@@ -57,6 +58,12 @@ router.include_router(
 router.include_router(
     router=users_router,
     prefix="/users",
+    tags=["admin"],
+)
+
+router.include_router(
+    router=scheduling_router,
+    prefix="/scheduling",
     tags=["admin"],
 )
 

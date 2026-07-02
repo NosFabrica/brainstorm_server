@@ -210,6 +210,21 @@ async def get_scheduling_for_pubkey_on_db(
     return await get_default_scheduling_on_db(db)
 
 
+async def bulk_set_scheduling_for_pubkeys_on_db(
+    db: AsyncDBSession, pubkeys: list[str], scheduling_id: int
+) -> int:
+    """Assign many users to a policy in one statement; returns rows updated."""
+    if not pubkeys:
+        return 0
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey.in_(pubkeys))
+        .values(scheduling_id=scheduling_id)
+    )
+    result = await db.execute(statement)
+    return result.rowcount
+
+
 async def set_scheduling_for_pubkey_on_db(
     db: AsyncDBSession, pubkey: str, scheduling_id: int
 ) -> None:
