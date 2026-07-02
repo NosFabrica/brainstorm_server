@@ -16,12 +16,14 @@ MAX_QUERY_WORDS = 6
 # labels are currently inert (§11.1) — kept for a future verbatim-field revival.
 # The real name-tier gate is matchCount() in doc.sd's has_token_match(), which
 # must list the same primary fields.
-#   primary     — name/display_name/username/nip05/lud16 (nip05 & lud16 are both
+#   primary     — name/display_name/nip05/lud16 (nip05 & lud16 are both
 #                 @-address identity fields, so lud16 is treated like nip05)
 #   affiliation — bio + website (only the EXACT clause labeled)
-_PRIMARY_FIELDS = ("name", "display_name", "username", "nip05", "lud16")
+# (The deprecated `username` folds into `name` at ingest per NIP-24, so it is no
+# longer a stored/searchable field — see process_strfry_event._FIELD_RESOLUTION.)
+_PRIMARY_FIELDS = ("name", "display_name", "nip05", "lud16")
 _AFFILIATION_FIELDS = ("about", "website")
-_SEARCH_FIELDS = ("name", "display_name", "about", "username", "nip05", "lud16", "website")
+_SEARCH_FIELDS = ("name", "display_name", "about", "nip05", "lud16", "website")
 
 
 def _field_role(field: str) -> str:

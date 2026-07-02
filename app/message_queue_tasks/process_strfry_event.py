@@ -39,18 +39,45 @@ async def process_strfry_event(session: AsyncNeoDriver, event: dict):
         return await process_event_kind_1984(session, event)
 
 
-# Some clients mirror profile fields as kind-0 *tags* in addition to (or
-# instead of) the JSON `content`, and use camelCase variants. We merge both and
-# normalize aliases so neither scheme is missed. See docs/search-vs-tapestry.md §8.4.1.
-_KIND0_TAG_ALIASES = {"displayName": "display_name"}
+# Canonical kind-0 field -> candidate keys in PRIORITY order (canonical first,
+# deprecated aliases after). We store ONLY the canonical field, picking the first
+# candidate that carries a non-empty value — so a deprecated key merely backfills
+# when the canonical is missing/blank. Per NIP-24, `username` is a deprecated
+# alias of `name` and `displayName` of `display_name`; some clients also send
+# these as kind-0 *tags* rather than in `content`. See docs/search-vs-tapestry.md
+# §8.4.1. Keys must be the canonical PROFILE_FIELDS (KIND_0_PROFILE_FIELDS).
+_FIELD_RESOLUTION: dict[str, tuple[str, ...]] = {
+    "name": ("name", "username"),            # NIP-24: username deprecated -> name
+    "display_name": ("display_name", "displayName"),
+    "about": ("about",),
+    "picture": ("picture",),
+    "banner": ("banner",),
+    "nip05": ("nip05",),
+    "lud06": ("lud06",),
+    "lud16": ("lud16",),
+    "website": ("website",),
+}
+
+# Guard against drift between the resolution table and the Vespa schema fields.
+assert set(_FIELD_RESOLUTION) == set(KIND_0_PROFILE_FIELDS), (
+    "FIELD_RESOLUTION keys must match vespa.PROFILE_FIELDS"
+)
 
 
 def _extract_kind0_profile(event: dict) -> dict:
-    """Merge a kind-0 event's `content` JSON and profile `tags` into one dict.
+    """Resolve each canonical profile field from a kind-0 event's `content` JSON
+    and profile `tags`.
 
-    `content` is the base; profile `tags` fill in any keys content didn't
-    provide (content wins on conflict). camelCase aliases (e.g. ``displayName``)
-    are normalized, and only recognized ``PROFILE_FIELDS`` are kept.
+    Two-level precedence:
+      * source — `content` is the base; profile `tags` only fill keys content
+        didn't provide (content wins on conflict).
+      * candidate — for each canonical field, the first key in
+        ``_FIELD_RESOLUTION`` that carries a non-empty value wins, so a
+        deprecated alias (`username`, `displayName`) only backfills when the
+        canonical key is absent/blank.
+
+    Only canonical ``PROFILE_FIELDS`` are returned; deprecated keys are never
+    surfaced as their own field.
     """
     merged: dict = {}
 
@@ -70,11 +97,14 @@ def _extract_kind0_profile(event: dict) -> dict:
             if key not in merged and isinstance(value, str):
                 merged[key] = value
 
-    for alias, canonical in _KIND0_TAG_ALIASES.items():
-        if merged.get(alias) and not merged.get(canonical):
-            merged[canonical] = merged[alias]
-
-    return {k: v for k, v in merged.items() if k in KIND_0_PROFILE_FIELDS}
+    out: dict = {}
+    for field, candidates in _FIELD_RESOLUTION.items():
+        for key in candidates:
+            value = merged.get(key)
+            if isinstance(value, str) and value.strip():
+                out[field] = value
+                break
+    return out
 
 
 async def process_event_kind_0(event: dict):

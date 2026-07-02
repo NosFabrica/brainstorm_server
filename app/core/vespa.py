@@ -30,7 +30,6 @@ DOCTYPE = "doc"
 PROFILE_FIELDS = (
     "name",
     "display_name",
-    "username",
     "about",
     "picture",
     "banner",
@@ -370,7 +369,7 @@ async def search(
         # verified_followers is only in match-features for the sort_followers
         # profile; other profiles leave it None.
         fields["_followers"] = mf.get("verified_followers")
-        # match tier (doc.sd §11/§12): "name" (name/display/username token match) >
+        # match tier (doc.sd §11/§12): "name" (name/display_name token match) >
         # "identity" (nip05/lud16, IDF-scored — the "primal" dilution) >
         # "affiliation" (about/website) > "gram" (trigram/recall noise). The
         # default profile also multiplies text by trust (wot_mult) and IDF-scores

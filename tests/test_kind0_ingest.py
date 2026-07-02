@@ -50,10 +50,27 @@ def test_camelcase_displayname_is_normalized():
     assert "displayName" not in out
 
 
-def test_username_is_extracted():
+def test_canonical_name_wins_over_deprecated_username():
+    # Both present: `name` is canonical (NIP-24), so `username` is dropped.
     ev = _event(content=json.dumps({"username": "dave", "name": "Dave"}))
     out = _extract_kind0_profile(ev)
-    assert out["username"] == "dave"
+    assert out["name"] == "Dave"
+    assert "username" not in out
+
+
+def test_deprecated_username_backfills_missing_name():
+    # Only the deprecated alias present → it populates the canonical `name`.
+    ev = _event(content=json.dumps({"username": "dave"}))
+    out = _extract_kind0_profile(ev)
+    assert out["name"] == "dave"
+    assert "username" not in out
+
+
+def test_blank_canonical_falls_back_to_deprecated():
+    # An empty/whitespace `name` is treated as missing → `username` backfills it.
+    ev = _event(content=json.dumps({"name": "   ", "username": "dave"}))
+    out = _extract_kind0_profile(ev)
+    assert out["name"] == "dave"
 
 
 def test_empty_or_malformed_event_yields_no_fields():

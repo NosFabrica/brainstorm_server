@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.vespa_query import build_query  # noqa: E402
 
-SEARCH_FIELDS = ("name", "display_name", "username", "nip05", "lud16", "website", "about")
+SEARCH_FIELDS = ("name", "display_name", "nip05", "lud16", "website", "about")
 
 
 def _get(url: str) -> dict:

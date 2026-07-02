@@ -6,13 +6,13 @@ re-process kind-0 → Vespa. This script reads every kind-0 from the internal
 strfry and runs each through the SAME ingest path the live consumer uses
 (`process_event_kind_0` → content/tags merge → `upsert_profile`). That:
 
-  * populates the new `username` field (not in Vespa's doc store, only in the
-    kind-0 source), and
+  * folds the deprecated `username` into `name` where `name` is empty (NIP-24),
+    and
   * rewrites every profile through the updated indexing pipeline, so the newly
     indexed `nip05`/`lud16`/`website` fields get built for existing docs.
 
-REQUIRES the schema changes (username + the indexed fields) to be DEPLOYED first
-— otherwise every `upsert_profile` fails on an unknown field.
+REQUIRES the schema changes (the indexed fields, `username` field removed) to be
+DEPLOYED first — otherwise every `upsert_profile` fails on an unknown field.
 
 It walks kind-0 newest→oldest by `until` cursor, de-duplicates by pubkey within
 the run (first/newest wins; kind-0 is replaceable so strfry should already keep
