@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = Field(default=False)
     # Max scheduled runs whose publishing may be in flight before admission pauses.
     scheduler_inflight_target: int = Field(default=1)
+    # Priority-weighted admission (w=priority+1). Off = strict highest-first.
+    scheduler_fairness_enabled: bool = Field(default=False)
     periodic_graperank_pubkey: str = Field(default="")
     vespa_url: str = Field(...)
     # Per-sink "fully re-assert state vs incremental" levers. Default True =

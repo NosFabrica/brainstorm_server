@@ -35,6 +35,23 @@ def request_in_pipeline(status: str, ta_status: str) -> bool:
     return status == "success" and ta_status in _NON_TERMINAL_STATUSES
 
 
+def choose_admission_lane(
+    active_priorities: list[int], admitted_counts: dict[int, int]
+) -> int:
+    """Which priority lane fills the next admission slot. Weight w(p)=p+1; pick
+    the active lane furthest below its weight-proportional share (tie-break to
+    the highest lane), so the admitted mix approximates the weights over time."""
+    total_weight = sum(p + 1 for p in active_priorities)
+    total_admitted = sum(admitted_counts.get(p, 0) for p in active_priorities)
+
+    def deficit(p: int) -> float:
+        target = (p + 1) / total_weight
+        current = admitted_counts.get(p, 0) / total_admitted if total_admitted else 0.0
+        return target - current
+
+    return max(active_priorities, key=lambda p: (deficit(p), p))
+
+
 def admission_budget(target: int, inflight: int, interactive_in_flight: bool) -> int:
     """How many scheduled runs to admit this cycle. Zero while any Manual/Admin
     run is in the pipeline (yield to interactive); else target minus in-flight."""

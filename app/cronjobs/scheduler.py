@@ -24,7 +24,11 @@ from app.repos.scheduler_repo import load_scheduler_candidates_on_db
 from app.repos.scheduling_repo import get_default_scheduling_on_db
 from app.repos.user_repo import count_user_follows
 from app.services.brainstorm_request_service import create_brainstorm_request
-from app.services.scheduler import admission_budget, rank_overdue_candidates
+from app.services.scheduler import (
+    admission_budget,
+    choose_admission_lane,
+    rank_overdue_candidates,
+)
 from app.services.scheduler_lock import acquire_or_renew_leader
 
 logger = loggr.get_logger(__name__)
@@ -32,6 +36,10 @@ logger = loggr.get_logger(__name__)
 SCHEDULER_INTERVAL_SECONDS = 60
 LEADER_LOCK_TTL_MS = 120_000
 _INSTANCE_ID = f"{socket.gethostname()}:{uuid.uuid4()}"
+
+# Cumulative admitted count per priority lane, for weighted fairness. Leader-only
+# in-memory state; resets on restart/leader change (best-effort by design).
+_admitted_counts: dict[int, int] = {}
 
 
 async def _run_cycle(db) -> None:
@@ -60,10 +68,19 @@ async def _run_cycle(db) -> None:
     )
     ranked = rank_overdue_candidates(candidates, datetime.now())
 
-    enqueued = 0
+    # Bucket into priority lanes (most-overdue first within each, from `ranked`).
+    lanes: dict[int, list] = {}
     for candidate in ranked:
-        if enqueued >= budget:
-            break
+        lanes.setdefault(candidate.priority, []).append(candidate)
+
+    enqueued = 0
+    while enqueued < budget and any(lanes.values()):
+        active = [p for p, queue in lanes.items() if queue]
+        if settings.scheduler_fairness_enabled:
+            lane = choose_admission_lane(active, _admitted_counts)
+        else:
+            lane = max(active)  # strict highest-priority-first
+        candidate = lanes[lane].pop(0)
         async with neo4j_driver.session() as session:
             if await count_user_follows(session, candidate.pubkey) <= 0:
                 continue  # no grapevine — picked up once they follow someone
@@ -75,6 +92,7 @@ async def _run_cycle(db) -> None:
             nsec_exists=True,
             trigger_source=TriggerSource.SCHEDULED.value,
         )
+        _admitted_counts[lane] = _admitted_counts.get(lane, 0) + 1
         enqueued += 1
 
     if ranked:
