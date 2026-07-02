@@ -39,16 +39,82 @@ async def process_strfry_event(session: AsyncNeoDriver, event: dict):
         return await process_event_kind_1984(session, event)
 
 
+# Canonical kind-0 field -> candidate keys in PRIORITY order (canonical first,
+# deprecated aliases after). We store ONLY the canonical field, picking the first
+# candidate that carries a non-empty value — so a deprecated key merely backfills
+# when the canonical is missing/blank. Per NIP-24, `username` is a deprecated
+# alias of `name` and `displayName` of `display_name`; some clients also send
+# these as kind-0 *tags* rather than in `content`. See docs/search-vs-tapestry.md
+# §8.4.1. Keys must be the canonical PROFILE_FIELDS (KIND_0_PROFILE_FIELDS).
+_FIELD_RESOLUTION: dict[str, tuple[str, ...]] = {
+    "name": ("name", "username"),            # NIP-24: username deprecated -> name
+    "display_name": ("display_name", "displayName"),
+    "about": ("about",),
+    "picture": ("picture",),
+    "banner": ("banner",),
+    "nip05": ("nip05",),
+    "lud06": ("lud06",),
+    "lud16": ("lud16",),
+    "website": ("website",),
+}
+
+# Guard against drift between the resolution table and the Vespa schema fields.
+assert set(_FIELD_RESOLUTION) == set(KIND_0_PROFILE_FIELDS), (
+    "FIELD_RESOLUTION keys must match vespa.PROFILE_FIELDS"
+)
+
+
+def _extract_kind0_profile(event: dict) -> dict:
+    """Resolve each canonical profile field from a kind-0 event's `content` JSON
+    and profile `tags`.
+
+    Two-level precedence:
+      * source — `content` is the base; profile `tags` only fill keys content
+        didn't provide (content wins on conflict).
+      * candidate — for each canonical field, the first key in
+        ``_FIELD_RESOLUTION`` that carries a non-empty value wins, so a
+        deprecated alias (`username`, `displayName`) only backfills when the
+        canonical key is absent/blank.
+
+    Only canonical ``PROFILE_FIELDS`` are returned; deprecated keys are never
+    surfaced as their own field.
+    """
+    merged: dict = {}
+
+    content_raw = event.get("content") or ""
+    if content_raw:
+        try:
+            parsed = json.loads(content_raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            merged.update(parsed)
+
+    for tag in event.get("tags") or []:
+        if isinstance(tag, list) and len(tag) >= 2 and isinstance(tag[0], str):
+            key, value = tag[0], tag[1]
+            # Tags only FILL gaps — content (above) wins on conflict.
+            if key not in merged and isinstance(value, str):
+                merged[key] = value
+
+    out: dict = {}
+    for field, candidates in _FIELD_RESOLUTION.items():
+        for key in candidates:
+            value = merged.get(key)
+            if isinstance(value, str) and value.strip():
+                out[field] = value
+                break
+    return out
+
+
 async def process_event_kind_0(event: dict):
     publisher = event["pubkey"]
-    content_raw = event.get("content") or ""
+    profile = _extract_kind0_profile(event)
 
-    try:
-        profile = json.loads(content_raw) if content_raw else {}
-    except json.JSONDecodeError:
-        return
-
-    if not isinstance(profile, dict):
+    # Skip a kind-0 carrying NO recognized profile fields (empty/malformed): the
+    # upsert clears missing fields to "", so an empty event would wipe an
+    # existing good profile. See docs/search-vs-tapestry.md §8.4.1.
+    if not profile:
         return
 
     # Vespa partial update: every standard kind-0 field gets assigned (or
