@@ -43,32 +43,25 @@ async def publish_durations_since_on_db(
     return [float(x) for x in result.scalars().all()]
 
 
-async def tier_demand_slip_rows_on_db(db: AsyncDBSession):
-    """Per policy: (name, priority, cadence_seconds, user_count, oldest_published).
-    NULL-scheduling users are counted against the default policy."""
-    statement = (
-        select(
-            Scheduling.name,
-            Scheduling.priority,
-            Scheduling.schedule_interval_seconds,
-            func.count(BrainstormNsec.pubkey),
-            func.min(BrainstormNsec.last_time_published_graperank),
-        )
-        .outerjoin(
-            BrainstormNsec,
-            or_(
-                BrainstormNsec.scheduling_id == Scheduling.id,
-                and_(
-                    BrainstormNsec.scheduling_id.is_(None),
-                    Scheduling.is_default.is_(True),
-                ),
+async def tier_users_on_db(db: AsyncDBSession):
+    """Per user: (tier_name, cadence_seconds, pubkey, last_published). Empty
+    tiers yield one row with pubkey=None. NULL-scheduling users map to the
+    default policy. Lets the caller compute demand (count) and slip (oldest
+    among schedulable users) with a follows filter."""
+    statement = select(
+        Scheduling.name,
+        Scheduling.schedule_interval_seconds,
+        BrainstormNsec.pubkey,
+        BrainstormNsec.last_time_published_graperank,
+    ).outerjoin(
+        BrainstormNsec,
+        or_(
+            BrainstormNsec.scheduling_id == Scheduling.id,
+            and_(
+                BrainstormNsec.scheduling_id.is_(None),
+                Scheduling.is_default.is_(True),
             ),
-        )
-        .group_by(
-            Scheduling.name,
-            Scheduling.priority,
-            Scheduling.schedule_interval_seconds,
-        )
+        ),
     )
     result = await execute_db_statement(db, statement, __name__)
     return result.all()

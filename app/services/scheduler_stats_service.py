@@ -6,12 +6,14 @@ from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.redis_db import redis_client
+from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.scheduler_metrics_repo import (
     count_published_successes_since_on_db,
     publish_durations_since_on_db,
     scheduling_priorities_on_db,
-    tier_demand_slip_rows_on_db,
+    tier_users_on_db,
 )
+from app.repos.user_repo import pubkeys_following_someone
 from app.schemas.schemas import SchedulerStats
 from app.services.scheduler_lanes import (
     DEFAULT_LANE,
@@ -36,9 +38,36 @@ async def get_scheduler_stats(db: AsyncDBSession) -> SchedulerStats:
     successes = await count_published_successes_since_on_db(db, since)
     throughput = throughput_per_day(successes, _METRICS_WINDOW_SECONDS)
 
-    rows = await tier_demand_slip_rows_on_db(db)  # (name, prio, cadence, count, oldest)
-    demand = demand_per_day([(row[3], row[2]) for row in rows])
-    tier_slip_seconds = {row[0]: tier_slip(row[4], row[2], now) for row in rows}
+    # Per-user rows: (tier_name, cadence, pubkey, last_published).
+    rows = await tier_users_on_db(db)
+    cadence_by_tier = {row[0]: row[1] for row in rows}
+    counts: dict[str, int] = {}
+    for name, _cadence, pubkey, _last in rows:
+        counts.setdefault(name, 0)
+        if pubkey is not None:
+            counts[name] += 1
+    demand = demand_per_day([(counts[t], cadence_by_tier[t]) for t in counts])
+
+    # Slip ignores un-schedulable (followerless) users so a stuck no-follows
+    # user can't inflate it forever.
+    published = [
+        (name, pubkey, last) for (name, _c, pubkey, last) in rows
+        if pubkey is not None and last is not None
+    ]
+    async with neo4j_driver.session() as session:
+        schedulable = await pubkeys_following_someone(
+            session, [pk for (_n, pk, _l) in published]
+        )
+    oldest_by_tier: dict[str, datetime] = {}
+    for name, pubkey, last in published:
+        if pubkey not in schedulable:
+            continue
+        if name not in oldest_by_tier or last < oldest_by_tier[name]:
+            oldest_by_tier[name] = last
+    tier_slip_seconds = {
+        tier: tier_slip(oldest_by_tier.get(tier), cadence_by_tier[tier], now)
+        for tier in cadence_by_tier
+    }
 
     durations = await publish_durations_since_on_db(db, since)
     median_publish = statistics.median(durations) if durations else None
