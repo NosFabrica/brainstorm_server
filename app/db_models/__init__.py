@@ -182,6 +182,14 @@ class Scheduling(TimestampMixin, Base):
     enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true", default=True
     )
+    # Per-tier manual-recalc quota: at most `limit` successfully-published manual
+    # runs per rolling `window` (issue 04). Default 20 / 7 days.
+    manual_quota_limit: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="20", default=20
+    )
+    manual_quota_window_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="604800", default=604800
+    )
     # Exactly one row is the default, used for users with no explicit assignment.
     is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False

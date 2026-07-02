@@ -368,6 +368,26 @@ async def count_scheduled_publishing_inflight_on_db(db: AsyncDBSession) -> int:
     return int(result.scalar_one())
 
 
+async def count_successful_manual_runs_in_window_on_db(
+    db: AsyncDBSession, pubkey: str, window_start: datetime
+) -> tuple[int, datetime | None]:
+    """Count a user's manual runs that published successfully since window_start,
+    with the oldest such run's created_at (for the quota reset time)."""
+    statement = select(
+        func.count(),
+        func.min(BrainstormRequest.created_at),
+    ).where(
+        BrainstormRequest.pubkey == pubkey,
+        BrainstormRequest.trigger_source == TriggerSource.MANUAL.value,
+        BrainstormRequest.status_ta_publication
+        == BrainstormRequestStatus.SUCCESS.value,
+        BrainstormRequest.created_at >= window_start,
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    row = result.one()
+    return int(row[0]), row[1]
+
+
 async def any_interactive_in_pipeline_on_db(db: AsyncDBSession) -> bool:
     """True if any Manual/Admin run is still in the pipeline (calc or publish)."""
     statement = select(func.count()).where(
