@@ -37,6 +37,7 @@ from app.repos.brainstorm_nsec import (
 )
 from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
+    update_brainstorm_request_publish_duration_by_id_on_db,
     update_brainstorm_request_status_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
 )
@@ -536,6 +537,11 @@ async def process_nostr_upload_message(message: dict):
 
                 # Freshness clock for the scheduler — advanced only on success.
                 await update_last_time_published_graperank_on_db(db, pubkey=observer)
+
+                # Measured publish duration for the scheduler's throughput metrics.
+                await update_brainstorm_request_publish_duration_by_id_on_db(
+                    db, run_id, round(time.perf_counter() - run_start, 3)
+                )
 
                 if vespa_search_available:
                     await set_is_observer_search_available_by_pubkey_on_db(

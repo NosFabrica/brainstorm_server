@@ -71,6 +71,14 @@ class BrainstormRequestInstance(CreatedAndUpdatedAtModel):
     error: GrapeRankError | None = None
 
 
+class SchedulerStats(BaseModel):
+    throughput_per_day: float
+    demand_per_day: float
+    median_publish_seconds: float | None
+    lane_depths: dict[str, int]
+    tier_slip_seconds: dict[str, float]
+
+
 class AdminStats(BaseModel):
     total_users: int | None
     scored_users: int

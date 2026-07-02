@@ -269,6 +269,17 @@ async def update_brainstorm_request_ta_status_by_id_on_db(
     return None
 
 
+async def update_brainstorm_request_publish_duration_by_id_on_db(
+    db: AsyncDBSession, brainstorm_request_id: int, seconds: float
+) -> None:
+    statement = (
+        update(BrainstormRequest)
+        .where(BrainstormRequest.private_id == brainstorm_request_id)
+        .values(publish_duration_seconds=seconds)
+    )
+    await db.execute(statement)
+
+
 async def update_brainstorm_request_internal_publication_status_by_id_on_db(
     db: AsyncDBSession,
     brainstorm_request_id: int,

@@ -86,6 +86,11 @@ class BrainstormRequest(TimestampMixin, Base):
     pubkey: Mapped[str] = mapped_column(String, nullable=True)
     graperank_preset_used: Mapped[str] = mapped_column(String, nullable=True)
     graperank_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Wall-clock seconds to publish this run's TAs (set on publish success).
+    # Feeds the scheduler's measured median publish duration.
+    publish_duration_seconds: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
     # manual/scheduled/admin/periodic — drives priority-lane routing.
     trigger_source: Mapped[str] = mapped_column(
         String(128),
