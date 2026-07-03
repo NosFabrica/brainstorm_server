@@ -14,10 +14,13 @@ The NIP-50 relay adds trust via the rank_* profiles (defaulting to rank_desc).
 """
 import asyncio
 import json
+import multiprocessing as mp
 import os
+from concurrent.futures import ProcessPoolExecutor
 
 import httpx
 
+from app.core import vespa_feed
 from app.core.config import settings
 from app.core.loggr import loggr
 from app.core.vespa_query import MAX_QUERY_WORDS, build_query
@@ -71,13 +74,18 @@ SORT_PROFILES = {
 # query(min_rank); text_relevance ignores it.
 DEFAULT_MIN_RANK = 2.0
 
-# In-flight feed concurrency (max concurrent ops). Under h2c these multiplex over
-# a handful of connections, not one-per-op, so there's no cold-connect herd; past
-# ~32-128 the Vespa write path, not the client, is the bound (measured: no gain
-# above, regression above ~256). Env-overridable (VESPA_FEED_CONCURRENCY), a
-# values-file change, no rebuild. If the server is scaled out, the aggregate across
-# feeders is replicas * uvicorn_workers * this — lower it accordingly.
+# Total in-flight feed concurrency (env VESPA_FEED_CONCURRENCY). Split across
+# workers on the sharded path (per-worker = _BATCH_CONCURRENCY // _FEED_WORKERS),
+# used whole in-process. Under h2c these multiplex over a handful of connections;
+# the single Vespa content node is the ceiling — past ~128 more in-flight queues.
 _BATCH_CONCURRENCY = int(os.getenv("VESPA_FEED_CONCURRENCY", "32"))
+
+# Large batches shard the feed across worker processes: one asyncio loop is
+# GIL-bound to ~1 core, but the single Vespa content node has headroom. Workers =
+# available cores; the _BATCH_CONCURRENCY budget splits evenly across them. Small
+# batches stay in-process (spawn cost not worth it).
+_FEED_WORKERS = os.cpu_count() or 1
+_FEED_PARALLEL_THRESHOLD = 5000
 
 # HTTP/2 cleartext (h2c). Vespa serves h2c by default and httpx speaks it via
 # prior-knowledge once http1 is disabled (see _build_client) — one connection
@@ -263,24 +271,7 @@ async def upsert_score(
     `follower_counts` tensor. Both `add` ops upsert the observer's cell (insert
     or replace). Written in one partial update so the two stay consistent.
     """
-    body = {
-        "fields": {
-            "quality_scores": {
-                "add": {
-                    "cells": [
-                        {"address": {"user": observer}, "value": int(score)}
-                    ]
-                }
-            },
-            "follower_counts": {
-                "add": {
-                    "cells": [
-                        {"address": {"user": observer}, "value": float(followers)}
-                    ]
-                }
-            },
-        }
-    }
+    body = vespa_feed.upsert_body(observer, score, followers)
     r = await _put_with_retry(
         _doc_url(pubkey), params={"create": "true"}, json=body
     )
@@ -289,16 +280,7 @@ async def upsert_score(
 
 async def remove_score(pubkey: str, observer: str) -> None:
     """Remove the observer's score + follower count from the doc's tensors."""
-    body = {
-        "fields": {
-            "quality_scores": {
-                "remove": {"addresses": [{"user": observer}]}
-            },
-            "follower_counts": {
-                "remove": {"addresses": [{"user": observer}]}
-            },
-        }
-    }
+    body = vespa_feed.remove_body(observer)
     r = await _put_with_retry(_doc_url(pubkey), json=body)
     # 404 is fine — nothing to remove if the doc isn't there yet.
     if r.status_code == 404:
@@ -306,25 +288,54 @@ async def remove_score(pubkey: str, observer: str) -> None:
     _raise_with_context("remove_score", pubkey, body, r)
 
 
+def _feed_plan(total: int) -> tuple[int, int]:
+    """(n_shards, per_shard_concurrency) for a batch of `total` ops.
+
+    In-process (1 shard) at or below the threshold. Above it, scale shards with
+    size — double while each shard still holds >= threshold ops — power-of-2 so
+    the concurrency budget splits evenly, capped at available cores. So ~5k-20k =
+    2 shards @ 64, ~20k-40k = 4 @ 32, ~40k-80k = 8 @ 16, larger = 16 @ 8, …
+    """
+    if total <= _FEED_PARALLEL_THRESHOLD:
+        return 1, _BATCH_CONCURRENCY
+    n = 2
+    while n * 2 <= _FEED_WORKERS and total // (n * 2) >= _FEED_PARALLEL_THRESHOLD:
+        n *= 2
+    n = min(n, _FEED_WORKERS)
+    return n, max(1, _BATCH_CONCURRENCY // n)
+
+
 async def batch_upsert_scores(
     upserts: list[tuple[str, int, int]],
     removes: list[str],
     observer: str,
 ) -> tuple[int, int]:
-    """Run many score upserts + removes concurrently against Vespa.
+    """Run many score upserts + removes against Vespa. Returns (n_success,
+    n_failed). Individual failures are logged but never raised — scores are a
+    best-effort search mirror, not source of truth.
 
-    `upserts` is a list of (pubkey, score, followers) tuples; `removes` is a
-    list of pubkeys whose score for `observer` should be deleted. Returns
-    (n_success, n_failed). Individual failures are logged but never raised — the
-    caller treats scores as best-effort search mirror, not source of truth.
+    Small batches run in-process; large ones shard across worker processes so the
+    feed isn't bottlenecked on one GIL-bound core (see `_feed_plan`).
     """
-    if not upserts and not removes:
+    total = len(upserts) + len(removes)
+    if total == 0:
         return 0, 0
+    n_shards, per_shard = _feed_plan(total)
+    if n_shards <= 1:
+        return await _batch_upsert_inprocess(upserts, removes, observer, per_shard)
+    return await _batch_upsert_sharded(
+        upserts, removes, observer, n_shards, per_shard
+    )
 
-    # No pre-warm: under HTTP/1.1 it only warms one of the ~conc connections, so it
-    # never prevented the cold-connect herd. Modest VESPA_FEED_CONCURRENCY + the
-    # connect-timeout/retry in _put_with_retry handle that (measured lossless).
-    sem = asyncio.Semaphore(_BATCH_CONCURRENCY)
+
+async def _batch_upsert_inprocess(
+    upserts: list[tuple[str, int, int]],
+    removes: list[str],
+    observer: str,
+    concurrency: int,
+) -> tuple[int, int]:
+    """Feed the batch on this process's event loop + shared client."""
+    sem = asyncio.Semaphore(concurrency)
 
     async def _do_upsert(pubkey: str, score: int, followers: int) -> None:
         async with sem:
@@ -340,14 +351,55 @@ async def batch_upsert_scores(
     results = await asyncio.gather(*tasks, return_exceptions=True)
     failed = [r for r in results if isinstance(r, BaseException)]
     if failed:
-        # Log the first few exceptions verbatim; collapse the rest into a count.
         for exc in failed[:5]:
             logger.warning(f"vespa score-batch op failed: {exc!r}")
         if len(failed) > 5:
-            logger.warning(
-                f"... and {len(failed) - 5} more vespa score-batch failures"
-            )
+            logger.warning(f"... and {len(failed) - 5} more vespa score-batch failures")
     return len(results) - len(failed), len(failed)
+
+
+async def _batch_upsert_sharded(
+    upserts: list[tuple[str, int, int]],
+    removes: list[str],
+    observer: str,
+    n_shards: int,
+    per_shard: int,
+) -> tuple[int, int]:
+    """Split the feed evenly across `n_shards` worker processes (spawn context —
+    safe to fork an async parent), each feeding its slice at `per_shard`
+    concurrency with its own httpx client. Sums (ok, failed); a whole shard that
+    crashes counts its slice as failed (Vespa is best-effort)."""
+    up_shards = vespa_feed.shard(upserts, n_shards)
+    rm_shards = vespa_feed.shard(removes, n_shards)
+    sizes = [len(up_shards[i]) + len(rm_shards[i]) for i in range(n_shards)]
+    args = [
+        (settings.vespa_url, observer, up_shards[i], rm_shards[i],
+         per_shard, _CONNECT_RETRIES, _HTTP2)
+        for i in range(n_shards)
+    ]
+    logger.info(
+        f"vespa feed: {sum(sizes)} ops across {n_shards} processes @ {per_shard} conc each"
+    )
+    loop = asyncio.get_running_loop()
+    with ProcessPoolExecutor(
+        max_workers=n_shards, mp_context=mp.get_context("spawn")
+    ) as pool:
+        results = await asyncio.gather(
+            *(loop.run_in_executor(pool, vespa_feed.feed_shard, a) for a in args),
+            return_exceptions=True,
+        )
+    ok = failed = 0
+    for i, r in enumerate(results):
+        if isinstance(r, BaseException):
+            logger.warning(f"vespa feed shard {i} crashed: {r!r}")
+            failed += sizes[i]
+            continue
+        n_ok, n_failed, errs = r
+        ok += n_ok
+        failed += n_failed
+        for e in errs[:2]:
+            logger.warning(f"vespa feed op failed: {e}")
+    return ok, failed
 
 
 # ---------------------------------------------------------------------------
