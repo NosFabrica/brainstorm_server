@@ -71,29 +71,23 @@ SORT_PROFILES = {
 # query(min_rank); text_relevance ignores it.
 DEFAULT_MIN_RANK = 2.0
 
-# In-flight feed concurrency = number of SIMULTANEOUS connections, because the
-# Vespa cleartext endpoint serves HTTP/1.1 (h2c is not enabled, and httpx only
-# negotiates HTTP/2 via ALPN over TLS — see _HTTP2 below). There is NO stream
-# multiplexing, so each concurrent op needs its own TCP connection. Firing a big
-# burst of COLD connects stampedes Vespa's acceptor and trips the connect timeout:
-# measured locally, 128 cold connects dropped ~25-46% of ops; 32 dropped 0. Keep
-# this modest — within a run connections are reused (keepalive), so 32 pipelines
-# fine. Env-overridable (VESPA_FEED_CONCURRENCY), a values-file change, no rebuild.
-# If the server is scaled out, the aggregate across feeders is
-# replicas * uvicorn_workers * this — lower it accordingly.
+# In-flight feed concurrency (max concurrent ops). Under h2c these multiplex over
+# a handful of connections, not one-per-op, so there's no cold-connect herd; past
+# ~32-128 the Vespa write path, not the client, is the bound (measured: no gain
+# above, regression above ~256). Env-overridable (VESPA_FEED_CONCURRENCY), a
+# values-file change, no rebuild. If the server is scaled out, the aggregate across
+# feeders is replicas * uvicorn_workers * this — lower it accordingly.
 _BATCH_CONCURRENCY = int(os.getenv("VESPA_FEED_CONCURRENCY", "32"))
 
-# HTTP/2 would let many ops multiplex over one connection (no cold-connect herd),
-# but httpx only negotiates h2 via ALPN over TLS; against the plaintext http://
-# Vespa endpoint it always uses HTTP/1.1 (confirmed empirically). So this toggle
-# is effectively a no-op until Vespa is served over TLS (https). Harmless — httpx
-# falls back to HTTP/1.1 over cleartext regardless of this flag.
+# HTTP/2 cleartext (h2c). Vespa serves h2c by default and httpx speaks it via
+# prior-knowledge once http1 is disabled (see _build_client) — one connection
+# multiplexes many partial-update streams (~3x vs HTTP/1.1). Falls back to
+# HTTP/1.1 if the h2 package is missing (see _get_client).
 _HTTP2 = os.getenv("VESPA_HTTP2", "true").lower() not in ("0", "false", "no")
 
-# Cold-connect failures (the HTTP/1.1 herd above) are retried rather than dropped —
-# the retry lands on a now-warm connection and succeeds. This is what makes
-# feeding lossless. (Upserts/removes stay best-effort overall — a still-failing op
-# is logged, never raised, and the next GrapeRank run re-feeds it.)
+# Transient connect failures are retried rather than dropped, so feeding is
+# lossless. (Upserts/removes stay best-effort overall — a still-failing op is
+# logged, never raised, and the next GrapeRank run re-feeds it.)
 _CONNECT_RETRIES = int(os.getenv("VESPA_CONNECT_RETRIES", "3"))
 _RETRYABLE = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
 
@@ -107,6 +101,11 @@ _client: httpx.AsyncClient | None = None
 
 def _build_client(http2: bool) -> httpx.AsyncClient:
     return httpx.AsyncClient(
+        # h2c (HTTP/2 cleartext, prior-knowledge): httpx only uses HTTP/2 over
+        # plaintext when http1 is disabled — with http1 left on it negotiates
+        # HTTP/1.1. Vespa serves h2c by default, so one connection multiplexes
+        # many partial-update streams (measured ~3x vs HTTP/1.1). Requires h2.
+        http1=not http2,
         http2=http2,
         # Short connect timeout: a healthy connect is <100ms, so a cold connect
         # that stalls past this is abandoned fast and retried (_put_with_retry)
