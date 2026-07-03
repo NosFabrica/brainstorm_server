@@ -18,6 +18,7 @@ from app.message_queue_tasks.backfill_redis_relationships import (
 from app.neo4j_db.driver import test_neo4j_driver
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi_pagination import add_pagination
 
 from app.core.config import settings
@@ -136,6 +137,9 @@ origins = ["*"]
 # if settings.deploy_environment != "LOCAL":
 #     logger.info("Setting specific CORS origin...")
 #     origins = [settings.frontend_url]
+
+# Compress large JSON responses (e.g. /whitelisted, ~6.6MB of hex → ~3-4x smaller).
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 logger.info("Allowing CORS...")
 app.add_middleware(

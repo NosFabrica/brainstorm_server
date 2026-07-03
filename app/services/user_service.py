@@ -20,7 +20,9 @@ from app.repos.brainstorm_request_repo import (
     count_brainstorm_requests_with_priority_over_one_on_db,
     select_latest_brainstorm_request_on_db,
 )
-from app.repos.observer_whitelist_repo import select_observer_whitelist_on_db
+from app.repos.observer_whitelist_repo import (
+    select_whitelisted_pubkeys_of_observer,
+)
 from app.repos.user_repo import (
     get_all_section_stats,
     get_outbound_counts_and_influence,
@@ -351,8 +353,4 @@ async def get_whitelisted_pubkeys_of_observer(
     db: AsyncDBSession, pubkey: str, threshold: float = 0.02
 ) -> list[str]:
 
-    row = await select_observer_whitelist_on_db(db, pubkey)
-    if not row:
-        return []
-
-    return [pk for pk, influence in row.scores.items() if influence >= threshold]
+    return await select_whitelisted_pubkeys_of_observer(db, pubkey, threshold)

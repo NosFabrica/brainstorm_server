@@ -1,5 +1,7 @@
+import hashlib
+
 from fastapi import Query
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 
 from app.core.database import get_db
 
@@ -15,6 +17,9 @@ from app.routers.user.router import public_router as public_user_router
 from app.schemas.request_response_schemas import (
     GetWhitelistedPubkeysOfObserverResponse,
     WhitelistedPubkeys,
+)
+from app.repos.observer_whitelist_repo import (
+    select_observer_whitelist_updated_at,
 )
 from app.services.user_service import (
     get_whitelisted_pubkeys_of_observer,
@@ -110,6 +115,7 @@ router.include_router(
 async def get_whitelisted_pubkeys_of_observer_endpoint(
     request: Request,
     observer_pubkey: str,
+    response: Response,
     # Lower bound == the graperank cutoff: the whitelist table only stores
     # above-cutoff observees, so the endpoint offers *more* selectivity, never
     # less. Asking below the cutoff is meaningless here.
@@ -117,10 +123,36 @@ async def get_whitelisted_pubkeys_of_observer_endpoint(
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GetWhitelistedPubkeysOfObserverResponse:
 
+    # Cheap meta-read (no scores detoast) → ETag. Lets an unchanged whitelist
+    # short-circuit to 304 before we scan/serialize the ~99k-key blob.
+    updated_at = await select_observer_whitelist_updated_at(db, observer_pubkey)
+    if updated_at is None:
+        return GetWhitelistedPubkeysOfObserverResponse(
+            data=WhitelistedPubkeys(
+                observerPubkey=observer_pubkey, numPubkeys=0, pubkeys=[]
+            )
+        )
+
+    etag = _whitelist_etag(observer_pubkey, threshold, updated_at.isoformat())
+    if request.headers.get("if-none-match") == etag:
+        return Response(
+            status_code=304,
+            headers={"ETag": etag, "Cache-Control": "private, no-cache"},
+        )
+
     result = await get_whitelisted_pubkeys_of_observer(db, observer_pubkey, threshold)
 
     result_formated = WhitelistedPubkeys(
         observerPubkey=observer_pubkey, numPubkeys=len(result), pubkeys=result
     )
 
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "private, no-cache"
     return GetWhitelistedPubkeysOfObserverResponse(data=result_formated)
+
+
+def _whitelist_etag(observer_pubkey: str, threshold: float, updated_at: str) -> str:
+    digest = hashlib.sha1(
+        f"{observer_pubkey}:{threshold}:{updated_at}".encode()
+    ).hexdigest()
+    return f'"{digest}"'
