@@ -25,7 +25,6 @@ async def process_job_started_message(message: dict):
         await update_brainstorm_request_result_by_id_on_db(
             db,
             brainstorm_request_id=request_id,
-            result="",
             status=BrainstormRequestStatus.ONGOING,
             count_values="",
         )

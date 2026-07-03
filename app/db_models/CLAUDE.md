@@ -26,8 +26,7 @@ The GrapeRank job ledger. One row per requested run.
 | `status` | str(128) | `waiting \| ongoing \| success \| failure` (overall) |
 | `status_ta_publication` | str(128) | same vocabulary, publishing-to-Nostr stage |
 | `status_internal_brainstorm_publication` | str(128) | internal publication step, nullable |
-| `result` | text | serialized GrapeRank result. **Defer via `defer(BrainstormRequest.result)`** unless you need it. |
-| `count_values` | text | lightweight per-bucket counts, used by admin lists in lieu of `result` |
+| `count_values` | text | lightweight per-bucket counts (per-hop/confidence), used by admin lists and `/stats` |
 | `error` | JSONB | structured error info (algorithm code + message) when status==failure |
 | `parameters` | text | JSON-encoded algorithm parameters |
 | `algorithm` | str | "graperank", etc. |
@@ -67,6 +66,21 @@ Per-user state. Pubkey is the PK (one row per user).
 | `last_published_graperank_request_id` | int FK → `brainstorm_request.private_id` | back-link to the latest publishing job |
 
 **Watch out**: the `nsec` *vs* `encrypted_nsec` duality is a migration artefact. New code should write `encrypted_nsec` and ignore `nsec`. The repo helpers handle the fallback for old rows.
+
+### `ObserverWhitelist` — `observerwhitelist`
+
+Compact per-observer trust list. One row per observer (`observer_pubkey` PK),
+**overwritten each successful run**. Replaces parsing the huge `BrainstormRequest.result`
+blob for `GET /whitelisted/{observer_pubkey}`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `observer_pubkey` | str PK | the observer whose perspective this whitelist is |
+| `scores` | JSONB | `{observee_pubkey: influence}`, **above-cutoff only** (`round(influence,2) >= cutoff_of_valid_graperank_scores`), rounded influence |
+| `last_request_id` | int FK → `brainstorm_request.private_id` | provenance: the run that produced this snapshot |
+
+Written by the results consumer (`message_queue_tasks/message_queue_consumer.py`) in the
+same transaction as the run's status. Read by `observer_whitelist_repo.py`.
 
 ### `GrapeRankPreset` — `graperank_preset`
 

@@ -110,7 +110,10 @@ router.include_router(
 async def get_whitelisted_pubkeys_of_observer_endpoint(
     request: Request,
     observer_pubkey: str,
-    threshold: float = Query(default=0.02, ge=0.0, le=1.0),
+    # Lower bound == the graperank cutoff: the whitelist table only stores
+    # above-cutoff observees, so the endpoint offers *more* selectivity, never
+    # less. Asking below the cutoff is meaningless here.
+    threshold: float = Query(default=0.02, ge=0.02, le=1.0),
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GetWhitelistedPubkeysOfObserverResponse:
 

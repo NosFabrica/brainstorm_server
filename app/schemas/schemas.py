@@ -59,7 +59,6 @@ class BrainstormRequestInstance(CreatedAndUpdatedAtModel):
     status: str
     ta_status: str | None
     internal_publication_status: str | None
-    result: str | None
     count_values: str | None
     password: str
     algorithm: str

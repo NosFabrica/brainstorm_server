@@ -19,8 +19,10 @@ from app.core.tier_thresholds import (
     TIER_MEDIUM,
     TIER_MEDIUM_HIGH,
 )
+from app.core.config import settings
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import update_last_time_calculated_graperank_on_db
+from app.repos.observer_whitelist_repo import upsert_observer_whitelist_on_db
 from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_internal_publication_status_by_id_on_db,
     update_brainstorm_request_result_by_id_on_db,
@@ -47,9 +49,14 @@ async def process_message(message: dict):
         else BrainstormRequestStatus.FAILURE
     )
 
+    # Observer is constant across a run's scorecards; read it non-mutatingly
+    # (do NOT popitem — that drops one scorecard from the loops below).
     pubkey: str | None = None
     if grape_rank_result.scorecards:
-        pubkey = grape_rank_result.scorecards.popitem()[1].observer
+        pubkey = next(iter(grape_rank_result.scorecards.values())).observer
+
+    # Above-cutoff observees with rounded influence -> the observer's whitelist.
+    whitelist: dict[str, float] = {}
 
     number_by_confidence_by_hops = {
         "high": {},
@@ -83,11 +90,14 @@ async def process_message(message: dict):
 
             number_by_confidence_by_hops[confidence][scorecard.hops] += 1
 
+            rounded_influence = round(scorecard.influence, 2)
+            if rounded_influence >= settings.cutoff_of_valid_graperank_scores:
+                whitelist[scorecard.observee] = rounded_influence
+
     async with db_session() as db:
         await update_brainstorm_request_result_by_id_on_db(
             db,
             brainstorm_request_id=message["private_id"],
-            result=json.dumps(message["result"]),
             status=status,
             count_values=json.dumps(number_by_confidence_by_hops),
             error=grape_rank_result.error.model_dump() if grape_rank_result.error else None,
@@ -104,6 +114,18 @@ async def process_message(message: dict):
                 db,
                 brainstorm_request_id=message["private_id"],
                 status=BrainstormRequestStatus.FAILURE,
+            )
+        # Persist the observer's whitelist snapshot, atomic with the status
+        # write. Only on a successful calc with scorecards present: a degenerate
+        # empty-scorecard run must NOT wipe a good snapshot. An all-below-cutoff
+        # run legitimately writes {} (nobody trusted now).
+        if (
+            status == BrainstormRequestStatus.SUCCESS
+            and grape_rank_result.scorecards
+            and pubkey
+        ):
+            await upsert_observer_whitelist_on_db(
+                db, pubkey, whitelist, message["private_id"]
             )
         if pubkey:
             await update_last_time_calculated_graperank_on_db(db, pubkey)

@@ -22,7 +22,6 @@ from app.services.graperank_preset_service import (
 
 def brainstorm_request_db_obj_to_schema_converter(
     brainstorm_request_db_obj: BrainstormRequest,
-    include_result: bool = False,
     how_many_others_with_priority: int = 0,
     is_admin: bool = False,
 ) -> BrainstormRequestInstance:
@@ -38,7 +37,6 @@ def brainstorm_request_db_obj_to_schema_converter(
     brainstorm_request_obj = BrainstormRequestInstance(
         private_id=brainstorm_request_db_obj.private_id,
         status=brainstorm_request_db_obj.status,
-        result=brainstorm_request_db_obj.result if include_result else None,
         password=brainstorm_request_db_obj.password,
         created_at=brainstorm_request_db_obj.created_at,
         updated_at=brainstorm_request_db_obj.updated_at,
@@ -60,13 +58,11 @@ def brainstorm_request_db_obj_to_schema_converter(
 async def get_brainstorm_request_by_id(
     db: AsyncDBSession,
     brainstorm_request_id: int,
-    include_result: bool,
     is_admin: bool = False,
 ) -> BrainstormRequestInstance:
     brainstorm_request_db_obj = await select_brainstorm_request_by_id_on_db(
         db=db,
         brainstorm_request_id=brainstorm_request_id,
-        include_result=include_result,
     )
 
     how_many_others_with_priority = (
@@ -79,7 +75,6 @@ async def get_brainstorm_request_by_id(
 
     return brainstorm_request_db_obj_to_schema_converter(
         brainstorm_request_db_obj=brainstorm_request_db_obj,
-        include_result=include_result,
         how_many_others_with_priority=how_many_others_with_priority,
         is_admin=is_admin,
     )

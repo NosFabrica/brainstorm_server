@@ -3,7 +3,6 @@ from datetime import datetime, timedelta
 from nostr_sdk import PublicKey
 from sqlalchemy import Select, and_, asc, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
-from sqlalchemy.orm import defer, undefer
 
 from app.core.database import execute_db_statement, handle_no_data
 from app.core.loggr import loggr
@@ -35,14 +34,10 @@ async def delete_brainstorm_request_by_id_on_db(
 async def select_brainstorm_request_by_id_on_db(
     db: AsyncDBSession,
     brainstorm_request_id: int,
-    include_result: bool = False,
 ) -> BrainstormRequest:
     statement = select(BrainstormRequest).where(
         BrainstormRequest.private_id == brainstorm_request_id,
     )
-    # `result` is deferred at the mapping level; only load it on explicit request.
-    if include_result:
-        statement = statement.options(undefer(BrainstormRequest.result))
     existing_data = await execute_db_statement(db, statement, __name__)
     result: BrainstormRequest | None = existing_data.scalars().first()
 
@@ -79,7 +74,6 @@ async def select_latest_brainstorm_request_on_db(
         select(BrainstormRequest)
         .where(BrainstormRequest.pubkey == pubkey)
         .order_by(desc(BrainstormRequest.created_at))
-        .options(defer(BrainstormRequest.result))
         .limit(1)
     )
 
@@ -211,7 +205,6 @@ def build_recent_brainstorm_requests_stmt(
         select(BrainstormRequest)
         .where(*filters)
         .order_by(desc(BrainstormRequest.created_at))
-        .options(defer(BrainstormRequest.result))
     )
 
 
@@ -223,29 +216,7 @@ async def select_latest_non_waiting_brainstorm_request_on_db(
         .where(BrainstormRequest.pubkey == pubkey)
         .where(BrainstormRequest.status != BrainstormRequestStatus.WAITING.value)
         .order_by(desc(BrainstormRequest.created_at))
-        .options(defer(BrainstormRequest.result))
         .limit(1)
-    )
-
-    existing_data = await execute_db_statement(db, statement, __name__)
-    result: BrainstormRequest | None = existing_data.scalars().first()
-
-    return result
-
-
-async def select_latest_successful_brainstorm_request_on_db(
-    db: AsyncDBSession, pubkey: str
-) -> BrainstormRequest | None:
-    statement = (
-        select(BrainstormRequest)
-        .where(BrainstormRequest.pubkey == pubkey)
-        .where(BrainstormRequest.status == BrainstormRequestStatus.SUCCESS.value)
-        .order_by(desc(BrainstormRequest.created_at))
-        .limit(1)
-        # `result` is deferred at the mapping level; this caller reads it (the
-        # observer whitelist), so undefer it explicitly. (See issue 07 — this
-        # reader is slated to move to Neo4j, after which `result` can be dropped.)
-        .options(undefer(BrainstormRequest.result))
     )
 
     existing_data = await execute_db_statement(db, statement, __name__)
@@ -313,7 +284,6 @@ async def update_brainstorm_request_status_by_id_on_db(
 async def update_brainstorm_request_result_by_id_on_db(
     db: AsyncDBSession,
     brainstorm_request_id: int,
-    result: str,
     count_values: str,
     status: BrainstormRequestStatus,
     error: dict | None = None,
@@ -322,7 +292,6 @@ async def update_brainstorm_request_result_by_id_on_db(
         update(BrainstormRequest)
         .where(BrainstormRequest.private_id == brainstorm_request_id)
         .values(
-            result=result,
             status=status.value,
             count_values=count_values,
             error=error,

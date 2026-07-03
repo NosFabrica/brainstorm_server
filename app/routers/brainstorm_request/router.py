@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
@@ -22,14 +22,12 @@ router = APIRouter()
 )
 async def get_brainstorm_request_endpoint(
     brainstorm_request_id: int,
-    include_result: bool = Query(False),
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> BrainstormRequestResponse:
 
     result: BrainstormRequestInstance = await get_brainstorm_request_by_id(
         db=db,
         brainstorm_request_id=brainstorm_request_id,
-        include_result=include_result,
         is_admin=True,
     )
     return BrainstormRequestResponse(data=result)
