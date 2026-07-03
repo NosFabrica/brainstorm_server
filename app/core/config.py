@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     # full run is the expensive path, so keep it infrequent: bump toward N=84
     # (~weekly) once scheduling fans out to many observers.
     full_sync_every_n_runs: int = Field(default=12)
+    # Internal strfry relay used as the source of original signed kind-0 events
+    # for the NIP-50 /relay endpoint. Not exposed externally — the FastAPI
+    # /relay handler proxies search results out, never raw client traffic.
+    nip50_backing_relay_url: str = Field(default="ws://localhost:7777")
+    nip50_strfry_timeout_seconds: float = Field(default=3.0)
+    # Open Ranking (ORE) auth posture. When True, every data endpoint requires
+    # a valid NWT (ORE-A) and answers ONLY from the signer's own observer
+    # perspective (a client-supplied `pov` is ignored). When False (default),
+    # the endpoints are open/unauthenticated and use the public global observer
+    # plus any client-supplied `pov` per ORE-01.
+    open_ranking_require_auth: bool = Field(default=False)
 
 
 settings = Settings()
