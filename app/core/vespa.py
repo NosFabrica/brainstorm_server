@@ -99,6 +99,17 @@ _HTTP2 = os.getenv("VESPA_HTTP2", "true").lower() not in ("0", "false", "no")
 _CONNECT_RETRIES = int(os.getenv("VESPA_CONNECT_RETRIES", "3"))
 _RETRYABLE = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
 
+# Large batches (TA score mirror, kind-0 refeed) can be fed by the official JVM
+# `vespa-feed-client` subprocess instead of our httpx process-pool. Measured
+# ~2.5x throughput (the Python client is CPU-bound; the JVM feeder isn't — same
+# h2c wire, far less per-op overhead). Auto-enabled when the JAR is present (the
+# image ships a JRE + the JAR); the live-profile trickle stays on the httpx path.
+_FEEDER_JAR = os.getenv("VESPA_FEEDER_JAR", "/opt/vespa-feed-client.jar")
+_FEEDER_ENABLED = os.path.exists(_FEEDER_JAR)
+_FEEDER_THRESHOLD = 5000  # ops; below this the httpx path wins (JVM startup not worth it)
+# Optional --connections override; feed-client auto-tunes when unset.
+_FEEDER_CONNECTIONS = os.getenv("VESPA_FEEDER_CONNECTIONS")
+
 
 # ---------------------------------------------------------------------------
 # shared async client (kept open for the lifetime of the process so connections
@@ -320,12 +331,90 @@ async def batch_upsert_scores(
     total = len(upserts) + len(removes)
     if total == 0:
         return 0, 0
+    # Large batches: hand off to the JVM feeder subprocess if enabled. On any
+    # failure (missing JRE/JAR, spawn error, unparseable output) fall through to
+    # the httpx path — the mirror stays best-effort, never blocks the run.
+    if _FEEDER_ENABLED and total >= _FEEDER_THRESHOLD:
+        try:
+            return await _batch_upsert_feeder(upserts, removes, observer)
+        except Exception as e:
+            logger.warning(f"vespa feeder failed ({e!r}); falling back to httpx")
     n_shards, per_shard = _feed_plan(total)
     if n_shards <= 1:
         return await _batch_upsert_inprocess(upserts, removes, observer, per_shard)
     return await _batch_upsert_sharded(
         upserts, removes, observer, n_shards, per_shard
     )
+
+
+async def _batch_upsert_feeder(
+    upserts: list[tuple[str, int, int]],
+    removes: list[str],
+    observer: str,
+) -> tuple[int, int]:
+    """Feed the batch via the official `vespa-feed-client` JVM subprocess.
+
+    Streams JSONL partial-update ops to the client's stdin and reads its
+    `--benchmark` summary for the op counts. Raises on spawn/parse failure so
+    the caller can fall back to httpx.
+    """
+    total = len(upserts) + len(removes)
+    # Cap the JVM heap: the feed-client streams ops (bounded in-flight), so a
+    # small heap is plenty and keeps the subprocess from ballooning the server
+    # pod's memory (it runs in-pod, next to uvicorn — see k8s 2Gi limit).
+    cmd = [
+        "java", "-Xmx256m", "-jar", _FEEDER_JAR,
+        "--file", "/dev/stdin",
+        "--endpoint", settings.vespa_url,
+        "--benchmark",
+    ]
+    if _FEEDER_CONNECTIONS:
+        cmd += ["--connections", _FEEDER_CONNECTIONS]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,  # avoid a full stderr pipe deadlocking us
+    )
+
+    async def _feed_stdin() -> None:
+        buf: list[str] = []
+        try:
+            for pk, sc, fc in upserts:
+                buf.append(vespa_feed.upsert_feed_line(observer, pk, sc, fc))
+                if len(buf) >= 5000:
+                    proc.stdin.write(("\n".join(buf) + "\n").encode())
+                    await proc.stdin.drain()
+                    buf.clear()
+            for pk in removes:
+                buf.append(vespa_feed.remove_feed_line(observer, pk))
+                if len(buf) >= 5000:
+                    proc.stdin.write(("\n".join(buf) + "\n").encode())
+                    await proc.stdin.drain()
+                    buf.clear()
+            if buf:
+                proc.stdin.write(("\n".join(buf) + "\n").encode())
+                await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # feeder died early; exit code + empty stdout handled below
+        finally:
+            if proc.stdin and not proc.stdin.is_closing():
+                proc.stdin.close()
+
+    writer = asyncio.create_task(_feed_stdin())
+    stdout_data = await proc.stdout.read()  # blocks until the feeder finishes
+    await writer
+    await proc.wait()
+
+    stats = json.loads(stdout_data.decode())  # raises if the feeder produced no summary
+    ok = int(stats["feeder.ok.count"])
+    failed = int(stats.get("feeder.error.count", total - ok))
+    logger.info(
+        f"vespa feeder: ok={ok} failed={failed} of {total} ops "
+        f"in {stats.get('feeder.seconds')}s (exit={proc.returncode})"
+    )
+    return ok, failed
 
 
 async def _batch_upsert_inprocess(

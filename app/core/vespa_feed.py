@@ -13,6 +13,7 @@ The request-body builders here are the single source of truth, imported by
 `vespa.py` so the in-process and sharded paths stay byte-identical.
 """
 import asyncio
+import json
 
 import httpx
 
@@ -51,6 +52,24 @@ def remove_body(observer: str) -> dict:
             "follower_counts": {"remove": {"addresses": [{"user": observer}]}},
         }
     }
+
+
+def _feed_docid(pubkey: str) -> str:
+    return f"id:{NAMESPACE}:{DOCTYPE}::{pubkey}"
+
+
+def upsert_feed_line(observer: str, pubkey: str, score: int, followers: int) -> str:
+    """One `vespa-feed-client` JSONL op (a partial `update`, create-on-missing)
+    equivalent to upsert_body — same two-tensor lockstep write."""
+    return json.dumps(
+        {"update": _feed_docid(pubkey), "create": True, **upsert_body(observer, score, followers)}
+    )
+
+
+def remove_feed_line(observer: str, pubkey: str) -> str:
+    """Feed-client JSONL op equivalent to remove_body (remove the observer's
+    cell from both tensors). No `create` — a missing doc is a no-op."""
+    return json.dumps({"update": _feed_docid(pubkey), **remove_body(observer)})
 
 
 def shard(items: list, n: int) -> list[list]:
