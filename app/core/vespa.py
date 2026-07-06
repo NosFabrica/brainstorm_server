@@ -362,9 +362,11 @@ async def _batch_upsert_feeder(
     # Heap: 2g fits the in-flight peak at prod scale (256m OOM'd when Vespa was
     # slow and ops backed up) while staying well under the 8Gi pod limit shared
     # with uvicorn. The JVM default (25% of the limit) would do too, but pin it.
+    # --stdin, not `--file /dev/stdin`: on Linux the feed-client can't reopen a
+    # PIPE'd fd 0 via /dev/stdin (ENXIO "No such device or address").
     cmd = [
         "java", "-Xmx2g", "-jar", _FEEDER_JAR,
-        "--file", "/dev/stdin",
+        "--stdin",
         "--endpoint", settings.vespa_url,
         "--benchmark",
     ]
