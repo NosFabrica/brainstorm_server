@@ -339,6 +339,7 @@ async def upsert_scores_to_vespa(
     grape_rank_result: GrapeRankResult,
     observer: str,
     pubkeys_to_delete: list[str],
+    vespa_full_sync: bool,
 ):
     # Each score depends on the observer; the rank lives in a single cell of
     # the `quality_scores` sparse tensor, keyed by the observer pubkey.
@@ -364,7 +365,7 @@ async def upsert_scores_to_vespa(
             # Alive in Vespa — never remove it, even if full-sync is off and we
             # skip re-pushing it below.
             vespa_removes.discard(pubkey)
-            if settings.vespa_full_sync or pubkey in changed_pubkeys:
+            if vespa_full_sync or pubkey in changed_pubkeys:
                 upserts.append((pubkey, rank, round(scorecard.trusted_followers)))
         else:
             vespa_removes.add(pubkey)  # rank rounds to 0 → drop from the index
@@ -524,6 +525,7 @@ async def process_nostr_upload_message(message: dict):
                     grape_rank_result=grape_rank_result,
                     observer=observer,
                     pubkeys_to_delete=vespa_pubkeys_to_delete,
+                    vespa_full_sync=vespa_full_sync,
                 )
             vespa_search_available = True
             logger.info(f"Done pushing scores to Vespa!")
