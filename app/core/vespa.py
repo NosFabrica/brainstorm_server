@@ -359,11 +359,11 @@ async def _batch_upsert_feeder(
     the caller can fall back to httpx.
     """
     total = len(upserts) + len(removes)
-    # Cap the JVM heap: the feed-client streams ops (bounded in-flight), so a
-    # small heap is plenty and keeps the subprocess from ballooning the server
-    # pod's memory (it runs in-pod, next to uvicorn — see k8s 2Gi limit).
+    # Heap: 2g fits the in-flight peak at prod scale (256m OOM'd when Vespa was
+    # slow and ops backed up) while staying well under the 8Gi pod limit shared
+    # with uvicorn. The JVM default (25% of the limit) would do too, but pin it.
     cmd = [
-        "java", "-Xmx256m", "-jar", _FEEDER_JAR,
+        "java", "-Xmx2g", "-jar", _FEEDER_JAR,
         "--file", "/dev/stdin",
         "--endpoint", settings.vespa_url,
         "--benchmark",
@@ -375,7 +375,9 @@ async def _batch_upsert_feeder(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,  # avoid a full stderr pipe deadlocking us
+        # Capture stderr (drained concurrently below) so a feeder failure — OOM,
+        # bad endpoint — is logged, not swallowed into an empty-stdout parse error.
+        stderr=asyncio.subprocess.PIPE,
     )
 
     async def _feed_stdin() -> None:
@@ -403,11 +405,21 @@ async def _batch_upsert_feeder(
                 proc.stdin.close()
 
     writer = asyncio.create_task(_feed_stdin())
-    stdout_data = await proc.stdout.read()  # blocks until the feeder finishes
+    # Read both streams concurrently: the client streams periodic progress to
+    # stderr during a long feed, so an undrained stderr pipe would deadlock.
+    stdout_data, stderr_data = await asyncio.gather(
+        proc.stdout.read(), proc.stderr.read()
+    )
     await writer
     await proc.wait()
 
-    stats = json.loads(stdout_data.decode())  # raises if the feeder produced no summary
+    try:
+        stats = json.loads(stdout_data.decode())
+    except json.JSONDecodeError:
+        tail = stderr_data.decode(errors="replace").strip()[-500:]
+        raise RuntimeError(
+            f"feeder produced no summary (exit={proc.returncode}); stderr tail: {tail}"
+        )
     ok = int(stats["feeder.ok.count"])
     failed = int(stats.get("feeder.error.count", total - ok))
     logger.info(
