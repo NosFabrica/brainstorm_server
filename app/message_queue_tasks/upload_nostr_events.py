@@ -376,7 +376,7 @@ async def upsert_scores_to_vespa(
     )
     logger.info(
         f"vespa score batch: ok={n_ok} failed={n_failed} "
-        f"(upserts={len(upserts)} removes={len(pubkeys_to_delete)})"
+        f"(upserts={len(upserts)} removes={len(vespa_removes)})"
     )
 
 
