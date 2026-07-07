@@ -65,6 +65,7 @@ class BrainstormRequestInstance(CreatedAndUpdatedAtModel):
     parameters: str
     how_many_others_with_priority: int
     pubkey: str | None
+    trigger_source: str | None = None
     graperank_preset_used: str | None = None
     graperank_params: dict | None = None
     error: GrapeRankError | None = None

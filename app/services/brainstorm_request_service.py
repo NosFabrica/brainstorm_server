@@ -46,6 +46,7 @@ def brainstorm_request_db_obj_to_schema_converter(
         internal_publication_status=brainstorm_request_db_obj.status_internal_brainstorm_publication,
         ta_status=brainstorm_request_db_obj.status_ta_publication,
         pubkey=brainstorm_request_db_obj.pubkey,
+        trigger_source=brainstorm_request_db_obj.trigger_source,
         count_values=brainstorm_request_db_obj.count_values,
         graperank_preset_used=brainstorm_request_db_obj.graperank_preset_used,
         graperank_params=brainstorm_request_db_obj.graperank_params,

@@ -296,7 +296,19 @@ async def brainstorm_nsec_exists_by_pubkey_on_db(
 async def select_brainstorm_nsec_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> BrainstormNsec:
-    statement = select(BrainstormNsec).where(BrainstormNsec.pubkey == pubkey)
+    # Callers here only read nsec/pubkey/timestamps. Defer the heavy columns —
+    # last_published_pubkeys (LargeBinary, can be multi-MB) plus the JSONB params
+    # and back-link nobody on this path touches.
+    statement = (
+        select(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .options(
+            defer(BrainstormNsec.last_published_pubkeys),
+            defer(BrainstormNsec.last_published_graperank_request_id),
+            defer(BrainstormNsec.graperank_preset),
+            defer(BrainstormNsec.graperank_custom_params),
+        )
+    )
 
     existing_data = await execute_db_statement(db, statement, __name__)
     result: BrainstormNsec | None = existing_data.scalars().first()

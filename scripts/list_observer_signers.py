@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select  # noqa: E402
+from sqlalchemy.orm import defer  # noqa: E402
 from nostr_sdk import Keys  # noqa: E402
 
 from app.core.database import db_session  # noqa: E402
@@ -46,7 +47,18 @@ async def main() -> None:
     args = parser.parse_args()
 
     async with db_session() as db:
-        rows = (await db.execute(select(BrainstormNsec))).scalars().all()
+        # Only nsec/pubkey are read below; defer the heavy columns so this
+        # doesn't pull every row's multi-MB last_published_pubkeys blob.
+        rows = (
+            await db.execute(
+                select(BrainstormNsec).options(
+                    defer(BrainstormNsec.last_published_pubkeys),
+                    defer(BrainstormNsec.last_published_graperank_request_id),
+                    defer(BrainstormNsec.graperank_preset),
+                    defer(BrainstormNsec.graperank_custom_params),
+                )
+            )
+        ).scalars().all()
 
     if args.tsv and not args.signers_only:
         print("observer_pubkey\tsigning_pubkey")
