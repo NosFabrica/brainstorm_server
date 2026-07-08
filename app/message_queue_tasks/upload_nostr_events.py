@@ -96,9 +96,8 @@ def compute_delete_observees(
 
     Incremental: `previously_published - currently_published` (everything we'd
     published that is no longer above cutoff; this subsumes both genuine removals
-    and below-cutoff drops, including ones never reported in
-    `droppedBelowCutoffPubkeys`). Full-sync additionally sweeps every below-cutoff
-    Observee to reconcile drift."""
+    and below-cutoff drops, including ones the algo never reported). Full-sync
+    additionally sweeps every below-cutoff Observee to reconcile drift."""
     return _delete_from_sets(
         set(previously_published) - set(currently_published),
         set(below_cutoff),

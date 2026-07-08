@@ -3,8 +3,8 @@
 `plan_publish` is the pure decision the publish consumer makes from one algo
 result + the previously-published set: what to sign, and what each sink deletes.
 These tests feed it algo results (including the algorithm's own
-`changedScorePubkeys` / `droppedBelowCutoffPubkeys` deltas) and assert the
-publish/delete sets — across a steady-state delta and a full-sync reconciliation.
+`changedScorePubkeys` delta) and assert the publish/delete sets — across a
+steady-state delta and a full-sync reconciliation.
 """
 
 from app.message_queue_tasks.upload_nostr_events import plan_publish, prepare_ta_inputs
@@ -16,9 +16,8 @@ CUTOFF = 0.05
 def _result(
     scores: dict[str, float],
     changed: list[str] | None = None,
-    dropped: list[str] | None = None,
 ) -> GrapeRankResult:
-    """A GrapeRank result: {observee: influence} plus the algorithm's own deltas."""
+    """A GrapeRank result: {observee: influence} plus the algorithm's own delta."""
     cards = {
         pk: ScoreCard(observer="obs", observee=pk, influence=inf)
         for pk, inf in scores.items()
@@ -27,7 +26,6 @@ def _result(
         scorecards=cards,
         duration_seconds=0.0,
         changedScorePubkeys=changed or [],
-        droppedBelowCutoffPubkeys=dropped or [],
     )
 
 
@@ -36,7 +34,6 @@ def test_incremental_delta_run_publishes_only_changed_and_deletes_what_fell_off(
     run2 = _result(
         {"a": 0.90, "b": 0.80, "c": 0.01, "d": 0.70},
         changed=["c", "d"],
-        dropped=["c"],
     )
 
     plan = plan_publish(
@@ -60,10 +57,10 @@ def test_incremental_delta_run_publishes_only_changed_and_deletes_what_fell_off(
 
 
 def test_local_diff_catches_a_drop_the_algo_failed_to_report():
-    # "c" was above cutoff last run, is below it now, but the algorithm's delta
-    # OMITS it from droppedBelowCutoffPubkeys (still present in scorecards). The
-    # old `dropped + missing` set would miss it; the local diff deletes it anyway.
-    run = _result({"a": 0.90, "c": 0.01}, changed=[], dropped=[])
+    # "c" was above cutoff last run, is below it now, but the algorithm reports
+    # no delta for it (still present in scorecards, changed=[]). An algo-delta-only
+    # delete set would miss it; the local `fell_off` diff deletes it anyway.
+    run = _result({"a": 0.90, "c": 0.01}, changed=[])
 
     plan = plan_publish(
         run,
@@ -73,19 +70,16 @@ def test_local_diff_catches_a_drop_the_algo_failed_to_report():
         vespa_full_sync=False,
     )
 
+    # fell_off (previously_published - currently_above_cutoff) catches c despite
+    # the empty algo delta.
     assert plan.relay_deletes == ["c"]
-    # Demonstrate the blind spot: the algo-delta-only set would have missed it.
-    old_set = set(run.droppedBelowCutoffPubkeys) | {
-        pk for pk in ["a", "c"] if pk not in run.scorecards
-    }
-    assert "c" not in old_set
 
 
 def test_full_sync_on_10k_publishes_all_above_cutoff_and_sweeps_all_below():
     scores = {f"hi{i}": 0.50 for i in range(6000)}
     scores.update({f"lo{i}": 0.01 for i in range(4000)})
-    # No changed/dropped hints — full-sync ignores them and reconciles wholesale.
-    run = _result(scores, changed=[], dropped=[])
+    # No changed hint — full-sync ignores it and reconciles wholesale.
+    run = _result(scores, changed=[])
 
     plan = plan_publish(
         run,
@@ -105,7 +99,7 @@ def test_full_sync_on_10k_publishes_all_above_cutoff_and_sweeps_all_below():
 def test_incremental_vs_full_sync_on_same_10k_result():
     scores = {f"hi{i}": 0.50 for i in range(6000)}
     scores.update({f"lo{i}": 0.01 for i in range(4000)})
-    run = _result(scores, changed=[], dropped=[])  # a steady-state run: nothing changed
+    run = _result(scores, changed=[])  # a steady-state run: nothing changed
 
     full = plan_publish(run, [], CUTOFF, relay_full_sync=True, vespa_full_sync=True)
     incr = plan_publish(run, [], CUTOFF, relay_full_sync=False, vespa_full_sync=False)
@@ -118,7 +112,7 @@ def test_incremental_vs_full_sync_on_same_10k_result():
 
 
 def test_plan_publish_splits_delete_sets_when_sinks_use_different_modes():
-    run = _result({"a": 0.90, "lo": 0.01}, changed=[], dropped=[])
+    run = _result({"a": 0.90, "lo": 0.01}, changed=[])
 
     plan = plan_publish(
         run,

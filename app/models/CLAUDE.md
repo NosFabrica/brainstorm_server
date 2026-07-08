@@ -14,8 +14,7 @@ The GrapeRank algorithm's output, used both internally and as the queue-message 
 - **`GrapeRankResult`** — top-level container. Holds:
   - `scorecards: dict[str, ScoreCard] | None` — keyed by observee pubkey.
   - `rounds: int | None`, `duration_seconds: float`, `success: bool` — run telemetry.
-  - `changedScorePubkeys: list[str]` — incremental-publish hint (only these need new TA events).
-  - `droppedBelowCutoffPubkeys: list[str]` — must be deleted from TA + Vespa.
+  - `changedScorePubkeys: list[str]` — incremental-publish hint (only these need new TA events / Vespa upserts). Deletes are computed from the `fell_off` diff, not an algo hint.
   - `error: GrapeRankError | None` — structured failure (imported from [`app/schemas/schemas.py`](../schemas/schemas.py); the only schemas → models import).
 
 Consumed in [../message_queue_tasks/upload_nostr_events.py](../message_queue_tasks/upload_nostr_events.py). When changing fields, also touch:

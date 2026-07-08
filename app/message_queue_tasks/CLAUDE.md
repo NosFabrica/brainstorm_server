@@ -40,7 +40,7 @@ The longest module here. The main entry point is `process_nostr_upload_message(m
 
 - Two per-sink settings control "full re-assert vs incremental" (both `settings`, default `True`): `vespa_full_sync` (this Vespa mirror) and `relay_full_sync` (the Nostr relay — TA republish + kind-5 deletes). `True` pushes every above-cutoff scorecard each run; `False` only *changed* scores (`grape_rank_result.changedScorePubkeys`). Flip a sink `False` for steady state; run it `True` periodically to reconcile that sink's drift.
 - Below-cutoff scorecards are skipped for upserts.
-- Delete sets are computed **per sink**: `relay_pubkeys_to_delete` / `vespa_pubkeys_to_delete` = (all below-cutoff when that sink's full-sync is on, else `droppedBelowCutoffPubkeys`) **plus** previously-published pubkeys no longer in the scorecards (always removed from both). The two lists are shared when both modes match.
+- Delete sets are computed **per sink** by `plan_publish` from a local diff (no relay/Vespa read): `fell_off = previously_published − currently_above_cutoff` (delta), plus every below-cutoff Observee on full-sync. The two lists are shared when both modes match.
 - All ops are fanned out concurrently — see `batch_upsert_scores` in `app/core/vespa.py`.
 
 ### Order of operations matters
