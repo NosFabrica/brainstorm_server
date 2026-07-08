@@ -350,34 +350,35 @@ async def upsert_scores_to_vespa(
     assert grape_rank_result.scorecards is not None
     changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
 
-    # Vespa ingest threshold is DECOUPLED from the Nostr TA publish cutoff
-    # (`cutoff_of_valid_graperank_scores`): we index every profile whose rank is
-    # > 0 so it's searchable, and the rank>=2 *default filter* (set per query)
-    # decides visibility at search time. A scorecard whose rank rounds to 0 is
-    # removed from Vespa here (its cell is stale), NOT kept. The cutoff-based
-    # `pubkeys_to_delete` (gone / dropped-from-scorecards) is honored too.
-    # See docs/search-vs-tapestry.md §8.3.
+    # Vespa now mirrors the relay set exactly: index a score if it's above the
+    # publish `cutoff` (same boundary as the Nostr TA events). Below-cutoff
+    # scorecards are NOT indexed — their removal is handled by `pubkeys_to_delete`
+    # (the previously-published diff / full-sync below-cutoff sweep from
+    # `plan_publish`), so there is no separate rank>0 sweep here. Text search still
+    # finds below-cutoff profiles via their kind-0 doc (onlyRanked=false); only the
+    # trust cell is gated by the cutoff.
+    cutoff = settings.cutoff_of_valid_graperank_scores
     upserts: list[tuple[str, int, int]] = []
-    vespa_removes: set[str] = set(pubkeys_to_delete)
     for pubkey, scorecard in grape_rank_result.scorecards.items():
-        rank = round(scorecard.influence * 100)
-        if rank > 0:
-            # Alive in Vespa — never remove it, even if full-sync is off and we
-            # skip re-pushing it below.
-            vespa_removes.discard(pubkey)
-            if vespa_full_sync or pubkey in changed_pubkeys:
-                upserts.append((pubkey, rank, round(scorecard.trusted_followers)))
-        else:
-            vespa_removes.add(pubkey)  # rank rounds to 0 → drop from the index
+        if round(scorecard.influence, 2) < cutoff:
+            continue
+        if vespa_full_sync or pubkey in changed_pubkeys:
+            upserts.append(
+                (
+                    pubkey,
+                    round(scorecard.influence * 100),
+                    round(scorecard.trusted_followers),
+                )
+            )
 
     n_ok, n_failed = await batch_upsert_scores(
         upserts=upserts,
-        removes=list(vespa_removes),
+        removes=pubkeys_to_delete,
         observer=observer,
     )
     logger.info(
         f"vespa score batch: ok={n_ok} failed={n_failed} "
-        f"(upserts={len(upserts)} removes={len(vespa_removes)})"
+        f"(upserts={len(upserts)} removes={len(pubkeys_to_delete)})"
     )
 
 
