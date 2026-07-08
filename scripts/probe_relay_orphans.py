@@ -11,12 +11,12 @@ maxFilterLimit=500 and TAs are burst-published, so REQ recovers ~5%). Two phases
 
   2) In a brainstorm-server pod (needs .env + DB + the nsec encryption key file),
      diff it against last_published:
-        python -m scripts.probe_relay_orphans --scan ta_scan.jsonl --tsv
+        poetry run python -m scripts.probe_relay_orphans --scan ta_scan.jsonl --tsv
 
 Local docker equivalent:
     docker exec strfry sh -c 'cd /app && ./strfry scan "{\"kinds\":[30382]}"' \
       | docker exec -i -w /app brainstorm-server poetry run \
-          python -m scripts.probe_relay_orphans --scan - --tsv
+          poetry run python -m scripts.probe_relay_orphans --scan - --tsv
 
 Observers are processed biggest-first (by last_published size). `--out-dir`
 writes the actual orphan/missing pubkey lists per observer (feeds the reap).

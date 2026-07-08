@@ -9,8 +9,8 @@ read — search only sees above-cutoff cells), so cost scales with corpus size.
 
 Run in a brainstorm-server pod (needs .env + DB + VESPA_URL):
 
-    python -m scripts.probe_vespa_orphans --tsv
-    python -m scripts.probe_vespa_orphans --limit 50 --out-dir /tmp/vespa_drift
+    poetry run python -m scripts.probe_vespa_orphans --tsv
+    poetry run python -m scripts.probe_vespa_orphans --limit 50 --out-dir /tmp/vespa_drift
 
 Observers are processed biggest-first (by last_published size). `--out-dir`
 writes the actual orphan/missing pubkey lists per observer (feeds the cleanup).
