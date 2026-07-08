@@ -32,7 +32,7 @@ from app.db_models import BrainstormNsec  # noqa: E402
 from app.repos.brainstorm_nsec import (  # noqa: E402
     get_last_published_pubkeys_by_pubkey_on_db,
 )
-from app.services.observer_sweep_service import diff_published  # noqa: E402
+from app.services.observer_sweep_service import orphans_of  # noqa: E402
 
 _PUBKEY_BYTES = 32
 
@@ -64,7 +64,7 @@ async def main() -> None:
     parser.add_argument("--observer", help="Probe a single observer pubkey (hex).")
     parser.add_argument("--limit", type=int, help="Only the top-N observers.")
     parser.add_argument("--min-published", type=int, default=1)
-    parser.add_argument("--out-dir", help="Write <observer>.orphans/.missing.txt.")
+    parser.add_argument("--out-dir", help="Write <observer>.orphans.txt.")
     parser.add_argument("--tsv", action="store_true")
     args = parser.parse_args()
     out_dir = Path(args.out_dir) if args.out_dir else None
@@ -76,29 +76,25 @@ async def main() -> None:
         on_vespa = await visit_observer_cells(targets)
 
         if args.tsv:
-            print("observer\tpublished\tvespa\torphans\tmissing")
+            print("observer\tpublished\tvespa\torphans")
 
-        n = tot_o = tot_m = obs_orph = 0
+        n = tot_o = obs_orph = 0
         for observer in observers:
             published = await get_last_published_pubkeys_by_pubkey_on_db(db, observer)
             cells = on_vespa.get(observer, set())
-            orphans, missing = diff_published(cells, published)
+            orphans = orphans_of(cells, published)
             n += 1
             tot_o += len(orphans)
-            tot_m += len(missing)
             obs_orph += 1 if orphans else 0
             if out_dir:
                 _write_list(out_dir, observer, "orphans", orphans)
-                _write_list(out_dir, observer, "missing", missing)
             print(
-                f"{observer}\t{len(published)}\t{len(cells)}\t"
-                f"{len(orphans)}\t{len(missing)}",
+                f"{observer}\t{len(published)}\t{len(cells)}\t{len(orphans)}",
                 flush=True,
             )
 
     print(
-        f"\n# observers={n} with_orphans={obs_orph} "
-        f"total_orphans={tot_o} total_missing={tot_m}",
+        f"\n# observers={n} with_orphans={obs_orph} total_orphans={tot_o}",
         file=sys.stderr,
     )
 

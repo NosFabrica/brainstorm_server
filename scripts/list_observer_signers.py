@@ -29,7 +29,7 @@ from nostr_sdk import Keys  # noqa: E402
 
 from app.core.database import db_session  # noqa: E402
 from app.db_models import BrainstormNsec  # noqa: E402
-from app.utils.encryption import decrypt_nsec  # noqa: E402
+from app.utils.encryption import decrypt_nsec, load_keys_from_file  # noqa: E402
 
 
 async def main() -> None:
@@ -45,6 +45,7 @@ async def main() -> None:
         help="Print a header line and tab-separated columns.",
     )
     args = parser.parse_args()
+    load_keys_from_file()  # standalone process: bootstrap the nsec key file to decrypt
 
     async with db_session() as db:
         # Only nsec/pubkey are read below; defer the heavy columns so this

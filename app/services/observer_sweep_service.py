@@ -68,18 +68,16 @@ def parse_ta_scan(lines: Iterable[str]) -> dict[str, set[str]]:
     return dict(by_signer)
 
 
-def diff_published(
-    on_relay: set[str], last_published: list[str]
-) -> tuple[set[str], set[str]]:
-    """`(orphans, missing)` for one observer.
+def orphans_of(present: set[str], last_published: list[str]) -> set[str]:
+    """The orphan set for one observer: sink entries NOT in `last_published`.
 
-    orphans = on the relay but not in `last_published` → the reap set (delete).
-    missing = in `last_published` but not on the relay → under-delivered; a full
-    relay sync re-asserts it (not an orphan).
+    Includes GHOSTS — vanished-from-graph entries no resync can reap (resync only
+    deletes `fell_off ∪ below`, both derived from truth) — plus legacy sub-cutoff
+    and best-effort-write leftovers. Safe to delete wholesale: `plan_publish`
+    persists `last_published` as the COMPLETE above-cutoff set each run, so a
+    legitimately published observee is never absent from it.
 
-    Meaningful because `plan_publish` persists `last_published` as the full
-    above-cutoff set each run, so a legitimately-published observee is never
-    absent from it — every element of `orphans` is therefore safe to delete.
+    The inverse ("missing" = `last_published − present`, under-delivery) is
+    deliberately NOT computed — that's repaired by a resync, not by these scripts.
     """
-    published = set(last_published)
-    return on_relay - published, published - on_relay
+    return set(present) - set(last_published)

@@ -40,7 +40,7 @@ from app.repos.brainstorm_nsec import (  # noqa: E402
     get_last_published_pubkeys_by_pubkey_on_db,
 )
 from app.services.observer_sweep_service import (  # noqa: E402
-    diff_published,
+    orphans_of,
     parse_ta_scan,
 )
 from app.utils.encryption import decrypt_nsec, load_keys_from_file  # noqa: E402
@@ -101,7 +101,7 @@ async def main(by_signer: dict[str, set[str]]) -> None:
     )
     parser.add_argument(
         "--out-dir",
-        help="Write <observer>.orphans.txt / .missing.txt (the actual pubkeys).",
+        help="Write <observer>.orphans.txt (the actual pubkeys).",
     )
     parser.add_argument("--tsv", action="store_true", help="Print a header row.")
     args = parser.parse_args()
@@ -112,33 +112,31 @@ async def main(by_signer: dict[str, set[str]]) -> None:
         rows = await _roster(db, args.observer, args.min_published, args.limit)
 
         if args.tsv:
-            print("observer\tsigner\tpublished\trelay\torphans\tmissing")
+            print("observer\tsigner\tpublished\trelay\torphans")
 
-        n_obs = tot_orphans = tot_missing = obs_with_orphans = 0
+        n_obs = tot_orphans = obs_with_orphans = 0
         for row in rows:
             signer = _signer_of(row)
             if signer is None:
                 continue
             published = await get_last_published_pubkeys_by_pubkey_on_db(db, row.pubkey)
             on_relay = by_signer.get(signer, set())
-            orphans, missing = diff_published(on_relay, published)
+            orphans = orphans_of(on_relay, published)
 
             n_obs += 1
             tot_orphans += len(orphans)
-            tot_missing += len(missing)
             obs_with_orphans += 1 if orphans else 0
             if out_dir:
                 _write_list(out_dir, row.pubkey, "orphans", orphans)
-                _write_list(out_dir, row.pubkey, "missing", missing)
             print(
                 f"{row.pubkey}\t{signer}\t{len(published)}\t{len(on_relay)}\t"
-                f"{len(orphans)}\t{len(missing)}",
+                f"{len(orphans)}",
                 flush=True,
             )
 
     print(
         f"\n# observers={n_obs} with_orphans={obs_with_orphans} "
-        f"total_orphans={tot_orphans} total_missing={tot_missing}",
+        f"total_orphans={tot_orphans}",
         file=sys.stderr,
     )
 
