@@ -16,6 +16,7 @@ import asyncio
 import json
 import multiprocessing as mp
 import os
+from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
 import httpx
@@ -297,6 +298,52 @@ async def remove_score(pubkey: str, observer: str) -> None:
     if r.status_code == 404:
         return
     _raise_with_context("remove_score", pubkey, body, r)
+
+
+async def visit_observer_cells(
+    observers: set[str] | None = None, *, page: int = 2000
+) -> dict[str, set[str]]:
+    """Stream the whole corpus via the visit API → `observer_pubkey -> {doc_pubkey
+    that carries a quality_scores cell for that observer}`.
+
+    Vespa cells are keyed by the OBSERVER pubkey (not the TA signer), so this keys
+    directly by observer. `observers`, when given, restricts what's recorded so
+    memory stays bounded to the targets; None records every observer (heavy — one
+    entry per cell). Either way it's a FULL corpus scan — the visit API can't
+    filter by tensor cell key — so cost scales with corpus size. Streaming +
+    continuation keeps memory bounded to the retained mapping.
+
+    This is the Vespa analog of `strfry scan` for the relay: the only complete
+    enumeration of what the sink actually holds (search only sees above-cutoff
+    cells, so it can't surface sub-cutoff orphans).
+    """
+    client = _get_client()
+    base = f"{settings.vespa_url}/document/v1/{NAMESPACE}/{DOCTYPE}/docid"
+    out: dict[str, set[str]] = defaultdict(set)
+    cont: str | None = None
+    docs = 0
+    while True:
+        params: dict = {"wantedDocumentCount": page, "fieldSet": "[document]"}
+        if cont:
+            params["continuation"] = cont
+        r = await client.get(base, params=params, timeout=120.0)
+        r.raise_for_status()
+        data = r.json()
+        for d in data.get("documents", []):
+            docs += 1
+            fields = d.get("fields", {})
+            qs = fields.get("quality_scores")
+            if not qs:
+                continue
+            doc_pk = fields.get("pubkey") or d["id"].split("::")[-1]
+            for observer in qs.get("cells", {}):
+                if observers is None or observer in observers:
+                    out[observer].add(doc_pk)
+        cont = data.get("continuation")
+        if not cont:
+            break
+    logger.info("vespa visit: scanned %d docs, %d observers matched", docs, len(out))
+    return dict(out)
 
 
 def _feed_plan(total: int) -> tuple[int, int]:
