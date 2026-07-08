@@ -91,7 +91,10 @@ async def _delete_relay(observer: str, nsec: str, signer: str, orphans: set[str]
         events = await get_deletion_events_for_dropped_pubkeys(
             observees=sorted(orphans), signing_pubkey=signer, nostr_client=client
         )
-        sent = sum(1 for ev in events if (await client.send_event(ev)).success)
+        sent = 0
+        for ev in events:
+            if (await client.send_event(ev)).success:
+                sent += 1
         print(f"[relay {observer[:12]}] sent {sent}/{len(events)} kind-5 deletions")
     finally:
         await client.disconnect()
