@@ -151,6 +151,29 @@ def plan_publish(
     return PublishPlan(currently_published, relay_deletes, vespa_deletes)
 
 
+def published_state_to_persist(
+    previously_published: list[str],
+    currently_published: list[str],
+    sink_write_failed: bool,
+) -> list[str]:
+    """The `last_published_pubkeys` baseline to persist after a run.
+
+    Clean run → exactly the intended above-cutoff set. But if any sink write
+    failed this run, a delete may not have landed, and pruning the baseline past
+    it would orphan that pubkey in the sink forever (no future `fell_off` could
+    ever see it). So on a dirty run keep prev + current: the un-confirmed delete
+    stays in the baseline and is re-issued (idempotently) next run, while newly
+    above-cutoff keys are still tracked. A later clean run prunes back to
+    `currently_published`, so the baseline self-corrects and can't grow unbounded.
+
+    Coarse on purpose — it keys on "any sink failure", not on which delete
+    failed, so it over-retains slightly (a redundant, harmless re-delete). This
+    only prevents NEW orphans; orphans already in the sinks need the reset sweep."""
+    if sink_write_failed:
+        return list(set(previously_published) | set(currently_published))
+    return currently_published
+
+
 RELAYS: list[str] = [
     x
     for x in [
@@ -339,7 +362,7 @@ async def upsert_scores_to_vespa(
     observer: str,
     pubkeys_to_delete: list[str],
     vespa_full_sync: bool,
-):
+) -> int:
     # Each score depends on the observer; the rank lives in a single cell of
     # the `quality_scores` sparse tensor, keyed by the observer pubkey.
     # Vespa partial updates (create=true) create the doc if absent, so unknown
@@ -379,6 +402,9 @@ async def upsert_scores_to_vespa(
         f"vespa score batch: ok={n_ok} failed={n_failed} "
         f"(upserts={len(upserts)} removes={len(pubkeys_to_delete)})"
     )
+    # Surfaced so the caller can tell whether a remove may not have landed and
+    # keep the published-state baseline honest (see published_state_to_persist).
+    return n_failed
 
 
 async def process_nostr_upload_message(message: dict):
@@ -518,10 +544,11 @@ async def process_nostr_upload_message(message: dict):
                 )
 
         vespa_search_available = False
+        vespa_n_failed = 0
         try:
             with _timed(timings, "vespa"):
                 logger.info(f"Pushing scores to Vespa...")
-                await upsert_scores_to_vespa(
+                vespa_n_failed = await upsert_scores_to_vespa(
                     grape_rank_result=grape_rank_result,
                     observer=observer,
                     pubkeys_to_delete=vespa_pubkeys_to_delete,
@@ -542,10 +569,24 @@ async def process_nostr_upload_message(message: dict):
                     status=BrainstormRequestStatus.SUCCESS,
                 )
 
+                # Keep the baseline honest: if any sink write may have failed
+                # (a total Vespa error, a partial Vespa remove failure, or a
+                # relay enqueue failure), a delete may not have landed — don't
+                # prune those pubkeys out of the baseline or they orphan in the
+                # sink forever. Retain prev ∪ current so the delete is retried.
+                sink_write_failed = (
+                    send_failures > 0
+                    or vespa_n_failed > 0
+                    or not vespa_search_available
+                )
                 await update_last_published_pubkeys_by_pubkey_on_db(
                     db,
                     pubkey=observer,
-                    published_pubkeys=currently_published_pubkeys,
+                    published_pubkeys=published_state_to_persist(
+                        previously_published=previously_published_pubkeys,
+                        currently_published=currently_published_pubkeys,
+                        sink_write_failed=sink_write_failed,
+                    ),
                     graperank_request_id=run_id,
                 )
 
