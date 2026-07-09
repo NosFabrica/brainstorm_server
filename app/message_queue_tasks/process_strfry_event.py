@@ -134,14 +134,22 @@ async def create_pubkey_index(session: AsyncNeoDriver):
     await session.run(query)
 
 
+def _extract_report_targets(event: dict) -> list[str]:
+    """Reported target pubkeys for a kind-1984 event, or [] if it targets a note.
+
+    NIP-56: a report against a note/media carries an `e` tag (profile reports are
+    `p`-only). We only count user-level reports, so any `e` tag -> no targets.
+    """
+    tags = event.get("tags", [])
+    if any(tag and tag[0] == "e" for tag in tags):
+        return []
+    return [tag[1] for tag in tags if tag and tag[0] == "p" and len(tag) > 1]
+
+
 async def process_event_kind_1984(session: AsyncNeoDriver, event: dict):
 
     publisher = event["pubkey"]
-    # Extract followed pubkeys from tags [["p","pubkey1"], ...]
-    reported_pubkeys = [tag[1] for tag in event.get("tags", []) if tag[0] == "p"]
-
-    # if not reported_pubkeys and event["content"]:
-    #     return
+    reported_pubkeys = _extract_report_targets(event)
 
     if not reported_pubkeys:
         return
