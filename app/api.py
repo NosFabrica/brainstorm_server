@@ -18,6 +18,7 @@ from app.message_queue_tasks.backfill_redis_relationships import (
 from app.neo4j_db.driver import test_neo4j_driver
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi_pagination import add_pagination
 
 from app.core.config import settings
@@ -37,6 +38,7 @@ from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
 from app.cronjobs.periodic_graperank_trigger import (
     periodic_graperank_trigger_cronjob,
 )
+from app.cronjobs.scheduler import scheduler_cronjob
 
 from app.core.admin_whitelist import init_admin_whitelist
 
@@ -102,6 +104,7 @@ async def lifespan(app: FastAPI):
     periodic_graperank_task = asyncio.create_task(
         periodic_graperank_trigger_cronjob()
     )
+    scheduler_task = asyncio.create_task(scheduler_cronjob())
 
     try:
         yield
@@ -114,6 +117,7 @@ async def lifespan(app: FastAPI):
         consume_strfry_plugin_messages_task.cancel()
         fail_stale_ongoing_task.cancel()
         periodic_graperank_task.cancel()
+        scheduler_task.cancel()
         # regular_update_task.cancel()
         await vespa_aclose()
 
@@ -133,6 +137,9 @@ origins = ["*"]
 # if settings.deploy_environment != "LOCAL":
 #     logger.info("Setting specific CORS origin...")
 #     origins = [settings.frontend_url]
+
+# Compress large JSON responses (e.g. /whitelisted, ~6.6MB of hex → ~3-4x smaller).
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 logger.info("Allowing CORS...")
 app.add_middleware(

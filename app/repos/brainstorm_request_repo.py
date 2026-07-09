@@ -1,13 +1,18 @@
 from datetime import datetime, timedelta
 
 from nostr_sdk import PublicKey
-from sqlalchemy import Select, asc, delete, desc, func, select, update
-from sqlalchemy.orm import defer
+from sqlalchemy import Select, and_, asc, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import execute_db_statement, handle_no_data
 from app.core.loggr import loggr
-from app.db_models import BrainstormNsec, BrainstormRequest, BrainstormRequestStatus
+from app.db_models import (
+    BrainstormNsec,
+    BrainstormRequest,
+    BrainstormRequestStatus,
+    Scheduling,
+    TriggerSource,
+)
 from app.schemas.admin_sort import SortOrder, UsersSort
 
 logger = loggr.get_logger(__name__)
@@ -29,13 +34,10 @@ async def delete_brainstorm_request_by_id_on_db(
 async def select_brainstorm_request_by_id_on_db(
     db: AsyncDBSession,
     brainstorm_request_id: int,
-    include_result: bool = False,
 ) -> BrainstormRequest:
     statement = select(BrainstormRequest).where(
         BrainstormRequest.private_id == brainstorm_request_id,
     )
-    if not include_result:
-        statement = statement.options(defer(BrainstormRequest.result))
     existing_data = await execute_db_statement(db, statement, __name__)
     result: BrainstormRequest | None = existing_data.scalars().first()
 
@@ -72,7 +74,6 @@ async def select_latest_brainstorm_request_on_db(
         select(BrainstormRequest)
         .where(BrainstormRequest.pubkey == pubkey)
         .order_by(desc(BrainstormRequest.created_at))
-        .options(defer(BrainstormRequest.result))
         .limit(1)
     )
 
@@ -173,9 +174,14 @@ def build_recent_active_pubkeys_stmt(
             br_latest.c.status_ta_publication.label("latest_ta_status"),
             br_latest.c.algorithm.label("latest_algorithm"),
             BrainstormNsec.nsec.label("nsec"),
+            # Effective policy: the user's explicit assignment, else NULL (the
+            # router fills NULL with the default policy's name in one lookup).
+            Scheduling.id.label("scheduling_id"),
+            Scheduling.name.label("scheduling_name"),
         )
         .join(br_latest, br_latest.c.private_id == latest_subq.c.latest_id)
         .outerjoin(BrainstormNsec, BrainstormNsec.pubkey == latest_subq.c.pubkey)
+        .outerjoin(Scheduling, Scheduling.id == BrainstormNsec.scheduling_id)
         .order_by(direction(sort_col))
     )
 
@@ -199,7 +205,6 @@ def build_recent_brainstorm_requests_stmt(
         select(BrainstormRequest)
         .where(*filters)
         .order_by(desc(BrainstormRequest.created_at))
-        .options(defer(BrainstormRequest.result))
     )
 
 
@@ -210,24 +215,6 @@ async def select_latest_non_waiting_brainstorm_request_on_db(
         select(BrainstormRequest)
         .where(BrainstormRequest.pubkey == pubkey)
         .where(BrainstormRequest.status != BrainstormRequestStatus.WAITING.value)
-        .order_by(desc(BrainstormRequest.created_at))
-        .options(defer(BrainstormRequest.result))
-        .limit(1)
-    )
-
-    existing_data = await execute_db_statement(db, statement, __name__)
-    result: BrainstormRequest | None = existing_data.scalars().first()
-
-    return result
-
-
-async def select_latest_successful_brainstorm_request_on_db(
-    db: AsyncDBSession, pubkey: str
-) -> BrainstormRequest | None:
-    statement = (
-        select(BrainstormRequest)
-        .where(BrainstormRequest.pubkey == pubkey)
-        .where(BrainstormRequest.status == BrainstormRequestStatus.SUCCESS.value)
         .order_by(desc(BrainstormRequest.created_at))
         .limit(1)
     )
@@ -251,6 +238,17 @@ async def update_brainstorm_request_ta_status_by_id_on_db(
 
     _ = await execute_db_statement(db, statement, __name__)
     return None
+
+
+async def update_brainstorm_request_publish_duration_by_id_on_db(
+    db: AsyncDBSession, brainstorm_request_id: int, seconds: float
+) -> None:
+    statement = (
+        update(BrainstormRequest)
+        .where(BrainstormRequest.private_id == brainstorm_request_id)
+        .values(publish_duration_seconds=seconds)
+    )
+    await db.execute(statement)
 
 
 async def update_brainstorm_request_internal_publication_status_by_id_on_db(
@@ -286,7 +284,6 @@ async def update_brainstorm_request_status_by_id_on_db(
 async def update_brainstorm_request_result_by_id_on_db(
     db: AsyncDBSession,
     brainstorm_request_id: int,
-    result: str,
     count_values: str,
     status: BrainstormRequestStatus,
     error: dict | None = None,
@@ -295,7 +292,6 @@ async def update_brainstorm_request_result_by_id_on_db(
         update(BrainstormRequest)
         .where(BrainstormRequest.private_id == brainstorm_request_id)
         .values(
-            result=result,
             status=status.value,
             count_values=count_values,
             error=error,
@@ -322,6 +318,89 @@ async def fail_stale_ongoing_brainstorm_requests_on_db(
     return result.rowcount
 
 
+_NON_TERMINAL = [
+    BrainstormRequestStatus.WAITING.value,
+    BrainstormRequestStatus.ONGOING.value,
+]
+
+
+def in_pipeline_condition():
+    """A run is still in the pipeline while its calc is pending/running, or its
+    calc succeeded and publishing is pending/running. A failed calc is terminal
+    even though its ta_publication may still sit at the default 'waiting'.
+    Mirrors app.services.scheduler.request_in_pipeline."""
+    return or_(
+        BrainstormRequest.status.in_(_NON_TERMINAL),
+        and_(
+            BrainstormRequest.status == BrainstormRequestStatus.SUCCESS.value,
+            BrainstormRequest.status_ta_publication.in_(_NON_TERMINAL),
+        ),
+    )
+
+
+async def count_scheduled_publishing_inflight_on_db(db: AsyncDBSession) -> int:
+    """Scheduled runs still in the pipeline (the backpressure signal)."""
+    statement = select(func.count()).where(
+        BrainstormRequest.trigger_source == TriggerSource.SCHEDULED.value,
+        in_pipeline_condition(),
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return int(result.scalar_one())
+
+
+async def count_successful_manual_runs_in_window_on_db(
+    db: AsyncDBSession, pubkey: str, window_start: datetime
+) -> tuple[int, datetime | None]:
+    """Count a user's manual runs that published successfully since window_start,
+    with the oldest such run's created_at (for the quota reset time)."""
+    statement = select(
+        func.count(),
+        func.min(BrainstormRequest.created_at),
+    ).where(
+        BrainstormRequest.pubkey == pubkey,
+        BrainstormRequest.trigger_source == TriggerSource.MANUAL.value,
+        BrainstormRequest.status_ta_publication
+        == BrainstormRequestStatus.SUCCESS.value,
+        BrainstormRequest.created_at >= window_start,
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    row = result.one()
+    return int(row[0]), row[1]
+
+
+async def any_interactive_in_pipeline_on_db(db: AsyncDBSession) -> bool:
+    """True if any Manual/Admin run is still in the pipeline (calc or publish)."""
+    statement = select(func.count()).where(
+        BrainstormRequest.trigger_source.in_(
+            [TriggerSource.MANUAL.value, TriggerSource.ADMIN.value]
+        ),
+        in_pipeline_condition(),
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return int(result.scalar_one()) > 0
+
+
+async def fail_stale_publishing_brainstorm_requests_on_db(
+    db: AsyncDBSession, stale_threshold: timedelta
+) -> int:
+    """Fail hung publishes (ta_publication non-terminal past the cutoff) so a
+    stuck job can't permanently block scheduler admission."""
+    cutoff = datetime.now() - stale_threshold
+    statement = (
+        update(BrainstormRequest)
+        .where(
+            BrainstormRequest.status_ta_publication.in_(_NON_TERMINAL),
+            BrainstormRequest.updated_at < cutoff,
+        )
+        .values(
+            status_ta_publication=BrainstormRequestStatus.FAILURE.value,
+            status=BrainstormRequestStatus.FAILURE.value,
+        )
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.rowcount
+
+
 async def create_brainstorm_request_on_db(
     db: AsyncDBSession,
     algorithm: str,
@@ -329,6 +408,9 @@ async def create_brainstorm_request_on_db(
     pubkey: str,
     graperank_preset_used: str | None = None,
     graperank_params: dict | None = None,
+    force_full_relay: bool = False,
+    force_full_vespa: bool = False,
+    trigger_source: str = TriggerSource.MANUAL.value,
 ) -> BrainstormRequest:
     new_brainstorm_request_obj = BrainstormRequest(
         algorithm=algorithm,
@@ -336,6 +418,9 @@ async def create_brainstorm_request_on_db(
         pubkey=pubkey,
         graperank_preset_used=graperank_preset_used,
         graperank_params=graperank_params,
+        force_full_relay=force_full_relay,
+        force_full_vespa=force_full_vespa,
+        trigger_source=trigger_source,
     )
 
     db.add(new_brainstorm_request_obj)

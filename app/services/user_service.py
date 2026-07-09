@@ -14,13 +14,14 @@ from app.message_queue_tasks.process_strfry_event import (
     MUTED_BY_KEY_PREFIX,
     REPORTED_BY_KEY_PREFIX,
 )
-from app.models.grapeRankResult import GrapeRankResult
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.brainstorm_nsec import select_brainstorm_nsec_history_fields_on_db
 from app.repos.brainstorm_request_repo import (
     count_brainstorm_requests_with_priority_over_one_on_db,
     select_latest_brainstorm_request_on_db,
-    select_latest_successful_brainstorm_request_on_db,
+)
+from app.repos.observer_whitelist_repo import (
+    select_whitelisted_pubkeys_of_observer,
 )
 from app.repos.user_repo import (
     get_all_section_stats,
@@ -352,25 +353,4 @@ async def get_whitelisted_pubkeys_of_observer(
     db: AsyncDBSession, pubkey: str, threshold: float = 0.02
 ) -> list[str]:
 
-    latest_successful_result = await select_latest_successful_brainstorm_request_on_db(
-        db, pubkey
-    )
-
-    if not latest_successful_result:
-        return []
-
-    if not latest_successful_result.result:
-        raise Exception("successful graperank didnt have result")
-
-    graperank_result = GrapeRankResult.model_validate_json(
-        latest_successful_result.result
-    )
-
-    if graperank_result.scorecards is None:
-        raise Exception("graperank_result.scorecards is None")
-
-    return [
-        x.observee
-        for x in graperank_result.scorecards.values()
-        if x.influence >= threshold
-    ]
+    return await select_whitelisted_pubkeys_of_observer(db, pubkey, threshold)

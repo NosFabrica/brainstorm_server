@@ -1,7 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
-from app.core.redis_db import redis_client
 
-from app.db_models import BrainstormRequest, BrainstormRequestStatus
+from app.db_models import BrainstormRequest, BrainstormRequestStatus, TriggerSource
 from app.repos.brainstorm_nsec import (
     get_graperank_preset_by_pubkey_on_db,
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
@@ -13,8 +12,8 @@ from app.repos.brainstorm_request_repo import (
     delete_brainstorm_request_by_id_on_db,
     select_brainstorm_request_by_id_on_db,
 )
-
-from app.schemas.schemas import GrapeRankError, BrainstormRequestInstance
+from app.schemas.schemas import BrainstormRequestInstance, GrapeRankError
+from app.services.scheduler_lanes import enqueue_calc_request
 from app.services.graperank_preset_service import (
     normalize_preset,
     resolve_preset_params,
@@ -23,7 +22,6 @@ from app.services.graperank_preset_service import (
 
 def brainstorm_request_db_obj_to_schema_converter(
     brainstorm_request_db_obj: BrainstormRequest,
-    include_result: bool = False,
     how_many_others_with_priority: int = 0,
     is_admin: bool = False,
 ) -> BrainstormRequestInstance:
@@ -39,7 +37,6 @@ def brainstorm_request_db_obj_to_schema_converter(
     brainstorm_request_obj = BrainstormRequestInstance(
         private_id=brainstorm_request_db_obj.private_id,
         status=brainstorm_request_db_obj.status,
-        result=brainstorm_request_db_obj.result if include_result else None,
         password=brainstorm_request_db_obj.password,
         created_at=brainstorm_request_db_obj.created_at,
         updated_at=brainstorm_request_db_obj.updated_at,
@@ -49,6 +46,7 @@ def brainstorm_request_db_obj_to_schema_converter(
         internal_publication_status=brainstorm_request_db_obj.status_internal_brainstorm_publication,
         ta_status=brainstorm_request_db_obj.status_ta_publication,
         pubkey=brainstorm_request_db_obj.pubkey,
+        trigger_source=brainstorm_request_db_obj.trigger_source,
         count_values=brainstorm_request_db_obj.count_values,
         graperank_preset_used=brainstorm_request_db_obj.graperank_preset_used,
         graperank_params=brainstorm_request_db_obj.graperank_params,
@@ -61,13 +59,11 @@ def brainstorm_request_db_obj_to_schema_converter(
 async def get_brainstorm_request_by_id(
     db: AsyncDBSession,
     brainstorm_request_id: int,
-    include_result: bool,
     is_admin: bool = False,
 ) -> BrainstormRequestInstance:
     brainstorm_request_db_obj = await select_brainstorm_request_by_id_on_db(
         db=db,
         brainstorm_request_id=brainstorm_request_id,
-        include_result=include_result,
     )
 
     how_many_others_with_priority = (
@@ -80,7 +76,6 @@ async def get_brainstorm_request_by_id(
 
     return brainstorm_request_db_obj_to_schema_converter(
         brainstorm_request_db_obj=brainstorm_request_db_obj,
-        include_result=include_result,
         how_many_others_with_priority=how_many_others_with_priority,
         is_admin=is_admin,
     )
@@ -115,8 +110,10 @@ async def create_brainstorm_request(
     parameters: str,
     pubkey: str,
     nsec_exists: bool = False,
+    force_full_relay: bool = False,
+    force_full_vespa: bool = False,
+    trigger_source: str = TriggerSource.MANUAL.value,
 ) -> BrainstormRequestInstance:
-
     stored_preset = await get_graperank_preset_by_pubkey_on_db(db, parameters)
     requested_preset = normalize_preset(stored_preset)
     effective_preset, params = await resolve_preset_params(
@@ -131,6 +128,9 @@ async def create_brainstorm_request(
             pubkey=pubkey,
             graperank_preset_used=effective_preset.value,
             graperank_params=params.model_dump(),
+            force_full_relay=force_full_relay,
+            force_full_vespa=force_full_vespa,
+            trigger_source=trigger_source,
         )
     )
 
@@ -152,6 +152,6 @@ async def create_brainstorm_request(
 
     await update_last_time_triggered_graperank_on_db(db, parameters)
 
-    await redis_client.rpush("message_queue", instance.model_dump_json())
+    await enqueue_calc_request(db, instance, parameters, trigger_source)
 
     return instance

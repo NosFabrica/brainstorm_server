@@ -123,7 +123,7 @@ token still 401s:
 - **`admin/graperank`** — `PUT/GET /preset/{id}` for DEFAULT/PERMISSIVE/RESTRICTIVE; `GET /preset/{id}/history` for the audit log.
 - **`admin/nsec_encryption`** — `POST /rotate` (202, background task — 409 if running) and `POST /verify` (returns `{ok, fail}` over all encrypted rows).
 - **`admin/brainstorm_pubkey`** — `GET /{nostr_pubkey}` returns or creates the brainstorm pubkey (auto-triggers GrapeRank on creation). `POST /{nostr_pubkey}/trigger_graperank` to force one.
-- **`admin/brainstorm_request`** — `GET /{id}?include_result=...` and `POST /` (body: `CreateBrainstormRequestBody{algorithm, parameters, pubkey}`).
+- **`admin/brainstorm_request`** — `GET /{id}` and `POST /` (body: `CreateBrainstormRequestBody{algorithm, parameters, pubkey}`).
 
 ## Common tasks
 

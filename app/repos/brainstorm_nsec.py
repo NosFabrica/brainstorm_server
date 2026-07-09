@@ -1,10 +1,15 @@
 from datetime import datetime
-from sqlalchemy import select, update
-from sqlalchemy.orm import defer
-from app.core.database import execute_db_statement, handle_no_data
-from app.db_models import BrainstormNsec
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+from sqlalchemy.orm import defer
+
+from app.core.database import execute_db_statement, handle_no_data
+from app.db_models import BrainstormNsec, Scheduling
+from app.repos.scheduling_repo import (
+    get_default_scheduling_on_db,
+    get_scheduling_on_db,
+)
 from app.utils.encryption import decrypt_nsec, encrypt_nsec
 from app.utils.nostr import generate_random_nsec
 
@@ -19,7 +24,19 @@ def _resolve_plaintext_nsec(row: BrainstormNsec) -> str:
 async def get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> tuple[BrainstormNsec, bool]:
-    stmt = select(BrainstormNsec).where(BrainstormNsec.pubkey == pubkey)
+    # Defer the heavy columns nobody on this path needs — most notably
+    # last_published_pubkeys (LargeBinary, ~3MB for a big observer). Callers only
+    # read nsec/pubkey/timestamps; deferring keeps the per-call SELECT off the
+    # multi-MB blob. (Mirrors select_brainstorm_nsec_history_fields_on_db.)
+    stmt = (
+        select(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .options(
+            defer(BrainstormNsec.last_published_pubkeys),
+            defer(BrainstormNsec.last_published_graperank_request_id),
+            defer(BrainstormNsec.graperank_custom_params),
+        )
+    )
     existing_data = await execute_db_statement(db, stmt, __name__)
     result: BrainstormNsec | None = existing_data.scalar_one_or_none()
     if result:
@@ -71,6 +88,20 @@ async def update_last_time_calculated_graperank_on_db(
         .values(last_time_calculated_graperank=when)
     )
 
+    await db.execute(statement)
+
+
+async def update_last_time_published_graperank_on_db(
+    db: AsyncDBSession,
+    pubkey: str,
+    when: datetime | None = None,
+) -> None:
+    when = when or datetime.now()
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(last_time_published_graperank=when)
+    )
     await db.execute(statement)
 
 
@@ -130,8 +161,7 @@ def _unpack_pubkeys(blob: bytes | None) -> list[str]:
     if not blob:
         return []
     return [
-        blob[i : i + _PUBKEY_BYTES].hex()
-        for i in range(0, len(blob), _PUBKEY_BYTES)
+        blob[i : i + _PUBKEY_BYTES].hex() for i in range(0, len(blob), _PUBKEY_BYTES)
     ]
 
 
@@ -162,6 +192,56 @@ async def update_last_published_pubkeys_by_pubkey_on_db(
     await db.execute(statement)
 
 
+async def get_scheduling_for_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> Scheduling | None:
+    """The scheduling policy in effect for a user: their explicit assignment,
+    else the default policy. Unset / pre-existing users resolve to the default.
+    """
+    statement = select(BrainstormNsec.scheduling_id).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    scheduling_id = result.scalar_one_or_none()
+    if scheduling_id is not None:
+        row = await get_scheduling_on_db(db, scheduling_id)
+        if row is not None:
+            return row
+    return await get_default_scheduling_on_db(db)
+
+
+async def bulk_set_scheduling_for_pubkeys_on_db(
+    db: AsyncDBSession, pubkeys: list[str], scheduling_id: int
+) -> int:
+    """Assign many users to a policy in one statement; returns rows updated."""
+    if not pubkeys:
+        return 0
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey.in_(pubkeys))
+        .values(scheduling_id=scheduling_id)
+    )
+    result = await db.execute(statement)
+    return result.rowcount
+
+
+async def set_scheduling_for_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str, scheduling_id: int
+) -> None:
+    """Assign a user to a scheduling policy (auto-creating the row if absent).
+
+    This is the single seam a future admin-CRUD or external service would reuse
+    to move a user between policies.
+    """
+    await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey)
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(scheduling_id=scheduling_id)
+    )
+    await db.execute(statement)
+
+
 async def set_is_observer_search_available_by_pubkey_on_db(
     db: AsyncDBSession,
     pubkey: str,
@@ -171,6 +251,26 @@ async def set_is_observer_search_available_by_pubkey_on_db(
         update(BrainstormNsec)
         .where(BrainstormNsec.pubkey == pubkey)
         .values(is_observer_search_available=is_available)
+    )
+    await db.execute(statement)
+
+
+async def increment_runs_since_full_on_db(db: AsyncDBSession, pubkey: str) -> None:
+    """Count one more scheduled delta toward the every-Nth full backstop."""
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(runs_since_full=BrainstormNsec.runs_since_full + 1)
+    )
+    await db.execute(statement)
+
+
+async def reset_runs_since_full_on_db(db: AsyncDBSession, pubkey: str) -> None:
+    """Clear the backstop counter after a successful full run (sink in sync)."""
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(runs_since_full=0)
     )
     await db.execute(statement)
 
@@ -196,7 +296,19 @@ async def brainstorm_nsec_exists_by_pubkey_on_db(
 async def select_brainstorm_nsec_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> BrainstormNsec:
-    statement = select(BrainstormNsec).where(BrainstormNsec.pubkey == pubkey)
+    # Callers here only read nsec/pubkey/timestamps. Defer the heavy columns —
+    # last_published_pubkeys (LargeBinary, can be multi-MB) plus the JSONB params
+    # and back-link nobody on this path touches.
+    statement = (
+        select(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .options(
+            defer(BrainstormNsec.last_published_pubkeys),
+            defer(BrainstormNsec.last_published_graperank_request_id),
+            defer(BrainstormNsec.graperank_preset),
+            defer(BrainstormNsec.graperank_custom_params),
+        )
+    )
 
     existing_data = await execute_db_statement(db, statement, __name__)
     result: BrainstormNsec | None = existing_data.scalars().first()

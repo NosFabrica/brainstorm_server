@@ -23,5 +23,4 @@ class GrapeRankResult(BaseModel):
     duration_seconds: float
     success: bool = False
     changedScorePubkeys: list[str] = []
-    droppedBelowCutoffPubkeys: list[str] = []
     error: GrapeRankError | None = None

@@ -48,10 +48,10 @@ use `build_*_stmt`:
 
 ### Deferred / heavy columns
 
-`select_brainstorm_request_by_id_on_db(..., include_result=False)` defers the
-large `result` text column unless explicitly requested. Same pattern for
-`select_brainstorm_nsec_history_fields_on_db` (defers binary). Reach for
-`.options(defer(...))` whenever a row's large enough to matter.
+`select_brainstorm_nsec_history_fields_on_db` defers the binary
+`last_published_pubkeys` column. Reach for `.options(defer(...))` whenever a
+row's large enough to matter. (The old ~100MB `brainstorm_request.result` blob
+was removed — the per-observer whitelist now lives in `observer_whitelist_repo`.)
 
 ### Encrypted nsec
 

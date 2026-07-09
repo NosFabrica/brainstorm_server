@@ -30,6 +30,7 @@ from app.schemas.schemas import FollowListIngestResult, OwnUserData
 from app.services.assistant_profile_service import publish_assistant_kind0_for_user
 from app.services.onboarding_service import ingest_follow_list
 from app.services.brainstorm_request_service import create_brainstorm_request
+from app.services.manual_quota import enforce_manual_quota
 from app.services.user_service import (
     DEFAULT_PAGE_SIZE,
     DEFAULT_VERIFIED_THRESHOLD,
@@ -92,6 +93,8 @@ async def create_graperank_calc_endpoint(
 
     if request.client:
         await validateIfRequestedTooOftenByIP(request.client.host)
+
+    await enforce_manual_quota(db, user_pubkey)
 
     if settings.block_frequent_graperank_requests:
         latest = await get_own_latest_graperank(db, user_pubkey)

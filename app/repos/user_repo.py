@@ -131,6 +131,21 @@ async def count_user_follows(session: AsyncNeoDriver, pubkey: str) -> int:
     return record["count"] if record else 0
 
 
+# Which of the given pubkeys follow at least one user (i.e. are schedulable).
+async def pubkeys_following_someone(
+    session: AsyncNeoDriver, pubkeys: list[str]
+) -> set[str]:
+    if not pubkeys:
+        return set()
+    query = """
+    MATCH (user:NostrUser)-[:FOLLOWS]->(:NostrUser)
+    WHERE user.pubkey IN $pubkeys
+    RETURN DISTINCT user.pubkey AS pubkey
+    """
+    result = await session.run(query, pubkeys=pubkeys)
+    return {record["pubkey"] async for record in result}
+
+
 # ----------------- Mutes -----------------
 
 

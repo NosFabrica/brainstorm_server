@@ -59,16 +59,24 @@ class BrainstormRequestInstance(CreatedAndUpdatedAtModel):
     status: str
     ta_status: str | None
     internal_publication_status: str | None
-    result: str | None
     count_values: str | None
     password: str
     algorithm: str
     parameters: str
     how_many_others_with_priority: int
     pubkey: str | None
+    trigger_source: str | None = None
     graperank_preset_used: str | None = None
     graperank_params: dict | None = None
     error: GrapeRankError | None = None
+
+
+class SchedulerStats(BaseModel):
+    throughput_per_day: float
+    demand_per_day: float
+    median_publish_seconds: float | None
+    lane_depths: dict[str, int]
+    tier_slip_seconds: dict[str, float]
 
 
 class AdminStats(BaseModel):
@@ -88,6 +96,32 @@ class AdminUserListItem(BaseModel):
     latest_status: str | None
     latest_ta_status: str | None
     latest_algorithm: str | None
+    scheduling_id: int | None
+    scheduling_name: str
+
+
+class AdminUserDetail(BaseModel):
+    pubkey: str
+    scheduling_id: int | None
+    scheduling_name: str
+
+
+class SchedulingItem(BaseModel):
+    id: int
+    name: str
+    schedule_interval_seconds: int
+    priority: int
+    enabled: bool
+    is_default: bool
+    manual_quota_limit: int
+    manual_quota_window_seconds: int
+
+    model_config = {"from_attributes": True}
+
+
+class SchedulingUserItem(BaseModel):
+    pubkey: str
+    last_time_published_graperank: datetime | None
 
 
 class BrainstormPubkeyInstance(CreatedAndUpdatedAtModel):
