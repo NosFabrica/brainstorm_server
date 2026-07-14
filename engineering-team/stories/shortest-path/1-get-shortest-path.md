@@ -1,6 +1,6 @@
 # Story 1: GET /shortestPath — degree of separation between two pubkeys
 
-**Status:** Approved
+**Status:** Done
 **Created:** 2026-07-13
 **Type:** Feature
 
@@ -114,4 +114,4 @@ Defaults: `maxHops` = 30, `maxPaths` = 1000.
 
 - ADR: `engineering-team/decisions/shortest-path/0001-shortest-path-query-and-placement.md`
 - Test plan: `engineering-team/stories/shortest-path/1-get-shortest-path.test-plan.md`
-- Review: (filled in after Review phase)
+- Review: `engineering-team/reviews/shortest-path/1-get-shortest-path.md`
