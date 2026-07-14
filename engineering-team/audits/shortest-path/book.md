@@ -1,9 +1,9 @@
 # Book of Work: Shortest-path (follow-graph) API endpoint
 
 **Slug:** shortest-path
-**Status:** Open
+**Status:** Closed
 **Opened:** 2026-07-13
-**Closed:** —
+**Closed:** 2026-07-13
 
 ## Intent anchor
 **Acceptance frame (no PRD)** — the ask is GitHub issue #43
@@ -44,8 +44,12 @@ any mix (npub resolved to hex before the query). Frame confirmed as amended.
 
 ## Provenance
 - **Mode:** Acceptance-frame
-- **Confidence at close:** *(set at close)*
+- **Confidence at close:** high — every frame bullet judged satisfied at the
+  review PASS (story #1 Done); one post-review product observation (error
+  envelope shape) recorded as carry-forward, not a frame gap. Gate at close:
+  176 fast + 7 integration tests passing.
 
-## Close artifacts *(filled at book close)*
+## Close artifacts
 - Build audit: `engineering-team/audits/shortest-path/audit.md`
 - Product feedback: `engineering-team/audits/shortest-path/prd-seed.md`
+- Loose ends: `engineering-team/OPEN.md` (3 rows)
