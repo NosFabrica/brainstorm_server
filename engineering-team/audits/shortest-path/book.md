@@ -12,7 +12,8 @@ confirmed at kickoff. Completion is *judged* against these bullets.
 
 ### Acceptance frame
 
-- [ ] `GET /shortestPath?from=<hex>&to=<hex>` computes the shortest directed
+- [ ] `GET /shortestPath?from=<hex|npub>&to=<hex|npub>` (formats mixable;
+      npub resolved to hex before querying) computes the shortest directed
       path(s) through the Neo4j `FOLLOWS` graph and returns: `reachable`,
       `hops` (null when unreachable), one **randomly selected** shortest path
       as a pubkey chain inclusive of both endpoints, `pathCount`, and
@@ -35,7 +36,8 @@ confirmed at kickoff. Completion is *judged* against these bullets.
       `hops_<observer>` fast path, path node hydration (names/avatars).
 
 **Kickoff amendments (2026-07-13, David):** batch endpoint dropped from v1
-scope; auth posture resolved — public read. Frame confirmed as amended.
+scope; auth posture resolved — public read; inputs accept hex **or** npub in
+any mix (npub resolved to hex before the query). Frame confirmed as amended.
 
 ## Epics in this book
 - `shortest-path` — the two endpoints + guardrails + tests from issue #43.
