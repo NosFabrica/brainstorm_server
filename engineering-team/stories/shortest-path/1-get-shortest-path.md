@@ -112,6 +112,6 @@ Defaults: `maxHops` = 30, `maxPaths` = 1000.
 
 ## Linked artifacts
 
-- ADR: (filled in after Architecture phase)
-- Test plan: (filled in after Test Design phase)
+- ADR: `engineering-team/decisions/shortest-path/0001-shortest-path-query-and-placement.md`
+- Test plan: `engineering-team/stories/shortest-path/1-get-shortest-path.test-plan.md`
 - Review: (filled in after Review phase)
