@@ -23,16 +23,27 @@ ADR:   engineering-team/decisions/shortest-path/0001-shortest-path-query-and-pla
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 
+import httpx
 import pytest
 from neo4j import AsyncGraphDatabase
-from nostr_sdk import Keys
+from nostr_sdk import Keys, PublicKey
 
+import app.services.graph_service as graph_service_module
+from app.api import app
 from app.core.config import settings
 
 pytestmark = pytest.mark.integration
 
 N_RANDOM_CALLS = 40  # AC2: P(all-same | uniform over 2 paths) = 2^-39
+
+
+def _fresh_driver():
+    return AsyncGraphDatabase.driver(
+        settings.neo4j_db_url,
+        auth=(settings.neo4j_db_username, settings.neo4j_db_password),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -54,10 +65,7 @@ def graph():
     ]
 
     async def _seed() -> None:
-        driver = AsyncGraphDatabase.driver(
-            settings.neo4j_db_url,
-            auth=(settings.neo4j_db_username, settings.neo4j_db_password),
-        )
+        driver = _fresh_driver()
         try:
             async with driver.session() as session:
                 await session.run(
@@ -75,10 +83,7 @@ def graph():
             await driver.close()
 
     async def _teardown() -> None:
-        driver = AsyncGraphDatabase.driver(
-            settings.neo4j_db_url,
-            auth=(settings.neo4j_db_username, settings.neo4j_db_password),
-        )
+        driver = _fresh_driver()
         try:
             async with driver.session() as session:
                 await session.run(
@@ -95,8 +100,31 @@ def graph():
         asyncio.run(_teardown())
 
 
-def _get(client, params: dict):
-    return client.get("/shortestPath", params=params)
+@asynccontextmanager
+async def _api():
+    """HTTP client over the app with a loop-local Neo4j driver.
+
+    The shared conftest ``TestClient`` opens a NEW event loop per request (it
+    is used without entering its context manager, deliberately — that would
+    start the app lifespan). The app's module-level Neo4j driver pools
+    connections bound to whichever loop used it first, so a second request in
+    the same process dies with "Future attached to a different loop". Here
+    every test runs its whole body in ONE ``asyncio.run`` loop, with a fresh
+    driver injected into the service for its duration — same ASGI stack, same
+    assertions, no cross-loop pool reuse.
+    """
+    driver = _fresh_driver()
+    original = graph_service_module.neo4j_driver
+    graph_service_module.neo4j_driver = driver
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            yield client
+    finally:
+        graph_service_module.neo4j_driver = original
+        await driver.close()
 
 
 def _shortest_alice_carol_chains(pks) -> set[tuple[str, ...]]:
@@ -109,119 +137,167 @@ def _shortest_alice_carol_chains(pks) -> set[tuple[str, ...]]:
 # ---------------------------------------------------------------------------
 # AC1 — reachable pair, full response shape
 # ---------------------------------------------------------------------------
-def test_reachable_pair_full_shape(client, graph):
-    resp = _get(client, {"from": graph["alice"], "to": graph["carol"]})
+def test_reachable_pair_full_shape(graph):
+    async def body():
+        async with _api() as client:
+            resp = await client.get(
+                "/shortestPath",
+                params={"from": graph["alice"], "to": graph["carol"]},
+            )
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["code"] == 200
-    data = body["data"]
-    assert data["reachable"] is True
-    assert data["hops"] == 2
-    assert tuple(data["path"]) in _shortest_alice_carol_chains(graph)
-    assert data["pathCount"] == 2
-    assert data["pathCountCapped"] is False
-    assert data["from"] == graph["alice"]
-    assert data["to"] == graph["carol"]
-    assert data["maxHops"] == 30
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["code"] == 200
+            data = payload["data"]
+            assert data["reachable"] is True
+            assert data["hops"] == 2
+            assert tuple(data["path"]) in _shortest_alice_carol_chains(graph)
+            assert data["pathCount"] == 2
+            assert data["pathCountCapped"] is False
+            assert data["from"] == graph["alice"]
+            assert data["to"] == graph["carol"]
+            assert data["maxHops"] == 30
+
+    asyncio.run(body())
 
 
 # ---------------------------------------------------------------------------
 # AC6 (mix) + AC1 (echo) — npub inputs behave exactly like hex
 # ---------------------------------------------------------------------------
-def test_npub_and_hex_inputs_are_equivalent(client, graph):
-    from nostr_sdk import PublicKey
+def test_npub_and_hex_inputs_are_equivalent(graph):
+    async def body():
+        alice_npub = PublicKey.parse(graph["alice"]).to_bech32()
 
-    alice_npub = PublicKey.parse(graph["alice"]).to_bech32()
+        async with _api() as client:
+            resp = await client.get(
+                "/shortestPath",
+                params={"from": alice_npub, "to": graph["carol"]},
+            )
 
-    resp = _get(client, {"from": alice_npub, "to": graph["carol"]})
+            assert resp.status_code == 200
+            data = resp.json()["data"]
+            assert data["reachable"] is True
+            assert data["hops"] == 2
+            # Echo is canonical hex, not the npub as given.
+            assert data["from"] == graph["alice"]
+            assert data["to"] == graph["carol"]
 
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["reachable"] is True
-    assert data["hops"] == 2
-    # Echo is canonical hex, not the npub as given.
-    assert data["from"] == graph["alice"]
-    assert data["to"] == graph["carol"]
+    asyncio.run(body())
 
 
 # ---------------------------------------------------------------------------
 # AC2 — returned path is a random member of the shortest-path set
 # ---------------------------------------------------------------------------
-def test_returned_path_is_random_member_of_shortest_set(client, graph):
-    valid = _shortest_alice_carol_chains(graph)
-    seen: set[tuple[str, ...]] = set()
+def test_returned_path_is_random_member_of_shortest_set(graph):
+    async def body():
+        valid = _shortest_alice_carol_chains(graph)
+        seen: set[tuple[str, ...]] = set()
 
-    for _ in range(N_RANDOM_CALLS):
-        resp = _get(client, {"from": graph["alice"], "to": graph["carol"]})
-        assert resp.status_code == 200
-        chain = tuple(resp.json()["data"]["path"])
-        assert chain in valid  # membership on every call
-        seen.add(chain)
+        async with _api() as client:
+            for _ in range(N_RANDOM_CALLS):
+                resp = await client.get(
+                    "/shortestPath",
+                    params={"from": graph["alice"], "to": graph["carol"]},
+                )
+                assert resp.status_code == 200
+                chain = tuple(resp.json()["data"]["path"])
+                assert chain in valid  # membership on every call
+                seen.add(chain)
 
-    # Random selection: with 2 shortest paths and 40 uniform draws the odds of
-    # never seeing the second one are 2^-39 — if this fires, selection is not
-    # random.
-    assert len(seen) == 2
+        # Random selection: with 2 shortest paths and 40 uniform draws the
+        # odds of never seeing the second one are 2^-39 — if this fires,
+        # selection is not random.
+        assert len(seen) == 2
+
+    asyncio.run(body())
 
 
 # ---------------------------------------------------------------------------
 # AC3 — unreachable variants
 # ---------------------------------------------------------------------------
-def test_reverse_only_edge_is_unreachable(client, graph):
-    resp = _get(client, {"from": graph["loner"], "to": graph["alice"]})
+def test_reverse_only_edge_is_unreachable(graph):
+    async def body():
+        async with _api() as client:
+            resp = await client.get(
+                "/shortestPath",
+                params={"from": graph["loner"], "to": graph["alice"]},
+            )
 
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["reachable"] is False
-    assert data["hops"] is None
-    assert data["path"] is None
-    assert data["pathCount"] == 0
-    assert data["pathCountCapped"] is False
+            assert resp.status_code == 200
+            data = resp.json()["data"]
+            assert data["reachable"] is False
+            assert data["hops"] is None
+            assert data["path"] is None
+            assert data["pathCount"] == 0
+            assert data["pathCountCapped"] is False
 
-
-def test_unknown_pubkey_is_unreachable(client, graph):
-    resp = _get(client, {"from": graph["alice"], "to": graph["ghost"]})
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["reachable"] is False
-    assert data["hops"] is None
-    assert data["path"] is None
-    assert data["pathCount"] == 0
+    asyncio.run(body())
 
 
-def test_maxhops_gates_reachability(client, graph):
-    # True distance alice -> dave is 3.
-    too_low = _get(
-        client, {"from": graph["alice"], "to": graph["dave"], "maxHops": 2}
-    )
-    assert too_low.status_code == 200
-    assert too_low.json()["data"]["reachable"] is False
-    assert too_low.json()["data"]["maxHops"] == 2
+def test_unknown_pubkey_is_unreachable(graph):
+    async def body():
+        async with _api() as client:
+            resp = await client.get(
+                "/shortestPath",
+                params={"from": graph["alice"], "to": graph["ghost"]},
+            )
 
-    exact = _get(
-        client, {"from": graph["alice"], "to": graph["dave"], "maxHops": 3}
-    )
-    assert exact.status_code == 200
-    data = exact.json()["data"]
-    assert data["reachable"] is True
-    assert data["hops"] == 3
-    assert data["pathCount"] == 2
+            assert resp.status_code == 200
+            data = resp.json()["data"]
+            assert data["reachable"] is False
+            assert data["hops"] is None
+            assert data["path"] is None
+            assert data["pathCount"] == 0
+
+    asyncio.run(body())
+
+
+def test_maxhops_gates_reachability(graph):
+    async def body():
+        async with _api() as client:
+            # True distance alice -> dave is 3.
+            too_low = await client.get(
+                "/shortestPath",
+                params={"from": graph["alice"], "to": graph["dave"], "maxHops": 2},
+            )
+            assert too_low.status_code == 200
+            assert too_low.json()["data"]["reachable"] is False
+            assert too_low.json()["data"]["maxHops"] == 2
+
+            exact = await client.get(
+                "/shortestPath",
+                params={"from": graph["alice"], "to": graph["dave"], "maxHops": 3},
+            )
+            assert exact.status_code == 200
+            data = exact.json()["data"]
+            assert data["reachable"] is True
+            assert data["hops"] == 3
+            assert data["pathCount"] == 2
+
+    asyncio.run(body())
 
 
 # ---------------------------------------------------------------------------
 # AC5 — pathCount cap
 # ---------------------------------------------------------------------------
-def test_pathcount_is_capped_at_maxpaths(client, graph):
-    resp = _get(
-        client, {"from": graph["alice"], "to": graph["carol"], "maxPaths": 1}
-    )
+def test_pathcount_is_capped_at_maxpaths(graph):
+    async def body():
+        async with _api() as client:
+            resp = await client.get(
+                "/shortestPath",
+                params={
+                    "from": graph["alice"],
+                    "to": graph["carol"],
+                    "maxPaths": 1,
+                },
+            )
 
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["reachable"] is True
-    assert data["hops"] == 2
-    assert data["pathCount"] == 1
-    assert data["pathCountCapped"] is True
-    assert tuple(data["path"]) in _shortest_alice_carol_chains(graph)
+            assert resp.status_code == 200
+            data = resp.json()["data"]
+            assert data["reachable"] is True
+            assert data["hops"] == 2
+            assert data["pathCount"] == 1
+            assert data["pathCountCapped"] is True
+            assert tuple(data["path"]) in _shortest_alice_carol_chains(graph)
+
+    asyncio.run(body())

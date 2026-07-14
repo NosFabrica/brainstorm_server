@@ -114,3 +114,19 @@ Sample failure detail (right-reason check): `assert 404 == 200 — where 404 =
 Full fast suite with the new tests present: `12 failed, 164 passed,
 14 deselected` — the 12 failures are exactly this story's fast tests; nothing
 pre-existing broke.
+
+## Amendment (2026-07-13, Tester — harness fix during Implementation)
+
+First green run exposed a harness defect in the integration file, not in the
+implementation: the shared conftest `TestClient` (used without its context
+manager, deliberately — entering it would start the app lifespan) opens a NEW
+event loop per request, while the app's module-level Neo4j driver pools
+connections bound to the first loop that used it. Any second graph-touching
+request in the same process failed with "Future attached to a different loop"
+(4 of the 7 integration tests). Fixed by running each test body in ONE
+`asyncio.run` loop over `httpx.ASGITransport(app)` with a fresh, loop-local
+driver injected into the service for the test's duration (`_api()` context
+manager in the test file). **Assertions are unchanged** — same requests, same
+expected responses; only the transport/loop plumbing moved. Kick-back handled
+Tester-side per workflow 4 ("if a test is wrong, kick back to Tester");
+recorded here instead of silently editing.
