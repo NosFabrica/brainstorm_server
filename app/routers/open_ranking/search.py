@@ -7,6 +7,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.core.vespa import RANK_PROFILE_SORT_FOLLOWERS
 from app.core.vespa import search as vespa_search
 from app.routers.open_ranking.capabilities import resolve_algorithm
 from app.routers.open_ranking.common import (
@@ -75,11 +76,18 @@ async def search_pubkeys(
 
     # Vespa returns documents with `_quality_score` (the observer's score for
     # the matched profile). That score IS the rank for ORE-05.
+    #
+    # ranking_profile and min_rank are explicit on purpose: deployed schemas
+    # don't all give query(min_rank) a usable default, and omitting it has
+    # degraded sort_followers to pure-text ordering in production. 0.0 keeps
+    # zero-score hits in the results (they surface with rank 0.0).
     hits = await vespa_search(
         query_text=sanitized,
         user_pubkey=observer,
         hits=limit,
         include_zero_score_results=True,
+        ranking_profile=RANK_PROFILE_SORT_FOLLOWERS,
+        min_rank=0.0,
     )
 
     results: list[RankResult] = []

@@ -247,7 +247,19 @@ class TestRankPubkeys:
 # ===========================================================================
 class TestSearchPubkeys:
     def test_happy_path(self, client, auth_headers):
-        async def fake_search(query_text, user_pubkey, hits, include_zero_score_results):
+        seen_kwargs = {}
+
+        async def fake_search(
+            query_text,
+            user_pubkey,
+            hits,
+            include_zero_score_results,
+            *,
+            ranking_profile=None,
+            min_rank=None,
+        ):
+            seen_kwargs["ranking_profile"] = ranking_profile
+            seen_kwargs["min_rank"] = min_rank
             return [
                 {"pubkey": VALID_PUBKEY_1, "_quality_score": 0.91},
                 {"pubkey": VALID_PUBKEY_2, "_quality_score": 0.45},
@@ -261,6 +273,13 @@ class TestSearchPubkeys:
         body = r.json()
         assert [x["pubkey"] for x in body["results"]] == [VALID_PUBKEY_1, VALID_PUBKEY_2]
         assert body["results"][0]["rank"] == pytest.approx(0.91)
+        # The profile and min_rank must be explicit — deployed Vespa schemas
+        # don't all default query(min_rank) to a no-op, and relying on the
+        # schema default has degraded ORE-05 to pure-text ordering in prod.
+        from app.core.vespa import RANK_PROFILE_SORT_FOLLOWERS
+
+        assert seen_kwargs["ranking_profile"] == RANK_PROFILE_SORT_FOLLOWERS
+        assert seen_kwargs["min_rank"] == 0.0
 
     def test_empty_query_returns_422(self, client, auth_headers):
         r = client.post("/search/pubkeys", json={"query": ""}, headers=auth_headers)
