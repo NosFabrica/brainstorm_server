@@ -76,7 +76,7 @@ async def search_pubkeys(
 
     # ORE-05 requires results "sorted by rank in descending order", i.e. the
     # returned rank MUST be the ordering key. That key is Vespa's relevance
-    # (text match x observer-trust multiplier) — the name-trust score this
+    # (text match x observer-trust multiplier) — the "relevance" score this
     # endpoint advertises — NOT the 0-100 Trusted-Assertions GrapeRank value
     # (clients get that from /rank/pubkeys). Vespa already returns hits in
     # relevance-descending order, so the response is sorted by construction.
