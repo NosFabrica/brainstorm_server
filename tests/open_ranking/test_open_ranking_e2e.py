@@ -260,6 +260,7 @@ class TestSearchPubkeys:
         ):
             seen_kwargs["ranking_profile"] = ranking_profile
             seen_kwargs["min_rank"] = min_rank
+            seen_kwargs["include_zero_score_results"] = include_zero_score_results
             # _quality_score values deliberately contradict the relevance
             # order: rank MUST come from _relevance (the ordering key ORE-05
             # requires), not from the 0-100 trust score.
@@ -279,13 +280,15 @@ class TestSearchPubkeys:
         assert ranks == pytest.approx([11988.6, 3018.9])
         # ORE-05: "sorted by rank in descending order"
         assert ranks == sorted(ranks, reverse=True)
-        # The profile and min_rank must be explicit — deployed Vespa schemas
-        # don't all default query(min_rank) to a no-op, and relying on the
-        # schema default has degraded ORE-05 to pure-text ordering in prod.
-        from app.core.vespa import RANK_PROFILE_SORT_FOLLOWERS
+        # These arguments must mirror /search/byText's defaults (UI parity):
+        # min_rank omitted degrades ordering to pure text (schema default
+        # -1e9), and min_rank=0 / include_zero=True floods results with
+        # zero-trust exact-name matches at multiplier 1.0.
+        from app.core.vespa import DEFAULT_MIN_RANK, RANK_PROFILE_SORT_FOLLOWERS
 
         assert seen_kwargs["ranking_profile"] == RANK_PROFILE_SORT_FOLLOWERS
-        assert seen_kwargs["min_rank"] == 0.0
+        assert seen_kwargs["min_rank"] == DEFAULT_MIN_RANK
+        assert seen_kwargs["include_zero_score_results"] is False
 
     def test_empty_query_returns_422(self, client, auth_headers):
         r = client.post("/search/pubkeys", json={"query": ""}, headers=auth_headers)
