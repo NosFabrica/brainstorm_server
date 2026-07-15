@@ -4,9 +4,9 @@
 # so a plain unsigned POST works — handy for quick testing.
 #
 # To rank from a specific observer, pass --pov <hex>. NOTE: pov only takes
-# effect with the *personalized* algorithm (name-trust-pov); the default
-# algorithm (name-trust) is global and ignores pov per ORE-01. This script
-# auto-selects name-trust-pov whenever you pass --pov (override with --algo).
+# effect with the *personalized* algorithm (relevance-pov); the default
+# algorithm (relevance) is global and ignores pov per ORE-01. This script
+# auto-selects relevance-pov whenever you pass --pov (override with --algo).
 # (To rank AS a signed observer you need the Python version,
 # search_open_ranking.py, which signs the NWT.)
 #
@@ -38,7 +38,7 @@ QUERY="${ARGS[0]:?usage: search_open_ranking.sh \"<query>\" [limit] [--pov <hex>
 LIMIT="${ARGS[1]:-15}"
 
 # pov is honored only by a pov-based algorithm; default to the personalized one.
-[ -n "$POV" ] && [ -z "$ALGO" ] && ALGO="name-trust-pov"
+[ -n "$POV" ] && [ -z "$ALGO" ] && ALGO="relevance-pov"
 
 BODY=$(python3 -c 'import json,sys; b={"query":sys.argv[1],"limit":int(sys.argv[2])}; \
 pov,algo=sys.argv[3],sys.argv[4]; \

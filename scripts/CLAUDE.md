@@ -51,11 +51,11 @@ need **no `.env`**; override the target via `BRAINSTORM_HTTP` / `BRAINSTORM_WS`.
 - **`search_open_ranking.sh "<query>" [limit] [--pov <hex>] [--algo <id>]`** —
   ORE-05 `POST /search/pubkeys`, **unsigned** (ORE-05 auth is optional and
   currently off). Stdlib-only. `--pov` only matters with a *personalized*
-  algorithm, so it auto-selects `name-trust-pov` (the default `name-trust` is
+  algorithm, so it auto-selects `relevance-pov` (the default `relevance` is
   global and ignores pov per ORE-01).
 - **`search_open_ranking.py --query <q> [--pov <hex>] [--algo <id>] [--sign|--nsec ...]`**
   — same endpoint, but can **sign** an NWT so the observer = signer. Observer
-  priority: signer (when signed) → `--pov` (auto `name-trust-pov`) → server
+  priority: signer (when signed) → `--pov` (auto `relevance-pov`) → server
   default. Needs `requests` + `nostr-sdk` (poetry env), like
   `smoke_open_ranking.py`; no `.env` required.
 

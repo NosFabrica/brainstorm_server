@@ -7,6 +7,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.core.vespa import RANK_PROFILE_SORT_FOLLOWERS
 from app.core.vespa import search as vespa_search
 from app.routers.open_ranking.capabilities import resolve_algorithm
 from app.routers.open_ranking.common import (
@@ -73,13 +74,24 @@ async def search_pubkeys(
     )
     sanitized = _SANITIZE_RE.sub("", req.query).strip()
 
-    # Vespa returns documents with `_quality_score` (the observer's score for
-    # the matched profile). That score IS the rank for ORE-05.
+    # ORE-05 requires results "sorted by rank in descending order", i.e. the
+    # returned rank MUST be the ordering key. That key is Vespa's relevance
+    # (text match x observer-trust multiplier) — the "relevance" score this
+    # endpoint advertises — NOT the 0-100 Trusted-Assertions GrapeRank value
+    # (clients get that from /rank/pubkeys). Vespa already returns hits in
+    # relevance-descending order, so the response is sorted by construction.
+    #
+    # ranking_profile and min_rank are explicit on purpose: deployed schemas
+    # don't all give query(min_rank) a usable default, and omitting it has
+    # degraded sort_followers to pure-text ordering in production. 0.0 keeps
+    # zero-trust profiles in the results.
     hits = await vespa_search(
         query_text=sanitized,
         user_pubkey=observer,
         hits=limit,
         include_zero_score_results=True,
+        ranking_profile=RANK_PROFILE_SORT_FOLLOWERS,
+        min_rank=0.0,
     )
 
     results: list[RankResult] = []
@@ -88,7 +100,7 @@ async def search_pubkeys(
         if not isinstance(pk, str):
             continue
         results.append(
-            RankResult(pubkey=pk, rank=_safe_rank(h.get("_quality_score")))
+            RankResult(pubkey=pk, rank=_safe_rank(h.get("_relevance")))
         )
 
     return SearchPubkeysResponse(
