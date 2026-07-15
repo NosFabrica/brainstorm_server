@@ -42,13 +42,19 @@ CAPABILITY_DOC: dict[str, list[dict]] = {
             "name": "Name + Trust",
             "description": (
                 "Profile text match (name / nip05 / about) weighted by the "
-                "provider's default observer GrapeRank."
+                "provider's default observer GrapeRank. rank is the relative "
+                "relevance score used for ordering (higher = better match); "
+                "it is not a 0-100 trust score and is not comparable across "
+                "queries — use /rank/pubkeys for GrapeRank scores."
             ),
         },
         {
             "id": "name-trust-pov",
             "name": "Name + Trust (personalized)",
-            "description": "Same as name-trust, weighted by your own GrapeRank.",
+            "description": (
+                "Same as name-trust, weighted by your own GrapeRank; rank is "
+                "the relative relevance score used for ordering."
+            ),
             "pov": True,
         },
     ],

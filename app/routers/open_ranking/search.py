@@ -74,13 +74,17 @@ async def search_pubkeys(
     )
     sanitized = _SANITIZE_RE.sub("", req.query).strip()
 
-    # Vespa returns documents with `_quality_score` (the observer's score for
-    # the matched profile). That score IS the rank for ORE-05.
+    # ORE-05 requires results "sorted by rank in descending order", i.e. the
+    # returned rank MUST be the ordering key. That key is Vespa's relevance
+    # (text match x observer-trust multiplier) — the name-trust score this
+    # endpoint advertises — NOT the 0-100 Trusted-Assertions GrapeRank value
+    # (clients get that from /rank/pubkeys). Vespa already returns hits in
+    # relevance-descending order, so the response is sorted by construction.
     #
     # ranking_profile and min_rank are explicit on purpose: deployed schemas
     # don't all give query(min_rank) a usable default, and omitting it has
     # degraded sort_followers to pure-text ordering in production. 0.0 keeps
-    # zero-score hits in the results (they surface with rank 0.0).
+    # zero-trust profiles in the results.
     hits = await vespa_search(
         query_text=sanitized,
         user_pubkey=observer,
@@ -96,7 +100,7 @@ async def search_pubkeys(
         if not isinstance(pk, str):
             continue
         results.append(
-            RankResult(pubkey=pk, rank=_safe_rank(h.get("_quality_score")))
+            RankResult(pubkey=pk, rank=_safe_rank(h.get("_relevance")))
         )
 
     return SearchPubkeysResponse(
