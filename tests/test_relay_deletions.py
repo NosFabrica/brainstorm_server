@@ -80,20 +80,21 @@ def test_incremental_delete_set_is_previously_minus_currently_published():
         previously_published=["b", "x"],
         currently_published=["b", "c"],
         below_cutoff=[],
-        full_sync=False,
+        sweep_below_cutoff=False,
     )
 
     assert observees == ["x"]
 
 
-def test_full_sync_delete_set_also_sweeps_all_below_cutoff():
-    # Same diff as above ("x"), plus full-sync reconciliation sweeps every
+def test_sweep_below_cutoff_delete_set_also_sweeps_all_below_cutoff():
+    # Same diff as above ("x"), plus the opt-in drift sweep, which deletes every
     # below-cutoff Observee ("lo") even though it was never in previously/currently.
+    # Gated per-sink on `*_sweep_below_cutoff`, not full-sync.
     observees = compute_delete_observees(
         previously_published=["b", "x"],
         currently_published=["b", "c"],
         below_cutoff=["lo"],
-        full_sync=True,
+        sweep_below_cutoff=True,
     )
 
     assert observees == ["lo", "x"]  # sorted union, deduped
@@ -105,7 +106,7 @@ def test_delete_set_is_empty_when_nothing_dropped():
             previously_published=["b"],
             currently_published=["b", "c"],
             below_cutoff=[],
-            full_sync=False,
+            sweep_below_cutoff=False,
         )
         == []
     )

@@ -40,8 +40,6 @@ def test_incremental_delta_run_publishes_only_changed_and_deletes_what_fell_off(
         run2,
         previously_published=["a", "b", "c"],
         cutoff=CUTOFF,
-        relay_full_sync=False,
-        vespa_full_sync=False,
     )
 
     # Both sinks delete c (it fell off); a/b unchanged, d is new.
@@ -66,8 +64,6 @@ def test_local_diff_catches_a_drop_the_algo_failed_to_report():
         run,
         previously_published=["a", "c"],
         cutoff=CUTOFF,
-        relay_full_sync=False,
-        vespa_full_sync=False,
     )
 
     # fell_off (previously_published - currently_above_cutoff) catches c despite
@@ -75,52 +71,80 @@ def test_local_diff_catches_a_drop_the_algo_failed_to_report():
     assert plan.relay_deletes == ["c"]
 
 
-def test_full_sync_on_10k_publishes_all_above_cutoff_and_sweeps_all_below():
+def test_sweep_on_10k_publishes_all_above_cutoff_and_sweeps_all_below():
     scores = {f"hi{i}": 0.50 for i in range(6000)}
     scores.update({f"lo{i}": 0.01 for i in range(4000)})
-    # No changed hint — full-sync ignores it and reconciles wholesale.
     run = _result(scores, changed=[])
 
     plan = plan_publish(
         run,
         previously_published=[],
         cutoff=CUTOFF,
-        relay_full_sync=True,
-        vespa_full_sync=True,
+        sweep_relay=True,
+        sweep_vespa=True,
     )
 
     assert len(plan.currently_published) == 6000
     assert len(plan.relay_deletes) == 4000  # every below-cutoff Observee swept
     assert plan.relay_deletes == plan.vespa_deletes  # matching modes share the set
-    published = prepare_ta_inputs(run, CUTOFF, full_sync=True)
-    assert len(published) == 6000  # full-sync signs ALL above-cutoff, not just changed
 
 
-def test_incremental_vs_full_sync_on_same_10k_result():
+def test_full_sync_does_not_drive_deletes():
+    # Regression: full-sync used to imply the below-cutoff sweep, so every full
+    # run emitted kind-5 tombstones for coordinates it had never published.
+    # full_sync now only decides re-assertion; the delete set is unaffected.
     scores = {f"hi{i}": 0.50 for i in range(6000)}
     scores.update({f"lo{i}": 0.01 for i in range(4000)})
     run = _result(scores, changed=[])  # a steady-state run: nothing changed
 
-    full = plan_publish(run, [], CUTOFF, relay_full_sync=True, vespa_full_sync=True)
-    incr = plan_publish(run, [], CUTOFF, relay_full_sync=False, vespa_full_sync=False)
+    plan = plan_publish(run, [], CUTOFF)  # sweep off (the default)
 
-    # The op-count gap issue 05 is about: full-sync sweeps 4000 deletes + re-signs
-    # 6000; the steady-state incremental run touches nothing.
-    assert len(full.relay_deletes) == 4000
-    assert incr.relay_deletes == []
+    assert plan.relay_deletes == []  # nothing was published, so nothing fell off
+    assert plan.vespa_deletes == []
+    # ...while full-sync still re-signs every above-cutoff TA.
+    assert len(prepare_ta_inputs(run, CUTOFF, full_sync=True)) == 6000
     assert prepare_ta_inputs(run, CUTOFF, full_sync=False) == []  # nothing to sign
 
 
-def test_plan_publish_splits_delete_sets_when_sinks_use_different_modes():
+def test_sweep_is_additive_to_the_fell_off_diff():
+    run = _result({"a": 0.90, "lo": 0.01}, changed=[])
+
+    swept = plan_publish(run, ["a", "x"], CUTOFF, sweep_relay=True, sweep_vespa=True)
+    plain = plan_publish(run, ["a", "x"], CUTOFF)
+
+    # "x" fell off the published baseline either way; the sweep adds "lo", which
+    # was never published (so its delete is a relay no-op that costs a tombstone).
+    assert plain.relay_deletes == ["x"]
+    assert swept.relay_deletes == ["lo", "x"]
+
+
+def test_plan_publish_splits_delete_sets_when_sinks_sweep_differently():
+    # Draining Vespa alone: its cheap removes reap "lo" while the relay pays no
+    # tombstone for it. Both sinks still delete "x", which genuinely fell off.
     run = _result({"a": 0.90, "lo": 0.01}, changed=[])
 
     plan = plan_publish(
         run,
-        previously_published=["a"],
+        previously_published=["a", "x"],
         cutoff=CUTOFF,
-        relay_full_sync=True,
-        vespa_full_sync=False,
+        sweep_relay=False,
+        sweep_vespa=True,
     )
 
-    assert plan.relay_deletes == ["lo"]  # full-sync sweeps the below-cutoff Observee
-    assert plan.vespa_deletes == []  # incremental: nothing fell off the published set
+    assert plan.relay_deletes == ["x"]  # diff only: no tombstone for "lo"
+    assert plan.vespa_deletes == ["lo", "x"]  # swept: the orphan cell goes too
+
+
+def test_only_the_sweep_reaps_an_orphan():
+    # "orph" is below cutoff and was never in the published baseline, so no
+    # `fell_off` diff can ever see it. Off (the default) it survives; the drain
+    # reaps it on the runs the scheduler already does — no extra work enqueued.
+    run = _result({"a": 0.90, "orph": 0.01}, changed=[])
+
+    off = plan_publish(run, ["a"], CUTOFF)
+    assert off.relay_deletes == []
+    assert off.vespa_deletes == []
+
+    draining = plan_publish(run, ["a"], CUTOFF, sweep_relay=True, sweep_vespa=True)
+    assert draining.relay_deletes == ["orph"]
+    assert draining.vespa_deletes == ["orph"]

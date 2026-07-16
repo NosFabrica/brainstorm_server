@@ -38,9 +38,10 @@ The longest module here. The main entry point is `process_nostr_upload_message(m
 
 ### `upsert_scores_to_vespa` — the score-mirror function
 
-- Two per-sink settings control "full re-assert vs incremental" (both `settings`, default `True`): `vespa_full_sync` (this Vespa mirror) and `relay_full_sync` (the Nostr relay — TA republish + kind-5 deletes). `True` pushes every above-cutoff scorecard each run; `False` only *changed* scores (`grape_rank_result.changedScorePubkeys`). Flip a sink `False` for steady state; run it `True` periodically to reconcile that sink's drift.
+- `vespa_full_sync` / `relay_full_sync` (both default `False` = delta): `False` publishes only _changed_ scores (`changedScorePubkeys`), `True` re-asserts every above-cutoff scorecard each run. Drift is repaired by the `full_sync_every_n_runs` backstop + admin `resync`, not by leaving a sink `True`. **Re-assertion only — never deletes.** The k8s charts set these per env and override the code default.
 - Below-cutoff scorecards are skipped for upserts.
-- Delete sets are computed **per sink** by `plan_publish` from a local diff (no relay/Vespa read): `fell_off = previously_published − currently_above_cutoff` (delta), plus every below-cutoff Observee on full-sync. The two lists are shared when both modes match.
+- Delete sets are computed **per sink** by `plan_publish` from a local diff (no relay/Vespa read): `fell_off = previously_published − currently_above_cutoff`. Shared as one list when both sweep modes match.
+- The **sweep** (`*_sweep_below_cutoff`, default off) adds every below-cutoff Observee to the delete set, reaping orphans the diff can't see. Backwards-compat drain: on to clear the legacy backlog, then off — it's mostly no-op deletes that each cost a tombstone/remove op. Not implied by full-sync, the backstop, or `resync`.
 - All ops are fanned out concurrently — see `batch_upsert_scores` in `app/core/vespa.py`.
 
 ### Order of operations matters
