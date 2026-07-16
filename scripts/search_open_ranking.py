@@ -102,7 +102,7 @@ def main() -> int:
         default=None,
         help=(
             "ORE-05 algorithm id. pov only applies to the personalized algorithm "
-            "(name-trust-pov), so --pov auto-selects it unless --algo is given."
+            "(relevance-pov), so --pov auto-selects it unless --algo is given."
         ),
     )
     p.add_argument("--limit", type=int, default=15)
@@ -123,8 +123,8 @@ def main() -> int:
     observer_desc = "server default"
 
     # pov is honored only by a pov-based algorithm; default to the personalized
-    # one when --pov is given (the default name-trust algorithm ignores pov).
-    algo = args.algo or ("name-trust-pov" if args.pov else None)
+    # one when --pov is given (the default relevance algorithm ignores pov).
+    algo = args.algo or ("relevance-pov" if args.pov else None)
     if algo:
         body["algorithm"] = algo
 

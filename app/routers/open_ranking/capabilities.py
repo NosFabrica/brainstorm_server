@@ -38,17 +38,20 @@ CAPABILITY_DOC: dict[str, list[dict]] = {
     ],
     "/search/pubkeys": [
         {
-            "id": "name-trust",
-            "name": "Name + Trust",
+            "id": "relevance",
+            "name": "Relevance (global)",
             "description": (
-                "Profile text match (name / nip05 / about) weighted by the "
-                "provider's default observer GrapeRank."
+                "kind 0 profile text-matching score multiplied by a "
+                "web-of-trust metric (default perspective)"
             ),
         },
         {
-            "id": "name-trust-pov",
-            "name": "Name + Trust (personalized)",
-            "description": "Same as name-trust, weighted by your own GrapeRank.",
+            "id": "relevance-pov",
+            "name": "Relevance (personalized)",
+            "description": (
+                "kind 0 profile text-matching score multiplied by a "
+                "web-of-trust metric (personalized)"
+            ),
             "pov": True,
         },
     ],

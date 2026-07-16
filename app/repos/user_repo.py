@@ -823,3 +823,49 @@ async def get_top_inbound_by_influence(
         UserConnection(pubkey=record["pubkey"], influence=record["influence"])
         async for record in result
     ]
+
+
+# Shortest paths
+
+
+async def get_all_shortest_follow_paths(
+    session: AsyncNeoDriver,
+    from_pubkey: str,
+    to_pubkey: str,
+    max_hops: int,
+    max_paths: int,
+) -> tuple[list[list[str]], int]:
+    """All shortest directed FOLLOWS paths from `from_pubkey` to `to_pubkey`.
+
+    Returns (paths, true_path_count): up to `max_paths` materialized pubkey
+    chains (each inclusive of both endpoints) plus the TRUE number of shortest
+    paths found, so the caller can surface an exact capped/uncapped flag.
+    ([], 0) when either pubkey is absent from the graph or no directed path
+    exists within `max_hops`.
+
+    Cypher forbids parameters in variable-length bounds (`*..$maxHops` is
+    illegal), so `max_hops` is interpolated — guarded here, at the
+    interpolation site, independently of any caller-side validation. Both
+    pubkeys and `max_paths` are real query parameters. Callers must NOT pass
+    from_pubkey == to_pubkey: Neo4j rejects same-node shortest paths (the
+    service short-circuits that case; see ADR 0001).
+    """
+    if type(max_hops) is not int or not 1 <= max_hops <= 50:
+        raise ValueError(f"max_hops must be an int in [1, 50], got {max_hops!r}")
+
+    query = f"""
+    MATCH (a:NostrUser {{pubkey: $from_pubkey}}), (b:NostrUser {{pubkey: $to_pubkey}})
+    MATCH p = allShortestPaths((a)-[:FOLLOWS*..{max_hops}]->(b))
+    WITH [n IN nodes(p) | n.pubkey] AS chain
+    RETURN collect(chain)[..$max_paths] AS paths, count(*) AS path_count
+    """
+    result = await session.run(
+        query,
+        from_pubkey=from_pubkey,
+        to_pubkey=to_pubkey,
+        max_paths=int(max_paths),
+    )
+    record = await result.single()
+    if record is None:
+        return [], 0
+    return record["paths"], record["path_count"]
