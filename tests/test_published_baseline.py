@@ -63,8 +63,6 @@ def test_retained_failed_delete_is_re_deleted_on_the_next_run():
         run,
         previously_published=["a", "gone"],  # 'gone' retained from a prior dirty run
         cutoff=CUTOFF,
-        relay_full_sync=False,
-        vespa_full_sync=False,
     )
     assert plan.relay_deletes == ["gone"]
     assert plan.vespa_deletes == ["gone"]

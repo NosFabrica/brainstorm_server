@@ -14,12 +14,13 @@ DRY-RUN by default (reports counts + a sample); pass --apply to delete. "Missing
 
 Scope is ONE observer (--observer <hex>) — everything stays bounded to that
 observer's cells/TAs (the Vespa visit records only their cells, not the corpus).
-For bulk drift use per-observer resync?target=vespa / the backstop.
+For bulk drift set *_SWEEP_BELOW_CUTOFF (resync/the backstop do NOT sweep).
 
 Safety cap (default target, --apply only): if the orphan count exceeds
 --max-orphans (abs) or --max-orphan-pct (% of published), the delete is SKIPPED
 and flagged — a huge count is usually the legacy pre-cutoff-fix backlog, which
-`resync?target=vespa` reaps ~99.9% (but NOT ghosts) more safely than a raw delete.
+the `*_SWEEP_BELOW_CUTOFF` drain reaps (but NOT ghosts) more safely than a raw
+delete.
 
 RUN IT INSIDE THE brainstorm-server POD/CONTAINER — DB, VESPA_URL, and the nsec
 key file (/run/secrets/nsec_encryption_keys) are already wired; nothing to
@@ -150,7 +151,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--observer", required=True, help="Observer pubkey (hex).")
     # Per observer only: the Vespa visit records just this observer's cells, so
-    # memory stays bounded. For bulk drift use resync?target=vespa / the backstop.
+    # memory stays bounded. For bulk drift set *_SWEEP_BELOW_CUTOFF.
     parser.add_argument("--sink", choices=["vespa", "relay", "both"], default="vespa")
     parser.add_argument(
         "--scan", help="strfry-scan JSONL, or '-' for stdin (required for relay/both)."
