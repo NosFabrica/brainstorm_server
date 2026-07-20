@@ -7,6 +7,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.core.vespa import DEFAULT_MIN_RANK, RANK_PROFILE_SORT_FOLLOWERS
 from app.core.vespa import search as vespa_search
 from app.routers.open_ranking.capabilities import resolve_algorithm
 from app.routers.open_ranking.common import (
@@ -73,13 +74,28 @@ async def search_pubkeys(
     )
     sanitized = _SANITIZE_RE.sub("", req.query).strip()
 
-    # Vespa returns documents with `_quality_score` (the observer's score for
-    # the matched profile). That score IS the rank for ORE-05.
+    # ORE-05 requires results "sorted by rank in descending order", i.e. the
+    # returned rank MUST be the ordering key. That key is Vespa's relevance
+    # (text match x observer-trust multiplier) — the "relevance" score this
+    # endpoint advertises — NOT the 0-100 Trusted-Assertions GrapeRank value
+    # (clients get that from /rank/pubkeys). Vespa already returns hits in
+    # relevance-descending order, so the response is sorted by construction.
+    #
+    # The explicit arguments mirror /search/byText's defaults so ORE-05 and
+    # the main search page return the same results in the same order:
+    # min_rank=DEFAULT_MIN_RANK drops profiles below the observer-rank floor
+    # (influence*100 < 2) and include_zero_score_results=False drops unranked
+    # profiles. Without both filters, zero-trust exact-name matches enter at
+    # trust multiplier 1.0 and flood the results (bots above ranked users).
+    # min_rank must also never be omitted: the schema default (-1e9) flattens
+    # the trust multiplier to a constant and degrades ordering to pure text.
     hits = await vespa_search(
         query_text=sanitized,
         user_pubkey=observer,
         hits=limit,
-        include_zero_score_results=True,
+        include_zero_score_results=False,
+        ranking_profile=RANK_PROFILE_SORT_FOLLOWERS,
+        min_rank=DEFAULT_MIN_RANK,
     )
 
     results: list[RankResult] = []
@@ -88,7 +104,7 @@ async def search_pubkeys(
         if not isinstance(pk, str):
             continue
         results.append(
-            RankResult(pubkey=pk, rank=_safe_rank(h.get("_quality_score")))
+            RankResult(pubkey=pk, rank=_safe_rank(h.get("_relevance")))
         )
 
     return SearchPubkeysResponse(

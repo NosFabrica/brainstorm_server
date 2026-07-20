@@ -247,10 +247,26 @@ class TestRankPubkeys:
 # ===========================================================================
 class TestSearchPubkeys:
     def test_happy_path(self, client, auth_headers):
-        async def fake_search(query_text, user_pubkey, hits, include_zero_score_results):
+        seen_kwargs = {}
+
+        async def fake_search(
+            query_text,
+            user_pubkey,
+            hits,
+            include_zero_score_results,
+            *,
+            ranking_profile=None,
+            min_rank=None,
+        ):
+            seen_kwargs["ranking_profile"] = ranking_profile
+            seen_kwargs["min_rank"] = min_rank
+            seen_kwargs["include_zero_score_results"] = include_zero_score_results
+            # _quality_score values deliberately contradict the relevance
+            # order: rank MUST come from _relevance (the ordering key ORE-05
+            # requires), not from the 0-100 trust score.
             return [
-                {"pubkey": VALID_PUBKEY_1, "_quality_score": 0.91},
-                {"pubkey": VALID_PUBKEY_2, "_quality_score": 0.45},
+                {"pubkey": VALID_PUBKEY_1, "_relevance": 11988.6, "_quality_score": 0.0},
+                {"pubkey": VALID_PUBKEY_2, "_relevance": 3018.9, "_quality_score": 61.0},
             ]
 
         with patch("app.routers.open_ranking.search.vespa_search", new=fake_search):
@@ -260,7 +276,19 @@ class TestSearchPubkeys:
         assert r.status_code == 200, r.text
         body = r.json()
         assert [x["pubkey"] for x in body["results"]] == [VALID_PUBKEY_1, VALID_PUBKEY_2]
-        assert body["results"][0]["rank"] == pytest.approx(0.91)
+        ranks = [x["rank"] for x in body["results"]]
+        assert ranks == pytest.approx([11988.6, 3018.9])
+        # ORE-05: "sorted by rank in descending order"
+        assert ranks == sorted(ranks, reverse=True)
+        # These arguments must mirror /search/byText's defaults (UI parity):
+        # min_rank omitted degrades ordering to pure text (schema default
+        # -1e9), and min_rank=0 / include_zero=True floods results with
+        # zero-trust exact-name matches at multiplier 1.0.
+        from app.core.vespa import DEFAULT_MIN_RANK, RANK_PROFILE_SORT_FOLLOWERS
+
+        assert seen_kwargs["ranking_profile"] == RANK_PROFILE_SORT_FOLLOWERS
+        assert seen_kwargs["min_rank"] == DEFAULT_MIN_RANK
+        assert seen_kwargs["include_zero_score_results"] is False
 
     def test_empty_query_returns_422(self, client, auth_headers):
         r = client.post("/search/pubkeys", json={"query": ""}, headers=auth_headers)
