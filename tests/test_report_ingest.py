@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.message_queue_tasks import process_strfry_event as mod
 from app.message_queue_tasks.process_strfry_event import (
-    _extract_report_targets,
+    extract_report_targets,
     process_event_kind_1984,
 )
 
@@ -28,30 +28,30 @@ def _mock_session() -> MagicMock:
 def test_note_report_yields_no_targets():
     # e+p = reporting a specific note; must not count against the author.
     ev = _event([["e", "n" * 64, "spam"], ["p", "a" * 64]])
-    assert _extract_report_targets(ev) == []
+    assert extract_report_targets(ev) == []
 
 
 def test_user_report_yields_the_reported_pubkey():
     # p-only = reporting the user themselves.
     ev = _event([["p", "a" * 64, "nudity"]])
-    assert _extract_report_targets(ev) == ["a" * 64]
+    assert extract_report_targets(ev) == ["a" * 64]
 
 
 def test_multi_target_user_report_yields_all_pubkeys():
     ev = _event([["p", "a" * 64], ["p", "b" * 64]])
-    assert _extract_report_targets(ev) == ["a" * 64, "b" * 64]
+    assert extract_report_targets(ev) == ["a" * 64, "b" * 64]
 
 
 def test_note_only_report_yields_no_targets():
     # e with no p (malformed/note-only) still targets content, not a user.
     ev = _event([["e", "n" * 64, "illegal"]])
-    assert _extract_report_targets(ev) == []
+    assert extract_report_targets(ev) == []
 
 
 def test_media_report_yields_no_targets():
     # NIP-56 media report: x (blob hash) + its required e tag -> content, not user.
     ev = _event([["x", "h" * 64, "malware"], ["e", "n" * 64], ["p", "a" * 64]])
-    assert _extract_report_targets(ev) == []
+    assert extract_report_targets(ev) == []
 
 
 # --- handler level: note reports touch neither Neo4j nor the reverse-cache ------

@@ -9,7 +9,7 @@ loop forever (`while True: await blpop(...)`) so they're started with
 
 | Redis queue | Consumer (in `message_queue_consumer.py`) | Per-message handler | Side effects |
 |---|---|---|---|
-| `strfry:events` | `consume_strfry_plugin_messages()` | `process_strfry_event()` in `process_strfry_event.py` | Kind 0 → Vespa profile upsert. Kind 3/10000/1984 → Neo4j relationship updates + Redis reverse-set caches. |
+| `strfry:events` | `consume_strfry_plugin_messages()` | `process_strfry_event()` in `process_strfry_event.py` | Kind 0 → Vespa profile upsert. Kind 3/10000/1984 → Neo4j relationship updates + Redis reverse-set caches. Kind 5 → recompute the author's report edges from the relay. |
 | `nostr_results_message_queue` | `consume_nostr_upload_messages()` | `process_nostr_upload_message()` in `upload_nostr_events.py` | Sign + publish TA events to Nostr relays, then mirror scores into Vespa via `batch_upsert_scores` (for any observer, keyed by the observer pubkey). |
 | (other queues, see `message_queue_consumer.py`) | `consume_messages`, `consume_neo4j_write_messages`, `consume_job_started_messages` | … | … |
 
@@ -21,7 +21,8 @@ Dispatches incoming Nostr events by kind:
   - `KIND_0_PROFILE_FIELDS` — imported from `app.core.vespa.PROFILE_FIELDS`. **If you add/remove a profile field, change it in `vespa.PROFILE_FIELDS`** — the constant here aliases it.
 - **Kind 3** (contacts/follows) → upsert `FOLLOWS` relationships in Neo4j + maintain `followed_by:<pubkey>` Redis reverse-sets.
 - **Kind 10000** (mute list) → same shape as kind 3 but with `MUTES` relationships and `muted_by:` sets.
-- **Kind 1984** (reports) → `REPORTS` relationships + `reported_by:` sets.
+- **Kind 1984** (reports) → `REPORTS` relationships + `reported_by:` sets. **Only user-level reports count**: per NIP-56 a note/media report carries an `e` tag, a user report is `p`-only.
+- **Kind 5** (NIP-09 deletion) → `process_event_kind_5`. Reconciles the deleting author's `REPORTS` edges + `reported_by:` membership.
 
 The reverse-set helper is `_update_reverse_sets`. Use it for any new "X → relationships → reverse-cache" pattern.
 

@@ -4,6 +4,12 @@ from app.core.loggr import loggr
 from app.core.redis_db import redis_client
 from app.core.vespa import PROFILE_FIELDS as KIND_0_PROFILE_FIELDS
 from app.core.vespa import upsert_profile
+from app.services.report_graph_service import (
+    diff_author_targets,
+    extract_report_targets,
+    surviving_report_targets,
+)
+from app.services.report_relay_service import fetch_author_user_reports
 from neo4j import AsyncDriver as AsyncNeoDriver
 import time
 from tqdm import tqdm
@@ -37,6 +43,10 @@ async def process_strfry_event(session: AsyncNeoDriver, event: dict):
     if kind == 1984:
         # logger.info("Consuming event of kind 1984")
         return await process_event_kind_1984(session, event)
+
+    if kind == 5:
+        # logger.info("Consuming event of kind 5")
+        return await process_event_kind_5(session, event)
 
 
 # Canonical kind-0 field -> candidate keys in PRIORITY order (canonical first,
@@ -134,22 +144,10 @@ async def create_pubkey_index(session: AsyncNeoDriver):
     await session.run(query)
 
 
-def _extract_report_targets(event: dict) -> list[str]:
-    """Reported target pubkeys for a kind-1984 event, or [] if it targets a note.
-
-    NIP-56: a report against a note/media carries an `e` tag (profile reports are
-    `p`-only). We only count user-level reports, so any `e` tag -> no targets.
-    """
-    tags = event.get("tags", [])
-    if any(tag and tag[0] == "e" for tag in tags):
-        return []
-    return [tag[1] for tag in tags if tag and tag[0] == "p" and len(tag) > 1]
-
-
 async def process_event_kind_1984(session: AsyncNeoDriver, event: dict):
 
     publisher = event["pubkey"]
-    reported_pubkeys = _extract_report_targets(event)
+    reported_pubkeys = extract_report_targets(event)
 
     if not reported_pubkeys:
         return
@@ -295,3 +293,81 @@ async def _update_reverse_sets(
     for pk in removed_pubkeys:
         pipe.srem(f"{key_prefix}{pk}", publisher)
     await pipe.execute()
+
+
+async def _current_report_targets(session: AsyncNeoDriver, author: str) -> set[str]:
+    cypher = """
+    OPTIONAL MATCH (pub:NostrUser {pubkey: $author})-[:REPORTS]->(t:NostrUser)
+    RETURN collect(t.pubkey) AS targets
+    """
+    result = await session.run(cypher, author=author)
+    record = await result.single()
+    return set(record["targets"]) if record else set()
+
+
+async def process_event_kind_5(session: AsyncNeoDriver, event: dict):
+    """NIP-09 deletion: reconcile the author's report edges against the relay.
+
+    strfry purges the retracted 1984 before this kind-5 reaches us and the purge
+    emits no message, so we recompute from what the author *still* reports rather
+    than applying the deletion. See app/message_queue_tasks/CLAUDE.md.
+    """
+    author = event["pubkey"]
+
+    # Cheap indexed read before the network round-trip: hold no report edges for
+    # this author and their deletion can't remove anything. Only 0.76% of users
+    # have any, so this is what keeps recomputes rare.
+    current = await _current_report_targets(session, author)
+    if not current:
+        return
+
+    reports = await fetch_author_user_reports(author)
+    if reports is None:
+        return  # relay unreadable/truncated: leave the graph alone (see service)
+
+    desired = surviving_report_targets(reports, author)
+    diff = diff_author_targets(desired, current)
+
+    if diff.to_remove:
+        await session.run(
+            """
+            MATCH (pub:NostrUser {pubkey: $author})-[r:REPORTS]->(t:NostrUser)
+            WHERE t.pubkey IN $targets
+            DELETE r
+            """,
+            author=author,
+            targets=sorted(diff.to_remove),
+        )
+
+    if diff.to_add:
+        await session.run(
+            """
+            MERGE (pub:NostrUser {pubkey: $author})
+            WITH pub
+            UNWIND $targets AS tp
+                MERGE (t:NostrUser {pubkey: tp})
+                MERGE (pub)-[:REPORTS]->(t)
+            """,
+            author=author,
+            targets=sorted(diff.to_add),
+        )
+
+    # Re-assert the whole surviving set rather than only the Neo4j delta: Redis is
+    # what GrapeRank reads and it drifts from Neo4j independently (the backfill
+    # writes Neo4j, then Redis, non-atomically). SADD is idempotent, and we only
+    # get here for the 0.76% of authors who report at all. Members Neo4j never
+    # knew about are the backfill's job.
+    await _update_reverse_sets(
+        REPORTED_BY_KEY_PREFIX,
+        author,
+        added_pubkeys=sorted(desired),
+        removed_pubkeys=sorted(diff.to_remove),
+    )
+
+    if diff:
+        logger.info(
+            "kind-5 report recompute for %s: +%d/-%d targets",
+            author,
+            len(diff.to_add),
+            len(diff.to_remove),
+        )

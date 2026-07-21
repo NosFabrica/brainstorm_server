@@ -7,7 +7,7 @@ Redis) lives in the thin CLI and is verified per-env, not here.
 """
 from __future__ import annotations
 
-from app.services.report_backfill_service import (
+from app.services.report_graph_service import (
     build_desired_reported_by,
     diff_reported_by,
 )
@@ -54,10 +54,31 @@ def test_cross_author_deletion_does_not_exclude_the_report():
     assert build_desired_reported_by([r], [forged]) == {"a" * 64: {"r" * 64}}
 
 
-def test_kind5_without_k1984_tag_is_ignored():
-    # Only report-scoped deletions (k=1984) sweep reports; a bare kind-5 doesn't.
+def test_kind5_without_k_tag_still_retracts_the_report():
+    # `k` is only a SHOULD and 81% of real kind-5 omit it (measured 2026-07-17),
+    # while strfry purges on e-tag + author without reading `k` at all. Requiring
+    # it here would keep reports the relay has already deleted. We don't need it:
+    # unlike the live path, the backfill HAS the reports, so an e-tag matching a
+    # report id (+ the author-match below) already proves what was deleted.
     r = _report(reporter="r" * 64, targets=["a" * 64], eid="rep1")
     d = _deletion(author="r" * 64, report_ids=["rep1"], k=None)
+    assert build_desired_reported_by([r], [d]) == {}
+
+
+def test_deletion_of_a_note_and_a_report_still_retracts_the_report():
+    # A kind-5 may sweep several kinds at once and tag only one of them. We
+    # don't care what else it deletes — the report id it references is ours.
+    r = _report(reporter="r" * 64, targets=["a" * 64], eid="rep1")
+    d = _deletion(author="r" * 64, report_ids=["note9", "rep1"], k="1")
+    assert build_desired_reported_by([r], [d]) == {}
+
+
+def test_deletion_referencing_only_unrelated_events_changes_nothing():
+    # The id match is what validates: an `e` that isn't one of our report ids
+    # must not touch any report, whatever `k` claims. This is also what bounds
+    # the deleters map to |reports| when the relay is full of note deletions.
+    r = _report(reporter="r" * 64, targets=["a" * 64], eid="rep1")
+    d = _deletion(author="r" * 64, report_ids=["some-note"], k="1984")
     assert build_desired_reported_by([r], [d]) == {"a" * 64: {"r" * 64}}
 
 

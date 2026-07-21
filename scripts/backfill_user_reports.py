@@ -50,7 +50,7 @@ from app.message_queue_tasks.process_strfry_event import (  # noqa: E402
     REPORTED_BY_KEY_PREFIX,
 )
 from app.neo4j_db.driver import driver as neo4j_driver  # noqa: E402
-from app.services.report_backfill_service import (  # noqa: E402
+from app.services.report_graph_service import (  # noqa: E402
     ReportedByDiff,
     build_desired_reported_by,
     diff_reported_by,
