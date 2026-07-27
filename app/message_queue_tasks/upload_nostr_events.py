@@ -76,32 +76,35 @@ def prepare_ta_inputs(
 
 
 def _delete_from_sets(
-    fell_off: set[str], below_cutoff: set[str], full_sync: bool
+    fell_off: set[str], below_cutoff: set[str], sweep_below_cutoff: bool
 ) -> list[str]:
     """The delete set from pre-built sets: Observees that fell off
-    (`previously - currently`), plus the full below-cutoff sweep on full-sync."""
-    return sorted(fell_off | below_cutoff if full_sync else fell_off)
+    (`previously - currently`), plus the whole below-cutoff sweep when enabled."""
+    return sorted(fell_off | below_cutoff if sweep_below_cutoff else fell_off)
 
 
 def compute_delete_observees(
     previously_published: list[str],
     currently_published: list[str],
     below_cutoff: list[str],
-    full_sync: bool,
+    sweep_below_cutoff: bool,
 ) -> list[str]:
-    """Observees whose score should be deleted this run — computed from a local
-    diff, no relay read. Sink-agnostic: relay and Vespa mirror the same logical
-    set (above-cutoff scores for the Observer), so both delete the same Observees,
-    differing only by their per-sink `full_sync` flag.
+    """One sink's delete set — computed from a local diff, no relay read.
 
-    Incremental: `previously_published - currently_published` (everything we'd
+    Default: `previously_published - currently_published` (everything we'd
     published that is no longer above cutoff; this subsumes both genuine removals
-    and below-cutoff drops, including ones the algo never reported). Full-sync
-    additionally sweeps every below-cutoff Observee to reconcile drift."""
+    and below-cutoff drops, including ones the algo never reported).
+
+    `sweep_below_cutoff` additionally deletes every below-cutoff Observee, reaping
+    orphans the diff can't see (legacy sub-cutoff rows, best-effort-write
+    leftovers). Nearly all of those were never published, so the sweep is mostly
+    no-op deletes that still cost a kind-5 tombstone (relay) / a remove op
+    (Vespa) — hence its own gate (`settings.*_sweep_below_cutoff`), NOT tied to
+    full-sync: full-sync re-asserts, it does not decide what to delete."""
     return _delete_from_sets(
         set(previously_published) - set(currently_published),
         set(below_cutoff),
-        full_sync,
+        sweep_below_cutoff,
     )
 
 
@@ -109,7 +112,11 @@ class PublishPlan(NamedTuple):
     """What one publish run does with an algo result, decided up front.
 
     `currently_published` is every above-cutoff Observee (the new published-state
-    to persist). `relay_deletes` / `vespa_deletes` are each sink's delete set."""
+    to persist). `relay_deletes` / `vespa_deletes` are each sink's delete set:
+    equal whenever both sinks sweep the same way, but genuinely independent,
+    because the sinks pay different prices for a sweep (a Vespa remove is a cheap
+    idempotent op; a relay delete costs a kind-5 tombstone) and an admin resync
+    can target one sink alone."""
 
     currently_published: list[str]
     relay_deletes: list[str]
@@ -120,16 +127,19 @@ def plan_publish(
     grape_rank_result: GrapeRankResult,
     previously_published: list[str],
     cutoff: float,
-    relay_full_sync: bool,
-    vespa_full_sync: bool,
+    sweep_relay: bool = False,
+    sweep_vespa: bool = False,
 ) -> PublishPlan:
     """Decide the per-sink delete sets + the new published-state from one algo
     result, with no relay read. Pure, so the whole publish decision is testable
     against algo results without DB/relay/signing.
 
     Partitions scorecards into above/below cutoff in a single pass, builds each
-    set once, and reuses them across both sinks — when the two `full_sync` flags
-    match (the common case) the delete set is computed once and shared."""
+    set once, and reuses them across both sinks — when the two sweep flags match
+    (the common case) the delete set is computed once and shared.
+
+    The delete sets do NOT depend on the full-sync flags — those decide what each
+    sink re-asserts, not what it deletes (see `compute_delete_observees`)."""
     assert grape_rank_result.scorecards is not None
     currently_published: list[str] = []
     above: set[str] = set()
@@ -142,11 +152,11 @@ def plan_publish(
             below.add(sc.observee)
 
     fell_off = set(previously_published) - above
-    relay_deletes = _delete_from_sets(fell_off, below, relay_full_sync)
+    relay_deletes = _delete_from_sets(fell_off, below, sweep_relay)
     vespa_deletes = (
         relay_deletes
-        if relay_full_sync == vespa_full_sync
-        else _delete_from_sets(fell_off, below, vespa_full_sync)
+        if sweep_relay == sweep_vespa
+        else _delete_from_sets(fell_off, below, sweep_vespa)
     )
     return PublishPlan(currently_published, relay_deletes, vespa_deletes)
 
@@ -480,18 +490,29 @@ async def process_nostr_upload_message(message: dict):
         with _timed(timings, "compute_deletes"):
             # One pass partitions scorecards into above/below cutoff and decides
             # both sinks' fetch-free local-diff delete sets (shared when the two
-            # full_sync modes match). The local diff subsumes the old
-            # dropped+missing set and catches drops the algo never reported.
+            # sweep modes match). The local diff subsumes the old dropped+missing
+            # set and catches drops the algo never reported. Independent of
+            # full-sync: that re-asserts, it does not delete.
             plan = plan_publish(
                 grape_rank_result,
                 previously_published=previously_published_pubkeys,
                 cutoff=settings.cutoff_of_valid_graperank_scores,
-                relay_full_sync=relay_full_sync,
-                vespa_full_sync=vespa_full_sync,
+                sweep_relay=settings.relay_sweep_below_cutoff,
+                sweep_vespa=settings.vespa_sweep_below_cutoff,
             )
             currently_published_pubkeys = plan.currently_published
             relay_pubkeys_to_delete = plan.relay_deletes
             vespa_pubkeys_to_delete = plan.vespa_deletes
+        # A sweep is a backlog-draining mode, not a steady state — say so loudly
+        # so it can't sit on unnoticed, billing no-op deletes every run.
+        if settings.relay_sweep_below_cutoff or settings.vespa_sweep_below_cutoff:
+            logger.warning(
+                f"below-cutoff sweep ENABLED for observer {observer} "
+                f"(relay={settings.relay_sweep_below_cutoff} "
+                f"vespa={settings.vespa_sweep_below_cutoff}): every run reaps every "
+                f"below-cutoff Observee. Turn *_SWEEP_BELOW_CUTOFF back off once the "
+                f"orphan backlog has drained."
+            )
         counts["n_above_cutoff"] = len(currently_published_pubkeys)
         counts["n_relay_deletes"] = len(relay_pubkeys_to_delete)
         counts["n_vespa_deletes"] = len(vespa_pubkeys_to_delete)

@@ -9,7 +9,7 @@ pipeline.
 
 ## State machine
 
-Per Nostr kind (3, 10000, 1984), state is stored in
+Per Nostr kind (0, 3, 5, 10000, 1984 — see `ev_kinds`), state is stored in
 [`brainstorm_nostr_relay_transfer`](../db_models/__init__.py) (UNIQUE on `kind`):
 
 | field | meaning |

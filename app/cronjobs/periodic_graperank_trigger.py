@@ -42,6 +42,7 @@ async def _trigger_graperank(pubkey: str, reason: str) -> None:
         if not due:
             await increment_runs_since_full_on_db(db, pubkey=pubkey)
 
+        # Backstop forces a full RE-ASSERT only
         triggered = await create_brainstorm_request(
             db=db,
             algorithm="graperank",
