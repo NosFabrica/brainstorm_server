@@ -45,10 +45,12 @@ from nostr_sdk import Keys
 from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
 )
+from app.services.verified_cutoffs import VerifiedCutoffs
 
 # Tier boundaries match the FE (high ≥ 0.5, trusted ≥ 0.2, neutral ≥ 0.07).
-# The verified_threshold separates "low" from "unverified" — passed per request
-# since it depends on the user's selected trust preset.
+# The verified line separating "low" from "unverified" is preset-driven for
+# /stats (see app.services.verified_cutoffs); /overview and /connections still
+# take DEFAULT_VERIFIED_THRESHOLD per request until ticket 03.
 # Re-export so existing call sites that import from user_service keep working.
 # Canonical source: app.core.tier_thresholds.
 from app.core.tier_thresholds import (  # noqa: E402,F401
@@ -234,8 +236,8 @@ async def get_user_overview(
 
 async def get_user_stats(
     pubkey: str,
+    cutoffs: VerifiedCutoffs,
     observer: str | None = None,
-    verified_threshold: float = DEFAULT_VERIFIED_THRESHOLD,
     tier_high: float = TIER_HIGH,
     tier_medium_high: float = TIER_MEDIUM_HIGH,
     tier_medium: float = TIER_MEDIUM,
@@ -251,7 +253,8 @@ async def get_user_stats(
             pubkey,
             influence_key,
             trusted_reporters_key,
-            verified_threshold,
+            cutoffs.as_kind_map(),
+            cutoffs.verified_line,
             tier_high,
             tier_medium_high,
             tier_medium,

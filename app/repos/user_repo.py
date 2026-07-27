@@ -577,32 +577,49 @@ async def get_all_section_stats(
     pubkey: str,
     influence_key: str,
     trusted_reporters_key: str,
-    verified_threshold: float,
+    verified_cutoff_by_kind: dict[str, float],
+    verified_line: float,
     tier_high: float,
     tier_medium_high: float,
     tier_medium: float,
 ) -> dict[str, ConnectionStats]:
     """Single-query version of get_section_stats covering all 6 relationships.
-    ~20% faster than 6 parallel sessions on heavy accounts (1 round-trip)."""
+    ~20% faster than 6 parallel sessions on heavy accounts (1 round-trip).
+
+    Each section's `verified` uses its own cutoff from `verified_cutoff_by_kind`,
+    strict `>` to match GrapeRank. Tier bucketing is a *fallthrough* off the
+    single `verified_line`: at or below it a subject is `low` (or flagged), above
+    it the fixed bands apply. So the buckets always sum to `total`, however high
+    a strict preset pushes the line."""
     blocks: list[str] = ["MATCH (user:NostrUser {pubkey: $pubkey})"]
     return_fields: list[str] = []
+    params: dict = {
+        "pubkey": pubkey,
+        "influence_key": influence_key,
+        "trusted_reporters_key": trusted_reporters_key,
+        "vl": verified_line,
+        "tier_high": tier_high,
+        "tier_medium_high": tier_medium_high,
+        "tier_medium": tier_medium,
+    }
     for name, rel_type, direction in _STATS_KINDS:
         pattern = _scoped_match_pattern(rel_type, direction)
-        # `flagged` is its own bucket (influence < vt AND trusted_reporters >= 2);
-        # `unverified` excludes flagged so the buckets sum to `total`.
+        params[f"vt_{name}"] = verified_cutoff_by_kind[name]
+        # `flagged` is its own bucket (below the line AND trusted_reporters >= 2);
+        # `low` excludes flagged so the buckets sum to `total`.
         blocks.append(
             f"""
         CALL (user) {{
             MATCH {pattern}
             RETURN
               count(*) AS {name}_total,
-              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $vt THEN 1 END) AS {name}_verified,
-              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_high THEN 1 END) AS {name}_th,
-              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_medium_high AND other[$influence_key] < $tier_high THEN 1 END) AS {name}_tt,
-              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $tier_medium AND other[$influence_key] < $tier_medium_high THEN 1 END) AS {name}_tn,
-              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] >= $vt AND other[$influence_key] < $tier_medium THEN 1 END) AS {name}_tl,
-              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] < $vt AND coalesce(other[$trusted_reporters_key], 0) >= 2 THEN 1 END) AS {name}_tf,
-              count(CASE WHEN other[$influence_key] IS NULL OR (other[$influence_key] < $vt AND coalesce(other[$trusted_reporters_key], 0) < 2) THEN 1 END) AS {name}_tu
+              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] > $vt_{name} THEN 1 END) AS {name}_verified,
+              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] > $vl AND other[$influence_key] >= $tier_high THEN 1 END) AS {name}_th,
+              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] > $vl AND other[$influence_key] >= $tier_medium_high AND other[$influence_key] < $tier_high THEN 1 END) AS {name}_tt,
+              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] > $vl AND other[$influence_key] >= $tier_medium AND other[$influence_key] < $tier_medium_high THEN 1 END) AS {name}_tn,
+              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] > $vl AND other[$influence_key] < $tier_medium THEN 1 END) AS {name}_tl,
+              count(CASE WHEN other[$influence_key] IS NOT NULL AND other[$influence_key] <= $vl AND coalesce(other[$trusted_reporters_key], 0) >= 2 THEN 1 END) AS {name}_tf,
+              count(CASE WHEN other[$influence_key] IS NULL OR (other[$influence_key] <= $vl AND coalesce(other[$trusted_reporters_key], 0) < 2) THEN 1 END) AS {name}_tu
         }}"""
         )
         return_fields.extend(
@@ -612,16 +629,7 @@ async def get_all_section_stats(
     blocks.append("RETURN " + ", ".join(return_fields))
     query = "\n".join(blocks)
 
-    result = await session.run(
-        query,
-        pubkey=pubkey,
-        influence_key=influence_key,
-        trusted_reporters_key=trusted_reporters_key,
-        vt=verified_threshold,
-        tier_high=tier_high,
-        tier_medium_high=tier_medium_high,
-        tier_medium=tier_medium,
-    )
+    result = await session.run(query, **params)
     record = await result.single()
 
     def _empty() -> ConnectionStats:

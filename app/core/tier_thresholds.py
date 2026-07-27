@@ -6,9 +6,13 @@ is the LOWER bound of its tier — `influence >= TIER_HIGH` means tier "high",
 `influence >= TIER_MEDIUM_HIGH AND < TIER_HIGH` means tier "medium_high",
 etc.
 
-DEFAULT_VERIFIED_THRESHOLD is also the lower bound of "medium_low" but is
-kept named separately because it's the user-configurable verified line
-(preset-driven on the FE — see Brainstorm-UI/.../services/trustThreshold.ts).
+DEFAULT_VERIFIED_THRESHOLD is the lower bound of "medium_low" but is kept
+named separately because it's the verified line. `/user/{pubkey}/stats` no
+longer uses it: that endpoint derives the line (and the three per-relationship
+verified cutoffs) from the observer's saved GrapeRank preset — see
+app.services.verified_cutoffs. It happens to equal DEFAULT's seeded follower
+cutoff, so the DEFAULT baseline is unchanged. `/overview` and `/connections`
+still take it per request until ticket 03 migrates them.
 
 Single source of truth for both:
   - on-the-fly tier counts in /user/{pubkey}/stats and /user/{pubkey}/connections

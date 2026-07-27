@@ -46,9 +46,10 @@ from app.services.user_service import (
     get_user_overview,
     get_user_stats,
 )
+from app.services.verified_cutoffs import VerifiedCutoffs
+from app.routers.user.dependencies import get_verified_cutoffs, resolve_observer
 from app.utils.auth.auth_models import JWTData
 from app.utils.api_validators import verify_token_optional
-from app.utils.observer import default_observer_pubkey
 
 CHALLENGE_TTL = 120  # seconds (2 minutes)
 
@@ -258,10 +259,9 @@ async def get_user_overview_endpoint(
         default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0
     ),
 ) -> GetUserOverviewResponse:
-    observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
     result = await get_user_overview(
         pubkey=pubkey,
-        observer=observer,
+        observer=resolve_observer(jwt_data),
         verified_threshold=verified_threshold,
     )
     return GetUserOverviewResponse(data=result)
@@ -273,19 +273,16 @@ async def get_user_overview_endpoint(
 )
 async def get_user_stats_endpoint(
     pubkey: str,
-    verified_threshold: float = Query(
-        default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0
-    ),
     tier_high: float = Query(default=TIER_HIGH, ge=0.0, le=1.0),
     tier_medium_high: float = Query(default=TIER_MEDIUM_HIGH, ge=0.0, le=1.0),
     tier_medium: float = Query(default=TIER_MEDIUM, ge=0.0, le=1.0),
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
+    cutoffs: VerifiedCutoffs = Depends(get_verified_cutoffs),
 ) -> GetUserStatsResponse:
-    observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
     result = await get_user_stats(
         pubkey=pubkey,
-        observer=observer,
-        verified_threshold=verified_threshold,
+        observer=resolve_observer(jwt_data),
+        cutoffs=cutoffs,
         tier_high=tier_high,
         tier_medium_high=tier_medium_high,
         tier_medium=tier_medium,
@@ -321,10 +318,9 @@ async def get_user_connections_endpoint(
         description="Include the filtered total (extra graph scan); off by default",
     ),
 ) -> GetUserConnectionsResponse:
-    observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
     result = await get_user_connections(
         pubkey=pubkey,
-        observer=observer,
+        observer=resolve_observer(jwt_data),
         kind=kind,
         limit=limit,
         cursor=cursor,
@@ -350,8 +346,6 @@ async def get_user_by_pubkey_data_endpoint(
     pubkey: str,
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
 ) -> GetUserDataResponse:
-    observer = jwt_data.nostr_pubkey if jwt_data else default_observer_pubkey()
-
-    result = await get_user_graph_data(pubkey, observer)
+    result = await get_user_graph_data(pubkey, resolve_observer(jwt_data))
 
     return GetUserDataResponse(data=result)

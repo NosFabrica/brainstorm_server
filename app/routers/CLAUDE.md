@@ -102,7 +102,7 @@ token still 401s:
 | Method | Path | Response | Notes |
 |---|---|---|---|
 | GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence |
-| GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Tier breakdown; query params: `verified_threshold`, `tier_high/trusted/neutral` |
+| GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Tier breakdown; query params: `tier_high/medium_high/medium`. Verified counts come from the observer's **saved preset** (`get_verified_cutoffs` in `user/dependencies.py`), not from a client threshold — `verified_threshold` is gone |
 | GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor` |
 | GET | `/{pubkey}` | `GetUserDataResponse` | Full 6-relationship graph |
 
