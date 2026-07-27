@@ -48,9 +48,8 @@ from app.services.brainstorm_request_service import (
 from app.services.verified_cutoffs import VerifiedCutoffs
 
 # Tier boundaries match the FE (high ≥ 0.5, trusted ≥ 0.2, neutral ≥ 0.07).
-# The verified line separating "low" from "unverified" is preset-driven for
-# /stats (see app.services.verified_cutoffs); /overview and /connections still
-# take DEFAULT_VERIFIED_THRESHOLD per request until ticket 03.
+# The verified line separating "low" from "unverified" is preset-driven on all
+# three read endpoints — see app.services.verified_cutoffs.
 # Re-export so existing call sites that import from user_service keep working.
 # Canonical source: app.core.tier_thresholds.
 from app.core.tier_thresholds import (  # noqa: E402,F401
@@ -113,7 +112,7 @@ async def _neo4j_outbound_counts_and_influence(
     pubkey: str,
     influence_key: str,
     trusted_reporters_key: str,
-    verified_threshold: float,
+    verified_line: float,
 ) -> tuple[float | None, int, int, int, bool, int]:
     async with neo4j_driver.session() as session:
         influence, following, muting, reporting, flagged_by_observer, flagged_count = (
@@ -122,7 +121,7 @@ async def _neo4j_outbound_counts_and_influence(
                 pubkey,
                 influence_key,
                 trusted_reporters_key,
-                verified_threshold,
+                verified_line,
             )
         )
     return (
@@ -198,9 +197,12 @@ async def get_user_history_data(db: AsyncDBSession, pubkey: str) -> UserHistoryI
 
 async def get_user_overview(
     pubkey: str,
+    verified_line: float,
     observer: str | None = None,
-    verified_threshold: float = DEFAULT_VERIFIED_THRESHOLD,
 ) -> UserOverviewData:
+    """`verified_line` (the observer's preset follower cutoff) decides the two
+    flagged fields — the only preset-sensitive output here. Required rather than
+    defaulted so a caller has to say which line it means."""
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
     trusted_reporters_key = (
         f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
@@ -213,7 +215,7 @@ async def get_user_overview(
         _redis_inbound_count(MUTED_BY_KEY_PREFIX, pubkey),
         _redis_inbound_count(REPORTED_BY_KEY_PREFIX, pubkey),
         _neo4j_outbound_counts_and_influence(
-            pubkey, influence_key, trusted_reporters_key, verified_threshold
+            pubkey, influence_key, trusted_reporters_key, verified_line
         ),
     )
     influence, following, muting, reporting, flagged_by_observer, flagged_count = neo_result
@@ -264,6 +266,7 @@ async def get_user_stats(
 
 async def get_user_connections(
     pubkey: str,
+    cutoffs: VerifiedCutoffs,
     observer: str | None = None,
     kind: ConnectionKind = "following",
     limit: int = DEFAULT_PAGE_SIZE,
@@ -271,12 +274,15 @@ async def get_user_connections(
     order: str = "desc",
     tier: str | None = None,
     min_influence: float | None = None,
-    verified_threshold: float = DEFAULT_VERIFIED_THRESHOLD,
+    verified_only: bool = False,
     tier_high: float = TIER_HIGH,
     tier_medium_high: float = TIER_MEDIUM_HIGH,
     tier_medium: float = TIER_MEDIUM,
     with_total: bool = False,
 ) -> PaginatedUserConnections:
+    """`cutoffs` comes from the observer's saved preset, exactly as for /stats:
+    `verified_only` filters on this section's own cutoff, and the tier buckets
+    fall through the follower cutoff."""
     limit = max(1, min(limit, MAX_PAGE_SIZE))
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
     trusted_reporters_key = (
@@ -295,15 +301,16 @@ async def get_user_connections(
 
     if kind == "flagged":
         # Virtual kind: DISTINCT flagged users across any relationship type.
-        # Ignores `tier` and `min_influence` — the flagged predicate is fixed.
-        # Page + (optional) total computed in one query / one session.
+        # Ignores `tier`, `min_influence` and `verified_only` — the flagged
+        # predicate is fixed, and every flagged user is unverified by
+        # definition. Page + (optional) total in one query / one session.
         async with neo4j_driver.session() as session:
             items, last_cursor, total = await get_paginated_flagged_connections(
                 session,
                 pubkey=pubkey,
                 influence_key=influence_key,
                 trusted_reporters_key=trusted_reporters_key,
-                verified_threshold=verified_threshold,
+                verified_line=cutoffs.verified_line,
                 limit=limit,
                 cursor_inf=cursor_inf,
                 cursor_pk=cursor_pk,
@@ -326,7 +333,8 @@ async def get_user_connections(
                 order=order,
                 tier=tier,
                 min_influence=min_influence,
-                verified_threshold=verified_threshold,
+                verified_cutoff=cutoffs.for_kind(kind) if verified_only else None,
+                verified_line=cutoffs.verified_line,
                 tier_high=tier_high,
                 tier_medium_high=tier_medium_high,
                 tier_medium=tier_medium,

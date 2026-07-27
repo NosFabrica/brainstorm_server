@@ -143,7 +143,7 @@ class TestStatsPubkey:
     def test_personalized_algorithm_uses_pov_as_observer(self, client, auth_headers):
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["pubkey"] = pubkey
             observed["observer"] = observer
             return _fake_overview(0.9)
@@ -524,7 +524,7 @@ class TestOpenModeNoAuth:
     def test_open_mode_uses_default_observer_for_global_algorithm(self, client):
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["observer"] = observer
             return _fake_overview(0.5)
 
@@ -538,7 +538,7 @@ class TestOpenModeNoAuth:
     def test_open_mode_honours_client_pov(self, client):
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["observer"] = observer
             return _fake_overview(0.5)
 
@@ -576,7 +576,7 @@ class TestAuthModeForcesOwnObserver:
         token, signer = make_nwt()
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["observer"] = observer
             return _fake_overview(0.5)
 
@@ -600,7 +600,7 @@ class TestAuthModeForcesOwnObserver:
         token, signer = make_nwt()
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["observer"] = observer
             return _fake_overview(0.5)
 
@@ -620,7 +620,7 @@ class TestAuthModeForcesOwnObserver:
         token, signer = make_nwt()
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["observer"] = observer
             return _fake_overview(0.5)
 

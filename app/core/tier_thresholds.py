@@ -7,12 +7,14 @@ is the LOWER bound of its tier — `influence >= TIER_HIGH` means tier "high",
 etc.
 
 DEFAULT_VERIFIED_THRESHOLD is the lower bound of "medium_low" but is kept
-named separately because it's the verified line. `/user/{pubkey}/stats` no
-longer uses it: that endpoint derives the line (and the three per-relationship
-verified cutoffs) from the observer's saved GrapeRank preset — see
-app.services.verified_cutoffs. It happens to equal DEFAULT's seeded follower
-cutoff, so the DEFAULT baseline is unchanged. `/overview` and `/connections`
-still take it per request until ticket 03 migrates them.
+named separately because it's the verified line. None of the three public read
+endpoints (`/stats`, `/overview`, `/connections`) use it any more: each derives
+the line (and the three per-relationship verified cutoffs) from the observer's
+saved GrapeRank preset — see app.services.verified_cutoffs. It happens to equal
+DEFAULT's seeded follower cutoff, so the DEFAULT baseline is unchanged. It
+survives as the baseline for callers with no observer preset to resolve: ORE-02
+(`/stats/pubkey`, which surfaces neither the flagged fields nor tiers) and the
+repo-layer default in get_paginated_section_connections.
 
 Single source of truth for both:
   - on-the-fly tier counts in /user/{pubkey}/stats and /user/{pubkey}/connections

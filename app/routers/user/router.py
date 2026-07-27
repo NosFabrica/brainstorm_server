@@ -33,7 +33,6 @@ from app.services.brainstorm_request_service import create_brainstorm_request
 from app.services.manual_quota import enforce_manual_quota
 from app.services.user_service import (
     DEFAULT_PAGE_SIZE,
-    DEFAULT_VERIFIED_THRESHOLD,
     MAX_PAGE_SIZE,
     TIER_HIGH,
     TIER_MEDIUM,
@@ -255,14 +254,12 @@ async def publish_assistant_profile_endpoint(
 async def get_user_overview_endpoint(
     pubkey: str,
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
-    verified_threshold: float = Query(
-        default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0
-    ),
+    cutoffs: VerifiedCutoffs = Depends(get_verified_cutoffs),
 ) -> GetUserOverviewResponse:
     result = await get_user_overview(
         pubkey=pubkey,
         observer=resolve_observer(jwt_data),
-        verified_threshold=verified_threshold,
+        verified_line=cutoffs.verified_line,
     )
     return GetUserOverviewResponse(data=result)
 
@@ -307,8 +304,12 @@ async def get_user_connections_endpoint(
         pattern="^(high|medium_high|medium|medium_low|low|low_and_reported_by_2_or_more_trusted_pubkeys)$",
     ),
     min_influence: float | None = Query(default=None, ge=0.0, le=1.0),
-    verified_threshold: float = Query(
-        default=DEFAULT_VERIFIED_THRESHOLD, ge=0.0, le=1.0
+    verified_only: bool = Query(
+        default=False,
+        description=(
+            "Keep only subjects verified for this `kind` under the observer's "
+            "saved preset. Ignored for kind=flagged."
+        ),
     ),
     tier_high: float = Query(default=TIER_HIGH, ge=0.0, le=1.0),
     tier_medium_high: float = Query(default=TIER_MEDIUM_HIGH, ge=0.0, le=1.0),
@@ -317,17 +318,19 @@ async def get_user_connections_endpoint(
         default=False,
         description="Include the filtered total (extra graph scan); off by default",
     ),
+    cutoffs: VerifiedCutoffs = Depends(get_verified_cutoffs),
 ) -> GetUserConnectionsResponse:
     result = await get_user_connections(
         pubkey=pubkey,
         observer=resolve_observer(jwt_data),
+        cutoffs=cutoffs,
         kind=kind,
         limit=limit,
         cursor=cursor,
         order=order,
         tier=tier,
         min_influence=min_influence,
-        verified_threshold=verified_threshold,
+        verified_only=verified_only,
         tier_high=tier_high,
         tier_medium_high=tier_medium_high,
         tier_medium=tier_medium,

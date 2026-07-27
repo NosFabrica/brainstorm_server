@@ -12,6 +12,7 @@ from app.routers.open_ranking.schemas import (
     StatsPubkeyRequest,
     StatsPubkeyResponse,
 )
+from app.core.tier_thresholds import DEFAULT_VERIFIED_THRESHOLD
 from app.services.user_service import get_user_overview
 from app.utils.auth.nwt import optional_nwt_signer
 
@@ -51,7 +52,11 @@ async def stats_pubkey(
         "/stats/pubkey", req.algorithm, pov, forced_observer=signer
     )
 
-    overview = await get_user_overview(pubkey=pubkey, observer=observer)
+    # ORE-02 exposes only the rank and the raw counts, never the flagged fields,
+    # so the verified line is unobservable here — pass the baseline.
+    overview = await get_user_overview(
+        pubkey=pubkey, observer=observer, verified_line=DEFAULT_VERIFIED_THRESHOLD
+    )
     counts = overview.counts
 
     return StatsPubkeyResponse(

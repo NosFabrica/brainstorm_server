@@ -18,36 +18,19 @@ Issue: .scratch/preset-verified-counts/issues/02-preset-drive-stats.md
 """
 
 import asyncio
-from contextlib import asynccontextmanager
 
-import httpx
 import pytest
-from neo4j import AsyncGraphDatabase
-from nostr_sdk import Keys
 
-import app.services.user_service as user_service_module
-from app.api import app
-from app.core.config import settings
-from app.routers.user.dependencies import get_verified_cutoffs
 from app.services.verified_cutoffs import VerifiedCutoffs
-from app.utils.observer import default_observer_pubkey
-from tests.test_verified_cutoffs import SEED
+from tests.integration.preset_graph import (
+    DEFAULT_CUTOFFS,
+    RESTRICTIVE_CUTOFFS,
+    api,
+    seed_graph,
+    fetch_stats,
+)
 
 pytestmark = pytest.mark.integration
-
-
-def _seeded(preset: str) -> VerifiedCutoffs:
-    row = SEED[preset]
-    return VerifiedCutoffs(
-        follower=row["verified_followers_influence_cutoff"],
-        muter=row["verified_muters_influence_cutoff"],
-        reporter=row["verified_reporters_influence_cutoff"],
-    )
-
-
-# The real factory presets, so the fixture influences below stay meaningful.
-DEFAULT_CUTOFFS = _seeded("DEFAULT")  # follower 0.02, muter 0.01, reporter 0.1
-RESTRICTIVE_CUTOFFS = _seeded("RESTRICTIVE")  # all 0.5
 
 # node name -> (influence, trusted_reporters). influence None = property absent.
 _NODES: dict[str, tuple[float | None, int]] = {
@@ -103,95 +86,10 @@ _EDGES: list[tuple[str, str, str]] = [
 ]
 
 
-def _fresh_driver():
-    return AsyncGraphDatabase.driver(
-        settings.neo4j_db_url,
-        auth=(settings.neo4j_db_username, settings.neo4j_db_password),
-    )
-
-
 @pytest.fixture(scope="module")
 def graph():
     """Seed the fixture graph; yield {name: hex_pubkey}; clean up after."""
-    observer = default_observer_pubkey()
-    influence_key = f"influence_{observer}"
-    trusted_reporters_key = f"trusted_reporters_{observer}"
-    pks = {name: Keys.generate().public_key().to_hex() for name in _NODES}
-
-    async def _seed() -> None:
-        driver = _fresh_driver()
-        try:
-            async with driver.session() as session:
-                for name, (influence, trusted_reporters) in _NODES.items():
-                    await session.run(
-                        f"MERGE (u:NostrUser {{pubkey: $pk}}) "
-                        f"SET u.`{trusted_reporters_key}` = $tr "
-                        + (
-                            f"SET u.`{influence_key}` = $inf"
-                            if influence is not None
-                            else ""
-                        ),
-                        pk=pks[name],
-                        inf=influence,
-                        tr=trusted_reporters,
-                    )
-                for src, rel, dst in _EDGES:
-                    await session.run(
-                        f"MATCH (a:NostrUser {{pubkey: $src}}), "
-                        f"(b:NostrUser {{pubkey: $dst}}) MERGE (a)-[:{rel}]->(b)",
-                        src=pks[src],
-                        dst=pks[dst],
-                    )
-        finally:
-            await driver.close()
-
-    async def _teardown() -> None:
-        driver = _fresh_driver()
-        try:
-            async with driver.session() as session:
-                await session.run(
-                    "MATCH (u:NostrUser) WHERE u.pubkey IN $pubkeys DETACH DELETE u",
-                    pubkeys=list(pks.values()),
-                )
-        finally:
-            await driver.close()
-
-    asyncio.run(_seed())
-    try:
-        yield pks
-    finally:
-        asyncio.run(_teardown())
-
-
-@asynccontextmanager
-async def _api(cutoffs: VerifiedCutoffs):
-    """HTTP client over the app with a loop-local Neo4j driver.
-
-    Same cross-loop caveat as ``test_shortest_path_integration`` — each test
-    body runs in ONE ``asyncio.run`` loop with a fresh driver injected for its
-    duration. `get_verified_cutoffs` is overridden so the observer's "saved
-    preset" is whatever the test says it is, with no Postgres round-trip.
-    """
-    driver = _fresh_driver()
-    original = user_service_module.neo4j_driver
-    user_service_module.neo4j_driver = driver
-    app.dependency_overrides[get_verified_cutoffs] = lambda: cutoffs
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver"
-        ) as client:
-            yield client
-    finally:
-        app.dependency_overrides.pop(get_verified_cutoffs, None)
-        user_service_module.neo4j_driver = original
-        await driver.close()
-
-
-async def _stats(client, pubkey: str, **params) -> dict:
-    resp = await client.get(f"/user/{pubkey}/stats", params=params)
-    assert resp.status_code == 200, resp.text
-    return resp.json()["data"]
+    yield from seed_graph(_NODES, _EDGES)
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +97,8 @@ async def _stats(client, pubkey: str, **params) -> dict:
 # ---------------------------------------------------------------------------
 def test_inbound_sections_use_their_own_cutoff(graph):
     async def body():
-        async with _api(DEFAULT_CUTOFFS) as client:
-            data = await _stats(client, graph["subject"])
+        async with api(DEFAULT_CUTOFFS) as client:
+            data = await fetch_stats(client, graph["subject"])
 
             # follower cutoff 0.02, strict `>`: 0.6, 0.3, 0.1, 0.03 clear it;
             # 0.02 (exactly at the line), 0.01, 0.005 and the null do not.
@@ -224,8 +122,8 @@ def test_verified_comparison_is_strict_greater_than(graph):
     async def body():
         # A cutoff placed exactly on a seeded influence must exclude it.
         cutoffs = VerifiedCutoffs(follower=0.6, muter=0.01, reporter=0.1)
-        async with _api(cutoffs) as client:
-            data = await _stats(client, graph["subject"])
+        async with api(cutoffs) as client:
+            data = await fetch_stats(client, graph["subject"])
             assert data["followed_by"]["verified"] == 0
 
     asyncio.run(body())
@@ -236,8 +134,8 @@ def test_verified_comparison_is_strict_greater_than(graph):
 # ---------------------------------------------------------------------------
 def test_outbound_sections_use_the_follower_cutoff(graph):
     async def body():
-        async with _api(DEFAULT_CUTOFFS) as client:
-            data = await _stats(client, graph["subject"])
+        async with api(DEFAULT_CUTOFFS) as client:
+            data = await fetch_stats(client, graph["subject"])
 
             # Each outbound section has one target at 0.05 and one at 0.015.
             # Follower cutoff 0.02 → exactly 1 verified everywhere. The muter
@@ -255,8 +153,8 @@ def test_outbound_sections_use_the_follower_cutoff(graph):
 # ---------------------------------------------------------------------------
 def test_tier_buckets_under_default_preset(graph):
     async def body():
-        async with _api(DEFAULT_CUTOFFS) as client:
-            tiers = (await _stats(client, graph["subject"]))["followed_by"][
+        async with api(DEFAULT_CUTOFFS) as client:
+            tiers = (await fetch_stats(client, graph["subject"]))["followed_by"][
                 "tier_counts"
             ]
 
@@ -274,8 +172,8 @@ def test_tier_buckets_under_default_preset(graph):
 
 def test_raising_the_line_falls_subjects_through_to_unverified(graph):
     async def body():
-        async with _api(RESTRICTIVE_CUTOFFS) as client:
-            tiers = (await _stats(client, graph["subject"]))["followed_by"][
+        async with api(RESTRICTIVE_CUTOFFS) as client:
+            tiers = (await fetch_stats(client, graph["subject"]))["followed_by"][
                 "tier_counts"
             ]
 
@@ -298,10 +196,10 @@ def test_raising_the_line_falls_subjects_through_to_unverified(graph):
 # ---------------------------------------------------------------------------
 def test_switching_default_to_restrictive_reduces_verified_counts(graph):
     async def body():
-        async with _api(DEFAULT_CUTOFFS) as client:
-            default = await _stats(client, graph["subject"])
-        async with _api(RESTRICTIVE_CUTOFFS) as client:
-            restrictive = await _stats(client, graph["subject"])
+        async with api(DEFAULT_CUTOFFS) as client:
+            default = await fetch_stats(client, graph["subject"])
+        async with api(RESTRICTIVE_CUTOFFS) as client:
+            restrictive = await fetch_stats(client, graph["subject"])
 
         for kind in (
             "followed_by",
@@ -328,10 +226,10 @@ def test_switching_default_to_restrictive_reduces_verified_counts(graph):
 # ---------------------------------------------------------------------------
 def test_verified_threshold_query_param_is_ignored(graph):
     async def body():
-        async with _api(DEFAULT_CUTOFFS) as client:
-            baseline = await _stats(client, graph["subject"])
+        async with api(DEFAULT_CUTOFFS) as client:
+            baseline = await fetch_stats(client, graph["subject"])
             # A threshold that would zero every count if it were still honoured.
-            spiked = await _stats(client, graph["subject"], verified_threshold=0.9)
+            spiked = await fetch_stats(client, graph["subject"], verified_threshold=0.9)
             assert spiked == baseline
 
     asyncio.run(body())

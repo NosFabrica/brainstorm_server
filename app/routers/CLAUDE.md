@@ -101,10 +101,17 @@ token still 401s:
 
 | Method | Path | Response | Notes |
 |---|---|---|---|
-| GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence |
-| GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Tier breakdown; query params: `tier_high/medium_high/medium`. Verified counts come from the observer's **saved preset** (`get_verified_cutoffs` in `user/dependencies.py`), not from a client threshold — `verified_threshold` is gone |
-| GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor` |
+| GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence. `flagged_by_observer` / `flagged_count` sit on the saved preset's verified line |
+| GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Tier breakdown; query params: `tier_high/medium_high/medium` |
+| GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor`. `verified_only=true` filters on the section's own preset cutoff; `tier` uses the same fallthrough as `/stats` |
 | GET | `/{pubkey}` | `GetUserDataResponse` | Full 6-relationship graph |
+
+The verified cutoffs, the verified line and the tier fallthrough all come from
+the observer's **saved preset** (`get_verified_cutoffs` in
+`user/dependencies.py`), never from a client-supplied number — the
+`verified_threshold` query param is gone from all three read endpoints. `/stats`
+returns the verified counts; `/overview` returns no verified count of its own,
+only the two flagged fields, which sit on the same line.
 
 ### `graperank/router.py` — GrapeRank presets
 

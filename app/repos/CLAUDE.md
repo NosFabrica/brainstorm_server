@@ -102,10 +102,22 @@ in `brainstorm_nsec.py` are the only safe entry points.
 are `get_list_of_pubkeys_*` and `count_*` helpers. Plus the bigger composite
 queries:
 
-- `get_outbound_counts_and_influence(session, pubkey, influence_key) → (influence, n_follows, n_mutes, n_reports)` — single round-trip vs four sequential.
-- `get_paginated_section_connections(session, pubkey, influence_key, rel_type, direction, limit, cursor_inf, cursor_pk) → (items, next_cursor)` — cursor = `(influence, pubkey)`; ordered influence DESC, pubkey ASC. **Drives `/user/{pubkey}/connections`**.
+- `get_outbound_counts_and_influence(session, pubkey, influence_key, trusted_reporters_key, verified_line) → (influence, n_follows, n_mutes, n_reports, flagged_by_observer, flagged_count)` — single round-trip vs four sequential.
+- `get_paginated_section_connections(session, pubkey, influence_key, rel_type, direction, limit, cursor_inf, cursor_pk, …)` → `(items, next_cursor, total)` — cursor = `(influence, pubkey)`; ordered influence DESC, pubkey ASC. **Drives `/user/{pubkey}/connections`**. `verified_cutoff` keeps only subjects strictly above that section's preset cutoff; `verified_line` is the tier fallthrough boundary.
 - `get_all_section_stats(...)` — one query covering all 6 sections; ~20 % faster than firing them in parallel.
 - `get_user_graph_data(...)` — unpaginated full graph.
+
+**One tier table, two endpoints.** `_TIER_PREDICATES` is expanded both by
+`get_all_section_stats` (the `/stats` bucket counts) and by
+`_build_tier_predicate` (the `/connections?tier=…` filter), so the two can't
+disagree about which subject sits in which bucket. Verified is strict `>` the
+verified line, so `_VERIFIED_LINE` / `_UNVERIFIED_LINE` are exact complements
+among subjects that have an influence at all (`_NO_INFLUENCE` is the third
+case); let them drift and a subject sitting exactly on the line lands in no
+bucket. `get_outbound_counts_and_influence` and
+`get_paginated_flagged_connections` share the same `<= $verified_line` reading
+of "flagged", which is why `/overview`'s `flagged_count` matches
+`/connections?kind=flagged`.
 
 Dynamic property access uses `user[$influence_key]` parameterization so
 `influence_<observer>` columns don't get string-interpolated into Cypher.
