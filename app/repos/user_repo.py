@@ -869,3 +869,206 @@ async def get_all_shortest_follow_paths(
     if record is None:
         return [], 0
     return record["paths"], record["path_count"]
+
+
+# ------------------------------ network alerts ------------------------------
+#
+# A network alert is a pubkey carrying more verified reports than its reach
+# justifies. The bar scales with audience size so a large account isn't flagged
+# by the same absolute report count as a small one:
+#
+#     N     = 2 + floor(verified_follower_count / 500)
+#     alert = verified_reporter_count > N
+#
+# The work is split across three bounded queries rather than one big one,
+# because the only expensive input is the verified follower count:
+#
+#   1. get_network_alert_candidates    — property reads only, no edge walks
+#   2. count_above_cutoff_followers_capped — counts followers, capped; used for
+#                                        any candidate with no stored count
+#   3. count_verified_muters           — display-only, over final rows only
+#
+# NOTHING IN THIS MODULE — OR ANYWHERE ELSE IN THE REPO TODAY — WRITES
+# `trusted_followers_<observer>`. Step (1) reads it, but the GrapeRank result
+# writer currently drops that scorecard field, so it is absent on every node and
+# step (2) runs for every candidate. The read is deliberate: persisting the
+# property turns step (2) into a property lookup, which is a follow-up change
+# with its own tradeoffs (extra per-observer property, faster property-key token
+# growth). Until then this path is read-only against Neo4j and pays a bounded
+# follower traversal per candidate instead.
+#
+# Two things keep step (1) off a full label scan:
+#
+#   Anchoring. Candidates are reached *through* the REPORTS edge instead of by
+#   scanning :NostrUser. Only a reported pubkey can clear N >= 2, and the
+#   reported set is orders of magnitude smaller than the node count. (There is
+#   no index that could help instead: the influence/reporter properties are
+#   per-observer, so indexing them would mean one index per observer.)
+#
+#   Prefiltering. The floor term is non-negative, so N >= 2 for everyone and
+#   `verified_reporter_count >= 3` is a superset of every possible alert. It
+#   applies before any arithmetic without dropping a qualifying row.
+#
+# Section membership uses the live (observer)-[:FOLLOWS]->(bob) edge, NOT
+# `hops_<observer> = 1`. The edge is maintained by kind-3 ingest (seconds
+# behind the user's follow list); `hops_` is only rewritten by a GrapeRank run,
+# so it would keep alerting on people the observer already unfollowed. `hops_`
+# is still returned for display, and remains the right input for a future
+# "alert me about pubkeys X hops out" control.
+
+# Grain of the threshold: one extra tolerated report per this many verified
+# followers. Shared with the service so the two can't drift apart.
+FOLLOWERS_PER_EXTRA_REPORT = 500
+
+# Ceiling on candidates pulled back from step (1). Far above any plausible
+# real count — a backstop against a pathological graph, not a paging limit.
+# Callers are expected to log when it bites rather than truncate silently.
+MAX_ALERT_CANDIDATES = 5000
+
+_ALERT_CANDIDATES_QUERY = """
+MATCH (observer:NostrUser {pubkey: $observer_pubkey})
+CALL (observer) {
+    MATCH (:NostrUser)-[:REPORTS]->(bob:NostrUser)
+    WITH DISTINCT observer, bob
+    WHERE coalesce(bob[$trusted_reporters_key], 0) >= 3
+      AND bob.pubkey <> observer.pubkey
+    WITH bob,
+         toInteger(coalesce(bob[$trusted_reporters_key], 0)) AS verified_reporters,
+         bob[$trusted_followers_key] AS stored_followers,
+         bob[$influence_key] AS influence,
+         bob[$hops_key] AS hops,
+         EXISTS { (observer)-[:FOLLOWS]->(bob) } AS is_direct
+    WHERE is_direct OR (influence IS NOT NULL AND influence > $cutoff)
+    RETURN bob.pubkey AS pubkey, verified_reporters, stored_followers,
+           influence, hops, is_direct
+}
+RETURN pubkey, verified_reporters, stored_followers, influence, hops, is_direct
+LIMIT $max_candidates
+"""
+
+
+async def get_network_alert_candidates(
+    session: AsyncNeoDriver,
+    observer_pubkey: str,
+    influence_key: str,
+    hops_key: str,
+    trusted_followers_key: str,
+    trusted_reporters_key: str,
+    cutoff: float,
+    max_candidates: int = MAX_ALERT_CANDIDATES,
+) -> list[dict]:
+    """Pubkeys that could be network alerts, before the report threshold applies.
+
+    Reachability is already decided here (directly followed, or above `cutoff`),
+    but the threshold is NOT — it needs a verified follower count, and
+    `stored_followers` comes back None when this observer has no GrapeRank run
+    carrying `trusted_followers_<observer>` yet. The caller resolves those.
+
+    Touches no follower or muter edges: every value is a property read on the
+    candidate node itself.
+    """
+    result = await session.run(
+        _ALERT_CANDIDATES_QUERY,
+        observer_pubkey=observer_pubkey,
+        influence_key=influence_key,
+        hops_key=hops_key,
+        trusted_followers_key=trusted_followers_key,
+        trusted_reporters_key=trusted_reporters_key,
+        cutoff=cutoff,
+        max_candidates=int(max_candidates),
+    )
+    return [dict(record) async for record in result]
+
+
+async def count_above_cutoff_followers_capped(
+    session: AsyncNeoDriver,
+    pubkeys: list[str],
+    influence_key: str,
+    cutoff: float,
+    cap: int,
+) -> dict[str, int]:
+    """Above-cutoff follower counts, each stopping at `cap`.
+
+    Fallback for candidates with no stored `trusted_followers_<observer>`.
+
+    `cap` is what makes this safe to run on a huge account. A row can only clear
+    the threshold when its verified follower count is below
+    `FOLLOWERS_PER_EXTRA_REPORT * (verified_reporters - 2)`, so counting past
+    that point cannot change any decision. Pass that value as `cap` and read the
+    result as: **count < cap → exact count, row passes; count == cap → the true
+    count is at least `cap`, row fails.** A row that survives therefore always
+    carries a real number, never a truncated one.
+
+    Caveat worth knowing: `cap` bounds the above-cutoff followers *collected*,
+    not the follower edges *scanned*. An account with many followers but few
+    above the cutoff never reaches the cap and still costs a full traversal of
+    its follower edges. The cap helps most where the risk is highest (accounts
+    with a large trusted following) and never hurts.
+
+    Cypher forbids a LIMIT that varies per row, so callers bucket pubkeys by
+    identical `cap` and call this once per bucket; `cap` is interpolated and so
+    is guarded here, at the interpolation site.
+    """
+    if type(cap) is not int or not 1 <= cap <= 10_000_000:
+        raise ValueError(f"cap must be an int in [1, 10000000], got {cap!r}")
+    if not pubkeys:
+        return {}
+
+    query = f"""
+    UNWIND $pubkeys AS pk
+    MATCH (bob:NostrUser {{pubkey: pk}})
+    CALL (bob) {{
+        MATCH (f:NostrUser)-[:FOLLOWS]->(bob)
+        WHERE f[$influence_key] IS NOT NULL
+          AND f[$influence_key] >= $cutoff
+        WITH f
+        LIMIT {cap}
+        RETURN count(f) AS capped_followers
+    }}
+    RETURN pk AS pubkey, capped_followers
+    """
+    result = await session.run(
+        query, pubkeys=pubkeys, influence_key=influence_key, cutoff=cutoff
+    )
+    return {
+        record["pubkey"]: int(record["capped_followers"] or 0)
+        async for record in result
+    }
+
+
+async def count_verified_muters(
+    session: AsyncNeoDriver,
+    pubkeys: list[str],
+    influence_key: str,
+    verified_threshold: float,
+) -> dict[str, int]:
+    """Above-threshold muter counts, keyed by pubkey.
+
+    Display-only — the algorithm never computes a `trusted_muters` scorecard
+    field, so there is nothing stored to read. Never part of the filter, so
+    callers run it last, over the already-limited result rows.
+    """
+    if not pubkeys:
+        return {}
+
+    query = """
+    UNWIND $pubkeys AS pk
+    MATCH (bob:NostrUser {pubkey: pk})
+    CALL (bob) {
+        MATCH (m:NostrUser)-[:MUTES]->(bob)
+        WHERE m[$influence_key] IS NOT NULL
+          AND m[$influence_key] >= $verified_threshold
+        RETURN count(m) AS verified_muters
+    }
+    RETURN pk AS pubkey, verified_muters
+    """
+    result = await session.run(
+        query,
+        pubkeys=pubkeys,
+        influence_key=influence_key,
+        verified_threshold=verified_threshold,
+    )
+    return {
+        record["pubkey"]: int(record["verified_muters"] or 0)
+        async for record in result
+    }

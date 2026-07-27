@@ -17,6 +17,7 @@ publishing — and routers just thin-wrap them.
 | `graperank_preset_service.py` | 109 | Builtin presets (DEFAULT/PERMISSIVE/RESTRICTIVE) get/set + history; bridges camelCase API ↔ snake_case columns. |
 | `assistant_profile_service.py` | 107 | Publish a kind-0 profile event for the assistant pubkey. Pure Nostr-side; no DB. |
 | `nsec_encryption_service.py` | 210 | Background rotation of `BrainstormNsec.encrypted_nsec`: scan rows, decrypt-old/encrypt-new, write back. Idempotent and resumable. |
+| `network_alerts_service.py` | 118 | `/networkAlerts`: resolves the observer (hex or npub), builds the per-observer property keys, maps graph rows → panel payload. Neo4j-only, no SQL. |
 
 ## Conventions
 
