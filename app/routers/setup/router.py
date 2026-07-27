@@ -11,7 +11,7 @@ from app.repos.brainstorm_nsec import (
 
 router = APIRouter()
 
-TAGS_IN_30382 = ["rank", "followers"]
+TAGS_IN_30382 = ["rank", "followers", "reporters", "muters", "hops"]
 
 
 @router.get(

@@ -10,7 +10,7 @@ If a class is exchanged over HTTP, it goes in `app/schemas/`. If it's purely an 
 
 The GrapeRank algorithm's output, used both internally and as the queue-message payload picked up by the Nostr-publishing consumer.
 
-- **`ScoreCard`** — per-(observer, observee) result. Fields: `observer`, `observee`, `context` (default `"not a bot"`), `average_score`, `input`, `confidence`, `influence`, `verified`, `hops`, `trusted_followers`, `trusted_reporters`.
+- **`ScoreCard`** — per-(observer, observee) result. Fields: `observer`, `observee`, `context` (default `"not a bot"`), `average_score`, `input`, `confidence`, `influence`, `verified`, `hops`, `trusted_followers`, `trusted_reporters`, `trusted_muters`. The three `trusted_*` counts and `hops` ride this object into the Trusted Assertion's tags; none is persisted to Neo4j.
 - **`GrapeRankResult`** — top-level container. Holds:
   - `scorecards: dict[str, ScoreCard] | None` — keyed by observee pubkey.
   - `rounds: int | None`, `duration_seconds: float`, `success: bool` — run telemetry.

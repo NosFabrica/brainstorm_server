@@ -8,11 +8,8 @@ from nostr_sdk import (  # type: ignore
     Client,
     ClientMessage,
     Event,
-    EventBuilder,
     Keys,
-    Kind,
     NostrSigner,
-    Tag,
 )
 
 from app.core.config import settings
@@ -21,6 +18,7 @@ from app.core.loggr import loggr
 from app.core.vespa import batch_upsert_scores
 from app.db_models import BrainstormRequestStatus
 from app.message_queue_tasks.ta_signing import (
+    UNREACHABLE_HOPS,
     TaInput,
     build_atag_deletion_builders,
     build_ta_event_builder,
@@ -51,8 +49,8 @@ def prepare_ta_inputs(
     cutoff: float,
     full_sync: bool,
 ) -> list[TaInput]:
-    """The above-cutoff scorecards to assert, as picklable
-    `(observee, rank, followers)` tuples — sorted by influence descending.
+    """The above-cutoff scorecards to assert, as picklable `TaInput`s — sorted by
+    influence descending.
 
     Replicates the two filters of the original sign loop: the full-sync /
     changed-score gate (which scorecards to consider this run), then the
@@ -69,7 +67,14 @@ def prepare_ta_inputs(
         reverse=True,
     )
     return [
-        (sc.observee, round(sc.influence * 100), sc.trusted_followers)
+        TaInput(
+            sc.observee,
+            round(sc.influence * 100),
+            sc.trusted_followers,
+            sc.trusted_reporters,
+            sc.trusted_muters,
+            sc.hops,
+        )
         for sc in selected
         if round(sc.influence, 2) >= cutoff
     ]
@@ -279,8 +284,8 @@ async def _sign_ta_events_sequential(
 ) -> list[Event]:
     """Sign each TA via the relay-connected client, one await at a time."""
     events: list[Event] = []
-    for d_tag, rank, followers in inputs:
-        builder = build_ta_event_builder(d_tag, rank, followers)
+    for ta_input in inputs:
+        builder = build_ta_event_builder(ta_input)
         events.append(await nostr_client.sign_event_builder(builder))
     return events
 
@@ -334,15 +339,12 @@ async def get_zero_score_events_for_pubkeys(
 ) -> list[Event]:
     # Replaceable kind 30382 events with rank=0. Published before the kind 5
     # deletions so that even if the relay rejects kind 5, the score is
-    # effectively zeroed out.
+    # effectively zeroed out. Built through the shared builder so a zeroed event
+    # carries the same tag set as a live one — every count zero, and no `hops`
+    # (a dropped Observee has no asserted distance).
     events: list[Event] = []
     for pk in pubkeys:
-        tags = [
-            Tag.parse(["d", pk]),
-            Tag.parse(["rank", "0"]),
-            Tag.parse(["followers", "0"]),
-        ]
-        builder = EventBuilder(kind=Kind(30382), content="").tags(tags)
+        builder = build_ta_event_builder(TaInput(pk, 0, 0, 0, 0, UNREACHABLE_HOPS))
         signed_event = await nostr_client.sign_event_builder(builder)
         events.append(signed_event)
     return events
