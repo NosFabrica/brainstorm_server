@@ -44,11 +44,18 @@ async def process_neo4j_write_message(message: dict):
         await db.commit()
 
     async def process_batch(batch):
+        # `trusted_followers` is the observee's verified-follower count as the
+        # algorithm computed it (followers above `verifiedFollowersInfluenceCutoff`
+        # — see GrapeRankAlgorithm.java). It's persisted because the network-alert
+        # threshold scales with it (N = 2 + floor(verified_followers / 500)), and
+        # recounting above-cutoff followers per candidate at query time is a scan
+        # over every follower edge. Written here, it's a property read instead.
         query = f"""
         UNWIND $rows AS row
         MATCH (n:NostrUser {{pubkey: row.observee}})
         SET n.influence_{observer} = row.influence,
             n.hops_{observer} = row.hops,
+            n.trusted_followers_{observer} = row.trusted_followers,
             n.trusted_reporters_{observer} = row.trusted_reporters
         """
         async with neo4j_driver.session() as session:

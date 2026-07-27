@@ -110,7 +110,7 @@ queries:
   - Candidates are anchored *through* the `REPORTS` edge, never a `:NostrUser` label scan. No index can substitute — the influence/reporter properties are per-observer, so indexing them would mean one index per observer.
   - `verified_reporter_count >= 3` prefilters before any arithmetic. Valid because `N = 2 + floor(tf/500) >= 2` for everyone.
   - The capped count's `cap` is **not** an arbitrary page size. A row alerts only when its verified follower count is below `500 * (reporters - 2)`, so a count reaching the cap belongs to a row that fails. That's why a count *below* the cap is exact and safe to publish, and why the service drops rows that hit it.
-  - Step 2 runs for candidates with no stored `trusted_followers_<observer>` — which today is **all** of them, because nothing writes that property. The whole `/networkAlerts` path is read-only against Neo4j. Persisting the property (a one-line addition to `write_neo4j_results.py`) would turn step 2 into a property read, at the cost of a fourth per-observer property; that tradeoff is deliberately a separate change.
+  - Step 2 runs only for candidates with no stored `trusted_followers_<observer>`, and goes quiet as observers backfill. `write_neo4j_results.py` persists that property, making it a **fourth** per-observer property — note the cost: Neo4j walks a linked list of property records to resolve a key, and every distinct property *name* permanently consumes a global property-key token that is never reclaimed. Both scale with observer count.
 
 **Per-observer node properties** written by `write_neo4j_results.py`, all suffixed
 with the observer's hex pubkey: `influence_`, `hops_`, `trusted_followers_`,
