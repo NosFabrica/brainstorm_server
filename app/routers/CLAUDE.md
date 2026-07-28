@@ -101,17 +101,19 @@ token still 401s:
 
 | Method | Path | Response | Notes |
 |---|---|---|---|
-| GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence. `flagged_by_observer` / `flagged_count` sit on the saved preset's verified line |
-| GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Tier breakdown; query params: `tier_high/medium_high/medium` |
-| GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor`. `verified_only=true` filters on the section's own preset cutoff; `tier` uses the same fallthrough as `/stats` |
+| GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence. The subject's own `verified` / `tier` and `flagged_by_observer` / `flagged_count` sit on the saved preset's verified line |
+| GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Per-section total + verified + tier breakdown. No query params — the tier bands are fixed constants |
+| GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor`. `verified_only=true` filters on the section's own preset cutoff; `tier` uses the same fallthrough as `/stats`; each row carries the preset's `verified` verdict + `tier` |
 | GET | `/{pubkey}` | `GetUserDataResponse` | Full 6-relationship graph |
 
 The verified cutoffs, the verified line and the tier fallthrough all come from
 the observer's **saved preset** (`get_verified_cutoffs` in
 `user/dependencies.py`), never from a client-supplied number — the
-`verified_threshold` query param is gone from all three read endpoints. `/stats`
-returns the verified counts; `/overview` returns no verified count of its own,
-only the two flagged fields, which sit on the same line.
+`verified_threshold` query param is gone from all three read endpoints, and so
+is `/connections`' `min_influence` — a client cannot supply a threshold at all.
+`/stats` returns the verified *counts*; `/overview` returns no count of its own,
+only the subject's own verdict and the two flagged fields; `/connections` rows
+each carry their own `verified` / `tier`. All of them sit on the same line.
 
 ### `graperank/router.py` — GrapeRank presets
 

@@ -38,3 +38,23 @@ def test_connections_exposes_the_preset_driven_verified_filter():
     # The replacement for the frontend's `min_influence: getVerifiedThreshold()`
     # — the server decides which cutoff "verified" means for this section.
     assert "verified_only" in _query_params("/user/{pubkey}/connections")
+
+
+@pytest.mark.parametrize("path", _READ_PATHS)
+def test_read_endpoints_take_no_tier_band_overrides(path):
+    # The tier bands are fixed constants (app/core/tier_thresholds.py). Letting a
+    # client move them meant `/connections?tier=…` could bucket a subject
+    # differently from the `/stats` count it's supposed to match — and nothing
+    # ever overrode them: the frontend sent back the same 0.50/0.20/0.07.
+    assert not {
+        "tier_high",
+        "tier_medium_high",
+        "tier_medium",
+    } & _query_params(path)
+
+
+def test_connections_takes_no_min_influence():
+    # The last client-supplied threshold. It was a `>=` stand-in for verified's
+    # strict `>`, so a client could still build a "verified" list that disagreed
+    # with /stats. Ticket 04 removed it once no caller passed it.
+    assert "min_influence" not in _query_params("/user/{pubkey}/connections")

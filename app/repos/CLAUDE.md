@@ -102,15 +102,24 @@ in `brainstorm_nsec.py` are the only safe entry points.
 are `get_list_of_pubkeys_*` and `count_*` helpers. Plus the bigger composite
 queries:
 
-- `get_outbound_counts_and_influence(session, pubkey, influence_key, trusted_reporters_key, verified_line) → (influence, n_follows, n_mutes, n_reports, flagged_by_observer, flagged_count)` — single round-trip vs four sequential.
-- `get_paginated_section_connections(session, pubkey, influence_key, rel_type, direction, limit, cursor_inf, cursor_pk, …)` → `(items, next_cursor, total)` — cursor = `(influence, pubkey)`; ordered influence DESC, pubkey ASC. **Drives `/user/{pubkey}/connections`**. `verified_cutoff` keeps only subjects strictly above that section's preset cutoff; `verified_line` is the tier fallthrough boundary.
+- `get_outbound_counts_and_influence(session, pubkey, influence_key, trusted_reporters_key, verified_line, …) → OutboundOverview(influence, following, muting, reporting, flagged_by_observer, flagged_count, verified, tier)` — single round-trip vs four sequential. `verified`/`tier` are the subject's *own* verdict, off the same `_TIER_PREDICATES` table the section rows use.
+- `get_paginated_section_connections(session, pubkey, influence_key, rel_type, direction, limit, cursor_inf, cursor_pk, …)` → `(items, next_cursor, total)` — cursor = `(influence, pubkey)`; ordered influence DESC, pubkey ASC. **Drives `/user/{pubkey}/connections`**. `verified_cutoff` is that section's preset cutoff — every row reports whether it clears it (`verified`) and which bucket it lands in (`tier`), and `verified_only` narrows the page to the verified rows. `verified_line` is the tier fallthrough boundary. There is no client-supplied `min_influence`.
 - `get_all_section_stats(...)` — one query covering all 6 sections; ~20 % faster than firing them in parallel.
 - `get_user_graph_data(...)` — unpaginated full graph.
 
-**One tier table, two endpoints.** `_TIER_PREDICATES` is expanded both by
-`get_all_section_stats` (the `/stats` bucket counts) and by
-`_build_tier_predicate` (the `/connections?tier=…` filter), so the two can't
-disagree about which subject sits in which bucket. Verified is strict `>` the
+**One tier table, three expanders.** `_TIER_PREDICATES` is expanded by
+`get_all_section_stats` (the `/stats` bucket counts), by `_build_tier_predicate`
+(the `/connections?tier=…` filter), and by `_tier_case` (the per-row `tier` on
+`/connections` items and the subject's own `tier` on `/overview`), so none of
+them can disagree about which subject sits in which bucket. The same fallthrough
+is also written in Python (`tier_thresholds.classify_tier`) for the GrapeRank
+result writer, which buckets scorecards before they reach the graph and so has
+no query to run; `tests/integration/test_tier_classifier_matches_cypher.py`
+asserts the two agree. The band bounds come
+from `_tier_band_params()` — the `TIER_*` constants, bound the same way by every
+expander. No endpoint takes band overrides: a client that could move a band could
+make `/connections?tier=…` return rows `/stats` counted in a different bucket.
+Verified is strict `>` the
 verified line, so `_VERIFIED_LINE` / `_UNVERIFIED_LINE` are exact complements
 among subjects that have an influence at all (`_NO_INFLUENCE` is the third
 case); let them drift and a subject sitting exactly on the line lands in no

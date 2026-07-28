@@ -12,8 +12,7 @@ from app.routers.open_ranking.schemas import (
     StatsPubkeyRequest,
     StatsPubkeyResponse,
 )
-from app.core.tier_thresholds import DEFAULT_VERIFIED_THRESHOLD
-from app.services.user_service import get_user_overview
+from app.services.user_service import get_user_rank_and_counts
 from app.utils.auth.nwt import optional_nwt_signer
 
 
@@ -52,16 +51,19 @@ async def stats_pubkey(
         "/stats/pubkey", req.algorithm, pov, forced_observer=signer
     )
 
-    # ORE-02 exposes only the rank and the raw counts, never the flagged fields,
-    # so the verified line is unobservable here — pass the baseline.
-    overview = await get_user_overview(
-        pubkey=pubkey, observer=observer, verified_line=DEFAULT_VERIFIED_THRESHOLD
-    )
-    counts = overview.counts
+    # NOTE: this endpoint does NOT apply the observer's saved GrapeRank preset.
+    # It returns `rank` (raw influence_<observer>) and raw counts, none of which
+    # move with a preset — so there's no line to resolve, hence no Postgres read
+    # and no line to get wrong. The observer itself still applies: it picks whose
+    # web of trust the rank comes from (signer / pov / house key).
+    # Surfacing verified / tier / flagged means switching to `get_user_overview`
+    # + `resolve_verified_cutoffs`, as the /user reads do.
+    result = await get_user_rank_and_counts(pubkey=pubkey, observer=observer)
+    counts = result.counts
 
     return StatsPubkeyResponse(
         pubkey=pubkey,
-        rank=_safe_rank(overview.influence),
+        rank=_safe_rank(result.influence),
         follows=counts.following,
         followers=counts.followed_by,
         mutes=counts.muting,

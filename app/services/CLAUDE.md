@@ -11,7 +11,7 @@ publishing — and routers just thin-wrap them.
 | File | LOC | Owns |
 |---|---|---|
 | `auth_service.py` | 24 | JWT mint / NIP-98 verify glue. The repo-less service — pure crypto + Redis. |
-| `user_service.py` | 359 | Everything under `/user/*`: graph fetches, stats, connection pagination, assistant-profile publish, GrapeRank trigger throttling. The biggest service. |
+| `user_service.py` | 380 | Everything under `/user/*`: graph fetches, stats, connection pagination, assistant-profile publish, GrapeRank trigger throttling. The biggest service. |
 | `brainstorm_request_service.py` | 157 | GrapeRank job lifecycle: create, status, result attach, error capture, throttle decisions. |
 | `brainstorm_pubkey_service.py` | 54 | Create-or-get the per-user brainstorm-assistant pubkey (delegates to `brainstorm_nsec` repo + GrapeRank trigger). |
 | `graperank_preset_service.py` | 109 | Builtin presets (DEFAULT/PERMISSIVE/RESTRICTIVE) get/set + history; bridges camelCase API ↔ snake_case columns. |
@@ -75,6 +75,7 @@ process; if/when you horizontally scale the server, push this flag into Redis.
 
 - Owns the throttle: `_should_block_graperank_trigger(...)` checks `last_time_triggered_graperank` against `settings.block_frequent_graperank_requests_minutes`.
 - Composes Neo4j calls (graph + influence) with Postgres (history). Avoid round-tripping per-section — there's a single `get_all_section_stats` for that.
+- `get_user_overview` needs a `verified_line` (the observer's preset cutoff); `get_user_rank_and_counts` is the lean alternative for callers wanting only a rank + the raw counts, which takes no line and so needs no preset read. ORE-02 uses it.
 - Manages the **observer key** for graph queries: defaults to `settings.periodic_graperank_pubkey`, else hardcoded fallback `be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a` (same as the Vespa search service).
 - Publishes the assistant kind-0 via `assistant_profile_service`.
 

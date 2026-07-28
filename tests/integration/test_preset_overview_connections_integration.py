@@ -17,13 +17,19 @@ import asyncio
 
 import pytest
 
+from app.repos.user_repo import (
+    get_counts_and_influence,
+    get_outbound_counts_and_influence,
+)
 from app.services.verified_cutoffs import VerifiedCutoffs
+from app.utils.observer import default_observer_pubkey
 from tests.integration.preset_graph import (
     DEFAULT_CUTOFFS,
     RESTRICTIVE_CUTOFFS,
     api,
     fetch_connections,
     fetch_overview,
+    fresh_driver,
     seed_graph,
     fetch_stats,
 )
@@ -151,6 +157,62 @@ def test_overview_flagged_derives_from_the_saved_preset(graph):
     asyncio.run(body())
 
 
+def test_overview_reports_the_subjects_own_tier(graph):
+    """The subject's own bucket, so a profile page renders its tier badge from
+    the observer's preset instead of re-deriving one from a threshold."""
+
+    async def body():
+        async with api(DEFAULT_CUTOFFS) as client:
+            default = await fetch_overview(client, graph["subject"])
+        async with api(RESTRICTIVE_CUTOFFS) as client:
+            restrictive = await fetch_overview(client, graph["subject"])
+
+        # 0.4 clears the DEFAULT line (0.02) and bands into medium_high
+        # (>= 0.2, < 0.5).
+        assert default["tier"] == "medium_high"
+
+        # The RESTRICTIVE line (0.5) is above it, so it falls through the bands
+        # — and its 2 trusted reporters put it in the flagged bucket.
+        assert restrictive["tier"] == "low_and_reported_by_2_or_more_trusted_pubkeys"
+
+    asyncio.run(body())
+
+
+def test_lean_counts_query_agrees_with_the_full_overview_query(graph):
+    """ORE-02 takes a lean query that skips the flagged scan and needs no
+    verified line. The influence and outbound counts it returns must still be
+    the ones `/overview` reports, or the two would quietly diverge."""
+
+    async def body():
+        observer = default_observer_pubkey()
+        driver = fresh_driver()
+        try:
+            async with driver.session() as session:
+                lean = await get_counts_and_influence(
+                    session, graph["subject"], f"influence_{observer}"
+                )
+                full = await get_outbound_counts_and_influence(
+                    session,
+                    graph["subject"],
+                    f"influence_{observer}",
+                    f"trusted_reporters_{observer}",
+                    verified_line=DEFAULT_CUTOFFS.verified_line,
+                )
+        finally:
+            await driver.close()
+
+        assert lean.influence == full.influence
+        assert (lean.following, lean.muting, lean.reporting) == (
+            full.following,
+            full.muting,
+            full.reporting,
+        )
+        # And they're real numbers, not two matching zeroes.
+        assert lean.following == 2
+
+    asyncio.run(body())
+
+
 def test_overview_ignores_the_verified_threshold_query_param(graph):
     async def body():
         async with api(DEFAULT_CUTOFFS) as client:
@@ -209,7 +271,14 @@ def test_verified_only_filter_is_strict_greater_than(graph):
     asyncio.run(body())
 
 
-def test_unfiltered_list_is_unaffected_by_the_preset(graph):
+_BANDED_TIERS = {"high", "medium_high", "medium", "medium_low"}
+
+
+def test_unfiltered_list_membership_is_unaffected_by_the_preset(graph):
+    """The preset decides which rows are *banded*, not which rows are in the
+    section — so an unfiltered page holds the same subjects either way, and only
+    the per-row tiers move."""
+
     async def body():
         async with api(DEFAULT_CUTOFFS) as client:
             default = await fetch_connections(
@@ -221,7 +290,14 @@ def test_unfiltered_list_is_unaffected_by_the_preset(graph):
             )
 
         assert default["total"] == 9
-        assert restrictive == default
+        assert restrictive["total"] == default["total"]
+        assert [item["pubkey"] for item in restrictive["items"]] == [
+            item["pubkey"] for item in default["items"]
+        ]
+        banded = lambda page: sum(  # noqa: E731
+            item["tier"] in _BANDED_TIERS for item in page["items"]
+        )
+        assert banded(restrictive) < banded(default)
 
     asyncio.run(body())
 
@@ -294,6 +370,40 @@ def test_tier_filters_partition_the_section(graph):
                     item["pubkey"] for item in unfiltered["items"]
                 ), cutoffs
                 assert len(seen) == unfiltered["total"], cutoffs
+
+    asyncio.run(body())
+
+
+# ---------------------------------------------------------------------------
+# /connections — the per-row tier
+# ---------------------------------------------------------------------------
+def test_row_tier_matches_the_tier_filter_buckets(graph):
+    async def body():
+        for cutoffs in (DEFAULT_CUTOFFS, RESTRICTIVE_CUTOFFS):
+            async with api(cutoffs) as client:
+                rows = await fetch_connections(client, graph["subject"], "followed_by")
+                by_row_tier: dict[str, set[str]] = {}
+                for item in rows["items"]:
+                    by_row_tier.setdefault(item["tier"], set()).add(item["pubkey"])
+
+                for tier in _TIERS:
+                    page = await fetch_connections(
+                        client, graph["subject"], "followed_by", tier=tier
+                    )
+                    assert by_row_tier.get(tier, set()) == {
+                        item["pubkey"] for item in page["items"]
+                    }, (cutoffs, tier)
+
+    asyncio.run(body())
+
+
+def test_flagged_rows_carry_the_flagged_tier(graph):
+    async def body():
+        async with api(DEFAULT_CUTOFFS) as client:
+            page = await fetch_connections(client, graph["subject"], "flagged")
+            assert page["items"]
+            for item in page["items"]:
+                assert item["tier"] == "low_and_reported_by_2_or_more_trusted_pubkeys"
 
     asyncio.run(body())
 

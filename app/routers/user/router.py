@@ -34,9 +34,6 @@ from app.services.manual_quota import enforce_manual_quota
 from app.services.user_service import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
-    TIER_HIGH,
-    TIER_MEDIUM,
-    TIER_MEDIUM_HIGH,
     ConnectionKind,
     get_own_latest_graperank,
     get_user_connections,
@@ -270,9 +267,6 @@ async def get_user_overview_endpoint(
 )
 async def get_user_stats_endpoint(
     pubkey: str,
-    tier_high: float = Query(default=TIER_HIGH, ge=0.0, le=1.0),
-    tier_medium_high: float = Query(default=TIER_MEDIUM_HIGH, ge=0.0, le=1.0),
-    tier_medium: float = Query(default=TIER_MEDIUM, ge=0.0, le=1.0),
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
     cutoffs: VerifiedCutoffs = Depends(get_verified_cutoffs),
 ) -> GetUserStatsResponse:
@@ -280,9 +274,6 @@ async def get_user_stats_endpoint(
         pubkey=pubkey,
         observer=resolve_observer(jwt_data),
         cutoffs=cutoffs,
-        tier_high=tier_high,
-        tier_medium_high=tier_medium_high,
-        tier_medium=tier_medium,
     )
     return GetUserStatsResponse(data=result)
 
@@ -303,7 +294,6 @@ async def get_user_connections_endpoint(
         default=None,
         pattern="^(high|medium_high|medium|medium_low|low|low_and_reported_by_2_or_more_trusted_pubkeys)$",
     ),
-    min_influence: float | None = Query(default=None, ge=0.0, le=1.0),
     verified_only: bool = Query(
         default=False,
         description=(
@@ -311,9 +301,6 @@ async def get_user_connections_endpoint(
             "saved preset. Ignored for kind=flagged."
         ),
     ),
-    tier_high: float = Query(default=TIER_HIGH, ge=0.0, le=1.0),
-    tier_medium_high: float = Query(default=TIER_MEDIUM_HIGH, ge=0.0, le=1.0),
-    tier_medium: float = Query(default=TIER_MEDIUM, ge=0.0, le=1.0),
     with_total: bool = Query(
         default=False,
         description="Include the filtered total (extra graph scan); off by default",
@@ -329,11 +316,7 @@ async def get_user_connections_endpoint(
         cursor=cursor,
         order=order,
         tier=tier,
-        min_influence=min_influence,
         verified_only=verified_only,
-        tier_high=tier_high,
-        tier_medium_high=tier_medium_high,
-        tier_medium=tier_medium,
         with_total=with_total,
     )
     return GetUserConnectionsResponse(data=result)

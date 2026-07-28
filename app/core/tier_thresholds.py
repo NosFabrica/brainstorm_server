@@ -1,27 +1,58 @@
-"""Canonical tier-band thresholds.
+"""Canonical tier bands and the tier classifier.
 
-Bucket names match the GR result writer's `count_values` keys
-(see app.message_queue_tasks.message_queue_consumer). Each constant below
-is the LOWER bound of its tier — `influence >= TIER_HIGH` means tier "high",
-`influence >= TIER_MEDIUM_HIGH AND < TIER_HIGH` means tier "medium_high",
-etc.
+Each TIER_* constant is the LOWER bound of the tier it names. The bands are
+fixed — no endpoint accepts overrides. Bucket names match the GR result
+writer's `count_values` keys.
 
-DEFAULT_VERIFIED_THRESHOLD is the lower bound of "medium_low" but is kept
-named separately because it's the verified line. None of the three public read
-endpoints (`/stats`, `/overview`, `/connections`) use it any more: each derives
-the line (and the three per-relationship verified cutoffs) from the observer's
-saved GrapeRank preset — see app.services.verified_cutoffs. It happens to equal
-DEFAULT's seeded follower cutoff, so the DEFAULT baseline is unchanged. It
-survives as the baseline for callers with no observer preset to resolve: ORE-02
-(`/stats/pubkey`, which surfaces neither the flagged fields nor tiers) and the
-repo-layer default in get_paginated_section_connections.
-
-Single source of truth for both:
-  - on-the-fly tier counts in /user/{pubkey}/stats and /user/{pubkey}/connections
-  - per-hop confidence buckets written into BrainstormRequest.count_values
+DEFAULT_VERIFIED_THRESHOLD is NOT the live verified line: that is per-
+relationship and comes from the observer's saved preset (see
+app.services.verified_cutoffs). It equals DEFAULT's seeded follower cutoff and
+survives only as a fallback, for when a preset can't be read
+(`FALLBACK_VERIFIED_CUTOFFS`) or a run has no params snapshot
+(`verified_line_for_run`).
 """
 
 TIER_HIGH = 0.50
 TIER_MEDIUM_HIGH = 0.20
 TIER_MEDIUM = 0.07
 DEFAULT_VERIFIED_THRESHOLD = 0.02
+
+FLAGGED_TIER = "low_and_reported_by_2_or_more_trusted_pubkeys"
+
+# Cypher CASE arm order (`user_repo._TIER_PREDICATES`); also the `count_values` keys.
+TIER_NAMES: tuple[str, ...] = (
+    "high",
+    "medium_high",
+    "medium",
+    "medium_low",
+    "low",
+    FLAGGED_TIER,
+)
+
+
+def classify_tier(
+    influence: float | None,
+    trusted_reporters: int,
+    verified_line: float,
+) -> str:
+    """A subject's tier bucket.
+
+    Bucketing lives here as well as in Cypher (`user_repo._TIER_PREDICATES`)
+    because the GrapeRank result writer buckets scorecards that aren't in the
+    graph yet. Keep the two in step —
+    tests/integration/test_tier_classifier_matches_cypher.py fails otherwise.
+
+    Fallthrough: bands apply only strictly above `verified_line`; at or below it
+    a subject is `low`, or flagged with 2+ trusted reporters. No influence → low.
+    """
+    if influence is None:
+        return "low"
+    if influence > verified_line:
+        if influence >= TIER_HIGH:
+            return "high"
+        if influence >= TIER_MEDIUM_HIGH:
+            return "medium_high"
+        if influence >= TIER_MEDIUM:
+            return "medium"
+        return "medium_low"
+    return FLAGGED_TIER if trusted_reporters >= 2 else "low"
