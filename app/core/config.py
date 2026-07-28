@@ -41,15 +41,15 @@ class Settings(BaseSettings):
     scheduler_fairness_enabled: bool = Field(default=False)
     periodic_graperank_pubkey: str = Field(default="")
     vespa_url: str = Field(...)
-    # Per-sink "fully re-assert state vs incremental" levers. Default True =
-    # current behavior (re-feed all above-cutoff + sweep all below-cutoff each
-    # run); False = incremental (changed scores + reported drops only).
-    #   vespa_full_sync → Vespa mirror (upserts + removes)
-    #   relay_full_sync → Nostr relay (kind-30382 TA republish + kind-5 deletes)
-    # When incremental, run a sink's flag True periodically to reconcile drift
-    # (the relay has no other reconciliation lever).
-    vespa_full_sync: bool = Field(default=True)
-    relay_full_sync: bool = Field(default=True)
+    # Per-sink publish mode. False (default) = only changed scores; True =
+    # re-assert every above-cutoff score each run. Re-assertion only, not deletes.
+    vespa_full_sync: bool = Field(default=False)  # Vespa upserts
+    relay_full_sync: bool = Field(default=False)  # kind-30382 TA republish
+    # Per-sink reaping: also delete EVERY below-cutoff Observee, not just
+    # those that fell off the baseline. Backwards-compat only — drains the legacy
+    # pre-cutoff backlog, then off. Not in env.example
+    relay_sweep_below_cutoff: bool = Field(default=False)
+    vespa_sweep_below_cutoff: bool = Field(default=False)
     # Count-gated parallel signing. At/below the threshold a publish run signs
     # via the simple sequential client loop (zero pool overhead — the common,
     # steady-state case). Above it, a *large* burst (first publish for an
@@ -59,12 +59,9 @@ class Settings(BaseSettings):
     sign_parallel_threshold: int = Field(default=10_000)
     sign_parallel_max_workers: int | None = Field(default=None)
     # Published-state-drift backstop: every Nth *scheduled* run for an observer
-    # forces a full re-assert on both sinks (delta can drift without self-repair).
-    # <= 0 disables the backstop (the per-run force_full_* overrides still work).
-    # Scheduled cadence is every 2h (12 runs/observer/day), so N=12 ≈ daily. The
-    # full run is the expensive path, so keep it infrequent: bump toward N=84
-    # (~weekly) once scheduling fans out to many observers.
-    full_sync_every_n_runs: int = Field(default=12)
+    # forces a full re-assert on both sinks.
+    # <= 0 disables the backstop.
+    full_sync_every_n_runs: int = Field(default=84)
     # Internal strfry relay used as the source of original signed kind-0 events
     # for the NIP-50 /relay endpoint. Not exposed externally — the FastAPI
     # /relay handler proxies search results out, never raw client traffic.

@@ -170,6 +170,10 @@ class UserConnectionCounts(BaseModel):
 class UserOverviewData(BaseModel):
     pubkey: str
     influence: float | None
+    # The subject's own bucket under the observer's saved preset, against the
+    # follower cutoff. Names are `ConnectionTierCounts`'; verified is any banded
+    # tier, so there's no separate flag.
+    tier: str | None = None
     flagged_by_observer: bool
     flagged_count: int
     counts: UserConnectionCounts
@@ -198,6 +202,11 @@ class UserConnectionItem(BaseModel):
     pubkey: str
     influence: float | None = None
     trusted_reporters: int | None = None
+    # The bucket `/stats` counted this row in, so a client renders the server's
+    # verdict rather than deriving its own from a threshold. Same fallthrough
+    # `/stats` and `?tier=` use. NB not the same question as `verified_only`,
+    # which filters on the section's own cutoff (muter/reporter, not follower).
+    tier: str | None = None
 
 
 class PaginatedUserConnections(BaseModel):

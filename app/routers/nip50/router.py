@@ -480,6 +480,47 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
         await _send_json(ws, ["EOSE", sub_id])
         return
 
+    # Cold-start fallback. An observer whose GrapeRank job hasn't landed yet has
+    # no cell in the `quality_scores` tensor, so every document scores 0 for it
+    # and the min_rank floor (rank>=2 by default) drops the entire result set.
+    # Without this, a brand-new observer gets a silent empty answer on every
+    # search until provisioning completes — which reads as "the relay is broken"
+    # and contradicts the NIP-11 document, which promises that the search "falls
+    # back to the instance's default observer" meanwhile.
+    #
+    # Retrying only when the personalized pass came back empty keeps this off the
+    # hot path: an observer that already has scores never pays the second call,
+    # and the retry disappears on its own once provisioning lands.
+    used_fallback_observer = False
+    fallback_observer = default_observer_pubkey()
+    if not results and observer_override and observer != fallback_observer:
+        try:
+            results = await vespa_search(
+                query_text=query,
+                user_pubkey=fallback_observer,
+                hits=hits,
+                include_zero_score_results=include_unscored,
+                ranking_profile=ranking_profile,
+                min_rank=min_rank,
+            )
+        except Exception as exc:
+            # The personalized pass already succeeded (it was just empty), so a
+            # failing fallback degrades to that empty answer rather than turning
+            # a working search into an error.
+            logger.warning("nip50: default-observer fallback failed: %r", exc)
+            results = []
+        if results:
+            used_fallback_observer = True
+            await _send_json(
+                ws,
+                [
+                    "NOTICE",
+                    f"observer {observer_override[:12]}... has no GrapeRank "
+                    "scores yet; ranking from the instance's default observer "
+                    "while its computation completes",
+                ],
+            )
+
     # Results already arrive in Vespa rank order, filtered + sorted as asked.
     ranked_pubkeys: list[str] = []
     seen: set[str] = set()
@@ -502,7 +543,7 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
     await _send_json(ws, ["EOSE", sub_id])
     logger.info(
         "nip50: sub=%s query=%r observer=%s profile=%s min_rank=%s "
-        "returned=%d emitted=%d",
+        "returned=%d emitted=%d fallback=%s",
         sub_id,
         query,
         observer[:12],
@@ -510,6 +551,7 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
         min_rank,
         len(results),
         emitted,
+        used_fallback_observer,
     )
 
 

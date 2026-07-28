@@ -15,19 +15,21 @@ from app.message_queue_tasks.upload_nostr_events import process_nostr_upload_mes
 from app.message_queue_tasks.write_neo4j_results import process_neo4j_write_message
 from app.core.tier_thresholds import (
     DEFAULT_VERIFIED_THRESHOLD,
-    TIER_HIGH,
-    TIER_MEDIUM,
-    TIER_MEDIUM_HIGH,
+    TIER_NAMES,
+    classify_tier,
 )
 from app.core.config import settings
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import update_last_time_calculated_graperank_on_db
 from app.repos.observer_whitelist_repo import upsert_observer_whitelist_on_db
 from app.repos.brainstorm_request_repo import (
+    select_brainstorm_request_by_id_on_db,
     update_brainstorm_request_internal_publication_status_by_id_on_db,
     update_brainstorm_request_result_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
 )
+from app.schemas.graperank_schemas import GrapeRankPresetParams
+from app.services.verified_cutoffs import build_cutoffs_from_params
 from app.neo4j_db.driver import driver as neo4j_driver
 
 logger = loggr.get_logger(__name__)
@@ -37,6 +39,58 @@ UPLOAD_NOSTR_RESULTS_QUEUE_NAME = "nostr_results_message_queue"
 WRITE_NEO4J_RESULTS_QUEUE_NAME = "write_neo4j_message_queue"
 STRFRY_EVENTS_QUEUE_NAME = "strfry:events"
 JOB_STARTED_QUEUE_NAME = "job_started_queue"
+
+
+def verified_line_for_run(request_row) -> float:
+    """The verified line THIS run computed under.
+
+    `count_values` is history, so it buckets against the run's own snapshotted
+    `graperank_params`, never the observer's preset as it stands today. A row
+    with no snapshot (predating the column) or an unreadable one falls back to
+    the baseline rather than failing the result write.
+    """
+    params = getattr(request_row, "graperank_params", None)
+    if not params:
+        return DEFAULT_VERIFIED_THRESHOLD
+    try:
+        return build_cutoffs_from_params(
+            GrapeRankPresetParams(**params)
+        ).verified_line
+    except (TypeError, ValueError):
+        logger.warning(
+            "Unusable graperank_params snapshot on the run; "
+            "bucketing count_values against the baseline line instead"
+        )
+        return DEFAULT_VERIFIED_THRESHOLD
+
+
+def bucket_scorecards_by_confidence_and_hops(
+    scorecards, verified_line: float
+) -> tuple[dict[str, dict[int, int]], dict[str, float]]:
+    """`(count_values, whitelist)` for one run's scorecards.
+
+    Buckets by (tier, hops) through `classify_tier` — the same fallthrough the
+    read endpoints apply in Cypher — so stored history and the observer's live
+    /stats agree. The whitelist is gated on the separate *validity* cutoff, so
+    it doesn't move with the preset.
+    """
+    number_by_confidence_by_hops: dict[str, dict[int, int]] = {
+        name: {} for name in TIER_NAMES
+    }
+    whitelist: dict[str, float] = {}
+
+    for scorecard in (scorecards or {}).values():
+        confidence = classify_tier(
+            scorecard.influence, scorecard.trusted_reporters, verified_line
+        )
+        by_hops = number_by_confidence_by_hops[confidence]
+        by_hops[scorecard.hops] = by_hops.get(scorecard.hops, 0) + 1
+
+        rounded_influence = round(scorecard.influence, 2)
+        if rounded_influence >= settings.cutoff_of_valid_graperank_scores:
+            whitelist[scorecard.observee] = rounded_influence
+
+    return number_by_confidence_by_hops, whitelist
 
 
 async def process_message(message: dict):
@@ -55,46 +109,18 @@ async def process_message(message: dict):
     if grape_rank_result.scorecards:
         pubkey = next(iter(grape_rank_result.scorecards.values())).observer
 
-    # Above-cutoff observees with rounded influence -> the observer's whitelist.
-    whitelist: dict[str, float] = {}
-
-    number_by_confidence_by_hops = {
-        "high": {},
-        "medium_high": {},
-        "medium": {},
-        "medium_low": {},
-        "low": {},
-        "low_and_reported_by_2_or_more_trusted_pubkeys": {},
-    }
-
-    if grape_rank_result.scorecards:
-        for _, scorecard in grape_rank_result.scorecards.items():
-            # Tier band boundaries are the canonical thresholds from
-            # user_service.py — kept in sync so on-the-fly /stats tier counts
-            # match the per-hop counts written here.
-            confidence = "high"
-            if scorecard.influence < TIER_HIGH:
-                confidence = "medium_high"
-            if scorecard.influence < TIER_MEDIUM_HIGH:
-                confidence = "medium"
-            if scorecard.influence < TIER_MEDIUM:
-                confidence = "medium_low"
-            if scorecard.influence < DEFAULT_VERIFIED_THRESHOLD:
-                if scorecard.trusted_reporters >= 2:
-                    confidence = "low_and_reported_by_2_or_more_trusted_pubkeys"
-                else:
-                    confidence = "low"
-
-            if not number_by_confidence_by_hops[confidence].get(scorecard.hops):
-                number_by_confidence_by_hops[confidence][scorecard.hops] = 0
-
-            number_by_confidence_by_hops[confidence][scorecard.hops] += 1
-
-            rounded_influence = round(scorecard.influence, 2)
-            if rounded_influence >= settings.cutoff_of_valid_graperank_scores:
-                whitelist[scorecard.observee] = rounded_influence
-
     async with db_session() as db:
+        # The line THIS run used, so stored history and live /stats agree.
+        request_row = await select_brainstorm_request_by_id_on_db(
+            db, message["private_id"]
+        )
+        number_by_confidence_by_hops, whitelist = (
+            bucket_scorecards_by_confidence_and_hops(
+                grape_rank_result.scorecards,
+                verified_line_for_run(request_row),
+            )
+        )
+
         await update_brainstorm_request_result_by_id_on_db(
             db,
             brainstorm_request_id=message["private_id"],

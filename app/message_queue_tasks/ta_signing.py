@@ -14,6 +14,7 @@ tree.
 import asyncio
 import os
 from concurrent.futures import ProcessPoolExecutor
+from typing import NamedTuple
 
 from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag  # type: ignore
 
@@ -23,20 +24,38 @@ TA_KIND = 30382
 # Coordinates per kind-5 deletion event. strfry's maxEventSize is generous, but
 # bounding the tag count keeps each deletion event well under any relay limit.
 DELETION_COORDS_PER_EVENT = 200
+# The algorithm's "no path from the Observer" hops value. Keyed on here rather
+# than on the current hop limit (8) so raising that limit needs no edit.
+UNREACHABLE_HOPS = 999
 
-# (observee/d-tag, rank, trusted-followers) — the only per-event inputs, as
-# plain picklable tuples so a shard ships cheaply across the process boundary.
-TaInput = tuple[str, int, int]
+
+class TaInput(NamedTuple):
+    """The per-event publish inputs — a plain picklable tuple so a shard ships
+    cheaply across the process boundary."""
+
+    observee: str  # the `d` tag
+    rank: int
+    followers: int
+    reporters: int
+    muters: int
+    hops: int
 
 
-def build_ta_event_builder(d_tag: str, rank: int, followers: int) -> EventBuilder:
+def build_ta_event_builder(ta_input: TaInput) -> EventBuilder:
     """The single source of truth for a TA's kind/tags, shared by the sequential
-    and parallel paths so both branches produce content-equivalent events."""
+    and parallel paths so both branches produce content-equivalent events.
+
+    `hops` is omitted at the unreachable sentinel so a consuming client never has
+    to special-case it — an absent tag means "no path", full stop."""
     tags = [
-        Tag.parse(["d", d_tag]),
-        Tag.parse(["rank", str(rank)]),
-        Tag.parse(["followers", str(followers)]),
+        Tag.parse(["d", ta_input.observee]),
+        Tag.parse(["rank", str(ta_input.rank)]),
+        Tag.parse(["followers", str(ta_input.followers)]),
+        Tag.parse(["reporters", str(ta_input.reporters)]),
+        Tag.parse(["muters", str(ta_input.muters)]),
     ]
+    if ta_input.hops < UNREACHABLE_HOPS:
+        tags.append(Tag.parse(["hops", str(ta_input.hops)]))
     return EventBuilder(kind=Kind(TA_KIND), content="").tags(tags)
 
 
@@ -68,8 +87,8 @@ def sign_ta_shard(inputs: list[TaInput], nsec: str) -> list[str]:
     (JSON, not `Event`, so results pickle back from a worker process)."""
     keys = Keys.parse(secret_key=nsec)
     return [
-        build_ta_event_builder(d_tag, rank, followers).sign_with_keys(keys).as_json()
-        for d_tag, rank, followers in inputs
+        build_ta_event_builder(ta_input).sign_with_keys(keys).as_json()
+        for ta_input in inputs
     ]
 
 

@@ -70,14 +70,12 @@ class TestCapabilityDocument:
 # ===========================================================================
 # ORE-02: /stats/pubkey
 # ===========================================================================
-def _fake_overview(influence: float | None = 0.42):
-    from app.schemas.schemas import UserConnectionCounts, UserOverviewData
+def _fake_stats(influence: float | None = 0.42):
+    from app.schemas.schemas import UserConnectionCounts
+    from app.services.user_service import UserRankAndCounts
 
-    return UserOverviewData(
-        pubkey=VALID_PUBKEY_1,
+    return UserRankAndCounts(
         influence=influence,
-        flagged_by_observer=False,
-        flagged_count=0,
         counts=UserConnectionCounts(
             followed_by=10, following=20, muted_by=1, muting=2, reported_by=3, reporting=4,
         ),
@@ -87,8 +85,8 @@ def _fake_overview(influence: float | None = 0.42):
 class TestStatsPubkey:
     def test_happy_path_global_algorithm(self, client, auth_headers):
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview",
-            new=AsyncMock(return_value=_fake_overview(0.42)),
+            "app.routers.open_ranking.stats.get_user_rank_and_counts",
+            new=AsyncMock(return_value=_fake_stats(0.42)),
         ):
             r = client.post(
                 "/stats/pubkey", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
@@ -107,8 +105,8 @@ class TestStatsPubkey:
 
     def test_null_influence_becomes_zero_rank(self, client, auth_headers):
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview",
-            new=AsyncMock(return_value=_fake_overview(None)),
+            "app.routers.open_ranking.stats.get_user_rank_and_counts",
+            new=AsyncMock(return_value=_fake_stats(None)),
         ):
             r = client.post(
                 "/stats/pubkey", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
@@ -143,13 +141,13 @@ class TestStatsPubkey:
     def test_personalized_algorithm_uses_pov_as_observer(self, client, auth_headers):
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["pubkey"] = pubkey
             observed["observer"] = observer
-            return _fake_overview(0.9)
+            return _fake_stats(0.9)
 
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+            "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post(
                 "/stats/pubkey",
@@ -162,6 +160,29 @@ class TestStatsPubkey:
             )
         assert r.status_code == 200
         assert observed == {"pubkey": VALID_PUBKEY_1, "observer": POV_PUBKEY}
+
+    def test_asks_for_no_verified_line(self, client, auth_headers):
+        """ORE-02 returns a rank and raw counts — nothing the observer's
+        verified line decides. So it takes the lean service call and passes no
+        line at all: there is none to resolve (no preset read, no Postgres on
+        this path) and none to get wrong. Surfacing verified / tier / flagged
+        here means switching to `get_user_overview` and resolving the preset,
+        which is a deliberate change, not a default."""
+        observed = {}
+
+        async def _capture(**kwargs):
+            observed.update(kwargs)
+            return _fake_stats(0.9)
+
+        with patch(
+            "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
+        ):
+            r = client.post(
+                "/stats/pubkey", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
+            )
+
+        assert r.status_code == 200, r.text
+        assert set(observed) == {"pubkey", "observer"}
 
 
 # ===========================================================================
@@ -392,8 +413,8 @@ class TestNWTAuth:
     def test_valid_nwt_lets_request_through(self, client):
         token, _pk = make_nwt()  # aud defaults to TEST_AUD
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview",
-            new=AsyncMock(return_value=_fake_overview(0.5)),
+            "app.routers.open_ranking.stats.get_user_rank_and_counts",
+            new=AsyncMock(return_value=_fake_stats(0.5)),
         ):
             r = client.post(
                 "/stats/pubkey",
@@ -452,8 +473,8 @@ class TestNWTAuth:
             aud=["other-provider.example", TEST_AUD, "third.example"]
         )
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview",
-            new=AsyncMock(return_value=_fake_overview(0.5)),
+            "app.routers.open_ranking.stats.get_user_rank_and_counts",
+            new=AsyncMock(return_value=_fake_stats(0.5)),
         ):
             r = client.post(
                 "/stats/pubkey",
@@ -489,8 +510,8 @@ class TestNWTAuth:
         # accepted. Defends against tight clock drift between client/server.
         token, _pk = make_nwt(exp=int(time.time()) - 5)
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview",
-            new=AsyncMock(return_value=_fake_overview(0.5)),
+            "app.routers.open_ranking.stats.get_user_rank_and_counts",
+            new=AsyncMock(return_value=_fake_stats(0.5)),
         ):
             r = client.post(
                 "/stats/pubkey",
@@ -515,8 +536,8 @@ class TestOpenModeNoAuth:
 
     def test_request_without_token_succeeds(self, client):
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview",
-            new=AsyncMock(return_value=_fake_overview(0.5)),
+            "app.routers.open_ranking.stats.get_user_rank_and_counts",
+            new=AsyncMock(return_value=_fake_stats(0.5)),
         ):
             r = client.post("/stats/pubkey", json={"pubkey": VALID_PUBKEY_1})
         assert r.status_code == 200, r.text
@@ -524,12 +545,12 @@ class TestOpenModeNoAuth:
     def test_open_mode_uses_default_observer_for_global_algorithm(self, client):
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["observer"] = observer
-            return _fake_overview(0.5)
+            return _fake_stats(0.5)
 
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+            "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post("/stats/pubkey", json={"pubkey": VALID_PUBKEY_1})
         assert r.status_code == 200, r.text
@@ -538,12 +559,12 @@ class TestOpenModeNoAuth:
     def test_open_mode_honours_client_pov(self, client):
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["observer"] = observer
-            return _fake_overview(0.5)
+            return _fake_stats(0.5)
 
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+            "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post(
                 "/stats/pubkey",
@@ -576,12 +597,12 @@ class TestAuthModeForcesOwnObserver:
         token, signer = make_nwt()
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["observer"] = observer
-            return _fake_overview(0.5)
+            return _fake_stats(0.5)
 
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+            "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post(
                 "/stats/pubkey",
@@ -600,12 +621,12 @@ class TestAuthModeForcesOwnObserver:
         token, signer = make_nwt()
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["observer"] = observer
-            return _fake_overview(0.5)
+            return _fake_stats(0.5)
 
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+            "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post(
                 "/stats/pubkey",
@@ -620,12 +641,12 @@ class TestAuthModeForcesOwnObserver:
         token, signer = make_nwt()
         observed = {}
 
-        async def _capture(*, pubkey, observer):
+        async def _capture(*, pubkey, observer, **_):
             observed["observer"] = observer
-            return _fake_overview(0.5)
+            return _fake_stats(0.5)
 
         with patch(
-            "app.routers.open_ranking.stats.get_user_overview", new=_capture
+            "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post(
                 "/stats/pubkey",

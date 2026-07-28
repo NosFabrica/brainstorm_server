@@ -11,13 +11,16 @@ publishing — and routers just thin-wrap them.
 | File | LOC | Owns |
 |---|---|---|
 | `auth_service.py` | 24 | JWT mint / NIP-98 verify glue. The repo-less service — pure crypto + Redis. |
-| `user_service.py` | 301 | Everything under `/user/*`: graph fetches, stats, connection pagination, assistant-profile publish, GrapeRank trigger throttling. The biggest service. |
+| `user_service.py` | 380 | Everything under `/user/*`: graph fetches, stats, connection pagination, assistant-profile publish, GrapeRank trigger throttling. The biggest service. |
 | `brainstorm_request_service.py` | 157 | GrapeRank job lifecycle: create, status, result attach, error capture, throttle decisions. |
 | `brainstorm_pubkey_service.py` | 54 | Create-or-get the per-user brainstorm-assistant pubkey (delegates to `brainstorm_nsec` repo + GrapeRank trigger). |
 | `graperank_preset_service.py` | 109 | Builtin presets (DEFAULT/PERMISSIVE/RESTRICTIVE) get/set + history; bridges camelCase API ↔ snake_case columns. |
+| `verified_cutoffs.py` | 95 | Resolves an observer's saved preset into the three per-relationship verified cutoffs (`follower`/`muter`/`reporter`) that `/stats`, `/overview` and `/connections` all compare Influence against. Inbound sections use their own cutoff; outbound sections and the tier `verified_line` use the follower cutoff. Strict `>`, no validity-floor clamp. |
 | `assistant_profile_service.py` | 107 | Publish a kind-0 profile event for the assistant pubkey. Pure Nostr-side; no DB. |
 | `nsec_encryption_service.py` | 210 | Background rotation of `BrainstormNsec.encrypted_nsec`: scan rows, decrypt-old/encrypt-new, write back. Idempotent and resumable. |
 | `network_alerts_service.py` | 118 | `/networkAlerts`: resolves the observer (hex or npub), builds the per-observer property keys, maps graph rows → panel payload. Neo4j-only, no SQL. |
+| `report_graph_service.py` | 120 | **Pure, no I/O.** The user-only report rules, shared by all three report paths (live kind-1984 ingest, the backfill script, the kind-5 recompute) so they cannot drift. Owns `extract_report_targets` (NIP-56 user-vs-note), the backfill's `build_desired_reported_by`/`diff_reported_by`, and kind-5's `deletion_may_target_reports`/`surviving_report_targets`/`diff_author_targets`. |
+| `report_relay_service.py` | 90 | Reads an author's surviving kind-1984 back from the internal relay (REQ over websocket). Returns `None` for *unknown* vs `[]` for *no reports* — see `../message_queue_tasks/CLAUDE.md`. |
 
 ## Conventions
 
@@ -73,6 +76,7 @@ process; if/when you horizontally scale the server, push this flag into Redis.
 
 - Owns the throttle: `_should_block_graperank_trigger(...)` checks `last_time_triggered_graperank` against `settings.block_frequent_graperank_requests_minutes`.
 - Composes Neo4j calls (graph + influence) with Postgres (history). Avoid round-tripping per-section — there's a single `get_all_section_stats` for that.
+- `get_user_overview` needs a `verified_line` (the observer's preset cutoff); `get_user_rank_and_counts` is the lean alternative for callers wanting only a rank + the raw counts, which takes no line and so needs no preset read. ORE-02 uses it.
 - Manages the **observer key** for graph queries: defaults to `settings.periodic_graperank_pubkey`, else hardcoded fallback `be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a` (same as the Vespa search service).
 - Publishes the assistant kind-0 via `assistant_profile_service`.
 

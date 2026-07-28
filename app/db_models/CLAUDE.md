@@ -26,7 +26,7 @@ The GrapeRank job ledger. One row per requested run.
 | `status` | str(128) | `waiting \| ongoing \| success \| failure` (overall) |
 | `status_ta_publication` | str(128) | same vocabulary, publishing-to-Nostr stage |
 | `status_internal_brainstorm_publication` | str(128) | internal publication step, nullable |
-| `count_values` | text | lightweight per-bucket counts (per-hop/confidence), used by admin lists and `/stats` |
+| `count_values` | text | lightweight per-bucket counts (per-hop/confidence), used by admin lists. A snapshot of the run: bucketed against the verified line from that run's own `graperank_params`, so it stays comparable with what `/stats` showed at the time even if the observer later changes preset |
 | `error` | JSONB | structured error info (algorithm code + message) when status==failure |
 | `parameters` | text | JSON-encoded algorithm parameters |
 | `algorithm` | str | "graperank", etc. |

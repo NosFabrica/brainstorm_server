@@ -94,8 +94,10 @@ Vespa is **not** in this compose — it lives in `brainstorm_one_click_deploymen
 
 ## Things to know (gotchas)
 
+- **Prod timestamptz drift.** A few **production** timestamp columns are `timestamp WITH time zone` while migrations/staging/local are naive (`brainstorm_request.*`, most of `brainstorm_nsec.*`, `brainstorm_nostr_relay_transfer.*` — but NOT `last_time_published_graperank`, `scheduling`, `graperank_preset*`, `observerwhitelist`). asyncpg returns tz-aware datetimes from those, so Python-side subtraction against naive `datetime.now()` throws `can't subtract offset-naive and offset-aware datetimes` **on prod only**. Normalize aware→naive at any such boundary. Full column table, root cause, patched sites, and re-verify commands: [`docs/timestamptz-drift.md`](docs/timestamptz-drift.md).
+
 - **`periodic_graperank_pubkey`** is the default observer perspective for `/search/byText` when no `observerPubkey` is passed. Score mirroring to Vespa is **not** gated on it — `upsert_scores_to_vespa` runs for every observer. If `periodic_graperank_pubkey` is empty, search still works using the hardcoded default in the search router.
 - **`MAX_QUERY_WORDS = 6`** in `vespa.py` caps how many words of the search query get treated as separate match groups. Longer queries are truncated.
-- **`VESPA_FULL_SYNC = True`** in `upload_nostr_events.py` re-pushes every above-cutoff scorecard on each graperank run. Flip to `False` once Vespa is in sync to only push changed scores.
+- **`VESPA_FULL_SYNC` / `RELAY_FULL_SYNC`** (in `app/core/config.py`, both default `False`) re-push every above-cutoff scorecard on each graperank run when `True`. Delta is the steady state; drift is repaired by `FULL_SYNC_EVERY_N_RUNS` + the admin resync.
 - **Vespa needs `about_gram` to exist in the schema** for partial bio matches ("nosfab" → "nosfabrica") to work. If you wipe the volume and re-deploy, you also need to refeed (or `vespa reindex`) so the derived `about_gram` field gets populated.
 - **The brainstorm-server's docker-compose.yml** does NOT include Vespa. Vespa is provided by the sibling `brainstorm_one_click_deployment` repo. Set `VESPA_URL` accordingly.
