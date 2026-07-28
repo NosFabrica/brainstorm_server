@@ -245,8 +245,8 @@ Vespa. To sort on it:
 ### 8.3 Vespa ingest threshold — index scores **> 0** (not `== 0`)
 
 Decouple the **Vespa** ingest/removal threshold from the **Nostr TA publish**
-cutoff (`cutoff_of_valid_graperank_scores`, 0.05). The TA publish/delete cutoff
-stays as-is (0.05); Vespa indexes **everything with rank > 0** so it's all
+cutoff (`cutoff_of_valid_graperank_scores`, 0.02). The TA publish/delete cutoff
+stays as-is (0.02); Vespa indexes **everything with rank > 0** so it's all
 searchable, and the `rank ≥ 2` *default filter* (§8.1) decides visibility at
 query time.
 
@@ -413,7 +413,7 @@ profiles) are additive and need no override.
    - *All personalized perspectives:* `python -m scripts.trigger_graperank_all
      --status`, then `--rate N [--limit N]` (paced/resumable; tracks done via the
      `brainstorm_request` table).
-   - *Impact:* bounded burst of partial-update writes (more rows: >0 vs ≥0.05);
+   - *Impact:* bounded burst of partial-update writes (more rows: >0 vs ≥0.02);
      GrapeRank itself is the heavy part — pace it. Search stays up.
 5. **kind-0 re-feed** → populates `username` + rebuilds nip05/lud16/website:
    `python -m scripts.refeed_kind0_to_vespa --status`, then `--concurrency N
