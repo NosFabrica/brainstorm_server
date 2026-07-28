@@ -14,6 +14,8 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 |---|---|---|
 | `/health` | `app/api.py:164` | Liveness (returns `1`) |
 | `/whitelisted/{observer_pubkey}` | `router.py:75-94` | Trusted-pubkey list for an observer; `threshold` query param (default 0.02) |
+| `/shortestPath` | `graph/router.py` | Shortest directed FOLLOWS path(s) between two pubkeys |
+| `/networkAlerts` | `network_alerts/router.py` | Pubkeys carrying more verified reports than their reach justifies, split into direct-follows / extended-network |
 
 ## Subdirs (by URL prefix)
 

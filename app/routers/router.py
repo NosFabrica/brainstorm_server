@@ -9,6 +9,7 @@ from app.routers.admin.router import router as admin_router
 from app.routers.auth_challenge.router import router as auth_challenge_router
 from app.routers.graph.router import router as graph_router
 from app.routers.graperank.router import router as graperank_router
+from app.routers.network_alerts.router import router as network_alerts_router
 from app.routers.nip50.router import router as nip50_router
 from app.routers.open_ranking.router import router as open_ranking_router
 from app.routers.search.router import router as search_router
@@ -44,6 +45,13 @@ router.include_router(
 router.include_router(
     router=graph_router,
     tags=["graph"],
+)
+
+# Network Alerts panel. Mounted at root alongside /shortestPath — an
+# observer-parameterized question about the graph, not a /user sub-resource.
+router.include_router(
+    router=network_alerts_router,
+    tags=["network-alerts"],
 )
 
 ADMIN_ROUTER_PREFIX = "/admin"

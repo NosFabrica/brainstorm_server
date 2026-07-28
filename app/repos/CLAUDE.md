@@ -106,6 +106,19 @@ queries:
 - `get_paginated_section_connections(session, pubkey, influence_key, rel_type, direction, limit, cursor_inf, cursor_pk, …)` → `(items, next_cursor, total)` — cursor = `(influence, pubkey)`; ordered influence DESC, pubkey ASC. **Drives `/user/{pubkey}/connections`**. `verified_cutoff` is that section's preset cutoff — every row reports whether it clears it (`verified`) and which bucket it lands in (`tier`), and `verified_only` narrows the page to the verified rows. `verified_line` is the tier fallthrough boundary. There is no client-supplied `min_influence`.
 - `get_all_section_stats(...)` — one query covering all 6 sections; ~20 % faster than firing them in parallel.
 - `get_user_graph_data(...)` — unpaginated full graph.
+- `get_network_alert_candidates(...)` / `count_above_cutoff_followers_capped(...)` / `count_verified_muters(...)` — the three bounded steps behind **`/networkAlerts`** (orchestrated by `network_alerts_service`). Things to preserve if you touch them:
+  - Candidates are anchored *through* the `REPORTS` edge, never a `:NostrUser` label scan. No index can substitute — the influence/reporter properties are per-observer, so indexing them would mean one index per observer.
+  - `verified_reporter_count >= 3` prefilters before any arithmetic. Valid because `N = 2 + floor(tf/500) >= 2` for everyone.
+  - The capped count's `cap` is **not** an arbitrary page size. A row alerts only when its verified follower count is below `500 * (reporters - 2)`, so a count reaching the cap belongs to a row that fails. That's why a count *below* the cap is exact and safe to publish, and why the service drops rows that hit it.
+  - Step 2 runs for candidates with no stored `trusted_followers_<observer>` — which today is **all** of them, because nothing writes that property. The whole `/networkAlerts` path is read-only against Neo4j. Persisting the property (a one-line addition to `write_neo4j_results.py`) would turn step 2 into a property read, at the cost of a fourth per-observer property; that tradeoff is deliberately a separate change.
+
+**Per-observer node properties** written by `write_neo4j_results.py`, all suffixed
+with the observer's hex pubkey: `influence_`, `hops_`, `trusted_followers_`,
+`trusted_reporters_`. All four are GrapeRank-run-fresh, NOT ingest-fresh — the
+`FOLLOWS`/`MUTES`/`REPORTS` edges update within seconds of a kind 3/10000/1984
+event, but these properties only change when that observer's GrapeRank job
+lands. Prefer an edge match over `hops_<observer> = 1` when you need "does X
+currently follow Y".
 
 **One tier table, three expanders.** `_TIER_PREDICATES` is expanded by
 `get_all_section_stats` (the `/stats` bucket counts), by `_build_tier_predicate`
