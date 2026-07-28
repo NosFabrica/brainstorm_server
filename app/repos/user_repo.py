@@ -1012,6 +1012,11 @@ async def get_all_shortest_follow_paths(
 #   `verified_reporter_count >= 3` is a superset of every possible alert. It
 #   applies before any arithmetic without dropping a qualifying row.
 #
+# Retraction is only partly live: the anchor is any live REPORTS edge, so
+# dropping the LAST one stops the alert at once, but the count itself is the
+# run-written `trusted_reporters_<observer>`. Retract 8 of 9 and it still
+# alerts at 9 until the next GrapeRank run.
+#
 # Section membership uses the live (observer)-[:FOLLOWS]->(bob) edge, NOT
 # `hops_<observer> = 1`. The edge is maintained by kind-3 ingest (seconds
 # behind the user's follow list); `hops_` is only rewritten by a GrapeRank run,
@@ -1087,12 +1092,19 @@ async def count_above_cutoff_followers_capped(
     session: AsyncNeoDriver,
     pubkeys: list[str],
     influence_key: str,
+    observer_pubkey: str,
     cutoff: float,
     cap: int,
 ) -> dict[str, int]:
     """Above-cutoff follower counts, each stopping at `cap`.
 
     Fallback for candidates with no stored `trusted_followers_<observer>`.
+
+    The observer is excluded from the count. `_ALERT_CANDIDATES_QUERY` already
+    excludes them as a *candidate*; without the same exclusion here, following
+    someone would add 1 to their own verified-follower count. It also keeps this
+    agreeing with the stored `trusted_followers_<observer>`, which GrapeRank
+    computes without the observer.
 
     `cap` is what makes this safe to run on a huge account. A row can only clear
     the threshold when its verified follower count is below
@@ -1109,29 +1121,32 @@ async def count_above_cutoff_followers_capped(
     with a large trusted following) and never hurts.
 
     Cypher forbids a LIMIT that varies per row, so callers bucket pubkeys by
-    identical `cap` and call this once per bucket; `cap` is interpolated and so
-    is guarded here, at the interpolation site.
+    identical `cap` and call this once per bucket.
     """
-    if type(cap) is not int or not 1 <= cap <= 10_000_000:
-        raise ValueError(f"cap must be an int in [1, 10000000], got {cap!r}")
     if not pubkeys:
         return {}
 
-    query = f"""
+    query = """
     UNWIND $pubkeys AS pk
-    MATCH (bob:NostrUser {{pubkey: pk}})
-    CALL (bob) {{
+    MATCH (bob:NostrUser {pubkey: pk})
+    CALL (bob) {
         MATCH (f:NostrUser)-[:FOLLOWS]->(bob)
         WHERE f[$influence_key] IS NOT NULL
-          AND f[$influence_key] >= $cutoff
+          AND f[$influence_key] > $cutoff
+          AND f.pubkey <> $observer_pubkey
         WITH f
-        LIMIT {cap}
+        LIMIT $cap
         RETURN count(f) AS capped_followers
-    }}
+    }
     RETURN pk AS pubkey, capped_followers
     """
     result = await session.run(
-        query, pubkeys=pubkeys, influence_key=influence_key, cutoff=cutoff
+        query,
+        pubkeys=pubkeys,
+        influence_key=influence_key,
+        observer_pubkey=observer_pubkey,
+        cutoff=cutoff,
+        cap=int(cap),
     )
     return {
         record["pubkey"]: int(record["capped_followers"] or 0)
@@ -1160,7 +1175,7 @@ async def count_verified_muters(
     CALL (bob) {
         MATCH (m:NostrUser)-[:MUTES]->(bob)
         WHERE m[$influence_key] IS NOT NULL
-          AND m[$influence_key] >= $verified_threshold
+          AND m[$influence_key] > $verified_threshold
         RETURN count(m) AS verified_muters
     }
     RETURN pk AS pubkey, verified_muters

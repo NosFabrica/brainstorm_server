@@ -97,7 +97,7 @@ in `brainstorm_nsec.py` are the only safe entry points.
 
 ### `user_repo.py` (Neo4j)
 
-19 async functions, raw Cypher. Patterned around three relations (`FOLLOWS`,
+27 async functions, raw Cypher. Patterned around three relations (`FOLLOWS`,
 `MUTES`, `REPORTS`) × two directions (in/out). For each (rel, direction) there
 are `get_list_of_pubkeys_*` and `count_*` helpers. Plus the bigger composite
 queries:

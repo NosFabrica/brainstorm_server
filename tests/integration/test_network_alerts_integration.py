@@ -43,6 +43,7 @@ import pytest
 from neo4j import AsyncGraphDatabase
 from nostr_sdk import Keys
 
+import app.services.network_alerts_service as alerts_service_module
 from app.api import app
 from app.core.config import settings
 from app.repos.user_repo import count_above_cutoff_followers_capped
@@ -196,9 +197,26 @@ def graph():
 
 @asynccontextmanager
 async def _async_client():
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
+    """HTTP client over the app, with a loop-local Neo4j driver.
+
+    Same cross-loop caveat as ``preset_graph.api`` — each test body runs in its
+    own ``asyncio.run`` loop, and the service's module-level driver pins its
+    connections to whichever loop touched it first. Swap in a fresh one for the
+    duration or every request through the app raises "attached to a different
+    loop".
+    """
+    driver = _fresh_driver()
+    original = alerts_service_module.neo4j_driver
+    alerts_service_module.neo4j_driver = driver
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            yield client
+    finally:
+        alerts_service_module.neo4j_driver = original
+        await driver.close()
 
 
 def _fetch(observer: str, **params) -> dict:
@@ -341,6 +359,7 @@ def test_capped_count_stops_at_the_cap(graph):
                     session=s,
                     pubkeys=[graph["fallback_counted"]],
                     influence_key=inf_key,
+                    observer_pubkey=graph["alice"],
                     cutoff=0.02,
                     cap=10,
                 )
@@ -348,6 +367,7 @@ def test_capped_count_stops_at_the_cap(graph):
                     session=s,
                     pubkeys=[graph["fallback_counted"]],
                     influence_key=inf_key,
+                    observer_pubkey=graph["alice"],
                     cutoff=0.02,
                     cap=2,
                 )
@@ -362,7 +382,8 @@ def test_capped_count_stops_at_the_cap(graph):
 
 
 def test_capped_count_rejects_a_nonsense_cap(graph):
-    """`cap` is interpolated into the Cypher, so it's guarded at that site."""
+    """`cap` is a bound parameter, so a Cypher-shaped string can't alter the
+    query — it just fails to coerce to an int."""
 
     async def _go():
         driver = _fresh_driver()
@@ -372,6 +393,7 @@ def test_capped_count_rejects_a_nonsense_cap(graph):
                     session=s,
                     pubkeys=[graph["fallback_counted"]],
                     influence_key=f"influence_{graph['alice']}",
+                    observer_pubkey=graph["alice"],
                     cutoff=0.02,
                     cap="1 RETURN 1 //",
                 )

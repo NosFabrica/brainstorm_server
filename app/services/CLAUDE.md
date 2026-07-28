@@ -18,7 +18,7 @@ publishing — and routers just thin-wrap them.
 | `verified_cutoffs.py` | 95 | Resolves an observer's saved preset into the three per-relationship verified cutoffs (`follower`/`muter`/`reporter`) that `/stats`, `/overview` and `/connections` all compare Influence against. Inbound sections use their own cutoff; outbound sections and the tier `verified_line` use the follower cutoff. Strict `>`, no validity-floor clamp. |
 | `assistant_profile_service.py` | 107 | Publish a kind-0 profile event for the assistant pubkey. Pure Nostr-side; no DB. |
 | `nsec_encryption_service.py` | 210 | Background rotation of `BrainstormNsec.encrypted_nsec`: scan rows, decrypt-old/encrypt-new, write back. Idempotent and resumable. |
-| `network_alerts_service.py` | 118 | `/networkAlerts`: resolves the observer (hex or npub), builds the per-observer property keys, maps graph rows → panel payload. Neo4j-only, no SQL. |
+| `network_alerts_service.py` | 267 | `/networkAlerts`: resolves the observer (hex or npub), builds the per-observer property keys, maps graph rows → panel payload. Neo4j-only, no SQL. |
 | `report_graph_service.py` | 120 | **Pure, no I/O.** The user-only report rules, shared by all three report paths (live kind-1984 ingest, the backfill script, the kind-5 recompute) so they cannot drift. Owns `extract_report_targets` (NIP-56 user-vs-note), the backfill's `build_desired_reported_by`/`diff_reported_by`, and kind-5's `deletion_may_target_reports`/`surviving_report_targets`/`diff_author_targets`. |
 | `report_relay_service.py` | 90 | Reads an author's surviving kind-1984 back from the internal relay (REQ over websocket). Returns `None` for *unknown* vs `[]` for *no reports* — see `../message_queue_tasks/CLAUDE.md`. |
 
