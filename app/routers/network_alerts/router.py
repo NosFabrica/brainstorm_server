@@ -11,8 +11,10 @@ the auth posture of the other read-only graph traversals — every score it
 returns is already public via /user/{pubkey}/overview.
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.core.database import get_db
 from app.schemas.request_response_schemas import GetNetworkAlertsResponse
 from app.services import network_alerts_service
 from app.services.network_alerts_service import (
@@ -47,8 +49,10 @@ async def get_network_alerts_endpoint(
             "response flags which ones were truncated."
         ),
     ),
+    db: AsyncDBSession = Depends(get_db),
 ) -> GetNetworkAlertsResponse:
     data = await network_alerts_service.get_network_alerts_for_observer(
+        db=db,
         observer_raw=observer,
         limit=limit,
     )

@@ -6,7 +6,6 @@ from app.neo4j_db.driver import driver as neo4j_driver
 
 import time
 from tqdm import tqdm
-from itertools import islice
 
 from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_internal_publication_status_by_id_on_db,
@@ -50,6 +49,11 @@ async def process_neo4j_write_message(message: dict):
         # threshold scales with it (N = 2 + floor(verified_followers / 500)), and
         # recounting above-cutoff followers per candidate at query time is a scan
         # over every follower edge. Written here, it's a property read instead.
+        #
+        # Zero is stored like any other count. /networkAlerts reads the
+        # reporter count from the same run, so both sides of its threshold stay
+        # on one clock — recomputing followers live for the zero rows would mix
+        # a fresh denominator with a stale numerator.
         query = f"""
         UNWIND $rows AS row
         MATCH (n:NostrUser {{pubkey: row.observee}})
@@ -83,6 +87,7 @@ async def process_neo4j_write_message(message: dict):
         f"Took {final_time:.2f} seconds to process {len(scorecards)} Neo4j writes "
         f"run={run_id} observer={observer}"
     )
-    example_scorecard = next(islice(grape_rank_result.scorecards.values(), 1, 2))
+    # First, not second: a single-scorecard run made islice(…, 1, 2) raise.
+    example_scorecard = next(iter(grape_rank_result.scorecards.values()))
 
     logger.info(f"Check the observed pubkey {example_scorecard.observee}")

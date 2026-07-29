@@ -15,6 +15,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from nostr_sdk import Keys
 
+from app.api import app
+from app.core.database import get_db
+from app.services.verified_cutoffs import VerifiedCutoffs
 from app.services.network_alerts_service import (
     follower_count_cap_for,
     reporter_threshold_for,
@@ -45,16 +48,29 @@ def _candidate(pubkey: str, **overrides) -> dict:
 
 @pytest.fixture
 def mock_graph(monkeypatch):
-    """Patch the three repo calls + the Neo4j session opener.
+    """Patch the three repo calls, the Neo4j session opener, and the preset read.
 
     Returns a dict of the AsyncMocks so a test can set candidates and, where it
-    matters, the capped-count and muter-count responses.
+    matters, the capped-count and muter-count responses. `cutoffs` is the
+    observer's resolved preset — set `.return_value` to a different
+    `VerifiedCutoffs` to exercise a non-DEFAULT observer without Postgres.
     """
     mocks = {
         "candidates": AsyncMock(return_value=[]),
         "capped": AsyncMock(return_value={}),
         "muters": AsyncMock(return_value={}),
+        # DEFAULT's seeded values.
+        "cutoffs": AsyncMock(
+            return_value=VerifiedCutoffs(follower=0.02, muter=0.01, reporter=0.1)
+        ),
     }
+    monkeypatch.setattr(
+        "app.services.network_alerts_service.resolve_verified_cutoffs",
+        mocks["cutoffs"],
+    )
+    # The endpoint takes a DB session only to resolve the preset above; with
+    # that patched, nothing touches Postgres.
+    app.dependency_overrides[get_db] = lambda: None
     monkeypatch.setattr(
         "app.services.network_alerts_service.get_network_alert_candidates",
         mocks["candidates"],
@@ -74,7 +90,8 @@ def mock_graph(monkeypatch):
     fake_driver = MagicMock()
     fake_driver.session = lambda: _fake_session()
     monkeypatch.setattr("app.services.network_alerts_service.neo4j_driver", fake_driver)
-    return mocks
+    yield mocks
+    app.dependency_overrides.pop(get_db, None)
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +346,42 @@ def test_muters_are_counted_only_for_returned_rows(client, mock_graph):
     _get(client, {"observer": _pk()})
 
     assert mock_graph["muters"].await_args.kwargs["pubkeys"] == [kept]
+
+
+# ---------------------------------------------------------------------------
+# The observer's saved preset drives every cutoff
+# ---------------------------------------------------------------------------
+def test_cutoffs_come_from_the_observers_saved_preset(client, mock_graph):
+    """Not a flat constant — the same resolution /stats and /connections use."""
+    observer = _pk()
+    mock_graph["cutoffs"].return_value = VerifiedCutoffs(
+        follower=0.5, muter=0.5, reporter=0.5
+    )
+    mock_graph["candidates"].return_value = [
+        _candidate(_pk(), stored_followers=None, verified_reporters=5)
+    ]
+
+    _get(client, {"observer": observer})
+
+    assert mock_graph["cutoffs"].await_args.args[1] == observer
+    assert mock_graph["candidates"].await_args.kwargs["cutoff"] == 0.5
+    assert mock_graph["capped"].await_args.kwargs["cutoff"] == 0.5
+
+
+def test_muter_count_uses_the_muter_cutoff_not_the_follower_line(
+    client, mock_graph
+):
+    """Muters ride their own preset cutoff (0.01 on DEFAULT vs the follower
+    line's 0.02), matching VerifiedCutoffs.for_kind("muted_by"). Sharing one
+    value here would disagree with /stats."""
+    mock_graph["candidates"].return_value = [
+        _candidate(_pk(), stored_followers=0, verified_reporters=5)
+    ]
+
+    _get(client, {"observer": _pk()})
+
+    assert mock_graph["muters"].await_args.kwargs["verified_threshold"] == 0.01
+    assert mock_graph["candidates"].await_args.kwargs["cutoff"] == 0.02
 
 
 # ---------------------------------------------------------------------------

@@ -26,8 +26,9 @@ scaling exists to protect.
 
 from collections import defaultdict
 
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+
 from app.core.loggr import loggr
-from app.core.tier_thresholds import DEFAULT_VERIFIED_THRESHOLD
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.user_repo import (
     FOLLOWERS_PER_EXTRA_REPORT,
@@ -40,15 +41,11 @@ from app.schemas.request_response_schemas import (
     NetworkAlertItem,
     NetworkAlertsData,
 )
+from app.services.verified_cutoffs import VerifiedCutoffs, resolve_verified_cutoffs
 from app.utils.neo4j_values import safe_float, safe_int
 from app.utils.nostr import resolve_pubkey_or_400
 
 logger = loggr.get_logger(__name__)
-
-# Influence at or above which a pubkey counts as part of the observer's trust
-# network. Same line the whitelist and the /connections tiering use, so the
-# extended-network section matches what the rest of the product calls "trusted".
-NETWORK_ALERT_CUTOFF = DEFAULT_VERIFIED_THRESHOLD
 
 # Floor of the scaled threshold: everyone tolerates this many verified reports
 # before any follower-count allowance applies.
@@ -82,6 +79,7 @@ async def _resolve_follower_counts(
     candidates: list[dict],
     influence_key: str,
     observer_pubkey: str,
+    cutoffs: VerifiedCutoffs,
 ) -> dict[str, int]:
     """Verified follower count per candidate pubkey, for rows that can alert.
 
@@ -122,7 +120,7 @@ async def _resolve_follower_counts(
             pubkeys=pubkeys,
             influence_key=influence_key,
             observer_pubkey=observer_pubkey,
-            cutoff=NETWORK_ALERT_CUTOFF,
+            cutoff=cutoffs.verified_line,
             cap=cap,
         )
         for pubkey in pubkeys:
@@ -151,6 +149,7 @@ def _to_item(
 
 
 async def get_network_alerts_for_observer(
+    db: AsyncDBSession,
     observer_raw: str,
     limit: int = DEFAULT_ALERT_LIMIT,
 ) -> NetworkAlertsData:
@@ -162,6 +161,8 @@ async def get_network_alerts_for_observer(
     """
     observer = resolve_pubkey_or_400(observer_raw, "observer")
     influence_key = f"influence_{observer}"
+    # Same preset resolution as /stats; the muter count rides its own cutoff.
+    cutoffs = await resolve_verified_cutoffs(db, observer)
 
     async with neo4j_driver.session() as session:
         candidates = await get_network_alert_candidates(
@@ -171,7 +172,7 @@ async def get_network_alerts_for_observer(
             hops_key=f"hops_{observer}",
             trusted_followers_key=f"trusted_followers_{observer}",
             trusted_reporters_key=f"trusted_reporters_{observer}",
-            cutoff=NETWORK_ALERT_CUTOFF,
+            cutoff=cutoffs.verified_line,
         )
         if len(candidates) >= MAX_ALERT_CANDIDATES:
             # Never truncate quietly — a capped candidate set means the sections
@@ -184,7 +185,7 @@ async def get_network_alerts_for_observer(
             )
 
         follower_counts = await _resolve_follower_counts(
-            session, candidates, influence_key, observer
+            session, candidates, influence_key, observer, cutoffs
         )
 
         # Threshold test. Candidates missing from follower_counts are already
@@ -213,7 +214,7 @@ async def get_network_alerts_for_observer(
             session=session,
             pubkeys=[r["pubkey"] for r, _ in direct_page + extended_page],
             influence_key=influence_key,
-            verified_threshold=DEFAULT_VERIFIED_THRESHOLD,
+            verified_threshold=cutoffs.muter,
         )
 
     return NetworkAlertsData(

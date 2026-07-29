@@ -47,6 +47,7 @@ import app.services.network_alerts_service as alerts_service_module
 from app.api import app
 from app.core.config import settings
 from app.repos.user_repo import count_above_cutoff_followers_capped
+from app.services.verified_cutoffs import VerifiedCutoffs
 
 pytestmark = pytest.mark.integration
 
@@ -196,7 +197,7 @@ def graph():
 
 
 @asynccontextmanager
-async def _async_client():
+async def _async_client(cutoffs: VerifiedCutoffs | None = None):
     """HTTP client over the app, with a loop-local Neo4j driver.
 
     Same cross-loop caveat as ``preset_graph.api`` — each test body runs in its
@@ -207,7 +208,13 @@ async def _async_client():
     """
     driver = _fresh_driver()
     original = alerts_service_module.neo4j_driver
+    original_resolve = alerts_service_module.resolve_verified_cutoffs
     alerts_service_module.neo4j_driver = driver
+    if cutoffs is not None:
+        async def _pinned(_db, _observer):
+            return cutoffs
+
+        alerts_service_module.resolve_verified_cutoffs = _pinned
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -216,12 +223,17 @@ async def _async_client():
             yield client
     finally:
         alerts_service_module.neo4j_driver = original
+        alerts_service_module.resolve_verified_cutoffs = original_resolve
         await driver.close()
 
 
-def _fetch(observer: str, **params) -> dict:
+def _fetch(observer: str, cutoffs: VerifiedCutoffs | None = None, **params) -> dict:
+    """`cutoffs` pins the observer's resolved preset. Left None, the endpoint
+    resolves it from Postgres, which for a generated fixture pubkey falls back
+    to DEFAULT (follower 0.02) — what the fixture numbers assume."""
+
     async def _go():
-        async with _async_client() as client:
+        async with _async_client(cutoffs) as client:
             resp = await client.get(
                 "/networkAlerts", params={"observer": observer, **params}
             )
@@ -341,6 +353,23 @@ def test_missing_stored_count_is_counted_from_the_graph(graph):
     row = _row(data, graph, "fallback_counted")
     assert row["verifiedFollowerCount"] == 3
     assert row["reporterThreshold"] == 2
+
+
+def test_counted_followers_use_the_observers_preset_cutoff(graph):
+    """The counted path rides the observer's saved preset, not a flat 0.02.
+
+    `fallback_counted`'s followers sit at 0.30 / 0.20 / 0.10 / 0.001, so the
+    count is a function of where the cutoff lands. Alice follows it and is
+    excluded from its own follower count, which is why 0.99 doesn't appear.
+    """
+    for follower_cutoff, expected in ((0.02, 3), (0.15, 2), (0.5, 0)):
+        cutoffs = VerifiedCutoffs(
+            follower=follower_cutoff, muter=follower_cutoff, reporter=follower_cutoff
+        )
+        data = _fetch(graph["alice"], cutoffs=cutoffs)
+
+        row = _row(data, graph, "fallback_counted")
+        assert row["verifiedFollowerCount"] == expected, follower_cutoff
 
 
 def test_capped_count_stops_at_the_cap(graph):
