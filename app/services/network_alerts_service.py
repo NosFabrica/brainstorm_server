@@ -78,7 +78,6 @@ async def _resolve_follower_counts(
     session,
     candidates: list[dict],
     influence_key: str,
-    observer_pubkey: str,
     cutoffs: VerifiedCutoffs,
 ) -> dict[str, int]:
     """Verified follower count per candidate pubkey, for rows that can alert.
@@ -119,7 +118,6 @@ async def _resolve_follower_counts(
             session=session,
             pubkeys=pubkeys,
             influence_key=influence_key,
-            observer_pubkey=observer_pubkey,
             cutoff=cutoffs.verified_line,
             cap=cap,
         )
@@ -185,7 +183,7 @@ async def get_network_alerts_for_observer(
             )
 
         follower_counts = await _resolve_follower_counts(
-            session, candidates, influence_key, observer, cutoffs
+            session, candidates, influence_key, cutoffs
         )
 
         # Threshold test. Candidates missing from follower_counts are already

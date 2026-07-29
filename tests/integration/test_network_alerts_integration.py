@@ -32,7 +32,9 @@ defined by the follow edge alone, with no influence requirement.
 ``stale_no_report_edge`` carries a reporter count with no surviving REPORTS
 edge — the shape left behind when reports are retracted (kind 5) before the
 next GrapeRank run rewrites the property. ``fallback_counted`` is seeded with
-three above-cutoff followers and one below, so the counted value is a known 3.
+three above-cutoff followers and one below; alice follows it too and counts as a
+fourth (matching ``countTrustedRaters``, which doesn't exclude the observer), so
+the counted value is a known 4.
 """
 
 import asyncio
@@ -64,10 +66,13 @@ _FIXTURE = {
     "both_sections": (0.900, 0, 6, True, True),
     "stale_no_report_edge": (0.400, 0, 7, True, False),
     "fallback_counted": (0.400, None, 3, True, True),
+    # Same follower set as fallback_counted, but with the count stored — so the
+    # two must agree once both paths use the same cutoff and membership.
+    "stored_twin": (0.400, 4, 3, True, True),
 }
 
 # Followers seeded onto `fallback_counted`: three above the 0.02 cutoff, one
-# below. The counted verified-follower count must therefore come back as 3.
+# below. Alice (0.99) follows it as well, so the count is these plus her.
 _FALLBACK_FOLLOWERS = [("f_hi1", 0.30), ("f_hi2", 0.20), ("f_hi3", 0.10)]
 _FALLBACK_WEAK_FOLLOWERS = [("f_lo1", 0.001)]
 
@@ -151,8 +156,18 @@ def graph():
                         finf=finf,
                         target=pks["fallback_counted"],
                     )
+                    await s.run(
+                        f"""
+                        MERGE (f:NostrUser {{pubkey: $fpk}})
+                        MERGE (b:NostrUser {{pubkey: $target}})
+                        MERGE (f)-[:FOLLOWS]->(b)
+                        """,
+                        fpk=pks[fname],
+                        target=pks["stored_twin"],
+                    )
 
-                # Alice would clear the bar herself if she weren't excluded.
+                # Alice is above the bar and follows several fixtures, so she
+                # counts toward their verified-follower totals.
                 await s.run(
                     f"""
                     MERGE (a:NostrUser {{pubkey: $alice}})
@@ -261,6 +276,7 @@ def test_direct_section_membership(graph):
         "direct_just_over",
         "both_sections",
         "fallback_counted",
+        "stored_twin",
     }
 
 
@@ -346,23 +362,37 @@ def test_verified_muter_count_excludes_below_cutoff_muters(graph):
 # Counted-fallback path (no stored trusted_followers_<observer>)
 # ---------------------------------------------------------------------------
 def test_missing_stored_count_is_counted_from_the_graph(graph):
-    """fallback_counted has no stored property; 3 of its 4 followers clear the
-    cutoff, so the endpoint must report exactly 3 — not 0, and not 4."""
+    """fallback_counted has no stored property; 3 of its 4 seeded followers
+    clear the cutoff, plus alice, so the endpoint must report 4 — not 0."""
     data = _fetch(graph["alice"])
 
     row = _row(data, graph, "fallback_counted")
-    assert row["verifiedFollowerCount"] == 3
+    assert row["verifiedFollowerCount"] == 4
     assert row["reporterThreshold"] == 2
+
+
+def test_stored_and_counted_paths_agree(graph):
+    """The regression this ticket exists for.
+
+    `stored_twin` and `fallback_counted` have identical follower sets; only the
+    first has `trusted_followers_<alice>` written. Under the preset the stored
+    value was computed at, both paths must return the same number — otherwise an
+    alert depends on whether a run happened to have landed.
+    """
+    data = _fetch(graph["alice"])
+
+    counted = _row(data, graph, "fallback_counted")["verifiedFollowerCount"]
+    stored = _row(data, graph, "stored_twin")["verifiedFollowerCount"]
+    assert counted == stored == 4
 
 
 def test_counted_followers_use_the_observers_preset_cutoff(graph):
     """The counted path rides the observer's saved preset, not a flat 0.02.
 
-    `fallback_counted`'s followers sit at 0.30 / 0.20 / 0.10 / 0.001, so the
-    count is a function of where the cutoff lands. Alice follows it and is
-    excluded from its own follower count, which is why 0.99 doesn't appear.
+    `fallback_counted`'s followers sit at 0.30 / 0.20 / 0.10 / 0.001, plus alice
+    at 0.99, so the count is a function of where the cutoff lands.
     """
-    for follower_cutoff, expected in ((0.02, 3), (0.15, 2), (0.5, 0)):
+    for follower_cutoff, expected in ((0.02, 4), (0.15, 3), (0.5, 1)):
         cutoffs = VerifiedCutoffs(
             follower=follower_cutoff, muter=follower_cutoff, reporter=follower_cutoff
         )
@@ -388,7 +418,6 @@ def test_capped_count_stops_at_the_cap(graph):
                     session=s,
                     pubkeys=[graph["fallback_counted"]],
                     influence_key=inf_key,
-                    observer_pubkey=graph["alice"],
                     cutoff=0.02,
                     cap=10,
                 )
@@ -396,7 +425,6 @@ def test_capped_count_stops_at_the_cap(graph):
                     session=s,
                     pubkeys=[graph["fallback_counted"]],
                     influence_key=inf_key,
-                    observer_pubkey=graph["alice"],
                     cutoff=0.02,
                     cap=2,
                 )
@@ -406,7 +434,7 @@ def test_capped_count_stops_at_the_cap(graph):
 
     exact, truncated = asyncio.run(_go())
 
-    assert exact[graph["fallback_counted"]] == 3
+    assert exact[graph["fallback_counted"]] == 4
     assert truncated[graph["fallback_counted"]] == 2
 
 
@@ -422,7 +450,6 @@ def test_capped_count_rejects_a_nonsense_cap(graph):
                     session=s,
                     pubkeys=[graph["fallback_counted"]],
                     influence_key=f"influence_{graph['alice']}",
-                    observer_pubkey=graph["alice"],
                     cutoff=0.02,
                     cap="1 RETURN 1 //",
                 )

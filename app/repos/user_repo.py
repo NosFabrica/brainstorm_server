@@ -1092,7 +1092,6 @@ async def count_above_cutoff_followers_capped(
     session: AsyncNeoDriver,
     pubkeys: list[str],
     influence_key: str,
-    observer_pubkey: str,
     cutoff: float,
     cap: int,
 ) -> dict[str, int]:
@@ -1100,11 +1099,12 @@ async def count_above_cutoff_followers_capped(
 
     Fallback for candidates with no stored `trusted_followers_<observer>`.
 
-    The observer is excluded from the count. `_ALERT_CANDIDATES_QUERY` already
-    excludes them as a *candidate*; without the same exclusion here, following
-    someone would add 1 to their own verified-follower count. It also keeps this
-    agreeing with the stored `trusted_followers_<observer>`, which GrapeRank
-    computes without the observer.
+    The observer counts as a follower here, matching
+    `GrapeRankAlgorithm.countTrustedRaters` and so the stored value. Excluding
+    them would need the same filter in the Java, which also feeds the
+    `followers` tag on every published kind-30382 and the Vespa follower_counts
+    tensor — a protocol-visible change for a ±1 that can only move N at an exact
+    multiple of FOLLOWERS_PER_EXTRA_REPORT.
 
     `cap` is what makes this safe to run on a huge account. A row can only clear
     the threshold when its verified follower count is below
@@ -1133,7 +1133,6 @@ async def count_above_cutoff_followers_capped(
         MATCH (f:NostrUser)-[:FOLLOWS]->(bob)
         WHERE f[$influence_key] IS NOT NULL
           AND f[$influence_key] > $cutoff
-          AND f.pubkey <> $observer_pubkey
         WITH f
         LIMIT $cap
         RETURN count(f) AS capped_followers
@@ -1144,7 +1143,6 @@ async def count_above_cutoff_followers_capped(
         query,
         pubkeys=pubkeys,
         influence_key=influence_key,
-        observer_pubkey=observer_pubkey,
         cutoff=cutoff,
         cap=int(cap),
     )
