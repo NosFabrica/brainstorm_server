@@ -996,9 +996,10 @@ async def get_all_shortest_follow_paths(
 # node. Step (2) is the fallback for any observer whose run carrying that
 # property hasn't landed yet, and goes quiet as they backfill.
 #
-# The read path here works either way — it prefers the stored value and counts
-# only when it's absent — so reverting the writer degrades performance without
-# breaking correctness.
+# Reverting the writer is NOT a clean fallback. The reader prefers the stored
+# value whenever it's present, and nothing deletes the property — so already-
+# written candidates would freeze at their last-run count instead of returning
+# to step (2). Removing the property is part of reverting the writer.
 #
 # Two things keep step (1) off a full label scan:
 #

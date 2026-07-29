@@ -9,6 +9,7 @@ membership — is exercised against a real Neo4j in
 tests/integration/test_network_alerts_integration.py.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,7 +17,7 @@ import pytest
 from nostr_sdk import Keys
 
 from app.api import app
-from app.core.database import get_db
+from app.routers.network_alerts.dependencies import get_alert_cutoffs
 from app.services.verified_cutoffs import VerifiedCutoffs
 from app.services.network_alerts_service import (
     follower_count_cap_for,
@@ -54,6 +55,9 @@ def mock_graph(monkeypatch):
     matters, the capped-count and muter-count responses. `cutoffs` is the
     observer's resolved preset — set `.return_value` to a different
     `VerifiedCutoffs` to exercise a non-DEFAULT observer without Postgres.
+
+    Only the cutoffs dependency is overridden, not observer resolution, so the
+    malformed-pubkey and npub cases still run the real validator.
     """
     mocks = {
         "candidates": AsyncMock(return_value=[]),
@@ -64,13 +68,12 @@ def mock_graph(monkeypatch):
             return_value=VerifiedCutoffs(follower=0.02, muter=0.01, reporter=0.1)
         ),
     }
-    monkeypatch.setattr(
-        "app.services.network_alerts_service.resolve_verified_cutoffs",
-        mocks["cutoffs"],
-    )
-    # The endpoint takes a DB session only to resolve the preset above; with
-    # that patched, nothing touches Postgres.
-    app.dependency_overrides[get_db] = lambda: None
+    # A plain function, not the AsyncMock: FastAPI reads the override's
+    # signature, and AsyncMock's (*args, **kwargs) becomes required query params.
+    async def _cutoffs_override():
+        return await mocks["cutoffs"]()
+
+    app.dependency_overrides[get_alert_cutoffs] = _cutoffs_override
     monkeypatch.setattr(
         "app.services.network_alerts_service.get_network_alert_candidates",
         mocks["candidates"],
@@ -91,7 +94,7 @@ def mock_graph(monkeypatch):
     fake_driver.session = lambda: _fake_session()
     monkeypatch.setattr("app.services.network_alerts_service.neo4j_driver", fake_driver)
     yield mocks
-    app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_alert_cutoffs, None)
 
 
 # ---------------------------------------------------------------------------
@@ -351,8 +354,8 @@ def test_muters_are_counted_only_for_returned_rows(client, mock_graph):
 # ---------------------------------------------------------------------------
 # The observer's saved preset drives every cutoff
 # ---------------------------------------------------------------------------
-def test_cutoffs_come_from_the_observers_saved_preset(client, mock_graph):
-    """Not a flat constant — the same resolution /stats and /connections use."""
+def test_resolved_cutoffs_drive_both_graph_queries(client, mock_graph):
+    """Whatever the preset resolves to reaches the candidate and count queries."""
     observer = _pk()
     mock_graph["cutoffs"].return_value = VerifiedCutoffs(
         follower=0.5, muter=0.5, reporter=0.5
@@ -363,9 +366,31 @@ def test_cutoffs_come_from_the_observers_saved_preset(client, mock_graph):
 
     _get(client, {"observer": observer})
 
-    assert mock_graph["cutoffs"].await_args.args[1] == observer
     assert mock_graph["candidates"].await_args.kwargs["cutoff"] == 0.5
     assert mock_graph["capped"].await_args.kwargs["cutoff"] == 0.5
+
+
+def test_the_cutoffs_dependency_resolves_the_named_observers_preset(monkeypatch):
+    """The half `mock_graph` overrides, tested directly: whose preset gets read.
+
+    Asserted here rather than through the app because the fixture replaces this
+    dependency wholesale.
+    """
+    keys = Keys.generate()
+    resolved = AsyncMock(
+        return_value=VerifiedCutoffs(follower=0.5, muter=0.5, reporter=0.5)
+    )
+    monkeypatch.setattr(
+        "app.routers.network_alerts.dependencies.resolve_verified_cutoffs", resolved
+    )
+    db = object()
+
+    cutoffs = asyncio.run(
+        get_alert_cutoffs(observer=keys.public_key().to_hex(), db=db)
+    )
+
+    assert cutoffs.follower == 0.5
+    assert resolved.await_args.args == (db, keys.public_key().to_hex())
 
 
 def test_muter_count_uses_the_muter_cutoff_not_the_follower_line(

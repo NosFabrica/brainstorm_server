@@ -12,11 +12,14 @@ returns is already public via /user/{pubkey}/overview.
 """
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
-from app.core.database import get_db
+from app.routers.network_alerts.dependencies import (
+    get_alert_cutoffs,
+    resolve_alert_observer,
+)
 from app.schemas.request_response_schemas import GetNetworkAlertsResponse
 from app.services import network_alerts_service
+from app.services.verified_cutoffs import VerifiedCutoffs
 from app.services.network_alerts_service import (
     DEFAULT_ALERT_LIMIT,
     MAX_ALERT_LIMIT,
@@ -33,13 +36,8 @@ router = APIRouter()
     ),
 )
 async def get_network_alerts_endpoint(
-    observer: str = Query(
-        ...,
-        description=(
-            "Observer pubkey (hex or npub). All trust scores are reported from "
-            "this perspective. Pass the House pubkey for the House view."
-        ),
-    ),
+    observer: str = Depends(resolve_alert_observer),
+    cutoffs: VerifiedCutoffs = Depends(get_alert_cutoffs),
     limit: int = Query(
         default=DEFAULT_ALERT_LIMIT,
         ge=1,
@@ -49,11 +47,10 @@ async def get_network_alerts_endpoint(
             "response flags which ones were truncated."
         ),
     ),
-    db: AsyncDBSession = Depends(get_db),
 ) -> GetNetworkAlertsResponse:
     data = await network_alerts_service.get_network_alerts_for_observer(
-        db=db,
-        observer_raw=observer,
+        observer=observer,
+        cutoffs=cutoffs,
         limit=limit,
     )
     return GetNetworkAlertsResponse(data=data)

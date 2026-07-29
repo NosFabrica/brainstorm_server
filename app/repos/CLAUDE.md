@@ -143,7 +143,10 @@ of "flagged", which is why `/overview`'s `flagged_count` matches
 
 Dynamic property access uses `user[$influence_key]` parameterization so
 `influence_<observer>` columns don't get string-interpolated into Cypher.
-Don't write the property name into the query string.
+Don't write the property name into the query string — a per-observer name in the
+query text gives every observer its own Neo4j plan-cache entry. The write side
+follows the same rule from the other direction: `write_neo4j_results.py` builds
+the `{name: value}` map in Python and does `SET n += row.props`.
 
 ## Common tasks
 

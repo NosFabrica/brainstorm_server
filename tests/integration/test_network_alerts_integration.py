@@ -47,6 +47,7 @@ from nostr_sdk import Keys
 
 import app.services.network_alerts_service as alerts_service_module
 from app.api import app
+from app.routers.network_alerts.dependencies import get_alert_cutoffs
 from app.core.config import settings
 from app.repos.user_repo import count_above_cutoff_followers_capped
 from app.services.verified_cutoffs import VerifiedCutoffs
@@ -211,8 +212,12 @@ def graph():
     asyncio.run(_cleanup())
 
 
+# DEFAULT's seeded values — what the fixture numbers assume.
+DEFAULT_CUTOFFS = VerifiedCutoffs(follower=0.02, muter=0.01, reporter=0.1)
+
+
 @asynccontextmanager
-async def _async_client(cutoffs: VerifiedCutoffs | None = None):
+async def _async_client(cutoffs: VerifiedCutoffs):
     """HTTP client over the app, with a loop-local Neo4j driver.
 
     Same cross-loop caveat as ``preset_graph.api`` — each test body runs in its
@@ -220,16 +225,18 @@ async def _async_client(cutoffs: VerifiedCutoffs | None = None):
     connections to whichever loop touched it first. Swap in a fresh one for the
     duration or every request through the app raises "attached to a different
     loop".
+
+    The preset comes from a dependency override, so these tests need Neo4j but
+    never Postgres.
     """
     driver = _fresh_driver()
     original = alerts_service_module.neo4j_driver
-    original_resolve = alerts_service_module.resolve_verified_cutoffs
     alerts_service_module.neo4j_driver = driver
-    if cutoffs is not None:
-        async def _pinned(_db, _observer):
-            return cutoffs
 
-        alerts_service_module.resolve_verified_cutoffs = _pinned
+    async def _pinned():
+        return cutoffs
+
+    app.dependency_overrides[get_alert_cutoffs] = _pinned
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -237,15 +244,15 @@ async def _async_client(cutoffs: VerifiedCutoffs | None = None):
         ) as client:
             yield client
     finally:
+        app.dependency_overrides.pop(get_alert_cutoffs, None)
         alerts_service_module.neo4j_driver = original
-        alerts_service_module.resolve_verified_cutoffs = original_resolve
         await driver.close()
 
 
-def _fetch(observer: str, cutoffs: VerifiedCutoffs | None = None, **params) -> dict:
-    """`cutoffs` pins the observer's resolved preset. Left None, the endpoint
-    resolves it from Postgres, which for a generated fixture pubkey falls back
-    to DEFAULT (follower 0.02) — what the fixture numbers assume."""
+def _fetch(
+    observer: str, cutoffs: VerifiedCutoffs = DEFAULT_CUTOFFS, **params
+) -> dict:
+    """`cutoffs` pins the observer's resolved preset, DEFAULT unless overridden."""
 
     async def _go():
         async with _async_client(cutoffs) as client:
@@ -475,3 +482,41 @@ def test_unknown_observer_returns_empty_sections(graph):
 
     assert data["directFollows"] == []
     assert data["extendedNetwork"] == []
+
+
+def test_the_endpoint_resolves_the_preset_when_nothing_is_overridden(graph):
+    """The router → `get_alert_cutoffs` → Postgres wiring, end to end.
+
+    Every other test here pins the cutoffs, so this is the only one that would
+    notice the handler being disconnected from the dependency. Alice has no
+    saved preset, which resolves to DEFAULT — the same cutoffs the pinned tests
+    assume, so the expected rows are unchanged.
+    """
+
+    async def _go():
+        driver = _fresh_driver()
+        original = alerts_service_module.neo4j_driver
+        alerts_service_module.neo4j_driver = driver
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    "/networkAlerts", params={"observer": graph["alice"]}
+                )
+                assert resp.status_code == 200, resp.text
+                return resp.json()["data"]
+        finally:
+            alerts_service_module.neo4j_driver = original
+            await driver.close()
+
+    data = asyncio.run(_go())
+
+    assert _names(data, "directFollows", graph) == {
+        "direct_flagged",
+        "direct_just_over",
+        "both_sections",
+        "fallback_counted",
+        "stored_twin",
+    }

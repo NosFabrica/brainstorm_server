@@ -49,6 +49,14 @@ The longest module here. The main entry point is `process_nostr_upload_message(m
 
 Nostr publish happens **before** Vespa mirror. If you reorder these, Vespa could end up holding scores that were never persisted to Nostr — that breaks the "Nostr is source of truth" invariant.
 
+## write_neo4j_results.py
+
+Persists the per-observer scorecard properties listed in `PERSISTED_FIELDS`, as
+`<field>_<observer_pubkey>`. The property names are built into a map in Python
+and applied with `SET n += row.props` — never interpolated into the query text,
+which would give every observer its own Neo4j plan-cache entry. Same rule the
+read side follows via `n[$key]`; see [`../repos/CLAUDE.md`](../repos/CLAUDE.md).
+
 ## Adding a new consumer
 
 1. Add an `async def consume_<topic>(): while True: msg = await ...; await handle(msg)` to `message_queue_consumer.py`.

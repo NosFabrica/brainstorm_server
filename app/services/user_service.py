@@ -2,7 +2,6 @@ import asyncio
 import base64
 import binascii
 import json
-import math
 from typing import Literal, NamedTuple
 
 from fastapi import HTTPException, status
@@ -49,6 +48,7 @@ from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
 )
 from app.services.verified_cutoffs import VerifiedCutoffs
+from app.utils.neo4j_values import safe_float
 
 # Tier boundaries match the FE (high ≥ 0.5, trusted ≥ 0.2, neutral ≥ 0.07).
 # The verified line separating "low" from "unverified" is preset-driven on all
@@ -82,20 +82,6 @@ _KIND_TO_REL: dict[ConnectionKind, tuple[str, str]] = {
 }
 
 
-def _safe_float(value) -> float | None:
-    # Neo4j can return inf/nan for stale or unbacked influence properties.
-    # json.dumps rejects these, so coerce to None for the wire.
-    if value is None:
-        return None
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isinf(f) or math.isnan(f):
-        return None
-    return f
-
-
 def _encode_cursor(sort_inf: float, pubkey: str) -> str:
     return base64.urlsafe_b64encode(
         json.dumps({"i": sort_inf, "p": pubkey}).encode()
@@ -125,7 +111,7 @@ async def _neo4j_outbound_counts_and_influence(
             trusted_reporters_key,
             verified_line,
         )
-    return overview._replace(influence=_safe_float(overview.influence))
+    return overview._replace(influence=safe_float(overview.influence))
 
 
 async def _neo4j_counts_and_influence(
@@ -134,7 +120,7 @@ async def _neo4j_counts_and_influence(
 ) -> OutboundCounts:
     async with neo4j_driver.session() as session:
         counts = await get_counts_and_influence(session, pubkey, influence_key)
-    return counts._replace(influence=_safe_float(counts.influence))
+    return counts._replace(influence=safe_float(counts.influence))
 
 
 def brainstorm_nsec_db_obj_to_user_history_schema_converter(
@@ -371,7 +357,7 @@ async def get_user_connections(
     items = [
         UserConnectionItem(
             pubkey=it.pubkey,
-            influence=_safe_float(it.influence),
+            influence=safe_float(it.influence),
             trusted_reporters=it.trusted_reporters,
             tier=it.tier,
         )
@@ -380,7 +366,7 @@ async def get_user_connections(
 
     next_cursor: str | None = None
     if last_cursor is not None:
-        last_sort_inf = _safe_float(last_cursor[0])
+        last_sort_inf = safe_float(last_cursor[0])
         if last_sort_inf is not None:
             next_cursor = _encode_cursor(last_sort_inf, last_cursor[1])
 

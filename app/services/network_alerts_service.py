@@ -26,8 +26,6 @@ scaling exists to protect.
 
 from collections import defaultdict
 
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
-
 from app.core.loggr import loggr
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.user_repo import (
@@ -41,9 +39,8 @@ from app.schemas.request_response_schemas import (
     NetworkAlertItem,
     NetworkAlertsData,
 )
-from app.services.verified_cutoffs import VerifiedCutoffs, resolve_verified_cutoffs
+from app.services.verified_cutoffs import VerifiedCutoffs
 from app.utils.neo4j_values import safe_float, safe_int
-from app.utils.nostr import resolve_pubkey_or_400
 
 logger = loggr.get_logger(__name__)
 
@@ -147,20 +144,21 @@ def _to_item(
 
 
 async def get_network_alerts_for_observer(
-    db: AsyncDBSession,
-    observer_raw: str,
+    observer: str,
+    cutoffs: VerifiedCutoffs,
     limit: int = DEFAULT_ALERT_LIMIT,
 ) -> NetworkAlertsData:
     """Both alert sections from the observer's perspective.
 
-    `observer_raw` is hex or npub. The observer is whoever the caller names —
-    the front end passes the House pubkey when it wants the House point of
-    view, so this service has no notion of who the House is.
+    `observer` is a resolved hex pubkey and `cutoffs` their saved preset, settled
+    by `resolve_alert_observer` / `get_alert_cutoffs` before the handler runs —
+    which is what keeps this function Neo4j-only. The observer is whoever the
+    caller names: the front end passes the House pubkey when it wants the House
+    point of view, so this service has no notion of who the House is.
+
+    The muter count rides its own cutoff, not the follower line.
     """
-    observer = resolve_pubkey_or_400(observer_raw, "observer")
     influence_key = f"influence_{observer}"
-    # Same preset resolution as /stats; the muter count rides its own cutoff.
-    cutoffs = await resolve_verified_cutoffs(db, observer)
 
     async with neo4j_driver.session() as session:
         candidates = await get_network_alert_candidates(

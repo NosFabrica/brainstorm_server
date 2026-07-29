@@ -110,7 +110,9 @@ token still 401s:
 
 The verified cutoffs, the verified line and the tier fallthrough all come from
 the observer's **saved preset** (`get_verified_cutoffs` in
-`user/dependencies.py`), never from a client-supplied number — the
+`user/dependencies.py`; `get_alert_cutoffs` in `network_alerts/dependencies.py`
+for `/networkAlerts`, whose observer is a query param rather than the JWT
+viewer), never from a client-supplied number — the
 `verified_threshold` query param is gone from all three read endpoints, and so
 is `/connections`' `min_influence` — a client cannot supply a threshold at all.
 `/stats` returns the verified *counts*; `/overview` returns no count of its own,
