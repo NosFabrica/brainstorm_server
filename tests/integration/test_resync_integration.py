@@ -47,9 +47,10 @@ def admin_observer(monkeypatch) -> str:
     async def _fake_admin() -> None:
         return None
 
-    # Don't push a real GrapeRank job onto the shared queue from a test.
+    # Don't push a real GrapeRank job onto the shared queue from a test. The
+    # enqueue lives in scheduler_lanes.enqueue_calc_request -> redis_client.rpush.
     monkeypatch.setattr(
-        "app.services.brainstorm_request_service.redis_client.rpush", AsyncMock()
+        "app.services.scheduler_lanes.redis_client.rpush", AsyncMock()
     )
     app.dependency_overrides[verify_token] = _fake_verify_token
     app.dependency_overrides[verify_admin_access] = _fake_admin

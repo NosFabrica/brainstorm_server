@@ -12,6 +12,7 @@ Shared, dependency-free infrastructure modules. Everything else imports from her
 | `database.py` | Async PostgreSQL `db_session()` context manager (asyncpg via SQLAlchemy). |
 | `redis_db.py` | `redis_client` async singleton + queue helpers. |
 | `sql_admin_panel.py` | SQLAdmin integration mounted by `app.api`. |
+| `tier_thresholds.py` | The fixed tier bands + `classify_tier`. The read endpoints bucket subjects in Cypher (`user_repo._TIER_PREDICATES`); the GrapeRank result writer buckets in-memory scorecards it hasn't written to the graph yet, so it can't run that query and needs this second implementation. `tests/integration/test_tier_classifier_matches_cypher.py` asserts the two agree. `DEFAULT_VERIFIED_THRESHOLD` is a fallback only — the live verified line comes from the observer's saved preset. |
 
 ## vespa.py — the only Vespa client
 

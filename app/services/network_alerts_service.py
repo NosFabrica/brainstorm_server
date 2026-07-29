@@ -24,11 +24,7 @@ pins N at 2 for everyone, which over-alerts on exactly the large accounts the
 scaling exists to protect.
 """
 
-import math
 from collections import defaultdict
-
-from fastapi import HTTPException, status
-from nostr_sdk import PublicKey
 
 from app.core.loggr import loggr
 from app.core.tier_thresholds import DEFAULT_VERIFIED_THRESHOLD
@@ -44,6 +40,8 @@ from app.schemas.request_response_schemas import (
     NetworkAlertItem,
     NetworkAlertsData,
 )
+from app.utils.neo4j_values import safe_float, safe_int
+from app.utils.nostr import resolve_pubkey_or_400
 
 logger = loggr.get_logger(__name__)
 
@@ -58,38 +56,6 @@ BASE_REPORTER_THRESHOLD = 2
 
 DEFAULT_ALERT_LIMIT = 100
 MAX_ALERT_LIMIT = 500
-
-
-def _resolve_pubkey_or_400(value: str, param_name: str) -> str:
-    """Hex or npub in, canonical hex out; anything unparseable is a 400."""
-    try:
-        return PublicKey.parse(value).to_hex()
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"{param_name} is not a valid hex pubkey or npub",
-        )
-
-
-def _safe_float(value) -> float | None:
-    """Neo4j can hand back inf/nan for stale or unbacked influence properties,
-    and json.dumps rejects both. Same coercion /connections applies."""
-    if value is None:
-        return None
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isinf(f) or math.isnan(f):
-        return None
-    return f
-
-
-def _safe_int(value) -> int | None:
-    if value is None:
-        return None
-    f = _safe_float(value)
-    return None if f is None else int(f)
 
 
 def reporter_threshold_for(verified_followers: int) -> int:
@@ -115,6 +81,7 @@ async def _resolve_follower_counts(
     session,
     candidates: list[dict],
     influence_key: str,
+    observer_pubkey: str,
 ) -> dict[str, int]:
     """Verified follower count per candidate pubkey, for rows that can alert.
 
@@ -123,17 +90,17 @@ async def _resolve_follower_counts(
     candidates are bucketed by identical cap and each bucket is one query —
     typically one or two, since the cap only varies with the reporter count.
 
-    A pubkey is absent from the result when it hit its cap: that means its true
-    count is at or above the cap, so it cannot alert and the caller drops it.
-    Every pubkey present therefore carries an exact count, never a truncated
-    one — which is why `verifiedFollowerCount` is always a real number on the
-    wire.
+    A pubkey is absent from the result when its count reached the cap (true
+    count >= cap) or no row came back at all. Either way it cannot alert, so the
+    caller drops it. Every pubkey present therefore carries an exact count,
+    never a truncated one — which is why `verifiedFollowerCount` is always a
+    real number on the wire.
     """
     resolved: dict[str, int] = {}
     by_cap: dict[int, list[str]] = defaultdict(list)
 
     for row in candidates:
-        stored = _safe_int(row.get("stored_followers"))
+        stored = safe_int(row.get("stored_followers"))
         if stored is not None:
             resolved[row["pubkey"]] = stored
         else:
@@ -154,14 +121,16 @@ async def _resolve_follower_counts(
             session=session,
             pubkeys=pubkeys,
             influence_key=influence_key,
+            observer_pubkey=observer_pubkey,
             cutoff=NETWORK_ALERT_CUTOFF,
             cap=cap,
         )
         for pubkey in pubkeys:
-            count = counts.get(pubkey, 0)
-            # == cap means the count was truncated: true value >= cap, so the
-            # row cannot clear its threshold. Leaving it out drops it.
-            if count < cap:
+            count = counts.get(pubkey)
+            # No row back, or one that hit the cap (true count >= cap): either
+            # way the row can't clear its threshold, so leave it out. Defaulting
+            # to 0 here would pin N at 2 and alert on it — see module docstring.
+            if count is not None and count < cap:
                 resolved[pubkey] = count
 
     return resolved
@@ -172,8 +141,8 @@ def _to_item(
 ) -> NetworkAlertItem:
     return NetworkAlertItem(
         pubkey=row["pubkey"],
-        influence=_safe_float(row.get("influence")),
-        hops=_safe_int(row.get("hops")),
+        influence=safe_float(row.get("influence")),
+        hops=safe_int(row.get("hops")),
         verified_follower_count=verified_followers,
         verified_muter_count=verified_muters,
         verified_reporter_count=int(row["verified_reporters"]),
@@ -191,7 +160,7 @@ async def get_network_alerts_for_observer(
     the front end passes the House pubkey when it wants the House point of
     view, so this service has no notion of who the House is.
     """
-    observer = _resolve_pubkey_or_400(observer_raw, "observer")
+    observer = resolve_pubkey_or_400(observer_raw, "observer")
     influence_key = f"influence_{observer}"
 
     async with neo4j_driver.session() as session:
@@ -215,11 +184,11 @@ async def get_network_alerts_for_observer(
             )
 
         follower_counts = await _resolve_follower_counts(
-            session, candidates, influence_key
+            session, candidates, influence_key, observer
         )
 
-        # Threshold test. Candidates missing from follower_counts hit their cap
-        # and are already known not to clear it.
+        # Threshold test. Candidates missing from follower_counts are already
+        # known not to clear it — see _resolve_follower_counts.
         alerts = [
             (row, follower_counts[row["pubkey"]])
             for row in candidates
@@ -235,7 +204,7 @@ async def get_network_alerts_for_observer(
 
         direct.sort(key=lambda rf: (-int(rf[0]["verified_reporters"]), rf[0]["pubkey"]))
         extended.sort(
-            key=lambda rf: (-(_safe_float(rf[0]["influence"]) or 0.0), rf[0]["pubkey"])
+            key=lambda rf: (-(safe_float(rf[0]["influence"]) or 0.0), rf[0]["pubkey"])
         )
 
         direct_page, extended_page = direct[:limit], extended[:limit]

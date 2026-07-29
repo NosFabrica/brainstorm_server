@@ -6,23 +6,10 @@ v1: the single-pair shortest-path lookup behind GET /shortestPath
 
 import random
 
-from fastapi import HTTPException, status
-from nostr_sdk import PublicKey
-
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.user_repo import get_all_shortest_follow_paths
 from app.schemas.request_response_schemas import ShortestPathData
-
-
-def _resolve_pubkey_or_400(value: str, param_name: str) -> str:
-    """Hex or npub in, canonical hex out; anything unparseable is a 400."""
-    try:
-        return PublicKey.parse(value).to_hex()
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"{param_name} is not a valid hex pubkey or npub",
-        )
+from app.utils.nostr import resolve_pubkey_or_400
 
 
 async def get_shortest_follow_path(
@@ -31,8 +18,8 @@ async def get_shortest_follow_path(
     max_hops: int,
     max_paths: int,
 ) -> ShortestPathData:
-    from_hex = _resolve_pubkey_or_400(from_raw, "from")
-    to_hex = _resolve_pubkey_or_400(to_raw, "to")
+    from_hex = resolve_pubkey_or_400(from_raw, "from")
+    to_hex = resolve_pubkey_or_400(to_raw, "to")
 
     # Anyone is zero hops from themselves — answered without touching the
     # graph. Also mandatory: Neo4j rejects same-node shortest-path queries

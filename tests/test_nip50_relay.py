@@ -648,6 +648,250 @@ def test_cold_start_not_fired_for_default_observer(
     assert calls == []
 
 
+# ---------------------------------------------------------------------------
+# Cold-observer fallback to the default observer's perspective
+# ---------------------------------------------------------------------------
+def _build_fallback_app(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    scored_observers: set[str],
+    result_pubkey: str,
+    observers_queried: list[str],
+    fallback_raises: bool = False,
+    default_observer: str = "e" * 64,
+) -> FastAPI:
+    """App whose Vespa stub only returns hits for observers that have scores.
+
+    Models the real failure mode: an observer with no cell in the
+    ``quality_scores`` tensor scores every document at 0, and the ``min_rank``
+    floor then drops the entire result set — so Vespa hands back an empty list.
+    """
+    from app.routers.nip50 import router as nip50_module
+
+    async def _fake_vespa_search(
+        *,
+        query_text: str,
+        user_pubkey: str,
+        hits: int,
+        include_zero_score_results: bool,
+        ranking_profile: str | None = None,
+        min_rank: float | None = None,
+    ) -> list[dict]:
+        observers_queried.append(user_pubkey)
+        if fallback_raises and user_pubkey == default_observer:
+            raise RuntimeError("vespa exploded on the fallback pass")
+        if user_pubkey in scored_observers:
+            return [{"pubkey": result_pubkey}]
+        return []
+
+    async def _fake_fetch_kind0(authors: list[str]) -> dict[str, dict]:
+        return {
+            pk: _kind0_event(pk, "alice")
+            for pk in authors
+            if pk == result_pubkey
+        }
+
+    async def _noop_provision(_observer: str) -> None:
+        return None
+
+    monkeypatch.setattr(nip50_module, "vespa_search", _fake_vespa_search)
+    monkeypatch.setattr(nip50_module, "_fetch_kind0_events", _fake_fetch_kind0)
+    monkeypatch.setattr(nip50_module, "_maybe_provision_observer", _noop_provision)
+    monkeypatch.setattr(
+        nip50_module, "default_observer_pubkey", lambda: default_observer
+    )
+
+    app = FastAPI()
+    app.include_router(nip50_module.router)
+    return app
+
+
+def test_cold_observer_falls_back_to_default_observer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An observer whose GrapeRank job hasn't landed yet has no scores, so the
+    personalized pass comes back empty. The relay must retry from the default
+    observer's perspective and say so via NOTICE, rather than handing the client
+    a silent empty result set.
+    """
+    pk, cold_observer, default_observer = "a" * 64, "d" * 64, "e" * 64
+    queried: list[str] = []
+
+    app = _build_fallback_app(
+        monkeypatch,
+        scored_observers={default_observer},
+        result_pubkey=pk,
+        observers_queried=queried,
+        default_observer=default_observer,
+    )
+    client = TestClient(app)
+
+    with client.websocket_connect("/relay") as ws:
+        ws.send_text(
+            json.dumps(["REQ", "s", {"search": f"alice observer:{cold_observer}"}])
+        )
+        frames = _drain_until_eose(ws, "s")
+
+    # Personalized pass first, then the default-observer retry.
+    assert queried == [cold_observer, default_observer]
+
+    events = [f for f in frames if f[0] == "EVENT"]
+    assert [f[2]["pubkey"] for f in events] == [pk]
+
+    notices = [f[1] for f in frames if f[0] == "NOTICE"]
+    assert len(notices) == 1
+    assert cold_observer[:12] in notices[0]
+    assert "default observer" in notices[0]
+
+
+def test_scored_observer_does_not_trigger_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An observer that already has scores must pay exactly one Vespa call and
+    get no NOTICE — the fallback stays off the hot path.
+    """
+    pk, warm_observer, default_observer = "a" * 64, "d" * 64, "e" * 64
+    queried: list[str] = []
+
+    app = _build_fallback_app(
+        monkeypatch,
+        scored_observers={warm_observer, default_observer},
+        result_pubkey=pk,
+        observers_queried=queried,
+        default_observer=default_observer,
+    )
+    client = TestClient(app)
+
+    with client.websocket_connect("/relay") as ws:
+        ws.send_text(
+            json.dumps(["REQ", "s", {"search": f"alice observer:{warm_observer}"}])
+        )
+        frames = _drain_until_eose(ws, "s")
+
+    assert queried == [warm_observer]
+    assert [f[1] for f in frames if f[0] == "NOTICE"] == []
+    assert [f[2]["pubkey"] for f in frames if f[0] == "EVENT"] == [pk]
+
+
+def test_genuinely_empty_search_emits_no_fallback_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A query that matches nothing for ANY observer still retries once, but
+    must not claim the observer is cold — there is simply nothing to find.
+    """
+    cold_observer, default_observer = "d" * 64, "e" * 64
+    queried: list[str] = []
+
+    app = _build_fallback_app(
+        monkeypatch,
+        scored_observers=set(),  # nobody has hits for this query
+        result_pubkey="a" * 64,
+        observers_queried=queried,
+        default_observer=default_observer,
+    )
+    client = TestClient(app)
+
+    with client.websocket_connect("/relay") as ws:
+        ws.send_text(
+            json.dumps(["REQ", "s", {"search": f"nomatch observer:{cold_observer}"}])
+        )
+        frames = _drain_until_eose(ws, "s")
+
+    assert queried == [cold_observer, default_observer]
+    assert [f[1] for f in frames if f[0] == "NOTICE"] == []
+    assert [f for f in frames if f[0] == "EVENT"] == []
+    assert frames[-1] == ["EOSE", "s"]
+
+
+def test_empty_search_without_observer_token_does_not_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no ``observer:`` token the search already ran as the default
+    observer, so an empty result is final — retrying would just repeat it.
+    """
+    default_observer = "e" * 64
+    queried: list[str] = []
+
+    app = _build_fallback_app(
+        monkeypatch,
+        scored_observers=set(),
+        result_pubkey="a" * 64,
+        observers_queried=queried,
+        default_observer=default_observer,
+    )
+    client = TestClient(app)
+
+    with client.websocket_connect("/relay") as ws:
+        ws.send_text(json.dumps(["REQ", "s", {"search": "nomatch"}]))
+        frames = _drain_until_eose(ws, "s")
+
+    assert queried == [default_observer]
+    assert [f[1] for f in frames if f[0] == "NOTICE"] == []
+
+
+def test_explicit_default_observer_does_not_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``observer:<default>`` names the observer we would fall back to, so an
+    empty answer must not trigger an identical second query.
+    """
+    default_observer = "e" * 64
+    queried: list[str] = []
+
+    app = _build_fallback_app(
+        monkeypatch,
+        scored_observers=set(),
+        result_pubkey="a" * 64,
+        observers_queried=queried,
+        default_observer=default_observer,
+    )
+    client = TestClient(app)
+
+    with client.websocket_connect("/relay") as ws:
+        ws.send_text(
+            json.dumps(
+                ["REQ", "s", {"search": f"nomatch observer:{default_observer}"}]
+            )
+        )
+        frames = _drain_until_eose(ws, "s")
+
+    assert queried == [default_observer]
+    assert [f[1] for f in frames if f[0] == "NOTICE"] == []
+
+
+def test_failing_fallback_degrades_to_empty_not_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The personalized pass already succeeded (it was just empty). If the
+    fallback query then fails, the client must still get a clean EOSE — a
+    broken retry must not turn a working search into a backend error.
+    """
+    cold_observer, default_observer = "d" * 64, "e" * 64
+    queried: list[str] = []
+
+    app = _build_fallback_app(
+        monkeypatch,
+        scored_observers={default_observer},
+        result_pubkey="a" * 64,
+        observers_queried=queried,
+        fallback_raises=True,
+        default_observer=default_observer,
+    )
+    client = TestClient(app)
+
+    with client.websocket_connect("/relay") as ws:
+        ws.send_text(
+            json.dumps(["REQ", "s", {"search": f"alice observer:{cold_observer}"}])
+        )
+        frames = _drain_until_eose(ws, "s")
+
+    assert queried == [cold_observer, default_observer]
+    assert [f for f in frames if f[0] == "EVENT"] == []
+    # No "search backend error" NOTICE — the retry failure is logged, not raised.
+    assert [f[1] for f in frames if f[0] == "NOTICE"] == []
+    assert frames[-1] == ["EOSE", "s"]
+
+
 def test_pure_extension_query_returns_eose(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

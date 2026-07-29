@@ -15,6 +15,9 @@ class ScoreCard(BaseModel):
     hops: int = 0
     trusted_followers: int = 0
     trusted_reporters: int = 0
+    # Defaulted so a Java worker that predates the count still validates —
+    # the two services deploy in either order.
+    trusted_muters: int = 0
 
 
 class GrapeRankResult(BaseModel):

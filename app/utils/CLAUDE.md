@@ -13,6 +13,7 @@ app/utils/
 │   ├── auth_models.py       # JWTData dataclass / TypedDict
 │   └── nip98.py             # NIP-98 signed-event validation
 ├── encryption.py            # Fernet symmetric encryption for nsec storage
+├── neo4j_values.py          # safe_float / safe_int — inf/nan coercion on graph reads
 ├── nostr.py                 # Tiny Nostr helpers (constants, format conversions)
 ├── rate_limiting/
 │   └── rate_limiting.py     # In-memory / Redis-backed rate limiter
@@ -60,7 +61,7 @@ or you'll have rows that can't be decrypted.
 
 ## nostr.py
 
-Six lines as of this writing — npub↔hex constants + maybe a small helper. Treat it as a place to drop tiny pure helpers; if it grows past ~50 LOC, split by topic.
+Tiny Nostr helpers: `generate_random_nsec`, and `resolve_pubkey_or_400` (hex or npub in, canonical hex out, 400 on anything else — shared by `/networkAlerts` and `/shortestPath`). Treat it as a place to drop small helpers; if it grows past ~50 LOC, split by topic.
 
 ## rate_limiting/
 
