@@ -487,10 +487,8 @@ def test_unknown_observer_returns_empty_sections(graph):
 def test_the_endpoint_resolves_the_preset_when_nothing_is_overridden(graph):
     """The router → `get_alert_cutoffs` → Postgres wiring, end to end.
 
-    Every other test here pins the cutoffs, so this is the only one that would
-    notice the handler being disconnected from the dependency. Alice has no
-    saved preset, which resolves to DEFAULT — the same cutoffs the pinned tests
-    assume, so the expected rows are unchanged.
+    Every other test here pins the cutoffs. Alice has no saved preset, so this
+    resolves to DEFAULT and the expected rows are unchanged.
     """
 
     async def _go():

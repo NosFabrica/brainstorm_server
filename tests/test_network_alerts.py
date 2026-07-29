@@ -56,8 +56,8 @@ def mock_graph(monkeypatch):
     observer's resolved preset — set `.return_value` to a different
     `VerifiedCutoffs` to exercise a non-DEFAULT observer without Postgres.
 
-    Only the cutoffs dependency is overridden, not observer resolution, so the
-    malformed-pubkey and npub cases still run the real validator.
+    Only the cutoffs dependency is overridden, so the malformed-pubkey and npub
+    cases still run the real validator.
     """
     mocks = {
         "candidates": AsyncMock(return_value=[]),
@@ -371,11 +371,8 @@ def test_resolved_cutoffs_drive_both_graph_queries(client, mock_graph):
 
 
 def test_the_cutoffs_dependency_resolves_the_named_observers_preset(monkeypatch):
-    """The half `mock_graph` overrides, tested directly: whose preset gets read.
-
-    Asserted here rather than through the app because the fixture replaces this
-    dependency wholesale.
-    """
+    """Whose preset gets read — the half `mock_graph` overrides, so not
+    assertable through the app."""
     keys = Keys.generate()
     resolved = AsyncMock(
         return_value=VerifiedCutoffs(follower=0.5, muter=0.5, reporter=0.5)

@@ -1,10 +1,8 @@
 """Observer + preset resolution for `/networkAlerts`.
 
-The observer is a query param here, not the JWT viewer, so this can't reuse
-`user/dependencies.get_verified_cutoffs`.
-
-Split in two because only `get_alert_cutoffs` needs a DB: tests override that
-one and pubkey validation still runs for real.
+The observer is a query param, not the JWT viewer, so this can't reuse
+`user/dependencies.get_verified_cutoffs`. Split in two so tests can override the
+DB half and still run pubkey validation for real.
 """
 
 from fastapi import Depends, Query

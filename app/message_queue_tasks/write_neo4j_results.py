@@ -15,8 +15,7 @@ from app.repos.brainstorm_request_repo import (
 BATCH_SIZE = 100  # Adjust as needed
 
 # Persisted per observer as `<field>_<observer_pubkey>`. `trusted_followers` is
-# here so /networkAlerts reads a property instead of rescanning every follower
-# edge; zeros included, so its threshold's two sides stay on one clock.
+# here so /networkAlerts reads a property instead of scanning follower edges.
 PERSISTED_FIELDS = ("influence", "hops", "trusted_followers", "trusted_reporters")
 
 logger = loggr.get_logger(__name__)
