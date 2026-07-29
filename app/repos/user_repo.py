@@ -991,14 +991,14 @@ async def get_all_shortest_follow_paths(
 #                                        any candidate with no stored count
 #   3. count_verified_muters           — display-only, over final rows only
 #
-# NOTHING IN THIS MODULE — OR ANYWHERE ELSE IN THE REPO TODAY — WRITES
-# `trusted_followers_<observer>`. Step (1) reads it, but the GrapeRank result
-# writer currently drops that scorecard field, so it is absent on every node and
-# step (2) runs for every candidate. The read is deliberate: persisting the
-# property turns step (2) into a property lookup, which is a follow-up change
-# with its own tradeoffs (extra per-observer property, faster property-key token
-# growth). Until then this path is read-only against Neo4j and pays a bounded
-# follower traversal per candidate instead.
+# Steady state is (1) + (3): `write_neo4j_results.py` persists
+# `trusted_followers_<observer>`, so step (1) reads the count straight off the
+# node. Step (2) is the fallback for any observer whose run carrying that
+# property hasn't landed yet, and goes quiet as they backfill.
+#
+# The read path here works either way — it prefers the stored value and counts
+# only when it's absent — so reverting the writer degrades performance without
+# breaking correctness.
 #
 # Two things keep step (1) off a full label scan:
 #

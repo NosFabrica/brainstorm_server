@@ -13,16 +13,11 @@ The panel has two sections and this service maps 1:1 onto them:
 
 A pubkey qualifying for both is reported only under direct follows.
 
-The threshold needs a verified follower count, and today nothing stores one:
-the GrapeRank algorithm computes `trusted_followers` but the Neo4j result
-writer drops it. So this service counts above-cutoff followers from the graph,
-bounded so a popular account can't dominate the response — see
-`_resolve_follower_counts`.
-
-It still *reads* `trusted_followers_<observer>` and prefers it when present.
-That read is inert until something persists the property; it exists so that
-change stays a one-line addition to the result writer rather than a rewrite
-here. Everything this service does against Neo4j is a read.
+The threshold needs a verified follower count. It normally comes straight off
+the node — `trusted_followers_<observer>`, written by the GrapeRank result
+writer — but it is absent for any observer whose first run carrying that
+property hasn't landed. Those rows are counted from the graph instead, bounded
+so a popular account can't dominate the response. See `_resolve_follower_counts`.
 
 Coalescing a missing count to 0 was the obvious alternative and is wrong: it
 pins N at 2 for everyone, which over-alerts on exactly the large accounts the
@@ -90,11 +85,10 @@ async def _resolve_follower_counts(
 ) -> dict[str, int]:
     """Verified follower count per candidate pubkey, for rows that can alert.
 
-    Stored value wins, but nothing writes `trusted_followers_<observer>` today,
-    so in practice every candidate takes the counted path below. The count is
-    capped at `follower_count_cap_for(...)`. Cypher can't vary a LIMIT per row,
-    so candidates are bucketed by identical cap and each bucket is one query —
-    one per distinct reporter count among the candidates.
+    Stored value wins. Anything missing it is counted from the graph, capped at
+    `follower_count_cap_for(...)`. Cypher can't vary a LIMIT per row, so
+    candidates are bucketed by identical cap and each bucket is one query —
+    typically one or two, since the cap only varies with the reporter count.
 
     A pubkey is absent from the result when its count reached the cap (true
     count >= cap) or no row came back at all. Either way it cannot alert, so the
