@@ -17,8 +17,34 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      # poe check_all = black --check, isort --check, flake8, mypy, pytest.
+      # PYTEST_ADDOPTS deselects integration tests (they need real services).
+      - name: Lint and test
+        env:
+          PYTEST_ADDOPTS: "-m 'not integration'"
+        run: poetry run poe check_all
+
   build:
     name: Build and push image
+    needs: [test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
