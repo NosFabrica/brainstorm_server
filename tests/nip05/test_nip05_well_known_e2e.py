@@ -7,6 +7,7 @@ assert the route agrees with whatever the kind-0 publisher advertises.
 
 from __future__ import annotations
 
+from app.core.config import settings
 from app.utils.assistant_nip05 import compute_assistant_nip05_local_part
 
 ASSISTANT_PUBKEY = "a" * 64
@@ -14,6 +15,60 @@ OTHER_ASSISTANT_PUBKEY = "b" * 64
 HOUSE_PUBKEY = "c" * 64
 
 WELL_KNOWN_PATH = "/.well-known/nostr.json"
+
+
+class TestRelaysAttribute:
+    """NIP-05: `relays` is keyed by PUBKEY (not by name), and a server generating
+    responses dynamically SHOULD serve it for any name it serves."""
+
+    def test_hit_advertises_the_ta_relay_keyed_by_pubkey(self, make_client):
+        client = make_client(assistants=(ASSISTANT_PUBKEY,))
+        name = compute_assistant_nip05_local_part(ASSISTANT_PUBKEY)
+
+        body = client.get(WELL_KNOWN_PATH, params={"name": name}).json()
+
+        assert body["relays"] == {
+            ASSISTANT_PUBKEY: [settings.nostr_upload_ta_events_relay_public_url]
+        }
+
+    def test_house_identity_advertises_the_ta_relay(self, make_client):
+        client = make_client(house_pubkey=HOUSE_PUBKEY)
+
+        body = client.get(WELL_KNOWN_PATH, params={"name": "_"}).json()
+
+        assert body["relays"] == {
+            HOUSE_PUBKEY: [settings.nostr_upload_ta_events_relay_public_url]
+        }
+
+    def test_relay_url_tracks_the_environment(self, make_client, monkeypatch):
+        """staging/local/prod each advertise their own relay — it's one env var."""
+        monkeypatch.setattr(
+            settings, "nostr_upload_ta_events_relay_public_url", "ws://localhost:7778"
+        )
+        client = make_client(assistants=(ASSISTANT_PUBKEY,))
+        name = compute_assistant_nip05_local_part(ASSISTANT_PUBKEY)
+
+        body = client.get(WELL_KNOWN_PATH, params={"name": name}).json()
+
+        assert body["relays"] == {ASSISTANT_PUBKEY: ["ws://localhost:7778"]}
+
+    def test_relays_omitted_when_no_public_relay_configured(
+        self, make_client, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "nostr_upload_ta_events_relay_public_url", "")
+        client = make_client(assistants=(ASSISTANT_PUBKEY,))
+        name = compute_assistant_nip05_local_part(ASSISTANT_PUBKEY)
+
+        body = client.get(WELL_KNOWN_PATH, params={"name": name}).json()
+
+        assert "relays" not in body
+
+    def test_miss_carries_no_relays(self, make_client):
+        client = make_client(assistants=(ASSISTANT_PUBKEY,))
+
+        body = client.get(WELL_KNOWN_PATH, params={"name": "nobody_here_0000"}).json()
+
+        assert body == {"names": {}}
 
 
 class TestNameResolution:
@@ -26,7 +81,7 @@ class TestNameResolution:
         r = client.get(WELL_KNOWN_PATH, params={"name": name})
 
         assert r.status_code == 200
-        assert r.json() == {"names": {name: ASSISTANT_PUBKEY}}
+        assert r.json()["names"] == {name: ASSISTANT_PUBKEY}
 
     def test_hit_carries_the_cors_header_and_json_content_type(self, make_client):
         client = make_client(assistants=(ASSISTANT_PUBKEY,))
@@ -65,7 +120,7 @@ class TestHouseIdentity:
         r = client.get(WELL_KNOWN_PATH, params={"name": "_"})
 
         assert r.status_code == 200
-        assert r.json() == {"names": {"_": HOUSE_PUBKEY}}
+        assert r.json()["names"] == {"_": HOUSE_PUBKEY}
 
     def test_underscore_is_absent_when_no_house_identity_configured(self, make_client):
         client = make_client(house_pubkey="")

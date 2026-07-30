@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
-from app.services.nip05_service import resolve_nip05_name
+from app.services.nip05_service import build_nip05_document
 
 router = APIRouter()
 
@@ -19,11 +19,11 @@ async def nip05_well_known(
     db: AsyncDBSession = Depends(get_db),
 ) -> JSONResponse:
     # No name, no lookup — never dump the list; that's an enumeration surface.
-    names = await resolve_nip05_name(db, name) if name else {}
+    document = await build_nip05_document(db, name) if name else {"names": {}}
 
     # Explicit JSONResponse so the CORS header is set even without an Origin,
     # which the middleware would skip (mirrors open_ranking/well_known.py).
     return JSONResponse(
-        content={"names": names},
+        content=document,
         headers={"Access-Control-Allow-Origin": "*"},
     )

@@ -20,7 +20,7 @@ publishing — and routers just thin-wrap them.
 | `nsec_encryption_service.py` | 210 | Background rotation of `BrainstormNsec.encrypted_nsec`: scan rows, decrypt-old/encrypt-new, write back. Idempotent and resumable. |
 | `network_alerts_service.py` | 226 | `/networkAlerts`: builds the per-observer property keys and maps graph rows → panel payload. **Neo4j only** — the observer pubkey and their preset cutoffs arrive already resolved, from `routers/network_alerts/dependencies.py`. |
 | `report_graph_service.py` | 120 | **Pure, no I/O.** The user-only report rules, shared by all three report paths (live kind-1984 ingest, the backfill script, the kind-5 recompute) so they cannot drift. Owns `extract_report_targets` (NIP-56 user-vs-note), the backfill's `build_desired_reported_by`/`diff_reported_by`, and kind-5's `deletion_may_target_reports`/`surviving_report_targets`/`diff_author_targets`. |
-| `nip05_service.py` | 23 | NIP-05 name resolution for `/.well-known/nostr.json`: the reserved `_` house identity from `settings.periodic_graperank_pubkey`, otherwise scan Assistant pubkeys and match the derived local-part. Uncached by design. |
+| `nip05_service.py` | 40 | NIP-05 document for `/.well-known/nostr.json`: the reserved `_` house identity from `settings.periodic_graperank_pubkey`, otherwise scan Assistant pubkeys and match the derived local-part. Hits also carry the recommended `relays` attribute (keyed by pubkey) from `nostr_upload_ta_events_relay_public_url`. Uncached by design. |
 | `report_relay_service.py` | 90 | Reads an author's surviving kind-1984 back from the internal relay (REQ over websocket). Returns `None` for *unknown* vs `[]` for *no reports* — see `../message_queue_tasks/CLAUDE.md`. |
 
 ## Conventions
