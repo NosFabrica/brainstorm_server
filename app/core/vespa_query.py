@@ -198,7 +198,7 @@ def _field_clauses(field: str, var: str, role: str) -> list[str]:
     return ["({" + ",".join(ann) + "}" + f"userInput({var}))"]
 
 
-def _near_clauses(var: str, literal: str) -> list[str]:
+def _near_clauses(var: str, literal: str, allow_fuzzy: bool = True) -> list[str]:
     """Prefix + fuzzy clauses for one word, against the merged attribute fields.
 
     Emitted ONCE per word (not per source field) because name_parts/name_tokens
@@ -208,6 +208,8 @@ def _near_clauses(var: str, literal: str) -> list[str]:
 
     Direct terms, never userInput(): userInput() silently drops prefix/fuzzy
     annotations (see _NEAR_FIELDS).
+
+    `allow_fuzzy=False` for the synthetic joined/pair variants — see _word_group.
     """
     out: list[str] = []
     if len(literal) >= _min_prefix_len(literal):
@@ -218,7 +220,7 @@ def _near_clauses(var: str, literal: str) -> list[str]:
     # Only the top budget is emitted: maxEditDistance:N subsumes every smaller N,
     # so the old per-tier clauses were pure duplicate work once the match_quality
     # labels they fed turned out to be inert (§11.1).
-    edits = _word_max_edits(literal)
+    edits = _word_max_edits(literal) if allow_fuzzy else 0
     if edits:
         for f in _NEAR_FIELDS:
             out.append(
@@ -227,13 +229,27 @@ def _near_clauses(var: str, literal: str) -> list[str]:
     return out
 
 
-def _word_group(var: str, literal: str, with_grams: bool = True) -> str:
-    """All match clauses for one query word across the searchable fields + grams."""
+def _word_group(var: str, literal: str, synthetic: bool = False) -> str:
+    """All match clauses for one query word.
+
+    `synthetic=True` marks the joined / adjacent-pair CONCATENATIONS built in
+    build_query, not words the user typed. They get exact + prefix but NO fuzzy
+    and no trigrams:
+
+      * fuzzy — "satoshi nakamoto bitcoin" builds "satoshinakamotobitcoin", 22
+        characters, which draws the TOP typo budget (3 edits). That is the single
+        most expensive matcher we have, walking the attribute dictionary for a
+        token nobody typed, and a 3-word query emitted six of them (joined + 2
+        pairs, x2 fields). Prefix on the concatenation is cheap and does the
+        useful work ("vitorp" -> Vitor Pamplona), so it stays.
+      * trigrams — the concatenation's trigrams are a superset of the words'
+        own, so they add recall noise without adding reach.
+    """
     clauses: list[str] = []
     for field in _SEARCH_FIELDS:
         clauses += _field_clauses(field, var, _field_role(field))
-    clauses += _near_clauses(var, literal)
-    if with_grams:
+    clauses += _near_clauses(var, literal, allow_fuzzy=not synthetic)
+    if not synthetic:
         if NAME_GRAM_RECALL:
             for gram_field in ("name_gram", "display_name_gram"):
                 gc = _gram_clause(literal, gram_field)
@@ -250,9 +266,9 @@ def _build_yql(words: list[str], joined, pairs: list[str]) -> str:
     adjacent-pair concatenations for >2-word queries."""
     parts = [_word_group(f"@w{i}", w) for i, w in enumerate(words[:MAX_QUERY_WORDS])]
     if joined:
-        parts.append(_word_group("@wj", joined, with_grams=False))
+        parts.append(_word_group("@wj", joined, synthetic=True))
     for i, _ in enumerate(pairs):
-        parts.append(_word_group(f"@wp{i}", pairs[i], with_grams=False))
+        parts.append(_word_group(f"@wp{i}", pairs[i], synthetic=True))
     return f"select * from doc where {' or '.join(parts)}"
 
 

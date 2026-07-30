@@ -23,6 +23,7 @@ from app.core.vespa_query import (
     MAX_TYPO_EDITS,
     MIN_PREFIX_LEN,
     NAME_GRAM_RECALL,
+    _NEAR_FIELDS,
     _word_max_edits,
     build_query,
 )
@@ -142,6 +143,26 @@ def test_params_bind_every_referenced_word():
     assert params["w1"] == "pamplona"
     # >=2 words also emit the joined variant
     assert params["wj"] == "vitorpamplona"
+
+
+# ---------------------------------------------------------------------------
+# Cost: the synthetic concatenations must not draw the expensive matcher
+# ---------------------------------------------------------------------------
+def test_synthetic_concatenations_get_prefix_but_not_fuzzy():
+    """build_query() invents a joined variant and adjacent pairs. Nobody typed
+    them, and they are long, so they drew the TOP typo budget — the most
+    expensive matcher we have, six times over on a 3-word query."""
+    yql = _yql("satoshi nakamoto bitcoin")
+    assert "@wj" in yql and "@wp0" in yql          # the synthetics are still built
+    assert "prefix:true}@wj" in yql                # prefix on them is cheap + useful
+    for var in ("@wj", "@wp0", "@wp1"):
+        assert f"fuzzy({var})" not in yql
+
+
+def test_fuzzy_clause_count_stays_bounded_by_real_words():
+    """One fuzzy clause per (real word over the length floor) per near field."""
+    yql = _yql("satoshi nakamoto bitcoin")
+    assert yql.count("fuzzy(") == 3 * len(_NEAR_FIELDS)
 
 
 def test_word_cap_is_enforced():
