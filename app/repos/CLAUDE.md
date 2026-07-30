@@ -78,6 +78,7 @@ in `brainstorm_nsec.py` are the only safe entry points.
 ### `brainstorm_nsec.py`
 
 - `get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey) → tuple[BrainstormNsec, bool]` (the bool is "created now")
+- `select_all_assistant_pubkeys_on_db(db) → list[str]` — every Assistant pubkey, derived from the rows' nsecs (the Assistant key is not a column; `pubkey` is the owner). Drives the NIP-05 well-known lookup.
 - Preset getters/setters: `get_graperank_preset_by_pubkey_on_db`, `set_graperank_preset_by_pubkey_on_db`, `get_graperank_custom_params_by_pubkey_on_db`, `set_graperank_custom_params_by_pubkey_on_db` (all auto-create the row if absent)
 - Timestamp updates: `update_last_time_triggered_graperank_on_db`, `update_last_time_calculated_graperank_on_db`
 - Published-pubkeys list: `get_last_published_pubkeys_by_pubkey_on_db`, `update_last_published_pubkeys_by_pubkey_on_db`

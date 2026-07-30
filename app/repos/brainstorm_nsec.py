@@ -1,10 +1,12 @@
 from datetime import datetime
 
+from nostr_sdk import Keys  # type: ignore
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from sqlalchemy.orm import defer
 
 from app.core.database import execute_db_statement, handle_no_data
+from app.core.loggr import loggr
 from app.db_models import BrainstormNsec, Scheduling
 from app.repos.scheduling_repo import (
     get_default_scheduling_on_db,
@@ -13,12 +15,18 @@ from app.repos.scheduling_repo import (
 from app.utils.encryption import decrypt_nsec, encrypt_nsec
 from app.utils.nostr import generate_random_nsec
 
+logger = loggr.get_logger(__name__)
+
+
+def _plaintext_nsec(nsec: str, encrypted_nsec: str | None) -> str:
+    """Prefer encrypted_nsec if present, otherwise fall back to plaintext nsec."""
+    if encrypted_nsec:
+        return decrypt_nsec(encrypted_nsec)
+    return nsec
+
 
 def _resolve_plaintext_nsec(row: BrainstormNsec) -> str:
-    """Prefer encrypted_nsec if present, otherwise fall back to plaintext nsec."""
-    if row.encrypted_nsec:
-        return decrypt_nsec(row.encrypted_nsec)
-    return row.nsec
+    return _plaintext_nsec(row.nsec, row.encrypted_nsec)
 
 
 async def get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
@@ -291,6 +299,27 @@ async def brainstorm_nsec_exists_by_pubkey_on_db(
     statement = select(BrainstormNsec.pubkey).where(BrainstormNsec.pubkey == pubkey)
     result = await execute_db_statement(db, statement, __name__)
     return result.scalar_one_or_none() is not None
+
+
+async def select_all_assistant_pubkeys_on_db(db: AsyncDBSession) -> list[str]:
+    """Every Assistant pubkey. Drives the NIP-05 /.well-known/nostr.json lookup.
+
+    The Assistant pubkey is not a column: `BrainstormNsec.pubkey` is the *owner*
+    (the row's PK), and the Assistant is the public half of the row's nsec. So it
+    is derived here, keeping nsecs inside the repo layer. A row whose nsec won't
+    decrypt or parse is skipped rather than failing every lookup.
+    """
+    statement = select(BrainstormNsec.nsec, BrainstormNsec.encrypted_nsec)
+    result = await execute_db_statement(db, statement, __name__)
+
+    pubkeys: list[str] = []
+    for nsec, encrypted_nsec in result.all():
+        try:
+            plaintext = _plaintext_nsec(nsec, encrypted_nsec)
+            pubkeys.append(Keys.parse(secret_key=plaintext).public_key().to_hex())
+        except Exception as e:
+            logger.error(f"Skipping a brainstorm_nsec row with an unusable nsec: {e}")
+    return pubkeys
 
 
 async def select_brainstorm_nsec_by_pubkey_on_db(

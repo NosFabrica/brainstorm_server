@@ -16,6 +16,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/whitelisted/{observer_pubkey}` | `router.py:75-94` | Trusted-pubkey list for an observer; `threshold` query param (default 0.02) |
 | `/shortestPath` | `graph/router.py` | Shortest directed FOLLOWS path(s) between two pubkeys |
 | `/networkAlerts` | `network_alerts/router.py` | Pubkeys carrying more verified reports than their reach justifies, split into direct-follows / extended-network |
+| `/.well-known/nostr.json` | `nip05/well_known.py` | NIP-05 verification for Assistant pubkeys; resolution in `services/nip05_service.py` |
 
 ## Subdirs (by URL prefix)
 
@@ -66,6 +67,8 @@ Every successful response is wrapped via `SuccessfulResponseDataSchema` (in `app
 ```
 
 Each endpoint's specific response class (e.g. `GetUserDataResponse`) subclasses that wrapper and types `data` as the relevant payload schema. **Don't return a bare dict** — the contract is the wrapped shape.
+
+**Exception: routes whose shape a third-party spec dictates.** Where an external protocol fixes the response body, the endpoint returns it unwrapped — the `.well-known` documents (`open_ranking/well_known.py` for ORE-01, `nip05/well_known.py` for NIP-05) via an explicit `JSONResponse`, and likewise the Open Ranking payloads and `nip50`'s NIP-11 document. Wrapping any of them would break the spec.
 
 ## Per-router summary
 

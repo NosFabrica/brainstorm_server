@@ -10,6 +10,7 @@ from app.routers.auth_challenge.router import router as auth_challenge_router
 from app.routers.graph.router import router as graph_router
 from app.routers.graperank.router import router as graperank_router
 from app.routers.network_alerts.router import router as network_alerts_router
+from app.routers.nip05.router import router as nip05_router
 from app.routers.nip50.router import router as nip50_router
 from app.routers.open_ranking.router import router as open_ranking_router
 from app.routers.search.router import router as search_router
@@ -39,6 +40,9 @@ router.include_router(
     router=open_ranking_router,
     tags=["open-ranking"],
 )
+
+# NIP-05 verification. Root-mounted — the spec fixes the path.
+router.include_router(router=nip05_router, tags=["nip05"])
 
 # Follow-graph queries (issue #43). Mounted at root so the path is exactly
 # /shortestPath, decoupled from the /user resource domain.
