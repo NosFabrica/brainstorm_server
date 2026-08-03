@@ -17,6 +17,7 @@ import pytest
 from nostr_sdk import Keys
 
 from app.api import app
+from app.repos.user_repo import MIN_ALERT_REPORTERS
 from app.routers.network_alerts.dependencies import get_alert_cutoffs
 from app.services.verified_cutoffs import VerifiedCutoffs
 from app.services.network_alerts_service import (
@@ -102,13 +103,13 @@ def mock_graph(monkeypatch):
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "followers,expected",
-    [(0, 2), (499, 2), (500, 3), (999, 3), (1000, 4), (2500, 7), (8600, 19)],
+    [(0, 4), (499, 4), (500, 5), (999, 5), (1000, 6), (2500, 9), (8600, 21)],
 )
 def test_reporter_threshold_scales_per_500_followers(followers, expected):
     assert reporter_threshold_for(followers) == expected
 
 
-@pytest.mark.parametrize("verified_reporters", range(3, 40))
+@pytest.mark.parametrize("verified_reporters", range(MIN_ALERT_REPORTERS, 40))
 def test_cap_is_exactly_the_point_where_a_row_can_no_longer_alert(
     verified_reporters,
 ):
@@ -125,8 +126,12 @@ def test_cap_is_exactly_the_point_where_a_row_can_no_longer_alert(
 
 
 def test_cap_is_never_below_one_bucket():
-    """Candidates are prefiltered to >= 3 reporters, so the cap can't be 0."""
-    assert follower_count_cap_for(3) == 500
+    """The prefilter is what keeps the cap a legal Cypher LIMIT.
+
+    Anything at or below the threshold floor would cap at zero or less. Pinned
+    to the constant so raising the floor without the prefilter fails here.
+    """
+    assert follower_count_cap_for(MIN_ALERT_REPORTERS) == 500
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +190,7 @@ def test_limit_out_of_range_is_422(client, mock_graph, bad_limit):
 def test_stored_follower_count_skips_the_graph_scan(client, mock_graph):
     bob = _pk()
     mock_graph["candidates"].return_value = [
-        _candidate(bob, stored_followers=1200, verified_reporters=5)
+        _candidate(bob, stored_followers=1200, verified_reporters=7)
     ]
 
     data = _get(client, {"observer": _pk()}).json()["data"]
@@ -193,15 +198,15 @@ def test_stored_follower_count_skips_the_graph_scan(client, mock_graph):
     mock_graph["capped"].assert_not_awaited()
     item = data["directFollows"][0]
     assert item["verifiedFollowerCount"] == 1200
-    assert item["reporterThreshold"] == 4
+    assert item["reporterThreshold"] == 6
 
 
 def test_missing_stored_count_falls_back_to_a_capped_scan(client, mock_graph):
     bob = _pk()
     mock_graph["candidates"].return_value = [
-        _candidate(bob, stored_followers=None, verified_reporters=5)
+        _candidate(bob, stored_followers=None, verified_reporters=7)
     ]
-    # Cap for 5 reporters is 500 * 3 = 1500; came back under it, so it's exact.
+    # Cap for 7 reporters is 500 * 3 = 1500; came back under it, so it's exact.
     mock_graph["capped"].return_value = {bob: 900}
 
     data = _get(client, {"observer": _pk()}).json()["data"]
@@ -210,7 +215,7 @@ def test_missing_stored_count_falls_back_to_a_capped_scan(client, mock_graph):
     assert mock_graph["capped"].await_args.kwargs["pubkeys"] == [bob]
     item = data["directFollows"][0]
     assert item["verifiedFollowerCount"] == 900
-    assert item["reporterThreshold"] == 3
+    assert item["reporterThreshold"] == 5
 
 
 def test_count_that_reaches_the_cap_is_dropped_not_reported(client, mock_graph):
@@ -221,7 +226,7 @@ def test_count_that_reaches_the_cap_is_dropped_not_reported(client, mock_graph):
     """
     bob = _pk()
     mock_graph["candidates"].return_value = [
-        _candidate(bob, stored_followers=None, verified_reporters=5)
+        _candidate(bob, stored_followers=None, verified_reporters=7)
     ]
     mock_graph["capped"].return_value = {bob: 1500}  # == cap
 
@@ -235,8 +240,8 @@ def test_fallback_buckets_candidates_by_cap(client, mock_graph):
     """One query per distinct cap — Cypher can't vary a LIMIT per row."""
     low, high = _pk(), _pk()
     mock_graph["candidates"].return_value = [
-        _candidate(low, stored_followers=None, verified_reporters=3),
-        _candidate(high, stored_followers=None, verified_reporters=10),
+        _candidate(low, stored_followers=None, verified_reporters=5),
+        _candidate(high, stored_followers=None, verified_reporters=12),
     ]
     mock_graph["capped"].return_value = {}
 
@@ -269,8 +274,8 @@ def test_stored_and_missing_counts_mix_in_one_response(client, mock_graph):
 def test_report_count_must_strictly_exceed_threshold(client, mock_graph):
     at, over = _pk(), _pk()
     mock_graph["candidates"].return_value = [
-        _candidate(at, stored_followers=0, verified_reporters=2),
-        _candidate(over, stored_followers=0, verified_reporters=3),
+        _candidate(at, stored_followers=0, verified_reporters=4),
+        _candidate(over, stored_followers=0, verified_reporters=5),
     ]
 
     data = _get(client, {"observer": _pk()}).json()["data"]
@@ -294,7 +299,7 @@ def test_sections_split_on_is_direct(client, mock_graph):
 def test_direct_section_orders_by_report_count_desc(client, mock_graph):
     few, many = _pk(), _pk()
     mock_graph["candidates"].return_value = [
-        _candidate(few, stored_followers=0, verified_reporters=4),
+        _candidate(few, stored_followers=0, verified_reporters=5),
         _candidate(many, stored_followers=0, verified_reporters=12),
     ]
 
@@ -334,7 +339,7 @@ def test_item_carries_every_score_the_panel_needs(client, mock_graph):
         "verifiedMuterCount": 7,
         "verifiedReporterCount": 9,
         # Returned alongside the count so the UI can say *why* it's flagged.
-        "reporterThreshold": 4,
+        "reporterThreshold": 6,
     }
 
 
