@@ -235,7 +235,7 @@ class NetworkAlertItem(BaseModel):
     verified_follower_count: int = Field(serialization_alias="verifiedFollowerCount")
     verified_muter_count: int = Field(serialization_alias="verifiedMuterCount")
     verified_reporter_count: int = Field(serialization_alias="verifiedReporterCount")
-    # The N this row was tested against: 2 + floor(verifiedFollowerCount / 500).
+    # The N this row was tested against: 4 + floor(verifiedFollowerCount / 500).
     reporter_threshold: int = Field(serialization_alias="reporterThreshold")
 
 

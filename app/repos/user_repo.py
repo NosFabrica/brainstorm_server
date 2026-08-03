@@ -1028,6 +1028,21 @@ async def get_all_shortest_follow_paths(
 # followers. Shared with the service so the two can't drift apart.
 FOLLOWERS_PER_EXTRA_REPORT = 500
 
+# Floor of the scaled threshold, before any follower allowance applies:
+# N = BASE_REPORTER_THRESHOLD + floor(verified_followers / 500). It lives here
+# rather than in the service because the candidate prefilter below is derived
+# from it, and the two have to move together — the service's follower-count cap
+# is `FOLLOWERS_PER_EXTRA_REPORT * (reporters - BASE_REPORTER_THRESHOLD)`, which
+# a candidate under the prefilter would turn into a zero-or-negative Cypher
+# LIMIT.
+BASE_REPORTER_THRESHOLD = 4
+
+# N is at least BASE_REPORTER_THRESHOLD for everyone, so a candidate at or below
+# it cannot clear the threshold whatever its follower count turns out to be.
+# Dropping those here is what keeps the arithmetic off the vast majority of
+# reported pubkeys.
+MIN_ALERT_REPORTERS = BASE_REPORTER_THRESHOLD + 1
+
 # Ceiling on candidates pulled back from step (1). Far above any plausible
 # real count — a backstop against a pathological graph, not a paging limit.
 # Callers are expected to log when it bites rather than truncate silently.
@@ -1038,7 +1053,7 @@ MATCH (observer:NostrUser {pubkey: $observer_pubkey})
 CALL (observer) {
     MATCH (:NostrUser)-[:REPORTS]->(bob:NostrUser)
     WITH DISTINCT observer, bob
-    WHERE coalesce(bob[$trusted_reporters_key], 0) >= 3
+    WHERE coalesce(bob[$trusted_reporters_key], 0) >= $min_reporters
       AND bob.pubkey <> observer.pubkey
     WITH bob,
          toInteger(coalesce(bob[$trusted_reporters_key], 0)) AS verified_reporters,
@@ -1083,6 +1098,7 @@ async def get_network_alert_candidates(
         trusted_followers_key=trusted_followers_key,
         trusted_reporters_key=trusted_reporters_key,
         cutoff=cutoff,
+        min_reporters=MIN_ALERT_REPORTERS,
         max_candidates=int(max_candidates),
     )
     return [dict(record) async for record in result]
@@ -1108,11 +1124,11 @@ async def count_above_cutoff_followers_capped(
 
     `cap` is what makes this safe to run on a huge account. A row can only clear
     the threshold when its verified follower count is below
-    `FOLLOWERS_PER_EXTRA_REPORT * (verified_reporters - 2)`, so counting past
-    that point cannot change any decision. Pass that value as `cap` and read the
-    result as: **count < cap → exact count, row passes; count == cap → the true
-    count is at least `cap`, row fails.** A row that survives therefore always
-    carries a real number, never a truncated one.
+    `FOLLOWERS_PER_EXTRA_REPORT * (verified_reporters - BASE_REPORTER_THRESHOLD)`,
+    so counting past that point cannot change any decision. Pass that value as
+    `cap` and read the result as: **count < cap → exact count, row passes;
+    count == cap → the true count is at least `cap`, row fails.** A row that
+    survives therefore always carries a real number, never a truncated one.
 
     Caveat worth knowing: `cap` bounds the above-cutoff followers *collected*,
     not the follower edges *scanned*. An account with many followers but few

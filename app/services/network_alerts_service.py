@@ -20,8 +20,8 @@ property hasn't landed. Those rows are counted from the graph instead, bounded
 so a popular account can't dominate the response. See `_resolve_follower_counts`.
 
 Coalescing a missing count to 0 was the obvious alternative and is wrong: it
-pins N at 2 for everyone, which over-alerts on exactly the large accounts the
-scaling exists to protect.
+pins N at its floor for everyone, which over-alerts on exactly the large
+accounts the scaling exists to protect.
 """
 
 from collections import defaultdict
@@ -29,6 +29,7 @@ from collections import defaultdict
 from app.core.loggr import loggr
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.user_repo import (
+    BASE_REPORTER_THRESHOLD,
     FOLLOWERS_PER_EXTRA_REPORT,
     MAX_ALERT_CANDIDATES,
     count_above_cutoff_followers_capped,
@@ -44,29 +45,30 @@ from app.utils.neo4j_values import safe_float, safe_int
 
 logger = loggr.get_logger(__name__)
 
-# Floor of the scaled threshold: everyone tolerates this many verified reports
-# before any follower-count allowance applies.
-BASE_REPORTER_THRESHOLD = 2
+# The floor (BASE_REPORTER_THRESHOLD, 4) and the grain
+# (FOLLOWERS_PER_EXTRA_REPORT, 500) both live in user_repo, beside the candidate
+# prefilter that is derived from them.
 
 DEFAULT_ALERT_LIMIT = 100
 MAX_ALERT_LIMIT = 500
 
 
 def reporter_threshold_for(verified_followers: int) -> int:
-    """N = 2 + floor(verified_followers / 500)."""
+    """N = 4 + floor(verified_followers / 500)."""
     return BASE_REPORTER_THRESHOLD + verified_followers // FOLLOWERS_PER_EXTRA_REPORT
 
 
 def follower_count_cap_for(verified_reporters: int) -> int:
     """Point past which counting a candidate's verified followers is pointless.
 
-    A row alerts when ``verified_reporters > 2 + floor(vfc / 500)``, which
-    rearranges to ``vfc < 500 * (verified_reporters - 2)``. Once that many
+    A row alerts when ``verified_reporters > 4 + floor(vfc / 500)``, which
+    rearranges to ``vfc < 500 * (verified_reporters - 4)``. Once that many
     verified followers have been counted the row cannot alert, whatever the
     true total is — so the count stops there.
 
     Always >= 500, because candidates are prefiltered to
-    ``verified_reporters >= 3``.
+    ``verified_reporters >= MIN_ALERT_REPORTERS`` (5). A candidate below that
+    line would make this zero or negative, which Cypher rejects as a LIMIT.
     """
     return FOLLOWERS_PER_EXTRA_REPORT * (verified_reporters - BASE_REPORTER_THRESHOLD)
 
@@ -122,7 +124,8 @@ async def _resolve_follower_counts(
             count = counts.get(pubkey)
             # No row back, or one that hit the cap (true count >= cap): either
             # way the row can't clear its threshold, so leave it out. Defaulting
-            # to 0 here would pin N at 2 and alert on it — see module docstring.
+            # to 0 here would pin N at its floor and alert on it — see the
+            # module docstring.
             if count is not None and count < cap:
                 resolved[pubkey] = count
 

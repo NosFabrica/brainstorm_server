@@ -11,21 +11,27 @@ that the capped follower count truncates where it should.
 Fixture graph — all per-observer properties are set from alice's perspective
 (``influence_<alice>``, ``trusted_followers_<alice>``, ...). ``tf`` is the
 stored verified-follower count, and ``None`` means the property is absent, which
-is what forces the counted fallback. ``N`` is ``2 + floor(tf / 500)``; a row
+is what forces the counted fallback. ``N`` is ``4 + floor(tf / 500)``; a row
 alerts when its verified reporter count is strictly greater than N.
 
+Every ``tr`` here clears ``MIN_ALERT_REPORTERS`` (5), so the rows that don't
+alert are decided by the rule under test rather than dropped by the candidate
+prefilter before it applies. That is also why ``direct_boundary`` carries 500
+stored followers: at the floor, "exactly N reports" would be 4 and the prefilter
+would swallow it, testing nothing.
+
     name                  follows?  influence  tf     tr   N   alerts?
-    direct_flagged        yes       0.001      0      5    2   direct
-    direct_boundary       yes       0.400      0      2    2   no  (2 > 2 false)
-    direct_just_over      yes       0.400      0      3    2   direct
-    ext_flagged           no        0.500      0      4    2   extended
-    ext_below_cutoff      no        0.001      0      9    2   no  (under cutoff)
-    ext_scaled_blocked    no        0.500      1000   4    4   no  (4 > 4 false)
-    ext_scaled_flagged    no        0.500      1000   5    4   extended
-    both_sections         yes       0.900      0      6    2   direct ONLY
-    stale_no_report_edge  yes       0.400      0      7    2   no  (no REPORTS edge)
-    fallback_counted      yes       0.400      None   3    2   direct, tf counted
-    alice (self)          --        0.990      0      9    2   no  (self-excluded)
+    direct_flagged        yes       0.001      0      7    4   direct
+    direct_boundary       yes       0.400      500    5    5   no  (5 > 5 false)
+    direct_just_over      yes       0.400      0      5    4   direct
+    ext_flagged           no        0.500      0      6    4   extended
+    ext_below_cutoff      no        0.001      0      9    4   no  (under cutoff)
+    ext_scaled_blocked    no        0.500      1000   6    6   no  (6 > 6 false)
+    ext_scaled_flagged    no        0.500      1000   7    6   extended
+    both_sections         yes       0.900      0      8    4   direct ONLY
+    stale_no_report_edge  yes       0.400      0      7    4   no  (no REPORTS edge)
+    fallback_counted      yes       0.400      None   5    4   direct, tf counted
+    alice (self)          --        0.990      0      9    4   no  (self-excluded)
 
 ``direct_flagged`` sits *below* the cutoff on purpose: the direct section is
 defined by the follow edge alone, with no influence requirement.
@@ -57,19 +63,19 @@ pytestmark = pytest.mark.integration
 # influence, stored trusted_followers (None = absent), trusted_reporters,
 # alice-follows, has-report-edge
 _FIXTURE = {
-    "direct_flagged": (0.001, 0, 5, True, True),
-    "direct_boundary": (0.400, 0, 2, True, True),
-    "direct_just_over": (0.400, 0, 3, True, True),
-    "ext_flagged": (0.500, 0, 4, False, True),
+    "direct_flagged": (0.001, 0, 7, True, True),
+    "direct_boundary": (0.400, 500, 5, True, True),
+    "direct_just_over": (0.400, 0, 5, True, True),
+    "ext_flagged": (0.500, 0, 6, False, True),
     "ext_below_cutoff": (0.001, 0, 9, False, True),
-    "ext_scaled_blocked": (0.500, 1000, 4, False, True),
-    "ext_scaled_flagged": (0.500, 1000, 5, False, True),
-    "both_sections": (0.900, 0, 6, True, True),
+    "ext_scaled_blocked": (0.500, 1000, 6, False, True),
+    "ext_scaled_flagged": (0.500, 1000, 7, False, True),
+    "both_sections": (0.900, 0, 8, True, True),
     "stale_no_report_edge": (0.400, 0, 7, True, False),
-    "fallback_counted": (0.400, None, 3, True, True),
+    "fallback_counted": (0.400, None, 5, True, True),
     # Same follower set as fallback_counted, but with the count stored — so the
     # two must agree once both paths use the same cutoff and membership.
-    "stored_twin": (0.400, 4, 3, True, True),
+    "stored_twin": (0.400, 4, 5, True, True),
 }
 
 # Followers seeded onto `fallback_counted`: three above the 0.02 cutoff, one
@@ -307,20 +313,22 @@ def test_sections_are_disjoint(graph):
 
 
 def test_threshold_scales_with_verified_followers(graph):
-    """1000 verified followers lifts N from 2 to 4, so 4 reports no longer alert."""
+    """1000 verified followers lifts N from 4 to 6, so 6 reports no longer alert."""
     data = _fetch(graph["alice"])
 
     everything = {i["pubkey"] for i in data["directFollows"] + data["extendedNetwork"]}
     assert graph["ext_scaled_blocked"] not in everything
 
     flagged = _row(data, graph, "ext_scaled_flagged")
-    assert flagged["reporterThreshold"] == 4
-    assert flagged["verifiedReporterCount"] == 5
+    assert flagged["reporterThreshold"] == 6
+    assert flagged["verifiedReporterCount"] == 7
     assert flagged["verifiedFollowerCount"] == 1000
 
 
 def test_report_count_must_strictly_exceed_threshold(graph):
-    """direct_boundary has exactly N=2 reports, so it is not an alert."""
+    """direct_boundary has exactly N=5 reports against 500 followers, so it is
+    not an alert — and it clears the prefilter, so the strict `>` is what
+    excludes it."""
     data = _fetch(graph["alice"])
 
     assert "direct_boundary" not in _names(data, "directFollows", graph)
@@ -375,7 +383,7 @@ def test_missing_stored_count_is_counted_from_the_graph(graph):
 
     row = _row(data, graph, "fallback_counted")
     assert row["verifiedFollowerCount"] == 4
-    assert row["reporterThreshold"] == 2
+    assert row["reporterThreshold"] == 4
 
 
 def test_stored_and_counted_paths_agree(graph):
