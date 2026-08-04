@@ -8,11 +8,14 @@ if a util is only used by one module, it belongs next to that module.
 ```
 app/utils/
 ├── api_validators.py        # FastAPI dependencies: verify_token (JWT or NIP-98)
+├── assistant_nip05.py       # Deterministic Assistant NIP-05 derivation (pure)
 ├── auth/
 │   ├── auth_util.py         # JWT mint/verify + password gen
 │   ├── auth_models.py       # JWTData dataclass / TypedDict
 │   └── nip98.py             # NIP-98 signed-event validation
+├── bip39_english.txt        # Vendored BIP-39 wordlist used by assistant_nip05
 ├── encryption.py            # Fernet symmetric encryption for nsec storage
+├── neo4j_values.py          # safe_float / safe_int — inf/nan coercion on graph reads
 ├── nostr.py                 # Tiny Nostr helpers (constants, format conversions)
 ├── rate_limiting/
 │   └── rate_limiting.py     # In-memory / Redis-backed rate limiter
@@ -60,7 +63,7 @@ or you'll have rows that can't be decrypted.
 
 ## nostr.py
 
-Six lines as of this writing — npub↔hex constants + maybe a small helper. Treat it as a place to drop tiny pure helpers; if it grows past ~50 LOC, split by topic.
+Tiny Nostr helpers: `generate_random_nsec`, and `resolve_pubkey_or_400` (hex or npub in, canonical hex out, 400 on anything else — shared by `/networkAlerts` and `/shortestPath`). Treat it as a place to drop small helpers; if it grows past ~50 LOC, split by topic.
 
 ## rate_limiting/
 
@@ -78,4 +81,4 @@ not here.
 
 - Utils should be **pure** or near-pure. If a util needs DB access, it's a repo. If it needs HTTP, it's a service. The grey area (this folder) is for stateless / trivially-stateful helpers.
 - No imports from `app/services/` or `app/routers/`. Utils sit at the bottom of the dependency graph.
-- Test by importing from a script in `scripts/` or a one-off REPL session — there's no `tests/` folder yet.
+- Test under `tests/` (see `tests/test_assistant_nip05.py` for a pure-helper example).

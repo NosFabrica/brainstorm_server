@@ -213,3 +213,54 @@ class ShortestPathData(BaseModel):
 
 class GetShortestPathResponse(SuccessfulResponseDataSchema):
     data: ShortestPathData
+
+
+class NetworkAlertItem(BaseModel):
+    """One flagged pubkey in a network-alert section.
+
+    Carries every trust score the panel needs so the front end doesn't have to
+    follow up with /user/{pubkey}/overview per row. Kind-0 profile data is
+    deliberately NOT here — the front end already resolves that separately.
+
+    `verifiedReporterCount` and `reporterThreshold` are returned as a pair so
+    the UI can explain *why* a row is flagged ("7 verified reports against a
+    threshold of 4") rather than restating the rule client-side.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    pubkey: str
+    influence: float | None
+    hops: int | None
+    verified_follower_count: int = Field(serialization_alias="verifiedFollowerCount")
+    verified_muter_count: int = Field(serialization_alias="verifiedMuterCount")
+    verified_reporter_count: int = Field(serialization_alias="verifiedReporterCount")
+    # The N this row was tested against: 4 + floor(verifiedFollowerCount / 500).
+    reporter_threshold: int = Field(serialization_alias="reporterThreshold")
+
+
+class NetworkAlertsData(BaseModel):
+    """Payload of GET /networkAlerts.
+
+    A pubkey qualifying for both sections appears only in `direct_follows` —
+    the observer's own follow is the more actionable signal, and duplicating
+    the row would double-count one bad actor in the panel.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    observer_pubkey: str = Field(serialization_alias="observerPubkey")
+    direct_follows: list[NetworkAlertItem] = Field(serialization_alias="directFollows")
+    extended_network: list[NetworkAlertItem] = Field(
+        serialization_alias="extendedNetwork"
+    )
+    # True when a section hit `limit` and more alerts exist behind it. Lets the
+    # panel show "showing first N" instead of implying the list is exhaustive.
+    direct_follows_truncated: bool = Field(serialization_alias="directFollowsTruncated")
+    extended_network_truncated: bool = Field(
+        serialization_alias="extendedNetworkTruncated"
+    )
+
+
+class GetNetworkAlertsResponse(SuccessfulResponseDataSchema):
+    data: NetworkAlertsData

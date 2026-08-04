@@ -49,7 +49,7 @@ def test_incremental_delta_run_publishes_only_changed_and_deletes_what_fell_off(
     # Incremental publishes only the changed-and-still-above-cutoff Observee (d);
     # c is "changed" too but below cutoff, so it is signed by nobody — only deleted.
     published = [
-        d_tag for d_tag, _, _ in prepare_ta_inputs(run2, CUTOFF, full_sync=False)
+        inp.observee for inp in prepare_ta_inputs(run2, CUTOFF, full_sync=False)
     ]
     assert published == ["d"]
 

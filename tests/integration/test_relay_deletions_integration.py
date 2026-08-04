@@ -17,7 +17,11 @@ from datetime import timedelta
 import pytest
 from nostr_sdk import Filter, Keys, Kind, PublicKey
 
-from app.message_queue_tasks.ta_signing import TA_KIND, build_ta_event_builder
+from app.message_queue_tasks.ta_signing import (
+    TA_KIND,
+    TaInput,
+    build_ta_event_builder,
+)
 from app.message_queue_tasks.upload_nostr_events import (
     get_deletion_events_for_dropped_pubkeys,
     init_nostr_client,
@@ -49,7 +53,9 @@ def test_atag_deletion_removes_one_ta_and_leaves_others_on_strfry():
         client = await init_nostr_client(nsec)
         try:
             for observee in (drop, keep):
-                ta = build_ta_event_builder(observee, 50, 1).sign_with_keys(keys)
+                ta = build_ta_event_builder(
+                    TaInput(observee, 50, 1, 0, 0, 1)
+                ).sign_with_keys(keys)
                 await client.send_event(ta)
             await asyncio.sleep(0.3)
             assert {drop, keep} <= await _published_dtags(client, pubkey)

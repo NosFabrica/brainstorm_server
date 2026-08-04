@@ -2,8 +2,7 @@ import asyncio
 import base64
 import binascii
 import json
-import math
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from fastapi import HTTPException, status
 
@@ -24,7 +23,10 @@ from app.repos.observer_whitelist_repo import (
     select_whitelisted_pubkeys_of_observer,
 )
 from app.repos.user_repo import (
+    OutboundCounts,
+    OutboundOverview,
     get_all_section_stats,
+    get_counts_and_influence,
     get_outbound_counts_and_influence,
     get_paginated_flagged_connections,
     get_paginated_section_connections,
@@ -45,10 +47,12 @@ from nostr_sdk import Keys
 from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
 )
+from app.services.verified_cutoffs import VerifiedCutoffs
+from app.utils.neo4j_values import safe_float
 
 # Tier boundaries match the FE (high ≥ 0.5, trusted ≥ 0.2, neutral ≥ 0.07).
-# The verified_threshold separates "low" from "unverified" — passed per request
-# since it depends on the user's selected trust preset.
+# The verified line separating "low" from "unverified" is preset-driven on all
+# three read endpoints — see app.services.verified_cutoffs.
 # Re-export so existing call sites that import from user_service keep working.
 # Canonical source: app.core.tier_thresholds.
 from app.core.tier_thresholds import (  # noqa: E402,F401
@@ -78,20 +82,6 @@ _KIND_TO_REL: dict[ConnectionKind, tuple[str, str]] = {
 }
 
 
-def _safe_float(value) -> float | None:
-    # Neo4j can return inf/nan for stale or unbacked influence properties.
-    # json.dumps rejects these, so coerce to None for the wire.
-    if value is None:
-        return None
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isinf(f) or math.isnan(f):
-        return None
-    return f
-
-
 def _encode_cursor(sort_inf: float, pubkey: str) -> str:
     return base64.urlsafe_b64encode(
         json.dumps({"i": sort_inf, "p": pubkey}).encode()
@@ -111,26 +101,26 @@ async def _neo4j_outbound_counts_and_influence(
     pubkey: str,
     influence_key: str,
     trusted_reporters_key: str,
-    verified_threshold: float,
-) -> tuple[float | None, int, int, int, bool, int]:
+    verified_line: float,
+) -> OutboundOverview:
     async with neo4j_driver.session() as session:
-        influence, following, muting, reporting, flagged_by_observer, flagged_count = (
-            await get_outbound_counts_and_influence(
-                session,
-                pubkey,
-                influence_key,
-                trusted_reporters_key,
-                verified_threshold,
-            )
+        overview = await get_outbound_counts_and_influence(
+            session,
+            pubkey,
+            influence_key,
+            trusted_reporters_key,
+            verified_line,
         )
-    return (
-        _safe_float(influence),
-        following,
-        muting,
-        reporting,
-        flagged_by_observer,
-        flagged_count,
-    )
+    return overview._replace(influence=safe_float(overview.influence))
+
+
+async def _neo4j_counts_and_influence(
+    pubkey: str,
+    influence_key: str,
+) -> OutboundCounts:
+    async with neo4j_driver.session() as session:
+        counts = await get_counts_and_influence(session, pubkey, influence_key)
+    return counts._replace(influence=safe_float(counts.influence))
 
 
 def brainstorm_nsec_db_obj_to_user_history_schema_converter(
@@ -196,9 +186,12 @@ async def get_user_history_data(db: AsyncDBSession, pubkey: str) -> UserHistoryI
 
 async def get_user_overview(
     pubkey: str,
+    verified_line: float,
     observer: str | None = None,
-    verified_threshold: float = DEFAULT_VERIFIED_THRESHOLD,
 ) -> UserOverviewData:
+    """`verified_line` (the observer's preset follower cutoff) decides the two
+    flagged fields and the subject's own `tier` — the only preset-sensitive
+    outputs here. Required, so a caller has to say which line it means."""
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
     trusted_reporters_key = (
         f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
@@ -206,39 +199,72 @@ async def get_user_overview(
 
     # Redis SCARD for inbound + one Neo4j query for outbound counts + influence +
     # flagged_by_observer, all in parallel.
-    followed_by, muted_by, reported_by, neo_result = await asyncio.gather(
+    followed_by, muted_by, reported_by, neo = await asyncio.gather(
         _redis_inbound_count(FOLLOWED_BY_KEY_PREFIX, pubkey),
         _redis_inbound_count(MUTED_BY_KEY_PREFIX, pubkey),
         _redis_inbound_count(REPORTED_BY_KEY_PREFIX, pubkey),
         _neo4j_outbound_counts_and_influence(
-            pubkey, influence_key, trusted_reporters_key, verified_threshold
+            pubkey, influence_key, trusted_reporters_key, verified_line
         ),
     )
-    influence, following, muting, reporting, flagged_by_observer, flagged_count = neo_result
-
     return UserOverviewData(
         pubkey=pubkey,
-        influence=influence,
-        flagged_by_observer=flagged_by_observer,
-        flagged_count=flagged_count,
+        influence=neo.influence,
+        tier=neo.tier,
+        flagged_by_observer=neo.flagged_by_observer,
+        flagged_count=neo.flagged_count,
         counts=UserConnectionCounts(
             followed_by=followed_by,
-            following=following,
+            following=neo.following,
             muted_by=muted_by,
-            muting=muting,
+            muting=neo.muting,
             reported_by=reported_by,
-            reporting=reporting,
+            reporting=neo.reporting,
+        ),
+    )
+
+
+class UserRankAndCounts(NamedTuple):
+    influence: float | None
+    counts: UserConnectionCounts
+
+
+async def get_user_rank_and_counts(
+    pubkey: str,
+    observer: str | None = None,
+) -> UserRankAndCounts:
+    """`/overview` minus everything the observer's verified line decides.
+
+    Just a rank and the six raw counts — currently ORE-02. No line means no
+    preset read and no line to get wrong, and it skips /overview's flagged
+    DISTINCT scan. Need verified / tier / flagged? Use `get_user_overview`.
+    """
+    influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
+
+    followed_by, muted_by, reported_by, neo = await asyncio.gather(
+        _redis_inbound_count(FOLLOWED_BY_KEY_PREFIX, pubkey),
+        _redis_inbound_count(MUTED_BY_KEY_PREFIX, pubkey),
+        _redis_inbound_count(REPORTED_BY_KEY_PREFIX, pubkey),
+        _neo4j_counts_and_influence(pubkey, influence_key),
+    )
+
+    return UserRankAndCounts(
+        influence=neo.influence,
+        counts=UserConnectionCounts(
+            followed_by=followed_by,
+            following=neo.following,
+            muted_by=muted_by,
+            muting=neo.muting,
+            reported_by=reported_by,
+            reporting=neo.reporting,
         ),
     )
 
 
 async def get_user_stats(
     pubkey: str,
+    cutoffs: VerifiedCutoffs,
     observer: str | None = None,
-    verified_threshold: float = DEFAULT_VERIFIED_THRESHOLD,
-    tier_high: float = TIER_HIGH,
-    tier_medium_high: float = TIER_MEDIUM_HIGH,
-    tier_medium: float = TIER_MEDIUM,
 ) -> UserSectionsStats:
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
     trusted_reporters_key = (
@@ -251,29 +277,27 @@ async def get_user_stats(
             pubkey,
             influence_key,
             trusted_reporters_key,
-            verified_threshold,
-            tier_high,
-            tier_medium_high,
-            tier_medium,
+            cutoffs.as_kind_map(),
+            cutoffs.verified_line,
         )
     return UserSectionsStats(**stats_by_kind)
 
 
 async def get_user_connections(
     pubkey: str,
+    cutoffs: VerifiedCutoffs,
     observer: str | None = None,
     kind: ConnectionKind = "following",
     limit: int = DEFAULT_PAGE_SIZE,
     cursor: str | None = None,
     order: str = "desc",
     tier: str | None = None,
-    min_influence: float | None = None,
-    verified_threshold: float = DEFAULT_VERIFIED_THRESHOLD,
-    tier_high: float = TIER_HIGH,
-    tier_medium_high: float = TIER_MEDIUM_HIGH,
-    tier_medium: float = TIER_MEDIUM,
+    verified_only: bool = False,
     with_total: bool = False,
 ) -> PaginatedUserConnections:
+    """`cutoffs` comes from the observer's saved preset, exactly as for /stats:
+    `verified_only` filters on this section's own cutoff, and the tier buckets
+    fall through the follower cutoff."""
     limit = max(1, min(limit, MAX_PAGE_SIZE))
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
     trusted_reporters_key = (
@@ -292,15 +316,16 @@ async def get_user_connections(
 
     if kind == "flagged":
         # Virtual kind: DISTINCT flagged users across any relationship type.
-        # Ignores `tier` and `min_influence` — the flagged predicate is fixed.
-        # Page + (optional) total computed in one query / one session.
+        # Ignores `tier` and `verified_only` — the flagged predicate is fixed,
+        # and every flagged user is unverified by definition. Page + (optional)
+        # total in one query / one session.
         async with neo4j_driver.session() as session:
             items, last_cursor, total = await get_paginated_flagged_connections(
                 session,
                 pubkey=pubkey,
                 influence_key=influence_key,
                 trusted_reporters_key=trusted_reporters_key,
-                verified_threshold=verified_threshold,
+                verified_line=cutoffs.verified_line,
                 limit=limit,
                 cursor_inf=cursor_inf,
                 cursor_pk=cursor_pk,
@@ -322,11 +347,9 @@ async def get_user_connections(
                 cursor_pk=cursor_pk,
                 order=order,
                 tier=tier,
-                min_influence=min_influence,
-                verified_threshold=verified_threshold,
-                tier_high=tier_high,
-                tier_medium_high=tier_medium_high,
-                tier_medium=tier_medium,
+                verified_cutoff=cutoffs.for_kind(kind),
+                verified_line=cutoffs.verified_line,
+                verified_only=verified_only,
                 with_total=with_total,
             )
 
@@ -334,15 +357,16 @@ async def get_user_connections(
     items = [
         UserConnectionItem(
             pubkey=it.pubkey,
-            influence=_safe_float(it.influence),
+            influence=safe_float(it.influence),
             trusted_reporters=it.trusted_reporters,
+            tier=it.tier,
         )
         for it in items
     ]
 
     next_cursor: str | None = None
     if last_cursor is not None:
-        last_sort_inf = _safe_float(last_cursor[0])
+        last_sort_inf = safe_float(last_cursor[0])
         if last_sort_inf is not None:
             next_cursor = _encode_cursor(last_sort_inf, last_cursor[1])
 

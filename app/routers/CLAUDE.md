@@ -14,6 +14,9 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 |---|---|---|
 | `/health` | `app/api.py:164` | Liveness (returns `1`) |
 | `/whitelisted/{observer_pubkey}` | `router.py:75-94` | Trusted-pubkey list for an observer; `threshold` query param (default 0.02) |
+| `/shortestPath` | `graph/router.py` | Shortest directed FOLLOWS path(s) between two pubkeys |
+| `/networkAlerts` | `network_alerts/router.py` | Pubkeys carrying more verified reports than their reach justifies, split into direct-follows / extended-network |
+| `/.well-known/nostr.json` | `nip05/well_known.py` | NIP-05 verification for Assistant pubkeys; resolution in `services/nip05_service.py` |
 
 ## Subdirs (by URL prefix)
 
@@ -65,6 +68,8 @@ Every successful response is wrapped via `SuccessfulResponseDataSchema` (in `app
 
 Each endpoint's specific response class (e.g. `GetUserDataResponse`) subclasses that wrapper and types `data` as the relevant payload schema. **Don't return a bare dict** — the contract is the wrapped shape.
 
+**Exception: routes whose shape a third-party spec dictates.** Where an external protocol fixes the response body, the endpoint returns it unwrapped — the `.well-known` documents (`open_ranking/well_known.py` for ORE-01, `nip05/well_known.py` for NIP-05) via an explicit `JSONResponse`, and likewise the Open Ranking payloads and `nip50`'s NIP-11 document. Wrapping any of them would break the spec.
+
 ## Per-router summary
 
 ### `auth_challenge/router.py` — Nostr login
@@ -101,10 +106,21 @@ token still 401s:
 
 | Method | Path | Response | Notes |
 |---|---|---|---|
-| GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence |
-| GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Tier breakdown; query params: `verified_threshold`, `tier_high/trusted/neutral` |
-| GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor` |
+| GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence. The subject's own `verified` / `tier` and `flagged_by_observer` / `flagged_count` sit on the saved preset's verified line |
+| GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Per-section total + verified + tier breakdown. No query params — the tier bands are fixed constants |
+| GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor`. `verified_only=true` filters on the section's own preset cutoff; `tier` uses the same fallthrough as `/stats`; each row carries the preset's `verified` verdict + `tier` |
 | GET | `/{pubkey}` | `GetUserDataResponse` | Full 6-relationship graph |
+
+The verified cutoffs, the verified line and the tier fallthrough all come from
+the observer's **saved preset** (`get_verified_cutoffs` in
+`user/dependencies.py`; `get_alert_cutoffs` in `network_alerts/dependencies.py`
+for `/networkAlerts`, whose observer is a query param rather than the JWT
+viewer), never from a client-supplied number — the
+`verified_threshold` query param is gone from all three read endpoints, and so
+is `/connections`' `min_influence` — a client cannot supply a threshold at all.
+`/stats` returns the verified *counts*; `/overview` returns no count of its own,
+only the subject's own verdict and the two flagged fields; `/connections` rows
+each carry their own `verified` / `tier`. All of them sit on the same line.
 
 ### `graperank/router.py` — GrapeRank presets
 

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.config import settings
 from app.core.loggr import loggr
 from app.repos.brainstorm_nsec import select_brainstorm_nsec_by_pubkey_on_db
+from app.utils.assistant_nip05 import compute_assistant_nip05
 
 logger = loggr.get_logger(__name__)
 
@@ -23,8 +24,6 @@ ASSISTANT_ABOUT = (
     "kind 30382 Trusted Assertions so that my owner's personalized web of trust "
     "metrics are available to be utilized by any nostr client that supports NIP-85."
 )
-PROD_WEBSITE = "https://brainstorm.nosfabrica.com"
-STAGING_WEBSITE = "https://brainstorm-staging.nosfabrica.com"
 
 KIND_0_PUBLISH_RELAYS: list[str] = [
     "wss://relay.damus.io",
@@ -66,18 +65,23 @@ async def publish_assistant_kind0_for_user(
     owner_name = await _fetch_owner_name(user_pubkey) or user_pubkey[:6]
     assistant_name = f"{owner_name}'s Brainstorm Assistant"
 
-    website = PROD_WEBSITE if settings.deploy_environment == "PROD" else STAGING_WEBSITE
-
-    content = json.dumps(
-        {
-            "name": assistant_name,
-            "display_name": assistant_name,
-            "website": website,
-            "about": ASSISTANT_ABOUT,
-        }
-    )
-
     keys = Keys.parse(secret_key=nsec_row.nsec)
+    assistant_pubkey = keys.public_key().to_hex()
+
+    metadata = {
+        "name": assistant_name,
+        "display_name": assistant_name,
+        "website": settings.frontend_url,
+        "about": ASSISTANT_ABOUT,
+    }
+
+    # Omitted when there's no domain — an empty claim renders as a failed badge.
+    nip05 = compute_assistant_nip05(assistant_pubkey)
+    if nip05:
+        metadata["nip05"] = nip05
+
+    content = json.dumps(metadata)
+
     client = Client(signer=NostrSigner.keys(keys=keys))
 
     added = 0
@@ -104,4 +108,4 @@ async def publish_assistant_kind0_for_user(
     finally:
         await client.disconnect()
 
-    return event.id().to_hex(), keys.public_key().to_hex()
+    return event.id().to_hex(), assistant_pubkey
