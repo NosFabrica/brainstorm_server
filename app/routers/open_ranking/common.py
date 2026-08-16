@@ -94,10 +94,19 @@ def validate_positive_limit(
     return limit
 
 
-def ore_error_response(status_code: int, reason: str) -> JSONResponse:
-    """Build a JSON error response with the ORE-00 `X-Reason` header set."""
+def ore_error_response(
+    status_code: int, reason: str, headers: dict[str, str] | None = None
+) -> JSONResponse:
+    """Build a JSON error response with the ORE-00 `X-Reason` header set.
+
+    `headers` carries through any additional response headers (e.g. the auth
+    dependency's WWW-Authenticate). HTTP header values are latin-1, so the
+    header copy of the reason is coerced; the JSON body keeps it exact.
+    """
+    merged = dict(headers or {})
+    merged["X-Reason"] = reason.encode("latin-1", errors="replace").decode("latin-1")
     return JSONResponse(
         status_code=status_code,
         content={"error": reason},
-        headers={"X-Reason": reason},
+        headers=merged,
     )

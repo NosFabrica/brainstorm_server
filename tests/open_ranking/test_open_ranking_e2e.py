@@ -9,6 +9,7 @@ deterministic and infra-free.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,6 +23,26 @@ VALID_PUBKEY_2 = "b" * 64
 VALID_PUBKEY_3 = "c" * 64
 POV_PUBKEY = "d" * 64
 INVALID_PUBKEY = "not-a-valid-pubkey"
+
+
+@contextmanager
+def pov_availability(
+    exists: bool = True,
+    graperank: bool = True,
+    search: bool = True,
+    in_pipeline: bool = False,
+):
+    """Stub the availability gate's repo reads (patched at their import site
+    in the availability module). Defaults describe a fully provisioned,
+    fully computed pov."""
+    with patch(
+        "app.routers.open_ranking.availability.get_pov_availability_fields_on_db",
+        new=AsyncMock(return_value=(exists, graperank, search)),
+    ), patch(
+        "app.routers.open_ranking.availability.any_request_in_pipeline_for_pubkey_on_db",
+        new=AsyncMock(return_value=in_pipeline),
+    ):
+        yield
 
 
 # ===========================================================================
@@ -146,7 +167,7 @@ class TestStatsPubkey:
             observed["observer"] = observer
             return _fake_stats(0.9)
 
-        with patch(
+        with pov_availability(), patch(
             "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post(
@@ -563,7 +584,7 @@ class TestOpenModeNoAuth:
             observed["observer"] = observer
             return _fake_stats(0.5)
 
-        with patch(
+        with pov_availability(), patch(
             "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post(
@@ -601,7 +622,7 @@ class TestAuthModeForcesOwnObserver:
             observed["observer"] = observer
             return _fake_stats(0.5)
 
-        with patch(
+        with pov_availability(), patch(
             "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post(
@@ -645,7 +666,7 @@ class TestAuthModeForcesOwnObserver:
             observed["observer"] = observer
             return _fake_stats(0.5)
 
-        with patch(
+        with pov_availability(), patch(
             "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post(
@@ -655,3 +676,300 @@ class TestAuthModeForcesOwnObserver:
             )
         assert r.status_code == 200, r.text
         assert observed["observer"] == signer
+
+    def test_personalized_algo_gates_on_unprovisioned_signer(self, client):
+        # The never-substitute contract applies to the effective observer, so
+        # an authenticated signer with no scores gets the same honest 422.
+        token, _signer = make_nwt()
+        with pov_availability(exists=False):
+            r = client.post(
+                "/stats/pubkey",
+                json={"pubkey": VALID_PUBKEY_1, "algorithm": "graperank-pov"},
+                headers={"Authorization": f"Nostr {token}"},
+            )
+        assert r.status_code == 422
+        assert r.headers.get("x-reason")
+
+
+# ===========================================================================
+# ORE-01 §"Unavailable pov" (protocol PR #9): 422 / 202, never substitute
+# ===========================================================================
+
+# (endpoint, personalized algorithm id, minimal valid request body)
+_PERSONALIZED_CASES = [
+    ("/stats/pubkey", "graperank-pov", {"pubkey": VALID_PUBKEY_1}),
+    ("/rank/pubkeys", "graperank-pov", {"pubkeys": [VALID_PUBKEY_1]}),
+    ("/search/pubkeys", "relevance-pov", {"query": "jack"}),
+    ("/followers", "graperank-pov", {"pubkey": VALID_PUBKEY_1}),
+    ("/muters", "graperank-pov", {"pubkey": VALID_PUBKEY_1}),
+]
+
+# The default (global) algorithm id the 422 reason must offer as fallback.
+_DEFAULT_ALGO = {
+    "/stats/pubkey": "graperank",
+    "/rank/pubkeys": "graperank",
+    "/search/pubkeys": "relevance",
+    "/followers": "graperank",
+    "/muters": "graperank",
+}
+
+
+class TestPovAvailability:
+    """A personalized algorithm with a pov the provider cannot serve MUST
+    return 422 with an X-Reason naming an explicit fallback, MUST NOT be
+    answered from a substituted point of view, and a provisioned pov whose
+    scores are still computing gets 202 + Retry-After."""
+
+    @pytest.mark.parametrize("endpoint,algo,body", _PERSONALIZED_CASES)
+    def test_unknown_pov_returns_422_on_every_endpoint(
+        self, client, endpoint, algo, body
+    ):
+        with pov_availability(exists=False):
+            r = client.post(
+                endpoint, json={**body, "algorithm": algo, "pov": POV_PUBKEY}
+            )
+        assert r.status_code == 422, r.text
+        reason = r.headers.get("x-reason", "")
+        assert reason, "422 must carry X-Reason"
+        # The reason must offer the explicit alternative: the endpoint's
+        # default global algorithm (ORE-01: first element of the array).
+        assert _DEFAULT_ALGO[endpoint] in reason
+        assert "fall back" in reason
+        assert r.json()["error"] == reason
+
+    def test_unavailable_pov_never_reaches_the_data_source(self, client):
+        """Never-substitute invariant: the refusal happens before any ranking
+        data is read, so no substituted or zero-filled result can leak out."""
+        service = AsyncMock(return_value=_fake_stats(0.9))
+        with pov_availability(exists=False), patch(
+            "app.routers.open_ranking.stats.get_user_rank_and_counts", new=service
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={
+                    "pubkey": VALID_PUBKEY_1,
+                    "algorithm": "graperank-pov",
+                    "pov": POV_PUBKEY,
+                },
+            )
+        assert r.status_code == 422
+        service.assert_not_awaited()
+
+    def test_house_pov_is_always_available(self, client):
+        """The default observer IS the global perspective — usable as an
+        explicit pov without any provisioning row. No availability stubs on
+        purpose: if the gate ever consults the DB for the house pov, the
+        sentinel session explodes and this test fails."""
+        observed = {}
+
+        async def _capture(*, pubkey, observer, **_):
+            observed["observer"] = observer
+            return _fake_stats(0.9)
+
+        with patch(
+            "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={
+                    "pubkey": VALID_PUBKEY_1,
+                    "algorithm": "graperank-pov",
+                    "pov": DEFAULT_OBSERVER,
+                },
+            )
+        assert r.status_code == 200, r.text
+        assert observed["observer"] == DEFAULT_OBSERVER
+
+    def test_global_algorithm_is_never_gated(self, client):
+        """A pov sent to a global algorithm MUST be ignored (ORE-01) — and the
+        availability gate must not even run (no stubs, same sentinel logic as
+        above)."""
+        observed = {}
+
+        async def _capture(*, pubkey, observer, **_):
+            observed["observer"] = observer
+            return _fake_stats(0.5)
+
+        with patch(
+            "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={
+                    "pubkey": VALID_PUBKEY_1,
+                    "algorithm": "graperank",
+                    "pov": POV_PUBKEY,
+                },
+            )
+        assert r.status_code == 200, r.text
+        assert observed["observer"] == DEFAULT_OBSERVER
+
+    def test_provisioned_and_ready_pov_returns_200(self, client):
+        with pov_availability(exists=True, graperank=True), patch(
+            "app.routers.open_ranking.stats.get_user_rank_and_counts",
+            new=AsyncMock(return_value=_fake_stats(0.7)),
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={
+                    "pubkey": VALID_PUBKEY_1,
+                    "algorithm": "graperank-pov",
+                    "pov": POV_PUBKEY,
+                },
+            )
+        assert r.status_code == 200, r.text
+        assert r.json()["rank"] == pytest.approx(0.7)
+
+    def test_provisioned_computing_pov_returns_202_with_retry_after(self, client):
+        with pov_availability(exists=True, graperank=False, in_pipeline=True):
+            r = client.post(
+                "/stats/pubkey",
+                json={
+                    "pubkey": VALID_PUBKEY_1,
+                    "algorithm": "graperank-pov",
+                    "pov": POV_PUBKEY,
+                },
+            )
+        assert r.status_code == 202, r.text
+        assert r.headers.get("retry-after", "").isdigit()
+        assert r.headers.get("x-reason")
+        body = r.json()
+        assert body["status"] == "computing"
+        assert body["retry_after"] == int(r.headers["retry-after"])
+
+    def test_provisioned_stalled_pov_returns_422(self, client):
+        with pov_availability(exists=True, graperank=False, in_pipeline=False):
+            r = client.post(
+                "/stats/pubkey",
+                json={
+                    "pubkey": VALID_PUBKEY_1,
+                    "algorithm": "graperank-pov",
+                    "pov": POV_PUBKEY,
+                },
+            )
+        assert r.status_code == 422
+        assert r.headers.get("x-reason")
+
+    def test_search_availability_is_independent_of_graperank(self, client):
+        """GrapeRank done but the Vespa mirror never landed: stats serves,
+        search refuses — availability is per data source."""
+        avail = pov_availability(
+            exists=True, graperank=True, search=False, in_pipeline=False
+        )
+        with avail, patch(
+            "app.routers.open_ranking.stats.get_user_rank_and_counts",
+            new=AsyncMock(return_value=_fake_stats(0.7)),
+        ):
+            stats = client.post(
+                "/stats/pubkey",
+                json={
+                    "pubkey": VALID_PUBKEY_1,
+                    "algorithm": "graperank-pov",
+                    "pov": POV_PUBKEY,
+                },
+            )
+            search = client.post(
+                "/search/pubkeys",
+                json={
+                    "query": "jack",
+                    "algorithm": "relevance-pov",
+                    "pov": POV_PUBKEY,
+                },
+            )
+        assert stats.status_code == 200
+        assert search.status_code == 422
+        assert "search index" in search.headers.get("x-reason", "")
+
+    def test_search_mirror_in_flight_returns_202(self, client):
+        with pov_availability(
+            exists=True, graperank=True, search=False, in_pipeline=True
+        ):
+            r = client.post(
+                "/search/pubkeys",
+                json={
+                    "query": "jack",
+                    "algorithm": "relevance-pov",
+                    "pov": POV_PUBKEY,
+                },
+            )
+        assert r.status_code == 202
+        assert r.headers.get("retry-after")
+
+
+# ===========================================================================
+# ORE-00 §Errors: X-Reason + {"error": ...} on every ORE error response
+# ===========================================================================
+class TestOREErrorShape:
+    def test_invalid_pubkey_carries_x_reason_and_error_body(self, client):
+        r = client.post("/stats/pubkey", json={"pubkey": INVALID_PUBKEY})
+        assert r.status_code == 422
+        reason = r.headers.get("x-reason", "")
+        assert "pubkey" in reason
+        assert r.json() == {"error": reason}
+
+    def test_unsupported_algorithm_carries_x_reason(self, client):
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1, "algorithm": "made-up-algo"},
+        )
+        assert r.status_code == 422
+        assert "made-up-algo" in r.headers.get("x-reason", "")
+
+    def test_missing_pov_carries_x_reason(self, client):
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1, "algorithm": "graperank-pov"},
+        )
+        assert r.status_code == 422
+        assert "pov" in r.headers.get("x-reason", "")
+
+    def test_oversize_batch_413_carries_x_reason(self, client):
+        big = [f"{i:064x}" for i in range(1001)]
+        r = client.post("/rank/pubkeys", json={"pubkeys": big})
+        assert r.status_code == 413
+        assert r.headers.get("x-reason")
+        assert "error" in r.json()
+
+    def test_method_not_allowed_carries_x_reason(self, client):
+        r = client.get("/stats/pubkey")
+        assert r.status_code == 405
+        assert r.headers.get("x-reason")
+
+    def test_missing_required_field_carries_x_reason(self, client):
+        r = client.post("/stats/pubkey", json={})
+        assert r.status_code == 422
+        reason = r.headers.get("x-reason", "")
+        assert "pubkey" in reason
+        assert r.json()["error"] == reason
+
+    def test_malformed_json_returns_400_with_x_reason(self, client):
+        r = client.post(
+            "/stats/pubkey",
+            content="{not json",
+            headers={"Content-Type": "application/json"},
+        )
+        # ORE-02..07 error tables: 400 = malformed request body.
+        assert r.status_code == 400
+        assert r.headers.get("x-reason")
+
+    def test_error_headers_are_cors_exposed(self, client):
+        """Browser clients must be able to read X-Reason / Retry-After
+        cross-origin, or the SHOULD-explain contract is dead letter on the
+        web."""
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": INVALID_PUBKEY},
+            headers={"Origin": "https://nostr.example"},
+        )
+        assert r.status_code == 422
+        exposed = r.headers.get("access-control-expose-headers", "")
+        assert "X-Reason" in exposed
+        assert "Retry-After" in exposed
+
+    def test_non_ore_paths_keep_default_error_shape(self, client):
+        """The handlers self-scope to ORE paths; everything else keeps
+        FastAPI's {"detail": ...} shape with no X-Reason."""
+        r = client.get("/definitely-not-an-ore-path")
+        assert r.status_code == 404
+        assert "detail" in r.json()
+        assert r.headers.get("x-reason") is None

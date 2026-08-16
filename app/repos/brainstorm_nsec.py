@@ -301,6 +301,25 @@ async def brainstorm_nsec_exists_by_pubkey_on_db(
     return result.scalar_one_or_none() is not None
 
 
+async def get_pov_availability_fields_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> tuple[bool, bool, bool]:
+    """Availability signals for the Open Ranking pov gate, without touching
+    nsec columns: `(row_exists, graperank_calculated, search_available)`.
+    A missing row returns `(False, False, False)`.
+    """
+    statement = select(
+        BrainstormNsec.last_time_calculated_graperank,
+        BrainstormNsec.is_observer_search_available,
+    ).where(BrainstormNsec.pubkey == pubkey)
+    result = await execute_db_statement(db, statement, __name__)
+    row = result.first()
+    if row is None:
+        return False, False, False
+    last_calculated, search_available = row
+    return True, last_calculated is not None, bool(search_available)
+
+
 async def select_all_assistant_pubkeys_on_db(db: AsyncDBSession) -> list[str]:
     """Every Assistant pubkey. Drives the NIP-05 /.well-known/nostr.json lookup.
 

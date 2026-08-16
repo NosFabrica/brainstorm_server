@@ -5,7 +5,10 @@ from __future__ import annotations
 import math
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.core.database import get_db
+from app.routers.open_ranking.availability import ensure_pov_available
 from app.routers.open_ranking.capabilities import resolve_algorithm
 from app.routers.open_ranking.common import TTL_HINTS, validate_pubkey
 from app.routers.open_ranking.schemas import (
@@ -43,13 +46,15 @@ def _safe_rank(value) -> float:
 async def stats_pubkey(
     req: StatsPubkeyRequest,
     signer: str | None = Depends(optional_nwt_signer),
+    db: AsyncDBSession = Depends(get_db),
 ) -> StatsPubkeyResponse:
     pubkey = validate_pubkey(req.pubkey, "pubkey")
     pov = validate_pubkey(req.pov, "pov") if req.pov else None
 
-    _algo_id, observer = resolve_algorithm(
+    algo_id, observer = resolve_algorithm(
         "/stats/pubkey", req.algorithm, pov, forced_observer=signer
     )
+    await ensure_pov_available(db, "/stats/pubkey", algo_id, observer)
 
     # NOTE: this endpoint does NOT apply the observer's saved GrapeRank preset.
     # It returns `rank` (raw influence_<observer>) and raw counts, none of which

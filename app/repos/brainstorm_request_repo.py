@@ -338,6 +338,25 @@ def in_pipeline_condition():
     )
 
 
+async def any_request_in_pipeline_for_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> bool:
+    """Whether this observer has a run still in the pipeline (calc pending or
+    running, or calc succeeded with publishing pending). Drives the Open
+    Ranking 202-vs-422 split for a provisioned-but-not-ready pov.
+    """
+    statement = (
+        select(BrainstormRequest.private_id)
+        .where(
+            BrainstormRequest.pubkey == pubkey,
+            in_pipeline_condition(),
+        )
+        .limit(1)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none() is not None
+
+
 async def count_scheduled_publishing_inflight_on_db(db: AsyncDBSession) -> int:
     """Scheduled runs still in the pipeline (the backpressure signal)."""
     statement = select(func.count()).where(
