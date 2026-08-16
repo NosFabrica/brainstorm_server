@@ -80,6 +80,12 @@ def _pov_required_ids() -> set[str]:
 _POV_REQUIRED: set[str] = _pov_required_ids()
 
 
+def algorithm_requires_pov(algo_id: str) -> bool:
+    """Whether this algorithm id is personalized (declares `pov: true` in the
+    capability document)."""
+    return algo_id in _POV_REQUIRED
+
+
 def resolve_algorithm(
     endpoint: str,
     requested: str | None,
