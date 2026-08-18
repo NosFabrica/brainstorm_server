@@ -23,6 +23,7 @@ from app.routers.open_ranking.schemas import (
     RankResult,
     SearchPubkeysRequest,
     SearchPubkeysResponse,
+    ore_responses,
 )
 from app.utils.auth.nwt import optional_nwt_signer
 
@@ -53,6 +54,7 @@ def _safe_rank(value) -> float:
     "/search/pubkeys",
     response_model=SearchPubkeysResponse,
     summary="ORE-05: search Nostr profiles by free-form text",
+    responses=ore_responses(),
 )
 async def search_pubkeys(
     req: SearchPubkeysRequest,

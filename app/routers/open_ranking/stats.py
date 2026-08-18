@@ -14,6 +14,7 @@ from app.routers.open_ranking.common import TTL_HINTS, validate_pubkey
 from app.routers.open_ranking.schemas import (
     StatsPubkeyRequest,
     StatsPubkeyResponse,
+    ore_responses,
 )
 from app.services.user_service import get_user_rank_and_counts
 from app.utils.auth.nwt import optional_nwt_signer
@@ -42,6 +43,7 @@ def _safe_rank(value) -> float:
     "/stats/pubkey",
     response_model=StatsPubkeyResponse,
     summary="ORE-02: rank + stats for a single pubkey",
+    responses=ore_responses(),
 )
 async def stats_pubkey(
     req: StatsPubkeyRequest,
