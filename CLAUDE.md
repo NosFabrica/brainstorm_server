@@ -60,7 +60,7 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 | [`scripts/`](scripts/CLAUDE.md) | One-off CLI tools (admin token, smoke tests). |
 | [`BIBLE.md`](BIBLE.md) | The narrative layer — the life of a Brainstorm request, store truth-rankings, keys and identity, what's built, design decisions. Read it to onboard. |
 | [`CONTEXT.md`](CONTEXT.md) | The domain glossary (ubiquitous language): TA, Observer/Observee, Influence vs Rank, the request lifecycle. Read it before naming anything. |
-| [`engineering-team/`](engineering-team/) | Book-of-work artifacts (stories, ADRs, test plans, reviews, audits), run per tapestry's engineering harness. Loose ends: `engineering-team/OPEN.md`. |
+| [`engineering-team/`](engineering-team/) | Book-of-work artifacts (stories, ADRs, test plans, reviews, audits), run per tapestry's engineering harness. **Strictness: Light (trial)** — gates and lanes in [`workflows/light-profile.md`](engineering-team/workflows/light-profile.md); one Standard control book first, per its trial protocol. Loose ends: `engineering-team/OPEN.md`. |
 | [`docs/`](docs/) | Working docs: the search engineering essays (Meilisearch-vs-Vespa, precision, trust-vs-exact-match) and ADRs (`docs/adr/`). |
 | `start.sh` | Entrypoint: `alembic upgrade head && uvicorn app.api:app`. |
 | `docker-compose.yml` | Local stack (postgres, redis, neo4j, strfry, neofry). |
