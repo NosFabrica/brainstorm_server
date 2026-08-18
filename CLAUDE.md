@@ -4,6 +4,15 @@ FastAPI service that backs the Brainstorm app. It ingests Nostr events,
 maintains a follow/mute/report graph, drives GrapeRank trust-score
 computations, and exposes a profile search backed by Vespa.
 
+The wire format this server publishes — kind-30382 Trusted Assertions and their
+kind-10040 designation — is specified in
+[`NosFabrica/protocols`](https://github.com/NosFabrica/protocols)
+([trusted-assertions.md](https://github.com/NosFabrica/protocols/blob/main/specs/trusted-assertions.md);
+the GrapeRank computation in
+[graperank.md](https://github.com/NosFabrica/protocols/blob/main/specs/graperank.md)).
+The map of the estate's repos and deployments is
+[ECOSYSTEM.md](https://github.com/NosFabrica/protocols/blob/main/ECOSYSTEM.md) there.
+
 ## What it talks to
 
 | Service | Role |
@@ -49,6 +58,9 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 | [`app/utils/`](app/utils/CLAUDE.md) | Auth dependency, encryption, NIP-98, small helpers. |
 | [`alembic/`](alembic/CLAUDE.md) | DB migration scripts. |
 | [`scripts/`](scripts/CLAUDE.md) | One-off CLI tools (admin token, smoke tests). |
+| [`CONTEXT.md`](CONTEXT.md) | The domain glossary (ubiquitous language): TA, Observer/Observee, Influence vs Rank, the request lifecycle. Read it before naming anything. |
+| [`engineering-team/`](engineering-team/) | Book-of-work artifacts (stories, ADRs, test plans, reviews, audits), run per tapestry's engineering harness. Loose ends: `engineering-team/OPEN.md`. |
+| [`docs/`](docs/) | Working docs: the search engineering essays (Meilisearch-vs-Vespa, precision, trust-vs-exact-match) and ADRs (`docs/adr/`). |
 | `start.sh` | Entrypoint: `alembic upgrade head && uvicorn app.api:app`. |
 | `docker-compose.yml` | Local stack (postgres, redis, neo4j, strfry, neofry). |
 | `env.example` | All env vars. Copy to `.env` and fill in. |
@@ -63,7 +75,7 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 
 ## Vespa specifics
 
-- The application package (schema, services.xml, hosts.xml) lives in a separate repo: `brainstorm_one_click_deployment/vespa-app/`. The brainstorm-server speaks only HTTP to a running Vespa via `settings.vespa_url`.
+- The application package (schema, services.xml, hosts.xml) lives out of repo. **Deployed source of truth: the kube chart's copy** (`brainstorm-k8s`, called `nosfabrica-kube` in the search docs — `charts/brainstorm/vespa-app/`). The copy in `brainstorm_one_click_deployment/vespa-app/` is **stale** (it predates the NaN-guard fix) and is for local dev only — see the header notes of [`docs/search-precision-and-filtering.md`](docs/search-precision-and-filtering.md). The brainstorm-server speaks only HTTP to a running Vespa via `settings.vespa_url`.
 - **Per-observer scores** = cells in the `quality_scores` sparse tensor `tensor<int8>(user{})`. The cell address is the observer's pubkey (hex). Upsert = `add` op; delete = `remove` op.
 - **Profile partial updates** = `POST /document/v1/doc/doc/docid/<pubkey>?create=true` with `{"fields": {field: {"assign": value}}}`. The `create=true` makes it act like an upsert.
 - **Search ranking** uses `name_and_quality_score_only`. The query passes `ranking.features.query(user_q)={<observer>:1.0}` so the rank profile picks that observer's score from the tensor.
@@ -73,7 +85,7 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 
 | I want to… | Look at… |
 |---|---|
-| Add a new Vespa field | `brainstorm_one_click_deployment/vespa-app/schemas/doc.sd` + update `vespa.upsert_profile` if it's a profile field |
+| Add a new Vespa field | the kube chart's `vespa-app/schemas/doc.sd` (deployed source of truth — see Vespa specifics) + update `vespa.upsert_profile` if it's a profile field |
 | Change the search rank profile | `vespa-app/schemas/doc.sd` (rank-profile blocks). Re-deploy needed but no re-feed unless you added a field |
 | Change profile-field clear behaviour | `vespa.upsert_profile` (currently assigns `""` when the new event omits the field) |
 | Adjust score upsert concurrency | `_BATCH_CONCURRENCY` in `app/core/vespa.py` |
@@ -94,7 +106,7 @@ Vespa is **not** in this compose — it lives in `brainstorm_one_click_deploymen
 
 ## Things to know (gotchas)
 
-- **Prod timestamptz drift.** A few **production** timestamp columns are `timestamp WITH time zone` while migrations/staging/local are naive (`brainstorm_request.*`, most of `brainstorm_nsec.*`, `brainstorm_nostr_relay_transfer.*` — but NOT `last_time_published_graperank`, `scheduling`, `graperank_preset*`, `observerwhitelist`). asyncpg returns tz-aware datetimes from those, so Python-side subtraction against naive `datetime.now()` throws `can't subtract offset-naive and offset-aware datetimes` **on prod only**. Normalize aware→naive at any such boundary. Full column table, root cause, patched sites, and re-verify commands: [`docs/timestamptz-drift.md`](docs/timestamptz-drift.md).
+- **Prod timestamptz drift.** A few **production** timestamp columns are `timestamp WITH time zone` while migrations/staging/local are naive (`brainstorm_request.*`, most of `brainstorm_nsec.*`, `brainstorm_nostr_relay_transfer.*` — but NOT `last_time_published_graperank`, `scheduling`, `graperank_preset*`, `observerwhitelist`). asyncpg returns tz-aware datetimes from those, so Python-side subtraction against naive `datetime.now()` throws `can't subtract offset-naive and offset-aware datetimes` **on prod only**. Normalize aware→naive at any such boundary.
 
 - **`periodic_graperank_pubkey`** is the default observer perspective for `/search/byText` when no `observerPubkey` is passed. Score mirroring to Vespa is **not** gated on it — `upsert_scores_to_vespa` runs for every observer. If `periodic_graperank_pubkey` is empty, search still works using the hardcoded default in the search router.
 - **`MAX_QUERY_WORDS = 6`** in `vespa.py` caps how many words of the search query get treated as separate match groups. Longer queries are truncated.
