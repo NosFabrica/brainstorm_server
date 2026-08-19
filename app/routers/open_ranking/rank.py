@@ -13,6 +13,7 @@ from app.repos.user_repo import batch_influence_for_pubkeys
 from app.routers.open_ranking.availability import ensure_pov_available
 from app.routers.open_ranking.capabilities import resolve_algorithm
 from app.routers.open_ranking.common import (
+    MAX_BATCH_PUBKEYS,
     TTL_HINTS,
     enforce_batch_size,
     validate_positive_limit,
@@ -23,6 +24,7 @@ from app.routers.open_ranking.schemas import (
     RankPubkeysRequest,
     RankPubkeysResponse,
     RankResult,
+    ore_responses,
 )
 from app.utils.auth.nwt import optional_nwt_signer
 
@@ -46,6 +48,7 @@ def _safe_rank(value) -> float:
     "/rank/pubkeys",
     response_model=RankPubkeysResponse,
     summary="ORE-03: rank a batch of pubkeys",
+    responses=ore_responses(batch_cap=MAX_BATCH_PUBKEYS),
 )
 async def rank_pubkeys(
     req: RankPubkeysRequest,

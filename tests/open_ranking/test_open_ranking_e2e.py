@@ -973,3 +973,59 @@ class TestOREErrorShape:
         assert r.status_code == 404
         assert "detail" in r.json()
         assert r.headers.get("x-reason") is None
+
+
+# ===========================================================================
+# OpenAPI / Swagger: the generated schema documents the ORE error + retry
+# contract the handlers actually implement
+# ===========================================================================
+class TestOpenAPISchema:
+    DATA_PATHS = [
+        "/stats/pubkey",
+        "/rank/pubkeys",
+        "/search/pubkeys",
+        "/followers",
+        "/muters",
+    ]
+
+    @pytest.fixture()
+    def openapi(self, client) -> dict:
+        r = client.get("/openapi.json")
+        assert r.status_code == 200
+        return r.json()
+
+    def test_data_endpoints_document_the_pov_contract(self, openapi):
+        """Every data endpoint documents 202 (pov computing) with the
+        Retry-After header and the {"status", "retry_after"} body, plus the
+        error statuses the ORE handlers can emit."""
+        for path in self.DATA_PATHS:
+            responses = openapi["paths"][path]["post"]["responses"]
+            for code in ("202", "400", "401", "403", "422"):
+                assert code in responses, f"{path} does not document {code}"
+            r202 = responses["202"]
+            schema_ref = r202["content"]["application/json"]["schema"]["$ref"]
+            assert schema_ref.endswith("OreComputingResponse")
+            assert "Retry-After" in r202["headers"]
+            assert "X-Reason" in r202["headers"]
+
+    def test_error_responses_document_the_ore_error_shape(self, openapi):
+        """Every documented error is {"error": ...} + X-Reason — NOT FastAPI's
+        auto-generated 422 HTTPValidationError ({"detail": [...]}), which the
+        ORE exception handlers never emit on these paths."""
+        for path in self.DATA_PATHS:
+            responses = openapi["paths"][path]["post"]["responses"]
+            for code, resp in responses.items():
+                if code in ("200", "202"):
+                    continue
+                schema_ref = resp["content"]["application/json"]["schema"]["$ref"]
+                assert schema_ref.endswith(
+                    "OreErrorResponse"
+                ), f"{path} {code} documents {schema_ref}"
+                assert (
+                    "X-Reason" in resp["headers"]
+                ), f"{path} {code} does not document the X-Reason header"
+
+    def test_batch_endpoint_documents_413(self, openapi):
+        responses = openapi["paths"]["/rank/pubkeys"]["post"]["responses"]
+        assert "413" in responses
+        assert "1000" in responses["413"]["description"]

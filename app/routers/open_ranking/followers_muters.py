@@ -31,6 +31,7 @@ from app.routers.open_ranking.schemas import (
     FollowersOrMutersRequest,
     FollowersOrMutersResponse,
     RankResult,
+    ore_responses,
 )
 from app.utils.auth.nwt import optional_nwt_signer
 
@@ -102,6 +103,7 @@ async def _top_inbound_response(
     "/followers",
     response_model=FollowersOrMutersResponse,
     summary="ORE-06: top-ranked followers of a pubkey",
+    responses=ore_responses(),
 )
 async def followers(
     req: FollowersOrMutersRequest,
@@ -122,6 +124,7 @@ async def followers(
     "/muters",
     response_model=FollowersOrMutersResponse,
     summary="ORE-07: top-ranked muters of a pubkey",
+    responses=ore_responses(),
 )
 async def muters(
     req: FollowersOrMutersRequest,
