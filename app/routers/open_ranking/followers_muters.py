@@ -10,7 +10,9 @@ import asyncio
 import math
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.core.database import get_db
 from app.core.redis_db import redis_client
 from app.message_queue_tasks.process_strfry_event import (
     FOLLOWED_BY_KEY_PREFIX,
@@ -18,6 +20,7 @@ from app.message_queue_tasks.process_strfry_event import (
 )
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.user_repo import get_top_inbound_by_influence
+from app.routers.open_ranking.availability import ensure_pov_available
 from app.routers.open_ranking.capabilities import resolve_algorithm
 from app.routers.open_ranking.common import (
     TTL_HINTS,
@@ -28,6 +31,7 @@ from app.routers.open_ranking.schemas import (
     FollowersOrMutersRequest,
     FollowersOrMutersResponse,
     RankResult,
+    ore_responses,
 )
 from app.utils.auth.nwt import optional_nwt_signer
 
@@ -60,14 +64,16 @@ async def _top_inbound_response(
     redis_prefix: str,
     req: FollowersOrMutersRequest,
     signer: str | None,
+    db: AsyncDBSession,
 ) -> FollowersOrMutersResponse:
     pubkey = validate_pubkey(req.pubkey, "pubkey")
     pov = validate_pubkey(req.pov, "pov") if req.pov else None
     limit = validate_positive_limit(req.limit) or DEFAULT_LIMIT
 
-    _algo_id, observer = resolve_algorithm(
+    algo_id, observer = resolve_algorithm(
         endpoint, req.algorithm, pov, forced_observer=signer
     )
+    await ensure_pov_available(db, endpoint, algo_id, observer)
 
     # Fire the graph query and the Redis total count in parallel.
     async def _fetch_top() -> list:
@@ -97,10 +103,12 @@ async def _top_inbound_response(
     "/followers",
     response_model=FollowersOrMutersResponse,
     summary="ORE-06: top-ranked followers of a pubkey",
+    responses=ore_responses(),
 )
 async def followers(
     req: FollowersOrMutersRequest,
     signer: str | None = Depends(optional_nwt_signer),
+    db: AsyncDBSession = Depends(get_db),
 ) -> FollowersOrMutersResponse:
     return await _top_inbound_response(
         endpoint="/followers",
@@ -108,6 +116,7 @@ async def followers(
         redis_prefix=FOLLOWED_BY_KEY_PREFIX,
         req=req,
         signer=signer,
+        db=db,
     )
 
 
@@ -115,10 +124,12 @@ async def followers(
     "/muters",
     response_model=FollowersOrMutersResponse,
     summary="ORE-07: top-ranked muters of a pubkey",
+    responses=ore_responses(),
 )
 async def muters(
     req: FollowersOrMutersRequest,
     signer: str | None = Depends(optional_nwt_signer),
+    db: AsyncDBSession = Depends(get_db),
 ) -> FollowersOrMutersResponse:
     return await _top_inbound_response(
         endpoint="/muters",
@@ -126,4 +137,5 @@ async def muters(
         redis_prefix=MUTED_BY_KEY_PREFIX,
         req=req,
         signer=signer,
+        db=db,
     )

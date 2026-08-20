@@ -23,6 +23,8 @@ from tests.conftest import make_nwt
 # App factory: only mounts the Open Ranking router.
 # ---------------------------------------------------------------------------
 def _build_app() -> FastAPI:
+    from app.core.database import get_db
+    from app.routers.open_ranking.errors import install_ore_error_handlers
     from app.routers.open_ranking.router import router as open_ranking_router
 
     app = FastAPI()
@@ -34,8 +36,20 @@ def _build_app() -> FastAPI:
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Reason", "Retry-After"],
     )
+    # Same error shape as the production app ({"error": ...} + X-Reason).
+    install_ore_error_handlers(app)
     app.include_router(open_ranking_router)
+
+    # Postgres is not part of this suite. The availability gate's repo reads
+    # are patched per-test; the session dependency yields a sentinel so any
+    # unpatched code path that actually touches the session fails loudly
+    # instead of dialing a real database.
+    async def _no_db():
+        yield None
+
+    app.dependency_overrides[get_db] = _no_db
     return app
 
 

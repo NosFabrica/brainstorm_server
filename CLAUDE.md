@@ -105,6 +105,13 @@ docker compose up -d            # postgres, redis, neo4j, strfry, neofry
 
 Vespa is **not** in this compose — it lives in `brainstorm_one_click_deployment`. Either point `VESPA_URL` at a Vespa you run from that repo, or at a remote deploy.
 
+## Deploying to staging
+
+CI builds an image per branch of this repo; staging pins one of those tags. The
+branch/PR/pin workflow — including whether to join the current staging branch
+or start a new cycle — is documented in
+[brainstorm-k8s `docs/staging-workflow.md`](https://github.com/NosFabrica/brainstorm-k8s/blob/master/docs/staging-workflow.md).
+
 ## Things to know (gotchas)
 
 - **Prod timestamptz drift.** A few **production** timestamp columns are `timestamp WITH time zone` while migrations/staging/local are naive (`brainstorm_request.*`, most of `brainstorm_nsec.*`, `brainstorm_nostr_relay_transfer.*` — but NOT `last_time_published_graperank`, `scheduling`, `graperank_preset*`, `observerwhitelist`). asyncpg returns tz-aware datetimes from those, so Python-side subtraction against naive `datetime.now()` throws `can't subtract offset-naive and offset-aware datetimes` **on prod only**. Normalize aware→naive at any such boundary.

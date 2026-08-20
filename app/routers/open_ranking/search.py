@@ -6,9 +6,12 @@ import math
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.core.database import get_db
 from app.core.vespa import DEFAULT_MIN_RANK, RANK_PROFILE_SORT_FOLLOWERS
 from app.core.vespa import search as vespa_search
+from app.routers.open_ranking.availability import ensure_pov_available
 from app.routers.open_ranking.capabilities import resolve_algorithm
 from app.routers.open_ranking.common import (
     MAX_QUERY_LEN,
@@ -20,6 +23,7 @@ from app.routers.open_ranking.schemas import (
     RankResult,
     SearchPubkeysRequest,
     SearchPubkeysResponse,
+    ore_responses,
 )
 from app.utils.auth.nwt import optional_nwt_signer
 
@@ -50,10 +54,12 @@ def _safe_rank(value) -> float:
     "/search/pubkeys",
     response_model=SearchPubkeysResponse,
     summary="ORE-05: search Nostr profiles by free-form text",
+    responses=ore_responses(),
 )
 async def search_pubkeys(
     req: SearchPubkeysRequest,
     signer: str | None = Depends(optional_nwt_signer),
+    db: AsyncDBSession = Depends(get_db),
 ) -> SearchPubkeysResponse:
     if not isinstance(req.query, str) or not req.query.strip():
         raise HTTPException(
@@ -69,9 +75,10 @@ async def search_pubkeys(
     pov = validate_pubkey(req.pov, "pov") if req.pov else None
     limit = validate_positive_limit(req.limit, max_value=MAX_LIMIT) or DEFAULT_LIMIT
 
-    _algo_id, observer = resolve_algorithm(
+    algo_id, observer = resolve_algorithm(
         "/search/pubkeys", req.algorithm, pov, forced_observer=signer
     )
+    await ensure_pov_available(db, "/search/pubkeys", algo_id, observer)
     sanitized = _SANITIZE_RE.sub("", req.query).strip()
 
     # ORE-05 requires results "sorted by rank in descending order", i.e. the

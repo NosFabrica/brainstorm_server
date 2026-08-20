@@ -25,6 +25,7 @@ from app.core.config import settings
 from app.core.loggr import loggr
 from app.core.sql_admin_panel import add_sql_admin_panel
 from app.core.vespa import aclose as vespa_aclose
+from app.routers.open_ranking.errors import install_ore_error_handlers
 from app.routers.router import router as main_router
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
 from app.services.nsec_encryption_service import bootstrap_keys
@@ -148,7 +149,14 @@ app.add_middleware(
     allow_credentials=False,  # TODO: REMOVE THIS ONCE NEEDED
     allow_methods=["*"],
     allow_headers=["*"],
+    # ORE-00: browser clients must be able to read the Open Ranking error /
+    # retry headers cross-origin.
+    expose_headers=["X-Reason", "Retry-After"],
 )
+
+# Open Ranking error shape ({"error": ...} + X-Reason, PovComputing -> 202).
+# Self-scoped to the ORE paths; every other route keeps FastAPI defaults.
+install_ore_error_handlers(app)
 
 
 @app.middleware(middleware_type="http")

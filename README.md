@@ -71,6 +71,14 @@ poetry run pytest
 - docker network create brainstorm-network
 - docker-compose up
 
+## How to deploy to staging
+
+Staging runs images built by CI from branches of this repo, pinned and rolled
+out via the [brainstorm-k8s](https://github.com/NosFabrica/brainstorm-k8s)
+charts. The full branch/PR/pin workflow — including how to decide whether to
+join the current staging branch or start a new cycle — is documented in
+[brainstorm-k8s `docs/staging-workflow.md`](https://github.com/NosFabrica/brainstorm-k8s/blob/master/docs/staging-workflow.md).
+
 ## Admin routes (`/admin/*`)
 
 All admin routes are gated by JWT auth + pubkey whitelist. Controlled by env vars:

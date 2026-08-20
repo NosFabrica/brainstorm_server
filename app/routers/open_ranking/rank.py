@@ -5,11 +5,15 @@ from __future__ import annotations
 import math
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.core.database import get_db
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.user_repo import batch_influence_for_pubkeys
+from app.routers.open_ranking.availability import ensure_pov_available
 from app.routers.open_ranking.capabilities import resolve_algorithm
 from app.routers.open_ranking.common import (
+    MAX_BATCH_PUBKEYS,
     TTL_HINTS,
     enforce_batch_size,
     validate_positive_limit,
@@ -20,6 +24,7 @@ from app.routers.open_ranking.schemas import (
     RankPubkeysRequest,
     RankPubkeysResponse,
     RankResult,
+    ore_responses,
 )
 from app.utils.auth.nwt import optional_nwt_signer
 
@@ -43,10 +48,12 @@ def _safe_rank(value) -> float:
     "/rank/pubkeys",
     response_model=RankPubkeysResponse,
     summary="ORE-03: rank a batch of pubkeys",
+    responses=ore_responses(batch_cap=MAX_BATCH_PUBKEYS),
 )
 async def rank_pubkeys(
     req: RankPubkeysRequest,
     signer: str | None = Depends(optional_nwt_signer),
+    db: AsyncDBSession = Depends(get_db),
 ) -> RankPubkeysResponse:
     # 413 must fire BEFORE per-element validation (avoid 1000+ regex passes
     # for an oversize payload).
@@ -57,9 +64,10 @@ async def rank_pubkeys(
     pov = validate_pubkey(req.pov, "pov") if req.pov else None
     limit = validate_positive_limit(req.limit)
 
-    _algo_id, observer = resolve_algorithm(
+    algo_id, observer = resolve_algorithm(
         "/rank/pubkeys", req.algorithm, pov, forced_observer=signer
     )
+    await ensure_pov_available(db, "/rank/pubkeys", algo_id, observer)
 
     # Default limit = number of pubkeys. Silently clamp larger limits down
     # (per ORE-03 §"limit").
