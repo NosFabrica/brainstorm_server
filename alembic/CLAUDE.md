@@ -64,6 +64,7 @@ file. Briefly:
 | `5411ca1a52c4_add_events_column_to_nostr_transferer_.py` | `events` counter |
 | `75e7de43ccf0_add_unique_kind_constraint.py` | UNIQUE(kind) on transferer rows |
 | `1d144470cb48_*` etc. | (see file for details) |
+| `c3d4e5f6a7b8_add_short_url.py` | `short_url` — share-link records moved out of Redis (see `.scratch/shorturl/PRD.md` D1) |
 
 Treat this table as a hint; the source of truth is the `down_revision` chain in
 the files themselves.

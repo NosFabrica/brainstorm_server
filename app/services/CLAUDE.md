@@ -18,7 +18,7 @@ publishing — and routers just thin-wrap them.
 | `verified_cutoffs.py` | 95 | Resolves an observer's saved preset into the three per-relationship verified cutoffs (`follower`/`muter`/`reporter`) that `/stats`, `/overview` and `/connections` all compare Influence against. Inbound sections use their own cutoff; outbound sections and the tier `verified_line` use the follower cutoff. Strict `>`, no validity-floor clamp. |
 | `assistant_profile_service.py` | 111 | Publish a kind-0 profile event for the assistant pubkey. Pure Nostr-side; no DB. `website` and the NIP-05 domain both come from `settings.frontend_url`; `nip05` is derived per-pubkey by `app/utils/assistant_nip05.py` and omitted when that URL has no hostname. |
 | `nsec_encryption_service.py` | 210 | Background rotation of `BrainstormNsec.encrypted_nsec`: scan rows, decrypt-old/encrypt-new, write back. Idempotent and resumable. |
-| `shorturl_service.py` | 150 | URL shortener: validate relays, generate/dedupe short codes, Redis storage. Repo-less — Redis only. Powers [`/shorturl`](../routers/shorturl/CLAUDE.md). |
+| `shorturl_service.py` | 160 | URL shortener: validate relays, generate/dedupe Crockford base32 codes, Postgres storage via `short_url_repo`. Powers [`/shorturl`](../routers/shorturl/CLAUDE.md). |
 | `network_alerts_service.py` | 229 | `/networkAlerts`: builds the per-observer property keys and maps graph rows → panel payload. **Neo4j only** — the observer pubkey and their preset cutoffs arrive already resolved, from `routers/network_alerts/dependencies.py`. |
 | `report_graph_service.py` | 120 | **Pure, no I/O.** The user-only report rules, shared by all three report paths (live kind-1984 ingest, the backfill script, the kind-5 recompute) so they cannot drift. Owns `extract_report_targets` (NIP-56 user-vs-note), the backfill's `build_desired_reported_by`/`diff_reported_by`, and kind-5's `deletion_may_target_reports`/`surviving_report_targets`/`diff_author_targets`. |
 | `nip05_service.py` | 40 | NIP-05 document for `/.well-known/nostr.json`: the reserved `_` house identity from `settings.periodic_graperank_pubkey`, otherwise scan Assistant pubkeys and match the derived local-part. Hits also carry the recommended `relays` attribute (keyed by pubkey) from `nostr_upload_ta_events_relay_public_url`. Uncached by design. |
@@ -72,6 +72,18 @@ reasons, both structural rather than stylistic:
 
 Don't extend this to new subsystems without the same kind of reason.
 
+**Retrying a write that may violate a unique constraint** goes inside a
+savepoint, or the failed statement poisons the surrounding transaction:
+
+```python
+async with db.begin_nested():          # savepoint
+    row = await insert_thing_on_db(db, ...)
+```
+
+`shorturl_service.create_short_url` is the reference: it retries on a code
+collision, and on a *content* collision re-reads the winner's row instead of
+retrying. Don't invent a second pattern for this.
+
 ### Concurrency
 
 Heavy fan-out → `asyncio.gather` with `return_exceptions=True` and explicit
@@ -116,9 +128,9 @@ process; if/when you horizontally scale the server, push this flag into Redis.
 
 ### `shorturl_service.py`
 
-- `create_short_url(pubkey, relays)` → `(short_code, content)`. Validates relays (each a well-formed `ws://`/`wss://` URL; max `MAX_RELAYS = 7`; `[]` is valid), then returns the existing code for that `(pubkey, relay-set)` or mints a new one. Idempotent via a fingerprint reverse index.
-- `get_short_url_content(short_code)` → `ShortUrlContent`, 404 if absent.
-- Repo-less: talks only to the shared `redis_client`. TTL via `settings.shorturl_ttl_seconds` (None = no expiry). Redis key layout is documented in [`../routers/shorturl/CLAUDE.md`](../routers/shorturl/CLAUDE.md).
+- `create_short_url(db, pubkey, relays)` → `(short_code, content)`. Validates relays (each a well-formed `ws://`/`wss://` URL; max `MAX_RELAYS = 7`; `[]` is valid), then returns the existing code for that `(pubkey, relay-set)` or mints a new one. Idempotent via a unique constraint on `(pubkey, relays_fingerprint)`; a concurrent double-mint is resolved by re-reading the winner's row, not retried.
+- `get_short_url_content(db, short_code)` → `ShortUrlContent`, 404 if absent. Normalizes the code first (uppercase + Crockford folding).
+- Storage is Postgres via `app/repos/short_url_repo.py`. Redis holds only the rate-limit counter. Layout in [`../routers/shorturl/CLAUDE.md`](../routers/shorturl/CLAUDE.md).
 
 ## Adding a new service
 

@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.core.database import get_db
 from app.schemas.request_body_schemas import CreateShortUrlBody
 from app.schemas.request_response_schemas import (
     CreateShortUrlResponse,
@@ -33,8 +35,9 @@ async def rate_limit_create_short_url(request: Request) -> None:
 )
 async def create_short_url_endpoint(
     body: CreateShortUrlBody,
+    db: AsyncDBSession = Depends(dependency=get_db),
 ) -> CreateShortUrlResponse:
-    short_code, content = await create_short_url(body.pubkey, body.relays)
+    short_code, content = await create_short_url(db, body.pubkey, body.relays)
     return CreateShortUrlResponse(
         data=CreatedShortUrl(shortCode=short_code, content=content)
     )
@@ -44,6 +47,9 @@ async def create_short_url_endpoint(
     path="/{short_code}",
     summary="Resolve a short code to its stored pubkey + relays",
 )
-async def get_short_url_endpoint(short_code: str) -> GetShortUrlResponse:
-    content = await get_short_url_content(short_code)
+async def get_short_url_endpoint(
+    short_code: str,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> GetShortUrlResponse:
+    content = await get_short_url_content(db, short_code)
     return GetShortUrlResponse(data=content)
