@@ -226,3 +226,20 @@ class UserSectionsStats(BaseModel):
     muting: ConnectionStats
     reported_by: ConnectionStats
     reporting: ConnectionStats
+
+
+###################
+
+# URL shortener   #
+
+###################
+
+
+class ShortUrlContent(BaseModel):
+    pubkey: str
+    relays: list[str]
+
+
+class CreatedShortUrl(BaseModel):
+    shortCode: str
+    content: ShortUrlContent

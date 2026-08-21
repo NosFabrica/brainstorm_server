@@ -15,6 +15,7 @@ from app.routers.nip50.router import router as nip50_router
 from app.routers.open_ranking.router import router as open_ranking_router
 from app.routers.search.router import router as search_router
 from app.routers.setup.router import router as setup_router
+from app.routers.shorturl.router import router as shorturl_router
 from app.routers.user.router import router as user_router
 from app.routers.user.router import public_router as public_user_router
 from app.schemas.request_response_schemas import (
@@ -88,6 +89,14 @@ router.include_router(
     router=search_router,
     prefix=SEARCH_ROUTER_PREFIX,
     tags=["search"],
+)
+
+SHORTURL_ROUTER_PREFIX = "/shorturl"
+
+router.include_router(
+    router=shorturl_router,
+    prefix=SHORTURL_ROUTER_PREFIX,
+    tags=["shorturl"],
 )
 
 # NIP-50 search relay. Mounted at root because NIP-11 mandates the

@@ -22,6 +22,11 @@ class SetGrapeRankPresetBody(BaseModel):
     preset: GrapeRankPresetTemplate
 
 
+class CreateShortUrlBody(BaseModel):
+    pubkey: str
+    relays: list[str]
+
+
 class SetUserSchedulingBody(BaseModel):
     scheduling_id: int
 

@@ -8,9 +8,11 @@ from app.schemas.schemas import (
     AuthSuccessfulToken,
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
+    CreatedShortUrl,
     FollowListIngestResult,
     OwnUserData,
     PaginatedUserConnections,
+    ShortUrlContent,
     UserGraphData,
     UserHistoryInstance,
     UserOverviewData,
@@ -190,6 +192,14 @@ class SearchResults(BaseModel):
 
 class SearchByTextResponse(SuccessfulResponseDataSchema):
     data: SearchResults
+
+
+class CreateShortUrlResponse(SuccessfulResponseDataSchema):
+    data: CreatedShortUrl
+
+
+class GetShortUrlResponse(SuccessfulResponseDataSchema):
+    data: ShortUrlContent
 
 
 class ShortestPathData(BaseModel):
