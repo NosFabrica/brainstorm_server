@@ -13,6 +13,7 @@ import asyncio
 
 import pytest
 from fastapi import HTTPException
+from unittest.mock import AsyncMock
 from starlette.requests import Request
 
 from app.core.config import settings
@@ -198,17 +199,37 @@ def test_separate_callers_do_not_share_a_bucket(fake_redis):
 def test_a_burst_is_throttled_whether_or_not_the_caller_spoofs(
     client, monkeypatch, fake_redis, spoofed
 ):
-    """Rotating a forged leading hop must not win extra requests."""
-    monkeypatch.setattr("app.services.shorturl_service.redis_client", fake_redis)
-    body = {"pubkey": "a" * 64, "relays": []}
+    """Rotating a forged leading hop must not win extra requests.
 
-    statuses = []
-    for attempt in range(4):
-        chain = f"10.0.0.{attempt}, {_REAL}" if spoofed else _REAL
-        response = client.post(
-            "/shorturl", json=body, headers={"X-Forwarded-For": chain}
-        )
-        statuses.append(response.status_code)
+    The shortener's storage is mocked out: this exercises the limiter, which
+    runs as a route dependency before the handler is ever entered.
+    """
+    from app.core.database import get_db
+    from app.api import app as fastapi_app
+    from app.schemas.schemas import ShortUrlContent
 
-    assert statuses[0] == 200, f"first request should be allowed, got {statuses[0]}"
-    assert statuses[1:] == [429, 429, 429], statuses
+    async def _no_db():
+        yield None
+
+    fastapi_app.dependency_overrides[get_db] = _no_db
+    monkeypatch.setattr(
+        "app.routers.shorturl.router.create_short_url",
+        AsyncMock(
+            return_value=("AB3XK9QZ", ShortUrlContent(pubkey="a" * 64, relays=[]))
+        ),
+    )
+    try:
+        body = {"pubkey": "a" * 64, "relays": []}
+
+        statuses = []
+        for attempt in range(4):
+            chain = f"10.0.0.{attempt}, {_REAL}" if spoofed else _REAL
+            response = client.post(
+                "/shorturl", json=body, headers={"X-Forwarded-For": chain}
+            )
+            statuses.append(response.status_code)
+
+        assert statuses[0] == 200, f"first request should be allowed, got {statuses[0]}"
+        assert statuses[1:] == [429, 429, 429], statuses
+    finally:
+        fastapi_app.dependency_overrides.pop(get_db, None)

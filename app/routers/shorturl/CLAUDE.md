@@ -1,7 +1,9 @@
 # app/routers/shorturl
 
 A tiny URL shortener: maps a short code to a `{pubkey, relays}` payload.
-Backed entirely by Redis — no Postgres, no Neo4j. Business logic lives in
+Backed by Postgres (`short_url`) — the record of truth, deliberately not Redis:
+an evicted code would 404 a public URL permanently and cannot be recomputed.
+Business logic lives in
 [`app/services/shorturl_service.py`](../../services/shorturl_service.py); this
 router is a thin HTTP wrapper.
 
@@ -16,8 +18,12 @@ URL prefix: `/shorturl` (registered in [`routers/router.py`](../router.py)).
 
 ## Behaviour
 
-- **Short code** = 12 random alphanumeric chars (`secrets`-based), claimed
-  atomically via Redis `SET NX`.
+- **Short code** = 8 chars of Crockford base32 (`secrets`-based): uppercase,
+  never `I`/`L`/`O`/`U`. Stored uppercase; resolution uppercases and folds the
+  confusables (`I`/`L` -> `1`, `O` -> `0`), so a code works whether it was
+  scanned from the uppercase QR payload, copied lowercase, or retyped by hand.
+  The length is referenced only by the generator — nothing may infer it, so it
+  can change later without breaking codes already shared.
 - **Dedup / idempotency** — the same `(pubkey, relay-set)` always returns the
   same code. A relay set is order- and duplicate-insensitive and normalized
   (trimmed, lowercased, trailing slash stripped) before fingerprinting, so
@@ -25,9 +31,6 @@ URL prefix: `/shorturl` (registered in [`routers/router.py`](../router.py)).
 - **`[]` (empty relay list) is valid** and gets its own code. The only relay
   rules: each provided relay must be a well-formed `ws://`/`wss://` URL
   (format check only), and at most `MAX_RELAYS = 7` relays.
-- **Expiry** is opt-in via `settings.shorturl_ttl_seconds` (env
-  `SHORTURL_TTL_SECONDS`). `None` = never expire (default). When set, content
-  and index keys carry the same TTL and auto-delete together — no sweep job.
 
 ## Rate limiting
 
@@ -41,14 +44,14 @@ the ingress appends rather than replaces, so a client-supplied leading entry is
 attacker-controlled. This endpoint is unauthenticated, so that limit is its only
 throttle.
 
-## Redis layout
+## Storage
 
-| Key | Type | Holds |
-|---|---|---|
-| `shorturl:content:<code>` | string (JSON) | `{"pubkey", "relays"}` — what GET resolves |
-| `shorturl:fp:<pubkey>:<fingerprint>` | string | the short code — O(1) reverse index for dedup |
-| `rate_limit:shorturl_create:<ip>` | string (counter) | per-IP fixed-window counter |
+| Where | Holds |
+|---|---|
+| `short_url` (Postgres) | one row per code: `short_code` (unique), `pubkey`, `relays_fingerprint`, `relays` |
+| `rate_limit:shorturl_create:<ip>` (Redis) | per-IP fixed-window counter — the only thing still in Redis |
 
-The fingerprint key replaced an earlier per-pubkey hash specifically so the
-index expires *with* the content under TTL. A dangling index entry (content
-gone, index lingering) is detected on create and regenerated.
+Idempotency is a unique constraint on `(pubkey, relays_fingerprint)`, so a
+concurrent double-mint loses the race in the database rather than orphaning a
+row. There is no reverse-index key and no dangling-entry guard; both existed
+only because the record used to be split across two Redis keys.

@@ -142,6 +142,25 @@ retrying after a few attempts and never replays.
 | `processing_started_at` / `processed_at` / `attempts` | — | claimed/finished markers. The webhook path sets `processing_started_at` **at insert** — it is the worker — or the sweep would treat every in-flight delivery as abandoned |
 | `payload` | JSONB, **nullable** | Flash's delivery, kept whole: it carries no personal data (verified against every event held and the documented schema), so nothing in it expires. Nullable only for the row shape; nothing nulls it — a payload still waiting to be applied must stay replayable. See [`docs/flash/lifecycle.md`](../../docs/flash/lifecycle.md) |
 
+
+### `ShortUrl` — `short_url`
+
+Share links: a short code standing in for a pubkey + relay-hint set. Record of
+truth, deliberately **not** Redis — an evicted code would 404 a public URL
+permanently and, unlike the caches, cannot be recomputed.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | int PK | autoincrement |
+| `short_code` | str(32) UNIQUE | Crockford base32, 8 chars today. **Variable-length on purpose** — the generated length may change and already-shared codes must keep resolving, so nothing may infer a width from it. The UNIQUE constraint supplies the lookup index; no separate one |
+| `pubkey` | str(64) | the profile the link points at |
+| `relays_fingerprint` | str(64) | sha256 of the normalized relay set |
+| `relays` | JSONB | the relay hints, default `[]` |
+
+UNIQUE `(pubkey, relays_fingerprint)` is what makes minting idempotent: a
+concurrent double-mint loses the race in the database rather than creating a
+second code for the same content.
+
 ## Adding a new table
 
 1. New `class Foo(TimestampMixin, Base): __tablename__ = "foo"` in `__init__.py`.
