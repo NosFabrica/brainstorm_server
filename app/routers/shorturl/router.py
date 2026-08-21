@@ -39,7 +39,7 @@ async def create_short_url_endpoint(
 ) -> CreateShortUrlResponse:
     short_code, content = await create_short_url(db, body.pubkey, body.relays)
     return CreateShortUrlResponse(
-        data=CreatedShortUrl(shortCode=short_code, content=content)
+        data=CreatedShortUrl(short_code=short_code, content=content)
     )
 
 

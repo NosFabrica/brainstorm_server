@@ -33,7 +33,7 @@ Accepts either:
 1. **JWT bearer** — `Authorization: Bearer <token>` or legacy `access_token` header.
 2. **NIP-98** — `Authorization: Nostr <base64-event>`. Delegates to `auth/nip98.py` for signature + tag validation.
 
-On failure it raises `HTTPException(401, detail=ErrorResponseSchema(...))`.
+On failure it raises `HTTPException(401, detail="...")` — `detail` is a plain string throughout this repo, see [`app/services/CLAUDE.md`](../services/CLAUDE.md) → Errors.
 
 There's also a `verify_admin_access` dependency defined in
 [`app/routers/admin/router.py`](../routers/admin/router.py) (not here — it's

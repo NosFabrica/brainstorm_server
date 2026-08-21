@@ -695,5 +695,7 @@ class ShortUrlContent(BaseModel):
 
 
 class CreatedShortUrl(BaseModel):
-    shortCode: str
+    model_config = ConfigDict(populate_by_name=True)
+
+    short_code: str = Field(serialization_alias="shortCode")
     content: ShortUrlContent

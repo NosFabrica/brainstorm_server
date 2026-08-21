@@ -16,7 +16,6 @@ database instead of orphaning a row.
 
 import hashlib
 import secrets
-from urllib.parse import urlparse
 
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -36,7 +35,6 @@ logger = loggr.get_logger(__name__)
 # Referenced ONLY by generate_short_code. Nothing else may infer a length from
 # it — codes already in the wild must keep resolving if this changes.
 SHORT_CODE_LENGTH = 8
-MAX_RELAYS = 7
 
 # Crockford base32: the digits and uppercase letters, minus I, L, O and U.
 _SHORT_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -44,7 +42,6 @@ _SHORT_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 # digit it could be confused with, so it is not folded.
 _CONFUSABLES = str.maketrans({"I": "1", "L": "1", "O": "0"})
 
-_VALID_RELAY_SCHEMES = ("ws", "wss")
 _MAX_GENERATION_ATTEMPTS = 5
 
 
@@ -64,15 +61,6 @@ def normalize_short_code(raw: str) -> str:
     return (raw or "").strip().upper().translate(_CONFUSABLES)
 
 
-def _is_valid_relay_url(url: str) -> bool:
-    """Format-only check: must be a ws:// or wss:// URL with a host."""
-    try:
-        parsed = urlparse(url.strip())
-    except Exception:
-        return False
-    return parsed.scheme in _VALID_RELAY_SCHEMES and bool(parsed.netloc)
-
-
 def relays_fingerprint(relays: list[str]) -> str:
     """Stable fingerprint of a relay set, order- and duplicate-insensitive.
 
@@ -88,36 +76,10 @@ def _to_content(row: ShortUrl) -> ShortUrlContent:
     return ShortUrlContent(pubkey=row.pubkey, relays=list(row.relays))
 
 
-def _validated_pubkey(pubkey: str, relays: list[str]) -> str:
-    """Check the whole submission; return the pubkey in its stored form."""
-    pubkey = pubkey.strip()
-    if not pubkey:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="pubkey is required",
-        )
-    # An empty relay list is a valid submission. Any relays that ARE provided
-    # must be well-formed, and there can be at most MAX_RELAYS of them.
-    if len(relays) > MAX_RELAYS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"At most {MAX_RELAYS} relays are allowed",
-        )
-
-    invalid = [r for r in relays if not _is_valid_relay_url(r)]
-    if invalid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid relay url(s): {invalid}",
-        )
-    return pubkey
-
-
 async def create_short_url(
     db: AsyncDBSession, pubkey: str, relays: list[str]
 ) -> tuple[str, ShortUrlContent]:
     """Return the existing short code for (pubkey, relays) or mint a new one."""
-    pubkey = _validated_pubkey(pubkey, relays)
     fingerprint = relays_fingerprint(relays)
 
     existing = await select_short_url_by_content_on_db(db, pubkey, fingerprint)

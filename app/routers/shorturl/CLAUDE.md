@@ -13,8 +13,23 @@ URL prefix: `/shorturl` (registered in [`routers/router.py`](../router.py)).
 
 | Method | Path | Auth | Response | Notes |
 |---|---|---|---|---|
-| POST | `/shorturl` | none, **rate-limited 1 req/s/IP** | `CreateShortUrlResponse` (`data.shortCode`, `data.content`) | Body: `CreateShortUrlBody{pubkey, relays}`. Idempotent per `(pubkey, relay-set)`. |
+| POST | `/shorturl` | none, **rate-limited 1 req/s/IP** | `CreateShortUrlResponse` (`data.shortCode`, `data.content`) | Body: `CreateShortUrlBody{pubkey, relays}`. Idempotent per `(pubkey, relay-set)`. Bad input is a **422** from the request schema. |
 | GET | `/shorturl/{short_code}` | none | `GetShortUrlResponse` (`data.pubkey`, `data.relays`) | 404 if unknown/expired. |
+
+## Validation
+
+All of it lives in `CreateShortUrlBody`, so malformed input never reaches the
+service and the framework answers 422 with a field-level body:
+
+- **`pubkey`** — hex or npub in, **normalised to hex** before storage, matching
+  `resolve_pubkey_or_400`. Anything else is rejected; a malformed pubkey is
+  never stored.
+- **`relays`** — at most 7 (`CreateShortUrlBody.MAX_RELAYS`), each a `ws://` or
+  `wss://` URL with a host. `[]` is valid.
+
+The response attribute is `short_code` in Python and serialises as `shortCode`
+on the wire via `serialization_alias` — the wire format is fixed, the frontend
+is built against it.
 
 ## Behaviour
 
@@ -28,9 +43,8 @@ URL prefix: `/shorturl` (registered in [`routers/router.py`](../router.py)).
   same code. A relay set is order- and duplicate-insensitive and normalized
   (trimmed, lowercased, trailing slash stripped) before fingerprinting, so
   `[r2, r1/]` and `[r1, r2]` collapse to one code.
-- **`[]` (empty relay list) is valid** and gets its own code. The only relay
-  rules: each provided relay must be a well-formed `ws://`/`wss://` URL
-  (format check only), and at most `MAX_RELAYS = 7` relays.
+- **`[]` (empty relay list) is valid** and gets its own code. The relay rules
+  live in the request schema — see **Validation** above.
 
 ## Rate limiting
 
