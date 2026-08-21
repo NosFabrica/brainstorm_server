@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     # A subscriber not read from Flash within this is reported as stale.
     billing_stale_sync_hours: int = Field(default=24)
     vespa_url: str = Field(...)
+    # Expiry (seconds) for shortened URLs. None = never expire (current default).
+    shorturl_ttl_seconds: int | None = Field(default=None)
     # Per-sink publish mode. False (default) = only changed scores; True =
     # re-assert every above-cutoff score each run. Re-assertion only, not deletes.
     vespa_full_sync: bool = Field(default=False)  # Vespa upserts

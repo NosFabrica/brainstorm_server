@@ -14,10 +14,12 @@ from app.schemas.schemas import (
     BillingPlansData,
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
+    CreatedShortUrl,
     FollowListIngestResult,
     OwnUserData,
     PaginatedUserConnections,
     RefreshedSubscriptionView,
+    ShortUrlContent,
     SubscriptionView,
     TrustSignalsData,
     UserGraphData,
@@ -215,6 +217,14 @@ class SearchResults(BaseModel):
 
 class SearchByTextResponse(SuccessfulResponseDataSchema):
     data: SearchResults
+
+
+class CreateShortUrlResponse(SuccessfulResponseDataSchema):
+    data: CreatedShortUrl
+
+
+class GetShortUrlResponse(SuccessfulResponseDataSchema):
+    data: ShortUrlContent
 
 
 class ShortestPathData(BaseModel):
