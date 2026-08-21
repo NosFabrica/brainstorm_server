@@ -1,7 +1,11 @@
-from pydantic import BaseModel, Field
+from typing import ClassVar
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.graperank_schemas import GrapeRankPresetTemplate
 from app.schemas.nostr_event import NostrEvent
+from app.utils.nostr import to_hex_pubkey
 
 
 class CreateBrainstormRequestBody(BaseModel):
@@ -39,8 +43,38 @@ class RefreshSubscriptionBody(BaseModel):
 
 
 class CreateShortUrlBody(BaseModel):
-    pubkey: str
-    relays: list[str]
+    # Relay hints ride in the share link so a visitor's client can resolve a
+    # profile we haven't indexed. Seven is plenty and bounds the stored row.
+    MAX_RELAYS: ClassVar[int] = 7
+
+    pubkey: str = Field(
+        description="Profile pubkey, hex or npub. Normalised to hex on the way in."
+    )
+    relays: list[str] = Field(
+        max_length=MAX_RELAYS,
+        description="Relay hints; each a ws:// or wss:// URL with a host.",
+    )
+
+    @field_validator("pubkey")
+    @classmethod
+    def _normalise_pubkey(cls, value: str) -> str:
+        """Accept hex or npub, store hex. Shares `to_hex_pubkey` with the
+        `resolve_pubkey_or_400` used by the other pubkey-taking endpoints."""
+        return to_hex_pubkey(value.strip())
+
+    @field_validator("relays")
+    @classmethod
+    def _relays_well_formed(cls, relays: list[str]) -> list[str]:
+        """Validate and normalise together — returning the raw list would store
+        and echo back surrounding whitespace the check already ignored."""
+        cleaned = []
+        for relay in relays:
+            stripped = relay.strip()
+            parsed = urlparse(stripped)
+            if parsed.scheme not in ("ws", "wss") or not parsed.netloc:
+                raise ValueError(f"{relay!r} is not a ws:// or wss:// URL with a host")
+            cleaned.append(stripped)
+        return cleaned
 
 
 class SetUserSchedulingBody(BaseModel):

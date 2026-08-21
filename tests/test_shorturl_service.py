@@ -1,8 +1,9 @@
 """Minting and resolving short links — the storage-facing half of the shortener.
 
-The repo layer is mocked so these run in the fast suite; the pure helpers are
-covered separately in ``test_shorturl_codes.py``, and a real-Postgres round trip
-lives in ``tests/integration/test_shorturl_roundtrip.py``.
+The repo layer is mocked so these run in the fast suite. Input validation is not
+here — it lives in the request schema, covered by ``test_shorturl_contract.py``.
+The pure helpers are in ``test_shorturl_codes.py``, and a real-Postgres round
+trip in ``tests/integration/test_shorturl_roundtrip.py``.
 
 Issue: .scratch/shorturl/issues/02-durable-storage.md
 """
@@ -115,6 +116,16 @@ def test_a_dedup_hit_returns_the_stored_relays_not_the_callers(repo):
     assert content.relays == stored
 
 
+def test_an_empty_relay_list_mints_its_own_code(repo):
+    """`[]` is a legitimate content value with its own fingerprint."""
+    repo.insert.return_value = _row("7YJR9PD6", relays=[])
+
+    code, content = _run(svc.create_short_url(_FakeSession(), PK, []))
+
+    assert code == "7YJR9PD6"
+    assert content.relays == []
+
+
 def test_a_code_collision_is_retried(repo):
     """A unique violation on the code retries with a fresh one."""
     repo.insert.side_effect = [
@@ -151,40 +162,6 @@ def test_giving_up_after_repeated_collisions_is_a_500(repo):
     with pytest.raises(HTTPException) as excinfo:
         _run(svc.create_short_url(_FakeSession(), PK, RELAYS))
     assert excinfo.value.status_code == 500
-
-
-# --------------------------------------------------------------------------
-# validation
-# --------------------------------------------------------------------------
-
-
-def test_an_empty_relay_list_is_valid(repo):
-    repo.insert.return_value = _row("7YJR9PD6", relays=[])
-
-    code, content = _run(svc.create_short_url(_FakeSession(), PK, []))
-
-    assert code == "7YJR9PD6"
-    assert content.relays == []
-
-
-def test_a_blank_pubkey_is_rejected(repo):
-    with pytest.raises(HTTPException) as excinfo:
-        _run(svc.create_short_url(_FakeSession(), "   ", RELAYS))
-    assert excinfo.value.status_code == 400
-
-
-def test_too_many_relays_is_rejected(repo):
-    too_many = [f"wss://r{i}.example" for i in range(svc.MAX_RELAYS + 1)]
-    with pytest.raises(HTTPException) as excinfo:
-        _run(svc.create_short_url(_FakeSession(), PK, too_many))
-    assert excinfo.value.status_code == 400
-
-
-@pytest.mark.parametrize("bad", ["http://relay.example", "relay.example", "wss://", ""])
-def test_a_malformed_relay_is_rejected(repo, bad):
-    with pytest.raises(HTTPException) as excinfo:
-        _run(svc.create_short_url(_FakeSession(), PK, [bad]))
-    assert excinfo.value.status_code == 400
 
 
 # --------------------------------------------------------------------------

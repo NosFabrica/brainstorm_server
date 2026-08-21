@@ -39,9 +39,19 @@ a repo-only signal). Routers expose them under whatever HTTP shape they want.
 
 ### Errors
 
-Services raise `HTTPException` directly with `ErrorResponseSchema(...)` in the
-`detail`. Routers don't translate. That's why error handling lives close to the
-domain logic.
+Services raise `HTTPException` directly. Routers don't translate — that's why
+error handling lives close to the domain logic.
+
+**`detail` is a plain string.** Every endpoint in this repo does this, and the
+frontend reads it as one (`api.ts` does `data?.detail || data?.message` and
+feeds it to `new Error(...)`; two paths have no object guard and would render
+`[object Object]`). `ErrorResponseSchema` exists and is declared in `responses={}`
+for OpenAPI, but nothing raises it — don't be the first without migrating the
+clients too.
+
+Prefer input validation in the request schema over hand-rolled checks: the
+framework then answers 422 with a field-level body, which is more useful than a
+400 carrying a sentence. `CreateShortUrlBody` is the reference.
 
 Schema for errors: [`app/schemas/error_codes.py`](../schemas/error_codes.py)
 and [`request_response_schemas.py`](../schemas/request_response_schemas.py).
@@ -128,7 +138,7 @@ process; if/when you horizontally scale the server, push this flag into Redis.
 
 ### `shorturl_service.py`
 
-- `create_short_url(db, pubkey, relays)` → `(short_code, content)`. Validates relays (each a well-formed `ws://`/`wss://` URL; max `MAX_RELAYS = 7`; `[]` is valid), then returns the existing code for that `(pubkey, relay-set)` or mints a new one. Idempotent via a unique constraint on `(pubkey, relays_fingerprint)`; a concurrent double-mint is resolved by re-reading the winner's row, not retried.
+- `create_short_url(db, pubkey, relays)` → `(short_code, content)`. Input is already validated and normalised by `CreateShortUrlBody` (pubkey is hex, relays are well-formed and stripped), so this returns the existing code for that `(pubkey, relay-set)` or mints a new one. Idempotent via a unique constraint on `(pubkey, relays_fingerprint)`; a concurrent double-mint is resolved by re-reading the winner's row, not retried.
 - `get_short_url_content(db, short_code)` → `ShortUrlContent`, 404 if absent. Normalizes the code first (uppercase + Crockford folding).
 - Storage is Postgres via `app/repos/short_url_repo.py`. Redis holds only the rate-limit counter. Layout in [`../routers/shorturl/CLAUDE.md`](../routers/shorturl/CLAUDE.md).
 
@@ -136,7 +146,9 @@ process; if/when you horizontally scale the server, push this flag into Redis.
 
 1. New `<topic>_service.py` here. Public functions are `async`.
 2. Pull repo functions via `await ..._on_db(db, ...)`. Don't write raw SQL/Cypher in a service.
-3. Raise `HTTPException(detail=ErrorResponseSchema(...))` for client-visible failures.
+3. Raise `HTTPException(status_code=..., detail="a plain sentence")` for
+   client-visible failures — see **Errors**. Validation belongs in the request
+   schema, not here.
 4. Router file calls `await my_service.do_thing(...)` and returns the wrapped response — see [../routers/CLAUDE.md](../routers/CLAUDE.md).
 
 ## Trusted Lists (`tagging_parse.py`, `trusted_list_build.py`, `trusted_list_service.py`)
