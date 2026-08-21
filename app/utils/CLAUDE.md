@@ -18,7 +18,7 @@ app/utils/
 ├── neo4j_values.py          # safe_float / safe_int — inf/nan coercion on graph reads
 ├── nostr.py                 # Tiny Nostr helpers (constants, format conversions)
 ├── rate_limiting/
-│   └── rate_limiting.py     # In-memory / Redis-backed rate limiter
+│   └── rate_limiting.py     # Redis-backed rate limiter + trusted-proxy client IP
 └── constants.py             # Truly app-wide constants
 ```
 
@@ -71,12 +71,40 @@ Redis-backed fixed-window counters (`INCR` + `EXPIRE` on first hit). Used for
 endpoints that need throttling beyond the per-user "frequent graperank request"
 check in `user_service.py`.
 
-- `validateIfRequestedTooOftenByIP(ip)` — the original, hard-coded helper
-  (3 requests / 30 min, key `rate_limit:<ip>`). Used by `/user/graperank`.
-- `validate_rate_limit(ip, *, key_prefix, limit, window_seconds)` — generic
-  version; scopes the counter under `rate_limit:<key_prefix>:<ip>` so different
-  endpoints don't share a bucket. `/shorturl` POST uses it with
-  `key_prefix="shorturl_create", limit=1, window_seconds=1`.
+- `RateLimitPolicy(key_prefix, limit, window_seconds)` — one named throttle.
+  `GRAPERANK_POLICY` (`"graperank"`, 3 / 1800s) is shared by `POST
+  /user/graperank` and `POST /user/followList`; `/shorturl` POST defines its own
+  (`"shorturl_create"`, 1 / 1s) in its router.
+- `validate_rate_limit(ip, policy)` — the only per-IP limiter. Counter key is
+  `rate_limit:<key_prefix>:<ip>`.
+- `validate_subscription_refresh_allowed(pubkey)` (12 / 60s) and
+  `validate_flash_record_read_allowed(operator_pubkey)` (30 / 60s) — per-pubkey
+  billing throttles. All limiters share `_enforce_window`.
+- `resolve_client_ip(request)` — the caller's address, for limiter keys. **Reads
+  the hop our own proxy wrote, not the first one.** The ingress *appends* to
+  `X-Forwarded-For` rather than replacing it, so anything the client sends
+  survives at the front of the chain; trusting `[0]` lets a caller rotate a
+  forged header and bypass the limit entirely. `settings.trusted_proxy_hops`
+  (default 1, env `TRUSTED_PROXY_HOPS`) is how far from the right our entry sits
+  — raise it if a CDN or WAF is ever put in front.
+
+  The fallback to the direct peer **logs a warning**, deliberately. uvicorn runs
+  without a trusted `forwarded_allow_ips` (it defaults to `127.0.0.1`, and the
+  ingress pod is not loopback), so `request.client.host` behind the ingress is
+  the *ingress pod's* address — the same string for every caller. Falling back
+  silently would throttle unrelated callers as one.
+
+### The graperank counter key moved (issue 01)
+
+It used to be `rate_limit:<request.client.host>` with no prefix. Because of the
+uvicorn behaviour above, that resolved to the ingress pod address in production —
+so it was **one global bucket of 3 requests / 30 min shared by every caller**,
+not a per-IP limit. It is now `rate_limit:graperank:<real client ip>`.
+
+Two consequences, both intended: live counters were abandoned once on deploy, and
+the throttle changed from global to genuinely per-caller (a large capacity
+increase). Splitting `/user/graperank` from `/user/followList`, which still share
+the bucket, is issue 09.
 
 ## constants.py
 

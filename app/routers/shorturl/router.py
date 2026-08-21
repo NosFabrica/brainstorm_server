@@ -6,35 +6,24 @@ from app.schemas.request_response_schemas import (
     GetShortUrlResponse,
 )
 from app.schemas.schemas import CreatedShortUrl
-from app.services.shorturl_service import (
-    create_short_url,
-    get_short_url_content,
+from app.services.shorturl_service import create_short_url, get_short_url_content
+from app.utils.rate_limiting.rate_limiting import (
+    RateLimitPolicy,
+    resolve_client_ip,
+    validate_rate_limit,
 )
-from app.utils.rate_limiting.rate_limiting import validate_rate_limit
 
 router = APIRouter()
 
-# 1 request per second per IP on the create endpoint, to curb spam.
-_CREATE_RATE_LIMIT = 1
-_CREATE_RATE_WINDOW_SECONDS = 1
-_CREATE_RATE_KEY_PREFIX = "shorturl_create"
-
-
-def _client_ip(request: Request) -> str:
-    """Best-effort client IP, honoring X-Forwarded-For behind a proxy."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+# 1 request per second per IP on the create endpoint, to curb spam. This endpoint
+# is unauthenticated, so it is the only throttle there is.
+_CREATE_POLICY = RateLimitPolicy(
+    key_prefix="shorturl_create", limit=1, window_seconds=1
+)
 
 
 async def rate_limit_create_short_url(request: Request) -> None:
-    await validate_rate_limit(
-        _client_ip(request),
-        key_prefix=_CREATE_RATE_KEY_PREFIX,
-        limit=_CREATE_RATE_LIMIT,
-        window_seconds=_CREATE_RATE_WINDOW_SECONDS,
-    )
+    await validate_rate_limit(resolve_client_ip(request), _CREATE_POLICY)
 
 
 @router.post(

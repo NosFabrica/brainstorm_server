@@ -202,9 +202,7 @@ def client(caller: _Caller):
 def mock_rate_limit(monkeypatch) -> AsyncMock:
     """No-op rate limiter by default; tests can set ``.side_effect`` to trip it."""
     limiter = AsyncMock()
-    monkeypatch.setattr(
-        "app.routers.user.router.validateIfRequestedTooOftenByIP", limiter
-    )
+    monkeypatch.setattr("app.routers.user.router.validate_rate_limit", limiter)
     return limiter
 
 
