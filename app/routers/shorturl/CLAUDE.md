@@ -33,8 +33,13 @@ URL prefix: `/shorturl` (registered in [`routers/router.py`](../router.py)).
 
 The POST has a `Depends(rate_limit_create_short_url)` that calls the generic
 [`validate_rate_limit`](../../utils/rate_limiting/rate_limiting.py) with
-`key_prefix="shorturl_create"`, `limit=1`, `window_seconds=1`. Client IP is
-taken from `X-Forwarded-For` (first hop) when present, else `request.client`.
+`key_prefix="shorturl_create"`, `limit=1`, `window_seconds=1`. Client IP comes
+from the shared `resolve_client_ip` helper, which reads the hop **our ingress
+wrote** (`settings.trusted_proxy_hops` from the right of `X-Forwarded-For`),
+not the first one —
+the ingress appends rather than replaces, so a client-supplied leading entry is
+attacker-controlled. This endpoint is unauthenticated, so that limit is its only
+throttle.
 
 ## Redis layout
 
