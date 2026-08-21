@@ -38,6 +38,11 @@ class RefreshSubscriptionBody(BaseModel):
     subscription_id: str | None = Field(default=None, max_length=200)
 
 
+class CreateShortUrlBody(BaseModel):
+    pubkey: str
+    relays: list[str]
+
+
 class SetUserSchedulingBody(BaseModel):
     scheduling_id: int
 
