@@ -460,12 +460,18 @@ def describe_rotation_state(previous_secret: str) -> str | None:
     )
 
 
-def validate_flash_config(enabled: bool, api_key: str, webhook_secret: str) -> None:
+def validate_flash_config(
+    enabled: bool, api_key: str, webhook_secret: str, base_url: str
+) -> None:
     """Refuse to start half-configured.
 
     Booting without credentials looks healthy, then fails as a webhook rejecting
     every delivery while payments pile up unprocessed. Names the missing
     settings, never their values.
+
+    base_url is checked too because the chart sets it unconditionally: an unset
+    one arrives empty rather than absent, which overrides the default here
+    instead of falling back to it.
     """
     if not enabled:
         return
@@ -474,6 +480,7 @@ def validate_flash_config(enabled: bool, api_key: str, webhook_secret: str) -> N
         for name, value in (
             ("flash_api_key", api_key),
             ("flash_webhook_secret", webhook_secret),
+            ("flash_base_url", base_url),
         )
         if not value
     ]

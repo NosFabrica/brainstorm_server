@@ -457,7 +457,9 @@ def test_webhook_route_is_mounted_when_payments_are_configured(monkeypatch):
 
 def test_enabling_payments_without_credentials_fails_fast():
     with pytest.raises(FlashConfigError) as excinfo:
-        validate_flash_config(enabled=True, api_key="", webhook_secret="")
+        validate_flash_config(
+            enabled=True, api_key="", webhook_secret="", base_url="https://x"
+        )
 
     message = str(excinfo.value)
     assert "flash_api_key" in message
@@ -466,7 +468,12 @@ def test_enabling_payments_without_credentials_fails_fast():
 
 def test_startup_names_only_the_missing_credential():
     with pytest.raises(FlashConfigError) as excinfo:
-        validate_flash_config(enabled=True, api_key="sk_live_x", webhook_secret="")
+        validate_flash_config(
+            enabled=True,
+            api_key="sk_live_x",
+            webhook_secret="",
+            base_url="https://x",
+        )
 
     message = str(excinfo.value)
     assert "flash_webhook_secret" in message
@@ -474,14 +481,46 @@ def test_startup_names_only_the_missing_credential():
 
 
 def test_disabled_payments_need_no_credentials():
-    validate_flash_config(enabled=False, api_key="", webhook_secret="")
+    validate_flash_config(enabled=False, api_key="", webhook_secret="", base_url="")
 
 
 def test_config_error_never_contains_the_secret_value():
     with pytest.raises(FlashConfigError) as excinfo:
-        validate_flash_config(enabled=True, api_key="sk_live_abc", webhook_secret="")
+        validate_flash_config(
+            enabled=True,
+            api_key="sk_live_abc",
+            webhook_secret="",
+            base_url="https://x",
+        )
 
     assert "sk_live_abc" not in str(excinfo.value)
+
+
+def test_enabling_payments_without_a_base_url_fails_fast():
+    """The chart sets this variable unconditionally, so an unset one arrives as
+    empty rather than absent — which overrides the code default instead of
+    falling back to it. Without this check that surfaces later as a malformed
+    request to a host nobody chose."""
+    with pytest.raises(FlashConfigError) as excinfo:
+        validate_flash_config(
+            enabled=True,
+            api_key="sk_live_x",
+            webhook_secret="whsec_x",
+            base_url="",
+        )
+
+    message = str(excinfo.value)
+    assert "flash_base_url" in message
+    assert "flash_api_key" not in message
+
+
+def test_a_configured_base_url_starts_normally():
+    validate_flash_config(
+        enabled=True,
+        api_key="sk_live_x",
+        webhook_secret="whsec_x",
+        base_url="https://vault.example.com",
+    )
 
 
 def test_a_delivery_we_finished_is_marked_so_replay_skips_it(

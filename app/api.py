@@ -73,6 +73,7 @@ async def lifespan(app: FastAPI):
         enabled=settings.flash_enabled,
         api_key=settings.flash_api_key,
         webhook_secret=settings.flash_webhook_secret,
+        base_url=settings.flash_base_url,
     )
     rotation = describe_rotation_state(settings.flash_webhook_secret_previous)
     if rotation:
