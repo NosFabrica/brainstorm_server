@@ -15,6 +15,7 @@ from app.core.database import get_db
 from app.core.loggr import loggr
 from app.services.flash_webhook_service import (
     SIGNATURE_HEADER,
+    accepted_webhook_secrets,
     FlashSignatureError,
     handle_delivery,
     verify_delivery,
@@ -41,7 +42,7 @@ async def receive_flash_webhook(
         parts = verify_delivery(
             signature_header=request.headers.get(SIGNATURE_HEADER),
             raw_body=raw_body,
-            secret=settings.flash_webhook_secret,
+            secrets=accepted_webhook_secrets(),
             now=int(time.time()),
             tolerance_seconds=settings.flash_webhook_tolerance_seconds,
         )

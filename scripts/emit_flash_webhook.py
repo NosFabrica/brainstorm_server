@@ -39,6 +39,7 @@ def sign(secret: str, timestamp: int, raw_body: bytes) -> str:
         secret.encode(), str(timestamp).encode() + b"." + raw_body, hashlib.sha256
     ).hexdigest()
 
+
 EVENT_EXTRAS = {
     "subscription.activated": lambda now: {"activatedAt": now},
     "subscription.renewed": lambda now: {

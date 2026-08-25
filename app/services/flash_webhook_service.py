@@ -18,6 +18,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.core.config import settings
 from app.core.loggr import loggr
 from app.repos.billing_repo import (
     insert_flash_webhook_event_on_db,
@@ -32,6 +33,12 @@ SIGNATURE_HEADER = "Flash-Signature"
 
 # Recorded in place of the event name when a signed body doesn't carry one.
 MALFORMED_EVENT = "_malformed"
+
+# What `scripts/check_flash_credentials` sends. Recorded like anything else —
+# that is the point, it proves the receiving path works — but never interpreted,
+# so a rotation check cannot change a tier or turn up in the divergence report
+# as an event nobody could match.
+PROBE_EVENT = "credential.check"
 
 # Fields that make a delivery of a given event unique. First match wins.
 _DISCRIMINATORS: dict[str, tuple[str, ...]] = {
@@ -160,11 +167,29 @@ def parse_event_timestamp(payload: dict) -> datetime | None:
         return None
 
 
+def accepted_webhook_secrets() -> tuple[str, ...]:
+    """Which signing secrets are currently valid, newest first.
+
+    More than one only during a rotation: Flash signs with whatever is current
+    when it sends, and retries a rejected delivery only a few times before
+    dropping it forever, so a flag-day swap loses whatever was already in
+    flight. Clearing the previous value and rolling the server ends the window.
+    """
+    return tuple(
+        secret
+        for secret in (
+            settings.flash_webhook_secret,
+            settings.flash_webhook_secret_previous,
+        )
+        if secret
+    )
+
+
 def verify_delivery(
     *,
     signature_header: str | None,
     raw_body: bytes,
-    secret: str,
+    secrets: tuple[str, ...],
     now: int,
     tolerance_seconds: int,
 ) -> SignatureParts:
@@ -174,9 +199,19 @@ def verify_delivery(
         raise FlashSignatureError("malformed_signature_header", 400)
     if not is_timestamp_fresh(parts.timestamp, now, tolerance_seconds):
         raise FlashSignatureError("stale_timestamp", 400)
-    if not signature_matches(secret, parts.timestamp, raw_body, parts.signature):
-        raise FlashSignatureError("invalid_signature", 401)
-    return parts
+
+    for index, secret in enumerate(secrets):
+        if signature_matches(secret, parts.timestamp, raw_body, parts.signature):
+            if index > 0:
+                # The only signal that Flash has not caught up, so the old
+                # secret cannot be removed yet.
+                logger.info(
+                    "Flash delivery accepted on a superseded signing secret; "
+                    "a rotation is still in flight"
+                )
+            return parts
+
+    raise FlashSignatureError("invalid_signature", 401)
 
 
 def _read_body(raw_body: bytes) -> tuple[str, dict, dict]:
@@ -260,6 +295,15 @@ async def handle_delivery(
         db, raw_body=raw_body, delivery_timestamp=delivery_timestamp
     )
 
+    if recorded.event == PROBE_EVENT:
+        if recorded.event_id is not None:
+            await mark_webhook_event_processed_on_db(
+                db, recorded.event_id, now=utc_now()
+            )
+            await db.commit()
+        logger.info("Flash credential check accepted")
+        return recorded
+
     if recorded.duplicate:
         # Flash retrying something we hold. The original row carries whether it
         # was applied, and the recovery sweep retries it if not — so there is
@@ -286,7 +330,7 @@ async def handle_delivery(
                     db, recorded.event_id, outcome.reason.value
                 )
             await db.commit()
-    except Exception:
+    except Exception as err:
         # Includes an unreachable Flash. The event is already durable, so the
         # reconcile loop will settle this subscriber later; failing the response
         # would only make Flash redeliver something we hold.
@@ -294,7 +338,48 @@ async def handle_delivery(
             "Entitlement failed for %s; the event is recorded and replayable",
             recorded.external_ref,
         )
+        await _record_failure(db, recorded.event_id, err)
     return recorded
+
+
+async def _record_failure(
+    db: AsyncDBSession, event_id: int | None, err: BaseException
+) -> None:
+    """Give the row a reason so it shows up in the divergence report.
+
+    Without one it is invisible there until the abandoned sweep runs — the whole
+    window of a broken credential would look quiet. Rolls back first because a
+    database error leaves the session unusable, and swallows its own failure:
+    the reason is a nicety, acknowledging the delivery is not.
+    """
+    if event_id is None:
+        return
+    try:
+        await db.rollback()
+        await record_webhook_event_failure_on_db(
+            db, event_id, f"{type(err).__name__}: {err}"[:500]
+        )
+        await db.commit()
+    except Exception:
+        logger.exception(
+            "Could not record why entitlement failed for event %s", event_id
+        )
+
+
+def describe_rotation_state(previous_secret: str) -> str | None:
+    """What to say at boot when a rotation was started and never finished.
+
+    The overlap has no expiry, and its only other signal is an INFO line whose
+    absence means either "Flash caught up" or "nobody cleared it". Never names
+    the value.
+    """
+    if not previous_secret:
+        return None
+    return (
+        "FLASH_WEBHOOK_SECRET_PREVIOUS is set: deliveries signed with the "
+        "superseded secret are still accepted. Clear it once Flash has caught "
+        "up — see docs/flash-credential-rotation.md."
+    )
 
 
 def validate_flash_config(enabled: bool, api_key: str, webhook_secret: str) -> None:

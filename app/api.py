@@ -29,7 +29,10 @@ from app.core.vespa import aclose as vespa_aclose
 from app.routers.open_ranking.errors import install_ore_error_handlers
 from app.routers.router import router as main_router
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
-from app.services.flash_webhook_service import validate_flash_config
+from app.services.flash_webhook_service import (
+    describe_rotation_state,
+    validate_flash_config,
+)
 from app.services.nsec_encryption_service import bootstrap_keys
 from app.nostr_event_transferer.nostr_event_transferer import (
     nostr_event_recent_transferer_cronjob,
@@ -71,6 +74,9 @@ async def lifespan(app: FastAPI):
         api_key=settings.flash_api_key,
         webhook_secret=settings.flash_webhook_secret,
     )
+    rotation = describe_rotation_state(settings.flash_webhook_secret_previous)
+    if rotation:
+        logger.warning(rotation)
 
     await bootstrap_keys()
 
@@ -116,9 +122,7 @@ async def lifespan(app: FastAPI):
     fail_stale_ongoing_task = asyncio.create_task(
         fail_stale_ongoing_brainstorm_requests_cronjob()
     )
-    periodic_graperank_task = asyncio.create_task(
-        periodic_graperank_trigger_cronjob()
-    )
+    periodic_graperank_task = asyncio.create_task(periodic_graperank_trigger_cronjob())
     scheduler_task = asyncio.create_task(scheduler_cronjob())
     billing_sync_task = asyncio.create_task(billing_sync_cronjob())
 

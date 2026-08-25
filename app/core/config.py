@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     flash_base_url: str = Field(default="https://dev.server.vault.paywithflash.com")
     flash_api_key: str = Field(default="")
     flash_webhook_secret: str = Field(default="")
+    # Set only during a rotation, so deliveries Flash signed before the swap are
+    # still accepted. Clearing it is what ends the window.
+    flash_webhook_secret_previous: str = Field(default="")
     # Kept well under Flash's 10s webhook-ack budget: entitlement currently runs
     # inline, so this call sits inside that window.
     flash_http_timeout_seconds: float = Field(default=5.0)
