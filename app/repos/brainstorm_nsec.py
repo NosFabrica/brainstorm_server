@@ -251,6 +251,15 @@ async def bulk_set_scheduling_for_pubkeys_on_db(
     return result.rowcount
 
 
+async def is_billing_blocked_on_db(db: AsyncDBSession, pubkey: str) -> bool:
+    """Whether this user is barred from paid entitlement, payment notwithstanding."""
+    statement = select(BrainstormNsec.billing_blocked).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return bool(result.scalar_one_or_none())
+
+
 async def get_scheduling_source_on_db(db: AsyncDBSession, pubkey: str) -> str:
     """Who put this user on their policy: default | billing | admin."""
     statement = select(BrainstormNsec.scheduling_source).where(

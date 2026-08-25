@@ -11,7 +11,7 @@ which calls happen (and which don't), not persistence.
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -49,7 +49,7 @@ def _plan(scheduling_id: int = PAID_SCHEDULING_ID) -> SimpleNamespace:
         id=1,
         flash_service_id="9c1e",
         flash_plan_id="4f2a",
-        tier="priority",
+        subscription_tier="priority",
         scheduling_id=scheduling_id,
         amount_minor=200,
         currency="USD",
@@ -65,7 +65,8 @@ def billing(monkeypatch):
         user_exists=AsyncMock(return_value=True),
         fetch=AsyncMock(return_value=_subscription()),
         plan=AsyncMock(return_value=_plan()),
-        source=AsyncMock(return_value="default"),
+        blocked=AsyncMock(return_value=False),
+        policy=AsyncMock(return_value=SimpleNamespace(id=PAID_SCHEDULING_ID, enabled=True)),
         existing=AsyncMock(return_value=None),
         set_scheduling=AsyncMock(),
         upsert=AsyncMock(),
@@ -74,7 +75,8 @@ def billing(monkeypatch):
         ("brainstorm_nsec_exists_by_pubkey_on_db", seams.user_exists),
         ("fetch_subscription", seams.fetch),
         ("get_billing_plan_on_db", seams.plan),
-        ("get_scheduling_source_on_db", seams.source),
+        ("is_billing_blocked_on_db", seams.blocked),
+        ("get_scheduling_on_db", seams.policy),
         ("get_user_subscription_for_update_on_db", seams.existing),
         ("set_scheduling_for_pubkey_on_db", seams.set_scheduling),
         ("upsert_user_subscription_on_db", seams.upsert),
@@ -224,6 +226,31 @@ def test_a_lapsed_status_keeps_the_record_of_what_was_granted(billing):
     billing.set_scheduling.assert_not_awaited()
 
 
+def test_granting_onto_a_disabled_policy_is_escalated_not_silently_done(
+    billing, monkeypatch
+):
+    """They are paying for a tier that will never run. Re-enabling fixes everyone
+    at once, so grant — but say so loudly rather than waiting for a report.
+    (Asserted on the logger, not caplog: the repo's loggr doesn't propagate.)"""
+    billing.policy.return_value = SimpleNamespace(id=PAID_SCHEDULING_ID, enabled=False)
+    errors = MagicMock()
+    monkeypatch.setattr("app.services.billing_service.logger.error", errors)
+
+    outcome = _apply(billing)
+
+    assert outcome.applied is True
+    errors.assert_called_once()
+
+
+def test_an_enabled_policy_raises_no_alarm(billing, monkeypatch):
+    errors = MagicMock()
+    monkeypatch.setattr("app.services.billing_service.logger.error", errors)
+
+    _apply(billing)
+
+    errors.assert_not_called()
+
+
 def test_the_subscribers_row_is_locked_before_anything_is_decided(billing):
     billing.existing.assert_not_awaited()
 
@@ -233,24 +260,45 @@ def test_the_subscribers_row_is_locked_before_anything_is_decided(billing):
 
 
 # ---------------------------------------------------------------------------
-# Not overwriting a human's decision
+# Admin decisions vs paying for something
 # ---------------------------------------------------------------------------
-def test_an_admin_granted_tier_is_not_overwritten_by_billing(billing):
-    billing.source.return_value = "admin"
+def test_a_paying_user_is_granted_even_where_an_admin_last_set_the_policy(billing):
+    """An admin assignment stops billing taking a tier AWAY (slice 03); it must
+    never stop someone receiving what they are being charged for."""
+    outcome = _apply(billing)
+
+    assert outcome.applied is True
+    billing.set_scheduling.assert_awaited_once()
+
+
+def test_granting_hands_the_policy_back_to_billing(billing):
+    _apply(billing)
+
+    assert billing.set_scheduling.await_args.kwargs["source"] == "billing"
+
+
+# ---------------------------------------------------------------------------
+# Blocking
+# ---------------------------------------------------------------------------
+def test_a_blocked_user_is_never_granted_even_while_paying(billing):
+    billing.blocked.return_value = True
 
     outcome = _apply(billing)
 
-    assert outcome.reason == "admin_override"
+    assert outcome.applied is False
+    assert outcome.reason == "blocked"
     billing.set_scheduling.assert_not_awaited()
 
 
-def test_an_admin_granted_tier_still_records_the_subscription(billing):
-    """We stop touching their policy, not stop knowing they pay."""
-    billing.source.return_value = "admin"
+def test_a_blocked_user_still_has_their_subscription_recorded(billing):
+    """They are still being charged, so support must be able to see it — and
+    they must still be able to cancel and leave."""
+    billing.blocked.return_value = True
 
     _apply(billing)
 
     billing.upsert.assert_awaited_once()
+    assert billing.upsert.await_args.kwargs["flash_status"] == "active"
 
 
 # ---------------------------------------------------------------------------

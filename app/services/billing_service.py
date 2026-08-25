@@ -21,9 +21,10 @@ from app.repos.billing_repo import (
 )
 from app.repos.brainstorm_nsec import (
     brainstorm_nsec_exists_by_pubkey_on_db,
-    get_scheduling_source_on_db,
+    is_billing_blocked_on_db,
     set_scheduling_for_pubkey_on_db,
 )
+from app.repos.scheduling_repo import get_scheduling_on_db
 
 logger = loggr.get_logger(__name__)
 
@@ -104,10 +105,11 @@ async def _grant_and_record(
     existing = await get_user_subscription_for_update_on_db(db, pubkey)
 
     entitled = grants_entitlement(subscription.status)
-    # A tier granted by hand is a human's decision about a specific person.
-    # Billing records what it knows but does not overrule it.
-    admin_held = await get_scheduling_source_on_db(db, pubkey) == SchedulingSource.ADMIN.value
-    granting = entitled and not admin_held
+    # Blocking is the only thing that withholds a tier from someone paying for
+    # it. An admin assignment does NOT: it stops billing taking a tier away
+    # (slice 03), never stops someone receiving what they are charged for.
+    blocked = await is_billing_blocked_on_db(db, pubkey)
+    granting = entitled and not blocked
 
     # When we aren't granting, carry the previous grant forward rather than
     # blanking it: a `past_due` or unrecognised status must leave the user's
@@ -119,6 +121,18 @@ async def _grant_and_record(
     )
 
     if granting:
+        policy = await get_scheduling_on_db(db, plan.scheduling_id)
+        if policy is not None and not policy.enabled:
+            # They bought a tier that will never run. Grant it anyway — the fix
+            # is re-enabling the policy, which repairs everyone at once, whereas
+            # withholding would scatter paying users onto free. But this is
+            # someone being charged for nothing, so it is not report-later news.
+            logger.error(
+                "PAYING USER ON DISABLED POLICY: %s granted scheduling policy %s, "
+                "which is disabled and will never run",
+                pubkey,
+                plan.scheduling_id,
+            )
         await set_scheduling_for_pubkey_on_db(
             db, pubkey, granted_scheduling_id, source=SchedulingSource.BILLING.value
         )
@@ -141,9 +155,12 @@ async def _grant_and_record(
     )
     await db.commit()
 
-    if admin_held:
-        logger.info("%s is on an admin-granted tier; recorded only", pubkey)
-        return EntitlementOutcome(applied=False, reason="admin_override")
+    if blocked:
+        logger.warning(
+            "%s is blocked from paid entitlement; subscription recorded, nothing granted",
+            pubkey,
+        )
+        return EntitlementOutcome(applied=False, reason="blocked")
     if not entitled:
         logger.info(
             "Flash reports %s as %s; recorded, no tier granted",

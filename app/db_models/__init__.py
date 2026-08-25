@@ -169,6 +169,13 @@ class BrainstormNsec(TimestampMixin, Base):
         ForeignKey("scheduling.id"),
         nullable=True,
     )
+    # Barred from paid entitlement regardless of payment. Deliberately separate
+    # from scheduling_source: "blocked", "comped" and "billing-controlled" are
+    # three different states and must stay distinguishable. A blocked user is
+    # still charged until they cancel, so cancellation must never be gated on it.
+    billing_blocked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
     # See SchedulingSource. Billing only overwrites when this isn't ADMIN, so a
     # comped user survives a lapse and stays distinguishable from a bug.
     scheduling_source: Mapped[str] = mapped_column(
