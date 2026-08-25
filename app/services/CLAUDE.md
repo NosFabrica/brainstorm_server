@@ -99,3 +99,25 @@ process; if/when you horizontally scale the server, push this flag into Redis.
 2. Pull repo functions via `await ..._on_db(db, ...)`. Don't write raw SQL/Cypher in a service.
 3. Raise `HTTPException(detail=ErrorResponseSchema(...))` for client-visible failures.
 4. Router file calls `await my_service.do_thing(...)` and returns the wrapped response — see [../routers/CLAUDE.md](../routers/CLAUDE.md).
+
+## Trusted Lists (`tagging_parse.py`, `trusted_list_build.py`, `trusted_list_service.py`)
+
+Three modules, split so the decision logic is testable without any backend.
+
+| Module | Contains | I/O? |
+|---|---|---|
+| `tagging_parse.py` | kind-39999 parsing: tag elements vs taggings (told apart by `z`), polarity bucketing, `LEGACY_Z_TAG_PUBKEY` | none |
+| `trusted_list_build.py` | membership predicate, member ordering, the kind-30392 tag/content composition, `d`-tag identity | none |
+| `trusted_list_service.py` | the per-Observer pipeline: read → rank-filter → dictionary → publish → retract | Postgres, Neo4j, relay |
+
+**`LEGACY_Z_TAG_PUBKEY` is not a signing key.** It is tapestry's wire-binding
+literal used *only* to compose `z` tags. Changing it orphans historical taggings
+on every Brainstorm/Tapestry deployment. Never substitute the assistant pubkey.
+
+**Failure policy is asymmetric on purpose.** Postgres/Neo4j failures abort the
+run *before* anything publishes — a silently empty dictionary would publish
+signed claims that people belong to nothing. Relay failures are per-tag and
+never abort; a tag whose publish failed keeps its `d` slot marked current so the
+retraction pass cannot wipe the healthy list still on the relay.
+
+See `engineering-team/decisions/trusted-lists/0001-trusted-lists-from-taggings.md`.

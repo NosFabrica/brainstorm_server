@@ -58,6 +58,21 @@ class Settings(BaseSettings):
     # off the event loop so concurrent requests aren't starved.
     sign_parallel_threshold: int = Field(default=10_000)
     sign_parallel_max_workers: int | None = Field(default=None)
+    # --- Trusted Lists (kind-30392 from kind-39999 taggings) ---------------
+    # Inclusive floor on the asserter's Rank (0-100) in the Observer's own web
+    # of trust. Default 3 is exactly issue #73's "rank > 2" — stated as an
+    # inclusive floor so the comparison has no off-by-one. Compared against raw
+    # Influence (rank/100) to avoid double-rounding against published Rank.
+    trusted_list_min_rank: int = Field(default=3)
+    # How many distinct qualifying asserters must have used a Tag for it to
+    # enter the dictionary. Issue #73 anticipates raising this, so it is not a
+    # literal.
+    trusted_list_min_tag_uses: int = Field(default=1)
+    # Membership predicate floor: applications >= cutoff (and > disputes).
+    trusted_list_cutoff: int = Field(default=1)
+    # Where TLs are published. Empty = fall back to the TA relay, so retargeting
+    # to the nip85.* relays is an env change rather than a diff.
+    trusted_list_relay: str = Field(default="")
     # Published-state-drift backstop: every Nth *scheduled* run for an observer
     # forces a full re-assert on both sinks.
     # <= 0 disables the backstop.
