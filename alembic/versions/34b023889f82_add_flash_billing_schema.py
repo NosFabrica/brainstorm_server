@@ -1,7 +1,7 @@
 """add flash billing schema
 
 Revision ID: 34b023889f82
-Revises: b2c3d4e5f6a7
+Revises: d4e5f6a7b8c9
 Create Date: 2026-08-25 11:18:26.819829
 
 Additive. Everything the Flash payments feature needs, in one revision.
@@ -25,7 +25,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = '34b023889f82'
-down_revision = 'b2c3d4e5f6a7'
+down_revision = 'd4e5f6a7b8c9'
 branch_labels = None
 depends_on = None
 
