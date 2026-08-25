@@ -35,6 +35,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/admin/stats` | `admin/stats/` | admin |
 | `/admin/graperank` | `admin/graperank/` | admin |
 | `/admin/nsec-encryption` | `admin/nsec_encryption/` | admin |
+| `/admin/trustedLists` | `admin/trusted_lists/` | admin |
 
 ## Authentication
 

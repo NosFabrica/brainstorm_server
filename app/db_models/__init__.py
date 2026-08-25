@@ -264,3 +264,61 @@ class GrapeRankPresetHistory(Base):
     changed_at: Mapped[DateTime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+
+
+# --------------------------------------------------------------------------
+# Taggings (kind-39999) — the input set for Trusted Lists.
+# See engineering-team/decisions/trusted-lists/0001-trusted-lists-from-taggings.md
+# --------------------------------------------------------------------------
+
+
+class NostrTagElement(Base):
+    """A kind-39999 *tag element*: the declaration of a category ("Podcaster").
+
+    Addressable at ``39999:<author_pubkey>:<slug>`` — tags with the same slug by
+    different authors are DISTINCT elements, so the natural key is the pair, not
+    the slug. ``event_id`` is carried because taggings reference the element by
+    event id (`e` tag), which is how the deployed publishers write them.
+    """
+
+    __tablename__ = "nostr_tag_element"
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    author_pubkey: Mapped[str] = mapped_column(String(64), nullable=False)
+    slug: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False, server_default="")
+    description: Mapped[str] = mapped_column(String, nullable=False, server_default="")
+    # Event's own created_at (unix seconds), NOT ingest time — replaceability is
+    # decided on the event clock so out-of-order delivery can't regress a row.
+    created_at_unix: Mapped[int] = mapped_column(Integer, nullable=False)
+    __table_args__ = (
+        # The addressable coordinate. A newer event at the same coordinate
+        # replaces the row (latest-wins on created_at_unix).
+        UniqueConstraint(
+            "author_pubkey", "slug", name="uq_nostr_tag_element_coordinate"
+        ),
+    )
+
+
+class NostrUserTagging(Base):
+    """A kind-39999 *tagging*: an assertion that ``target_pubkey`` holds a tag.
+
+    Replaceable on (asserter, d-tag): the deterministic ``d`` gives each asserter
+    exactly one live stance per (target, tag), including flips between apply and
+    dispute. Enforced at write time so reads are plain aggregates.
+    """
+
+    __tablename__ = "nostr_user_tagging"
+    asserter_pubkey: Mapped[str] = mapped_column(String(64), primary_key=True)
+    d_tag: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_pubkey: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The referenced tag element's event id (the `e` tag). Not an FK: taggings
+    # legitimately arrive before the element they reference, and a dangling
+    # reference is dropped at read time rather than rejected at write time.
+    tag_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    polarity: Mapped[float] = mapped_column(Float, nullable=False, server_default="1")
+    created_at_unix: Mapped[int] = mapped_column(Integer, nullable=False)
+    __table_args__ = (
+        Index("ix_nostr_user_tagging_tag_event_id", "tag_event_id"),
+        Index("ix_nostr_user_tagging_target", "target_pubkey"),
+    )
