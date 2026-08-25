@@ -24,7 +24,8 @@ from app.db_models import BillingPlan, SchedulingSource
 from app.repos.billing_repo import (
     clear_granted_scheduling_on_db,
     get_billing_plan_on_db,
-    get_user_subscription_for_update_on_db,
+    get_user_subscription_on_db,
+    lock_user_for_update_on_db,
     record_sync_failure_on_db,
     select_entitlement_candidates_on_db,
     select_reconcile_candidates_on_db,
@@ -67,6 +68,7 @@ class EntitlementReason(enum.Enum):
     UNKNOWN_PLAN = "unknown_plan"
     UNKNOWN_SUBSCRIPTION = "unknown_subscription"
     REFERENCE_MISMATCH = "reference_mismatch"
+    BUSY = "busy"
 
 
 @dataclass(frozen=True)
@@ -187,13 +189,17 @@ def decide_entitlement(
     return EntitlementDecision.HOLD
 
 
-def _utc_now() -> datetime:
+def utc_now() -> datetime:
     """Naive UTC — the epoch every Flash timestamp is normalized to on the way in."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def apply_entitlement(
-    db: AsyncDBSession, *, external_ref: str | None, subscription_id: str | None
+    db: AsyncDBSession,
+    *,
+    external_ref: str | None,
+    subscription_id: str | None,
+    yield_if_busy: bool = False,
 ) -> EntitlementOutcome:
     """Reconcile one subscriber against Flash, in a single transaction.
 
@@ -214,6 +220,19 @@ async def apply_entitlement(
             external_ref,
         )
         return EntitlementOutcome(applied=False, reason=EntitlementReason.UNKNOWN_USER)
+
+    # Locked BEFORE reading Flash, not after. Fetching first and locking second
+    # lets two handlers both read, then serialise on the lock — and whichever
+    # read *earlier* writes last, so the older view of the subscription wins.
+    # Holding the lock across the HTTP call costs a row lock for one round trip,
+    # which at this volume is nothing against getting the ordering wrong.
+    if not await lock_user_for_update_on_db(
+        db, external_ref, skip_locked=yield_if_busy
+    ):
+        # Only background work asks to yield. A live webhook waits, because it
+        # has ten seconds to answer and nothing else to do meanwhile.
+        logger.info("%s is being reconciled elsewhere; leaving it", external_ref)
+        return EntitlementOutcome(applied=False, reason=EntitlementReason.BUSY)
 
     # Propagated, not swallowed: the caller decides what a failure means. The
     # webhook path logs and moves on (the event is recorded and replayable);
@@ -255,7 +274,7 @@ async def apply_entitlement(
         )
         return EntitlementOutcome(applied=False, reason=EntitlementReason.UNKNOWN_PLAN)
 
-    return await _grant_and_record(db, external_ref, subscription, plan, _utc_now())
+    return await _grant_and_record(db, external_ref, subscription, plan, utc_now())
 
 
 async def _grant_and_record(
@@ -265,9 +284,9 @@ async def _grant_and_record(
     plan: BillingPlan,
     now: datetime,
 ) -> EntitlementOutcome:
-    # Locks the row for this transaction, so two deliveries for one subscriber
-    # can't interleave into a policy and a record that disagree.
-    existing = await get_user_subscription_for_update_on_db(db, pubkey)
+    # apply_entitlement already holds the subscriber's lock, so this is a plain
+    # read — the row may not exist yet on a first subscription.
+    existing = await get_user_subscription_on_db(db, pubkey)
 
     resolution = resolve_entitlement(
         decide_entitlement(

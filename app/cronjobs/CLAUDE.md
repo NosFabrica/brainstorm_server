@@ -34,16 +34,28 @@ Periodic billing reconciliation, off unless Flash is configured
 (`settings.billing_sync_active` follows `flash_enabled` — the two being
 separately switchable would let grants happen while revocations never do).
 
-Two duties per cycle, in order of how far they can be trusted:
+Four duties per cycle, in order of how far they can be trusted:
 
-1. **Revoke what has provably lapsed** — locally decidable, no network.
-2. **Re-read Flash for what is not** — `past_due` rows, ones still recorded
-   `active` past their period end, and anything not asked about lately. Flash
-   retries an undelivered webhook a few times and then never replays it, so this
-   is the only path that recovers one.
+1. **Finish what we acknowledged and dropped** — a process killed between the
+   200 and the entitlement write leaves a recorded event nothing acted on, and
+   Flash will not send it again.
+2. **Revoke what has provably lapsed** — locally decidable, no network.
+3. **Re-read Flash for what is not** — `past_due` rows, ones still recorded
+   `active` past their period end, and anything not asked about lately.
+4. **Drop personal data from old events**, keeping the audit trail and the
+   redelivery protection.
 
-- **Safe on N replicas** — both duties are idempotent, so racing replicas
-  converge. No leader lock yet, deliberately.
+- **Safe on N replicas.** Correctness does not rest on the leader lock: replay
+  claims each event through the database (`UPDATE … WHERE` decides, not whoever
+  read first) and the other three are idempotent. The lock is there so N
+  replicas don't all ask Flash the same questions.
+- **The lock's TTL covers one cycle's work, not the gap between cycles.** At a
+  six-hour interval nothing renews it — there is no second acquisition inside
+  the window to renew from — so it is sized from the reconcile batch instead.
+- **Background work yields to live deliveries.** Both duties take the
+  subscriber's row lock with `SKIP LOCKED`; a webhook has ten seconds to
+  acknowledge and this lock is held across a Flash read, so the deadline-free
+  side is the one that steps aside.
 - Its lifespan `finally` **awaits** the cancelled task before `flash_aclose()`:
   a cancelled reconcile can still be mid-GET, and closing the shared client
   under it would look like a Flash outage on every shutdown.

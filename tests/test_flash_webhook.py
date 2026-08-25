@@ -64,9 +64,13 @@ def _sign(raw: bytes, timestamp: int | None = None, secret: str = SECRET) -> dic
 @pytest.fixture
 def insert_event(monkeypatch) -> AsyncMock:
     """Patch the repo insert; returns True (inserted) unless a test says otherwise."""
-    mock = AsyncMock(return_value=True)
+    mock = AsyncMock(return_value=1)
     monkeypatch.setattr(
         "app.services.flash_webhook_service.insert_flash_webhook_event_on_db", mock
+    )
+    monkeypatch.setattr(
+        "app.services.flash_webhook_service.mark_webhook_event_processed_on_db",
+        AsyncMock(),
     )
     return mock
 
@@ -304,15 +308,18 @@ def test_a_recorded_delivery_is_handed_to_entitlement(webhook_client, insert_eve
     assert entitlement.await_args.kwargs["subscription_id"] == "7d3b"
 
 
-def test_a_retry_is_still_reconciled(webhook_client, insert_event, entitlement):
-    """Skipping it would strand anyone whose first attempt failed — the write is
-    convergent, so repeating it costs nothing, and no recovery sweep exists yet."""
-    insert_event.return_value = False  # already recorded
+def test_a_retry_is_acknowledged_without_redoing_the_work(
+    webhook_client, insert_event, entitlement
+):
+    """The original row records whether it was applied, and the recovery sweep
+    retries it if not — so a redelivery has nothing to do but say 200."""
+    insert_event.return_value = None  # already recorded
     raw = _body()
 
-    webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
+    response = webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
 
-    entitlement.assert_awaited_once()
+    assert response.status_code == 200
+    entitlement.assert_not_awaited()
 
 
 def test_a_failing_entitlement_still_acknowledges_the_delivery(
@@ -331,7 +338,7 @@ def test_a_failing_entitlement_still_acknowledges_the_delivery(
 def test_retried_delivery_is_acknowledged_without_duplicating(
     webhook_client, insert_event
 ):
-    insert_event.return_value = False  # unique violation → nothing inserted
+    insert_event.return_value = None  # unique violation → nothing inserted
     raw = _body()
 
     response = webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
@@ -463,3 +470,39 @@ def test_config_error_never_contains_the_secret_value():
         validate_flash_config(enabled=True, api_key="sk_live_abc", webhook_secret="")
 
     assert "sk_live_abc" not in str(excinfo.value)
+
+
+def test_a_delivery_we_finished_is_marked_so_replay_skips_it(
+    webhook_client, insert_event, entitlement, monkeypatch
+):
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    marked = _AsyncMock()
+    monkeypatch.setattr(
+        "app.services.flash_webhook_service.mark_webhook_event_processed_on_db", marked
+    )
+    raw = _body()
+
+    webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
+
+    marked.assert_awaited_once()
+    assert marked.await_args.args[1] == 1
+
+
+def test_a_delivery_that_failed_is_left_for_replay(
+    webhook_client, insert_event, entitlement, monkeypatch
+):
+    """Not marking it is what brings it back — that is the whole recovery path."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    marked = _AsyncMock()
+    monkeypatch.setattr(
+        "app.services.flash_webhook_service.mark_webhook_event_processed_on_db", marked
+    )
+    entitlement.side_effect = RuntimeError("died mid-write")
+    raw = _body()
+
+    response = webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
+
+    assert response.status_code == 200
+    marked.assert_not_awaited()

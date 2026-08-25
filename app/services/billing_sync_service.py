@@ -16,20 +16,26 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.flash import FlashCredentialError, FlashUnavailable
 from app.core.loggr import loggr
 from app.repos.billing_repo import (
+    claim_webhook_event_on_db,
     clear_granted_scheduling_on_db,
+    mark_webhook_event_processed_on_db,
+    prune_webhook_payloads_on_db,
+    record_webhook_event_failure_on_db,
     record_sync_failure_on_db,
     select_entitlement_candidates_on_db,
+    select_abandoned_webhook_events_on_db,
     select_reconcile_candidates_on_db,
 )
 from app.repos.brainstorm_nsec import (
     get_scheduling_source_on_db,
     set_scheduling_for_pubkey_on_db,
 )
+from app.services.flash_webhook_service import delivery_target
 from app.services.billing_service import (
     EntitlementDecision,
     EntitlementReason,
     _is_admin_held,
-    _utc_now,
+    utc_now,
     apply_entitlement,
     decide_entitlement,
     resolve_entitlement,
@@ -58,7 +64,7 @@ async def revoke_lapsed_entitlements(
     # Normalized here rather than trusted from the caller: prod stores some of
     # these columns as timestamptz where staging and local are naive, so a
     # caller-supplied clock in the wrong epoch would compare silently wrong.
-    at = now or _utc_now()
+    at = now or utc_now()
     revoked = 0
     for row in await select_entitlement_candidates_on_db(db):
         if row.granted_scheduling_id is None:
@@ -98,6 +104,18 @@ async def revoke_lapsed_entitlements(
     return revoked
 
 
+# Outcomes that actually decided something. Anything else leaves the event
+# unmarked so it comes back round rather than being quietly discarded.
+_SETTLED_REASONS = frozenset(
+    {
+        EntitlementReason.GRANTED,
+        EntitlementReason.REVOKED,
+        EntitlementReason.HELD,
+        EntitlementReason.BLOCKED,
+        EntitlementReason.ADMIN_OVERRIDE,
+    }
+)
+
 # Outcomes where Flash answered but nothing was written — so nothing recorded
 # that we asked, and the candidate ordering would keep re-asking about them.
 _UNSETTLED_REASONS = frozenset(
@@ -132,7 +150,7 @@ async def reconcile_subscriptions(
     its period end — locally those are indistinguishable from "renewal succeeded
     and we missed the event", which is why the lapse sweep refuses to judge them.
     """
-    at = now or _utc_now()
+    at = now or utc_now()
     candidates = await select_reconcile_candidates_on_db(
         db, now=at, stale_after=stale_after, limit=limit
     )
@@ -160,6 +178,7 @@ async def reconcile_subscriptions(
         except FlashCredentialError:
             # Every remaining row would fail identically. Continuing would bury
             # the one thing a human needs to see under a copy of it per subscriber.
+            await db.rollback()
             failed += 1
             await record_sync_failure_on_db(db, row.pubkey, "credentials refused")
             await db.commit()
@@ -168,6 +187,7 @@ async def reconcile_subscriptions(
             )
             break
         except FlashUnavailable as unavailable:
+            await db.rollback()
             failed += 1
             await record_sync_failure_on_db(db, row.pubkey, str(unavailable))
             await db.commit()
@@ -178,3 +198,91 @@ async def reconcile_subscriptions(
             )
 
     return ReconcileResult(reconciled=reconciled, failed=failed)
+
+
+async def replay_unprocessed_events(
+    db: AsyncDBSession, *, limit: int, stale_after: timedelta, max_attempts: int
+) -> int:
+    """Finish events we acknowledged and then dropped. Returns how many.
+
+    Flash retries an undelivered webhook a few times and then never replays it,
+    so once we answered 200 the event is ours to not lose. A process killed
+    between the acknowledgement and the entitlement write leaves exactly this:
+    a recorded event nothing ever acted on.
+
+    Claiming is decided by the database, not by whoever read first, so this is
+    exactly-once even with several replicas running.
+    """
+    at = utc_now()
+    replayed = 0
+
+    for event in await select_abandoned_webhook_events_on_db(
+        db, now=at, stale_after=stale_after, max_attempts=max_attempts, limit=limit
+    ):
+        claimed = await claim_webhook_event_on_db(
+            db, event.id, now=at, stale_after=stale_after
+        )
+        await db.commit()
+        if not claimed:
+            # Someone else has it. Losing that race means the work is being
+            # done, not that it needs doing twice.
+            continue
+
+        if event.payload is None:
+            # Pruned. Marking it done would silently discard the work; leaving
+            # it is what a human sees in the divergence report.
+            logger.error(
+                "Flash event %s was pruned before it was applied", event.id
+            )
+            await record_webhook_event_failure_on_db(db, event.id, "payload pruned")
+            await db.commit()
+            continue
+
+        target = delivery_target(event.payload)
+        try:
+            outcome = await apply_entitlement(
+                db,
+                external_ref=target.external_ref,
+                subscription_id=target.subscription_id,
+                yield_if_busy=True,
+            )
+            if outcome.reason not in _SETTLED_REASONS:
+                # Nothing was decided — a live delivery holds this subscriber, or
+                # the event names nobody we know. Marking it done would discard
+                # the work; leaving it brings it back once the claim goes stale.
+                await record_webhook_event_failure_on_db(
+                    db, event.id, outcome.reason.value
+                )
+                await db.commit()
+                continue
+            await mark_webhook_event_processed_on_db(db, event.id, now=at)
+            await db.commit()
+            replayed += 1
+        except Exception as failed:
+            # Rolled back first: if the failure was itself a database error the
+            # session is already aborted, and recording it would fail too —
+            # taking the rest of the batch down with it.
+            await db.rollback()
+            # Left unprocessed on purpose: once the claim goes stale it comes
+            # back round, up to the attempt cap.
+            await record_webhook_event_failure_on_db(db, event.id, repr(failed))
+            await db.commit()
+            logger.exception("Replaying Flash event %s failed", event.id)
+
+    return replayed
+
+
+async def prune_webhook_payloads(
+    db: AsyncDBSession, *, retain: timedelta, now: datetime | None = None
+) -> int:
+    """Drop personal data from old events, keeping the audit trail.
+
+    The payload carries subscriber email and name; the row carries the dedupe
+    key, so redelivery protection survives the pruning.
+    """
+    at = now or utc_now()
+    pruned = await prune_webhook_payloads_on_db(db, older_than=at - retain)
+    if pruned:
+        await db.commit()
+        logger.info("Pruned payloads from %s old Flash events", pruned)
+    return pruned

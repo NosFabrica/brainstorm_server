@@ -53,8 +53,10 @@ class TimestampMixin(object):
     def __tablename__(cls):
         return cls.__name__.lower()
 
-    created_at = mapped_column(DateTime, nullable=False, server_default=func.now())
-    updated_at = mapped_column(
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
@@ -309,7 +311,9 @@ class FlashWebhookEvent(TimestampMixin, Base):
     subscription_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
     )
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Nullable so the personal data (email, name) can be dropped after a
+    # retention window while the row — dedupe key, audit trail — survives.
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Claimed by a worker, so the recovery sweep can tell "in progress" from
     # "abandoned". Written from the entitlement slice onward.
     processing_started_at: Mapped[datetime | None] = mapped_column(

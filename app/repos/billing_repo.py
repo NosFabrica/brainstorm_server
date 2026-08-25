@@ -7,7 +7,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import execute_db_statement
-from app.db_models import BillingPlan, FlashWebhookEvent, UserSubscription
+from app.db_models import (
+    BillingPlan,
+    BrainstormNsec,
+    FlashWebhookEvent,
+    UserSubscription,
+)
 
 
 async def insert_flash_webhook_event_on_db(
@@ -19,8 +24,14 @@ async def insert_flash_webhook_event_on_db(
     subscription_id: str | None,
     payload: dict,
     dedupe_key: str,
-) -> bool:
-    """Record one delivery. Returns False if we already had it.
+    claimed_at: datetime | None = None,
+) -> int | None:
+    """Record one delivery. Returns its id, or None if we already had it.
+
+    `claimed_at` marks it as already being worked on. The webhook path passes it
+    because it is about to do exactly that — without it the row looks abandoned
+    from the moment it lands, and the recovery sweep would duplicate every
+    delivery still in flight.
 
     ON CONFLICT DO NOTHING rather than catching IntegrityError: a raised
     constraint violation poisons the transaction, and this runs on the path that
@@ -35,12 +46,14 @@ async def insert_flash_webhook_event_on_db(
             subscription_id=subscription_id,
             payload=payload,
             dedupe_key=dedupe_key,
+            processing_started_at=claimed_at,
+            attempts=1 if claimed_at else 0,
         )
         .on_conflict_do_nothing(index_elements=["dedupe_key"])
         .returning(FlashWebhookEvent.id)
     )
     result = await execute_db_statement(db, statement, __name__)
-    return result.scalar_one_or_none() is not None
+    return result.scalar_one_or_none()
 
 
 async def get_billing_plan_on_db(
@@ -56,19 +69,15 @@ async def get_billing_plan_on_db(
     return result.scalar_one_or_none()
 
 
-async def get_user_subscription_for_update_on_db(
+async def get_user_subscription_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> UserSubscription | None:
-    """Read one subscriber's record, locking the row for the transaction.
+    """Read one subscriber's record.
 
-    Serialises concurrent deliveries for the same person, so the policy
-    assignment and the record they write can't interleave into disagreement.
+    Not locked here: serialisation is `lock_user_for_update_on_db`, taken
+    earlier and on a row that always exists.
     """
-    statement = (
-        select(UserSubscription)
-        .where(UserSubscription.pubkey == pubkey)
-        .with_for_update()
-    )
+    statement = select(UserSubscription).where(UserSubscription.pubkey == pubkey)
     result = await execute_db_statement(db, statement, __name__)
     return result.scalar_one_or_none()
 
@@ -194,3 +203,132 @@ async def record_sync_failure_on_db(
         )
     )
     await execute_db_statement(db, statement, __name__)
+
+
+async def lock_user_for_update_on_db(
+    db: AsyncDBSession, pubkey: str, *, skip_locked: bool = False
+) -> bool:
+    """Serialise everything that reconciles one subscriber. True if we hold it.
+
+    Locks `brainstorm_nsec` rather than `user_subscription` because it always
+    exists by this point, where the subscription row may not — and SELECT FOR
+    UPDATE on a row that isn't there locks nothing, so two first-time events for
+    the same person would sail past each other.
+
+    `skip_locked` returns False instead of waiting. Background work uses it so
+    it never queues behind, or in front of, a live webhook: Flash allows ten
+    seconds to acknowledge, and this lock is held across a Flash read.
+    """
+    statement = (
+        select(BrainstormNsec.pubkey)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .with_for_update(skip_locked=skip_locked)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none() is not None
+
+
+async def select_abandoned_webhook_events_on_db(
+    db: AsyncDBSession,
+    *,
+    now: datetime,
+    stale_after: timedelta,
+    max_attempts: int,
+    limit: int,
+) -> list[FlashWebhookEvent]:
+    """Events we acknowledged and then never finished.
+
+    The staleness window is what separates "a worker has this" from "a worker
+    died holding this" — without it the sweep would fight live processing.
+    """
+    statement = (
+        select(FlashWebhookEvent)
+        .where(
+            FlashWebhookEvent.processed_at.is_(None),
+            FlashWebhookEvent.attempts < max_attempts,
+            or_(
+                FlashWebhookEvent.processing_started_at.is_(None),
+                FlashWebhookEvent.processing_started_at <= now - stale_after,
+            ),
+        )
+        .order_by(FlashWebhookEvent.created_at.asc())
+        .limit(limit)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return list(result.scalars().all())
+
+
+async def claim_webhook_event_on_db(
+    db: AsyncDBSession, event_id: int, *, now: datetime, stale_after: timedelta
+) -> bool:
+    """Take ownership of one event. False means someone else got there first.
+
+    The WHERE clause re-checks what the select found, so the claim is decided by
+    the database rather than by whoever read first — which is what makes replay
+    exactly-once with several replicas running.
+    """
+    statement = (
+        update(FlashWebhookEvent)
+        .where(
+            FlashWebhookEvent.id == event_id,
+            FlashWebhookEvent.processed_at.is_(None),
+            or_(
+                FlashWebhookEvent.processing_started_at.is_(None),
+                FlashWebhookEvent.processing_started_at <= now - stale_after,
+            ),
+        )
+        .values(
+            processing_started_at=now,
+            attempts=FlashWebhookEvent.attempts + 1,
+        )
+        .returning(FlashWebhookEvent.id)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none() is not None
+
+
+async def mark_webhook_event_processed_on_db(
+    db: AsyncDBSession, event_id: int, *, now: datetime
+) -> None:
+    statement = (
+        update(FlashWebhookEvent)
+        .where(FlashWebhookEvent.id == event_id)
+        .values(processed_at=now, process_error=None)
+    )
+    await execute_db_statement(db, statement, __name__)
+
+
+async def record_webhook_event_failure_on_db(
+    db: AsyncDBSession, event_id: int, reason: str
+) -> None:
+    """Leaves processed_at null, so it comes back round once the claim goes stale."""
+    statement = (
+        update(FlashWebhookEvent)
+        .where(FlashWebhookEvent.id == event_id)
+        .values(process_error=reason)
+    )
+    await execute_db_statement(db, statement, __name__)
+
+
+async def prune_webhook_payloads_on_db(
+    db: AsyncDBSession, *, older_than: datetime
+) -> int:
+    """Drop the payloads of old events, keeping the rows.
+
+    Payloads carry subscriber email and name; the row itself carries the dedupe
+    key and the audit trail, so both survive the personal data being removed.
+    """
+    statement = (
+        update(FlashWebhookEvent)
+        .where(
+            FlashWebhookEvent.created_at <= older_than,
+            FlashWebhookEvent.payload.is_not(None),
+            # Never strip an event still waiting to be applied: replay reads the
+            # payload to find the subscriber, so pruning one would silently make
+            # it unreplayable.
+            FlashWebhookEvent.processed_at.is_not(None),
+        )
+        .values(payload=None)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.rowcount

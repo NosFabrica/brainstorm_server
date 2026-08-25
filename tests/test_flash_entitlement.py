@@ -71,6 +71,7 @@ def billing(monkeypatch):
         source=AsyncMock(return_value="default"),
         policy=AsyncMock(return_value=SimpleNamespace(id=PAID_SCHEDULING_ID, enabled=True)),
         existing=AsyncMock(return_value=None),
+        lock=AsyncMock(return_value=True),
         set_scheduling=AsyncMock(),
         upsert=AsyncMock(),
     )
@@ -81,7 +82,8 @@ def billing(monkeypatch):
         ("is_billing_blocked_on_db", seams.blocked),
         ("get_scheduling_source_on_db", seams.source),
         ("get_scheduling_on_db", seams.policy),
-        ("get_user_subscription_for_update_on_db", seams.existing),
+        ("get_user_subscription_on_db", seams.existing),
+        ("lock_user_for_update_on_db", seams.lock),
         ("set_scheduling_for_pubkey_on_db", seams.set_scheduling),
         ("upsert_user_subscription_on_db", seams.upsert),
     ):
@@ -252,12 +254,34 @@ def test_an_enabled_policy_raises_no_alarm(billing, monkeypatch):
     errors.assert_not_called()
 
 
-def test_the_subscribers_row_is_locked_before_anything_is_decided(billing):
-    billing.existing.assert_not_awaited()
+def test_the_subscriber_is_locked_before_flash_is_read(billing):
+    """Fetching first and locking second lets two handlers both read, then
+    serialise — and whichever read EARLIER writes last, so the older view wins."""
+    order = []
+    billing.lock.side_effect = lambda *a, **k: order.append("lock") or True
+    billing.fetch.side_effect = lambda *a, **k: order.append("fetch") or _subscription()
 
     _apply(billing)
 
-    billing.existing.assert_awaited_once()
+    assert order == ["lock", "fetch"]
+
+
+def test_a_live_delivery_is_never_made_to_wait_by_background_work(billing):
+    """Flash allows ten seconds to acknowledge, and the lock is held across a
+    Flash read — so the deadline-free side is the one that yields."""
+    billing.lock.return_value = False
+
+    outcome = asyncio.run(
+        apply_entitlement(
+            billing.db,
+            external_ref=PUBKEY,
+            subscription_id=SUBSCRIPTION_ID,
+            yield_if_busy=True,
+        )
+    )
+
+    assert outcome.reason is EntitlementReason.BUSY
+    billing.fetch.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

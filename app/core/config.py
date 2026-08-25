@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     billing_reconcile_batch: int = Field(default=25)
     # How long since a subscriber was last read from Flash before we ask again.
     billing_reconcile_stale_after_seconds: int = Field(default=21600)
+    # Replay of events we acknowledged and then dropped.
+    billing_replay_batch: int = Field(default=25)
+    # How long a claim is honoured before the event is treated as abandoned.
+    billing_replay_stale_after_seconds: int = Field(default=300)
+    # Personal data (email, name) is dropped from stored events after this.
+    billing_payload_retention_days: int = Field(default=90)
+    # Replay attempts before an event is left for a human rather than retried.
+    billing_replay_max_attempts: int = Field(default=5)
     vespa_url: str = Field(...)
     # Per-sink publish mode. False (default) = only changed scores; True =
     # re-assert every above-cutoff score each run. Re-assertion only, not deletes.

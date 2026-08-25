@@ -130,7 +130,8 @@ retrying after a few attempts and never replays.
 | `dedupe_key` | str **UNIQUE** | identity of one delivery; the constraint is what makes a retry a no-op |
 | `event_timestamp` | DateTime | when the event *happened*, from Flash's body — the ordering signal |
 | `delivery_timestamp` | int | when Flash *attempted delivery*, from the signature header. Orders nothing: a retry of an old event carries a newer value |
-| `processing_started_at` / `processed_at` / `attempts` | — | claimed/finished markers for the recovery sweep |
+| `processing_started_at` / `processed_at` / `attempts` | — | claimed/finished markers. The webhook path sets `processing_started_at` **at insert** — it is the worker — or the sweep would treat every in-flight delivery as abandoned |
+| `payload` | JSONB, **nullable** | nulled after `BILLING_PAYLOAD_RETENTION_DAYS`, and only once `processed_at` is set. The row survives, so the dedupe key and audit trail outlive the personal data; pruning one still waiting to be applied would silently make it unreplayable |
 
 ## Adding a new table
 

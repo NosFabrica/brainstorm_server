@@ -1,16 +1,19 @@
 """Periodic billing reconciliation.
 
-Two duties, in order of how much they can be trusted:
+Four duties, in order of how much they can be trusted:
 
-1. **Revoke what has provably lapsed** — locally decidable, no network.
-2. **Re-read Flash for what isn't** — a `past_due` row, one still recorded
-   `active` past its period end, or one we simply haven't asked about lately.
-   Flash retries a failed delivery a few times and then never replays it, so
-   this is the only path that recovers a lost webhook.
+1. **Finish what we acknowledged and dropped** — a process killed between the
+   200 and the entitlement write leaves a recorded event nothing acted on, and
+   Flash will not send it again.
+2. **Revoke what has provably lapsed** — locally decidable, no network.
+3. **Re-read Flash for what is not** — a `past_due` row, one still recorded
+   `active` past its period end, or one we haven't asked about lately.
+4. **Drop personal data from old events**, keeping the audit trail and the
+   redelivery protection.
 
-The durability slice adds replaying webhooks we acknowledged and then dropped,
-pruning old payloads, and a leader lock. No lock yet is safe rather than lucky —
-both duties are idempotent, so two replicas racing reach the same state.
+Correctness does not depend on the leader lock: replay claims each event through
+the database, and the other three are idempotent. The lock is there so N
+replicas don't all hammer Flash's API for the same answers.
 """
 
 import asyncio
@@ -19,12 +22,22 @@ from datetime import timedelta
 from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
+from app.core.redis_db import redis_client
 from app.services.billing_sync_service import (
+    prune_webhook_payloads,
     reconcile_subscriptions,
+    replay_unprocessed_events,
     revoke_lapsed_entitlements,
+)
+from app.services.leader_lock import (
+    BILLING_LOCK_KEY,
+    INSTANCE_ID,
+    acquire_or_renew_leader,
 )
 
 logger = loggr.get_logger(__name__)
+
+
 
 
 async def billing_sync_cronjob() -> None:
@@ -34,7 +47,32 @@ async def billing_sync_cronjob() -> None:
 
     while True:
         try:
+            # The lock has to outlive one cycle's work, not the gap between
+            # cycles: a batch is bounded by billing_reconcile_batch round trips
+            # to Flash, and an expiry mid-cycle lets a second replica start the
+            # same work. Nothing renews it — at a six-hour interval there is no
+            # second acquisition inside the window to renew from.
+            ttl_ms = int(
+                settings.billing_reconcile_batch
+                * settings.flash_http_timeout_seconds
+                * 4
+                * 1000
+            )
+            if not await acquire_or_renew_leader(
+                redis_client, INSTANCE_ID, ttl_ms, key=BILLING_LOCK_KEY
+            ):
+                await asyncio.sleep(settings.billing_sync_interval_seconds)
+                continue
+
             async with db_session() as db:
+                replayed = await replay_unprocessed_events(
+                    db,
+                    limit=settings.billing_replay_batch,
+                    stale_after=timedelta(
+                        seconds=settings.billing_replay_stale_after_seconds
+                    ),
+                    max_attempts=settings.billing_replay_max_attempts,
+                )
                 revoked = await revoke_lapsed_entitlements(db)
                 result = await reconcile_subscriptions(
                     db,
@@ -43,9 +81,14 @@ async def billing_sync_cronjob() -> None:
                         seconds=settings.billing_reconcile_stale_after_seconds
                     ),
                 )
-            if revoked or result.reconciled or result.failed:
+                await prune_webhook_payloads(
+                    db,
+                    retain=timedelta(days=settings.billing_payload_retention_days),
+                )
+            if replayed or revoked or result.reconciled or result.failed:
                 logger.info(
-                    "Billing sync: revoked %s, reconciled %s, failed %s",
+                    "Billing sync: replayed %s, revoked %s, reconciled %s, failed %s",
+                    replayed,
                     revoked,
                     result.reconciled,
                     result.failed,

@@ -22,7 +22,7 @@ publishing — and routers just thin-wrap them.
 | `report_graph_service.py` | 120 | **Pure, no I/O.** The user-only report rules, shared by all three report paths (live kind-1984 ingest, the backfill script, the kind-5 recompute) so they cannot drift. Owns `extract_report_targets` (NIP-56 user-vs-note), the backfill's `build_desired_reported_by`/`diff_reported_by`, and kind-5's `deletion_may_target_reports`/`surviving_report_targets`/`diff_author_targets`. |
 | `nip05_service.py` | 40 | NIP-05 document for `/.well-known/nostr.json`: the reserved `_` house identity from `settings.periodic_graperank_pubkey`, otherwise scan Assistant pubkeys and match the derived local-part. Hits also carry the recommended `relays` attribute (keyed by pubkey) from `nostr_upload_ta_events_relay_public_url`. Uncached by design. |
 | `billing_service.py`            | 337 | Flash entitlement on the event path: the status decision table (`decide_entitlement`), the resolution truth table (`resolve_entitlement`), and `apply_entitlement`. Entitlement **is** the scheduling assignment; `user_subscription` only records why. |
-| `billing_sync_service.py`       | 178 | The periodic half: revoking what lapsed, and re-reading Flash for what cannot be judged locally. Split from the above because they change for different reasons; both still decide via `billing_service`, so the rules cannot drift. |
+| `billing_sync_service.py`       | 288 | The periodic half: replaying events we acknowledged then dropped, revoking what lapsed, re-reading Flash for what cannot be judged locally, and pruning old payloads. Split from the above because they change for different reasons; both still decide via `billing_service`, so the rules cannot drift. |
 | `report_relay_service.py` | 90 | Reads an author's surviving kind-1984 back from the internal relay (REQ over websocket). Returns `None` for *unknown* vs `[]` for *no reports* — see `../message_queue_tasks/CLAUDE.md`. |
 
 ## Conventions
@@ -52,6 +52,20 @@ async with db_session() as db:
 
 If you need cross-repo atomicity, keep both calls inside one `db_session()`.
 Repos don't commit; the context manager does.
+
+**Declared exception: the billing subsystem commits explicitly**, in
+`billing_service`, `billing_sync_service` and `flash_webhook_service`. Two
+reasons, both structural rather than stylistic:
+
+- The webhook receiver must have the event *durably recorded before it answers
+  200*. Flash retries a delivery only a few times and then never replays it, so
+  an event lost between the acknowledgement and a later commit is lost for good.
+  Relying on dependency-teardown ordering for that is too subtle to be safe.
+- The periodic jobs commit per item, so a crash forty rows into a batch keeps
+  the thirty-nine already done. Every one of those writes is idempotent, so
+  partial progress is strictly better than an all-or-nothing batch.
+
+Don't extend this to new subsystems without the same kind of reason.
 
 ### Concurrency
 

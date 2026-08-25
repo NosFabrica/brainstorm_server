@@ -19,8 +19,11 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.loggr import loggr
-from app.repos.billing_repo import insert_flash_webhook_event_on_db
-from app.services.billing_service import apply_entitlement
+from app.repos.billing_repo import (
+    insert_flash_webhook_event_on_db,
+    mark_webhook_event_processed_on_db,
+)
+from app.services.billing_service import apply_entitlement, utc_now
 
 logger = loggr.get_logger(__name__)
 
@@ -59,7 +62,27 @@ class SignatureParts:
 
 
 @dataclass(frozen=True)
+class DeliveryTarget:
+    """Who an event is about. One decoder, so the live path and the replay path
+    cannot come to different conclusions about the same payload."""
+
+    external_ref: str | None
+    subscription_id: str | None
+
+
+def delivery_target(payload: dict | None) -> DeliveryTarget:
+    data = (payload or {}).get("data")
+    if not isinstance(data, dict):
+        data = {}
+    return DeliveryTarget(
+        external_ref=data.get("externalRef"),
+        subscription_id=data.get("subscriptionId"),
+    )
+
+
+@dataclass(frozen=True)
 class RecordedDelivery:
+    event_id: int | None
     event: str
     subscription_id: str | None
     external_ref: str | None
@@ -190,10 +213,10 @@ async def record_delivery(
     this function rather than of FastAPI's dependency-teardown ordering.
     """
     event, data, payload = _read_body(raw_body)
-    subscription_id = data.get("subscriptionId")
-    external_ref = data.get("externalRef")
+    target = delivery_target(payload)
+    subscription_id, external_ref = target.subscription_id, target.external_ref
 
-    inserted = await insert_flash_webhook_event_on_db(
+    event_id = await insert_flash_webhook_event_on_db(
         db,
         event=event,
         delivery_timestamp=delivery_timestamp,
@@ -201,8 +224,11 @@ async def record_delivery(
         subscription_id=subscription_id,
         payload=payload,
         dedupe_key=build_dedupe_key(event, data, raw_body),
+        # We are the worker for this event, from this moment.
+        claimed_at=utc_now(),
     )
     await db.commit()
+    inserted = event_id is not None
 
     logger.info(
         "Flash webhook %s recorded (subscription=%s, duplicate=%s)",
@@ -211,6 +237,7 @@ async def record_delivery(
         not inserted,
     )
     return RecordedDelivery(
+        event_id=event_id,
         event=event,
         subscription_id=subscription_id,
         external_ref=external_ref,
@@ -232,15 +259,25 @@ async def handle_delivery(
         db, raw_body=raw_body, delivery_timestamp=delivery_timestamp
     )
 
-    # Reconciled even when the record is a duplicate: the write is convergent, so
-    # repeating it is harmless, and until the recovery sweep exists a retry is
-    # the only second chance a failed first attempt gets.
+    if recorded.duplicate:
+        # Flash retrying something we hold. The original row carries whether it
+        # was applied, and the recovery sweep retries it if not — so there is
+        # nothing to do here but acknowledge.
+        return recorded
+
     try:
         await apply_entitlement(
             db,
             external_ref=recorded.external_ref,
             subscription_id=recorded.subscription_id,
         )
+        if recorded.event_id is not None:
+            # Marked done so the replay pass doesn't redo work that succeeded.
+            # Left unmarked on failure: that is precisely what replay is for.
+            await mark_webhook_event_processed_on_db(
+                db, recorded.event_id, now=utc_now()
+            )
+            await db.commit()
     except Exception:
         # Includes an unreachable Flash. The event is already durable, so the
         # reconcile loop will settle this subscriber later; failing the response
