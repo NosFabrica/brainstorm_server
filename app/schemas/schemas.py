@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from app.schemas.error_codes import ErrorCode
 
@@ -238,7 +238,6 @@ class BillingSubscriptionItem(BaseModel):
     # Flash's own id, so an operator can deep-link into the vault rather than
     # reading our copy of what it says.
     flash_subscription_id: str | None = None
-    email: str | None = None
     current_period_end: datetime | None = None
     last_synced_at: datetime | None = None
     last_sync_error: str | None = None
@@ -259,3 +258,84 @@ class DivergenceSection(BaseModel):
     count: int
     truncated: bool
     rows: list[dict]
+
+
+class SubscriptionView(BaseModel):
+    """What the UI shows a signed-in user. Every field always present — the
+    client's `normalize()` fails silently as "free" on a missing one."""
+
+    tier: str
+    status: str
+    current_period_end: datetime | None
+    rail: str | None
+    manage_url: str | None
+
+    @field_serializer("current_period_end")
+    def _utc_wire_format(self, value: datetime | None) -> str | None:
+        # Stored naive UTC; serialized with an explicit Z or `new Date()` in
+        # the browser reads it as local time, shifting it by the viewer's offset.
+        if value is None:
+            return None
+        return value.isoformat() + "Z"
+
+
+class BillingPlanView(BaseModel):
+    """One pricing-page entry. `checkout_url` is complete except `ref`, which
+    the client appends; null on the free entry."""
+
+    tier: str
+    name: str
+    amount_minor: int
+    currency: str
+    schedule_interval_seconds: int
+    checkout_url: str | None
+
+
+class BillingPlansData(BaseModel):
+    plans: list[BillingPlanView]
+
+
+class BillingPlanItem(CreatedAndUpdatedAtModel):
+    """One plan mapping, as an operator sees it. Ids only — no secrets live here."""
+
+    id: int
+    flash_service_id: str
+    flash_plan_id: str
+    subscription_tier: str
+    scheduling_id: int
+    amount_minor: int
+    currency: str
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# The UI whitelists exact lowercase literals with no trim or toLowerCase, so a
+# "Priority" written here would read as free everywhere. Enforced at the write.
+_TIER_PATTERN = r"^[a-z][a-z0-9_-]*$"
+
+
+class CreateBillingPlanBody(BaseModel):
+    flash_service_id: str
+    flash_plan_id: str
+    subscription_tier: str = Field(pattern=_TIER_PATTERN)
+    scheduling_id: int
+    amount_minor: int = Field(ge=0)
+    currency: str
+    is_active: bool = True
+
+
+class UpdateBillingPlanBody(BaseModel):
+    """Partial update; only supplied fields change."""
+
+    subscription_tier: str | None = Field(default=None, pattern=_TIER_PATTERN)
+    scheduling_id: int | None = None
+    amount_minor: int | None = Field(default=None, ge=0)
+    currency: str | None = None
+    is_active: bool | None = None
+
+
+class BillingBlockOutcome(BaseModel):
+    pubkey: str
+    blocked: bool
+    revoked: bool

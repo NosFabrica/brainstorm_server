@@ -17,9 +17,12 @@ from app.routers.search.router import router as search_router
 from app.routers.setup.router import router as setup_router
 from app.routers.user.router import router as user_router
 from app.routers.user.router import public_router as public_user_router
+from app.routers.admin.billing.dev import router as billing_dev_router
 from app.routers.admin.billing.router import router as billing_admin_router
 from app.routers.admin.billing.router import verify_billing_access
+from app.routers.billing.router import router as billing_public_router
 from app.routers.webhooks.flash import router as flash_webhook_router
+from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
 from app.core.config import settings
 from app.schemas.request_response_schemas import (
     GetWhitelistedPubkeysOfObserverResponse,
@@ -53,6 +56,15 @@ def include_billing_routers(target: APIRouter) -> None:
         prefix="/webhooks",
         tags=["webhooks"],
     )
+    if settings.deploy_environment == DEPLOY_ENVIRONMENT_LOCAL:
+        # The dev fake's control surface: set mock Flash state, emit signed
+        # synthetic webhooks at our own receiver. LOCAL only, by construction.
+        target.include_router(
+            router=billing_dev_router,
+            prefix="/admin/billing/dev",
+            dependencies=[Depends(verify_token), Depends(verify_billing_access)],
+            tags=["admin-billing"],
+        )
     # Deliberately NOT under admin_router: that applies verify_admin_access,
     # which would mean nobody could hold billing access without also holding
     # general administration — the opposite of the separation this exists for.
@@ -68,6 +80,14 @@ def include_billing_routers(target: APIRouter) -> None:
 
 
 include_billing_routers(router)
+
+# Always mounted: an instance with no billing answers an empty plans list, which
+# is how the UI knows to hide the pricing surface.
+router.include_router(
+    router=billing_public_router,
+    prefix="/billing",
+    tags=["billing"],
+)
 
 # Open Ranking provider (OREs 01/02/03/05/06/07). Mounted at root because the
 # protocol mandates exact paths (e.g. /.well-known/open-ranking.json,

@@ -16,19 +16,29 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.flash import FlashSubscription, fetch_subscription
 from app.core.loggr import loggr
 from app.db_models import BillingPlan, SchedulingSource
-from app.repos.billing_repo import (
+from fastapi import HTTPException, status
+
+from app.repos.billing_plan_repo import (
     get_billing_plan_on_db,
+    insert_billing_plan_on_db,
+    select_billing_plans_on_db,
+    update_billing_plan_on_db,
+)
+from app.repos.user_subscription_repo import (
+    clear_granted_scheduling_on_db,
     get_user_subscription_on_db,
     lock_user_for_update_on_db,
+    update_flash_status_on_db,
     upsert_user_subscription_on_db,
 )
 from app.repos.brainstorm_nsec import (
     brainstorm_nsec_exists_by_pubkey_on_db,
     get_scheduling_source_on_db,
     is_billing_blocked_on_db,
+    set_billing_blocked_on_db,
     set_scheduling_for_pubkey_on_db,
 )
-from app.repos.scheduling_repo import get_scheduling_on_db
+from app.repos.scheduling_repo import get_scheduling_on_db, scheduling_exists_on_db
 
 logger = loggr.get_logger(__name__)
 
@@ -162,7 +172,7 @@ def resolve_entitlement(
     )
 
 
-def _is_admin_held(source: str) -> bool:
+def is_admin_held(source: str) -> bool:
     return source == SchedulingSource.ADMIN.value
 
 
@@ -301,7 +311,7 @@ async def _grant_and_record(
             now=now,
         ),
         blocked=await is_billing_blocked_on_db(db, pubkey),
-        admin_held=_is_admin_held(await get_scheduling_source_on_db(db, pubkey)),
+        admin_held=is_admin_held(await get_scheduling_source_on_db(db, pubkey)),
         plan_scheduling_id=plan.scheduling_id,
         existing_granted=existing.granted_scheduling_id if existing else None,
     )
@@ -316,18 +326,11 @@ async def _grant_and_record(
     await upsert_user_subscription_on_db(
         db,
         pubkey=pubkey,
-        flash_subscription_id=subscription.id,
-        flash_subscriber_id=subscription.subscriber_id,
+        subscription=subscription,
         billing_plan_id=plan.id,
         # What we actually gave, not what the plan currently says it gives —
         # retuning a plan later must not strand whoever it already granted.
         granted_scheduling_id=resolution.granted_scheduling_id,
-        flash_status=subscription.status,
-        current_period_start=subscription.current_period_start,
-        current_period_end=subscription.current_period_end,
-        next_billing_date=subscription.next_billing_date,
-        trial_end_date=subscription.trial_end_date,
-        cancel_effective_date=subscription.cancel_effective_date,
     )
     await db.commit()
 
@@ -340,6 +343,141 @@ async def _grant_and_record(
     return EntitlementOutcome(
         applied=resolution.write_policy, reason=resolution.reason
     )
+
+
+async def list_billing_plans_admin(db: AsyncDBSession) -> list[BillingPlan]:
+    return await select_billing_plans_on_db(db)
+
+
+async def create_billing_plan(db: AsyncDBSession, values: dict) -> BillingPlan:
+    await _require_scheduling(db, values["scheduling_id"])
+    plan = await insert_billing_plan_on_db(db, **values)
+    await db.commit()
+    return plan
+
+
+async def update_billing_plan(
+    db: AsyncDBSession, plan_id: int, values: dict
+) -> BillingPlan:
+    if "scheduling_id" in values:
+        await _require_scheduling(db, values["scheduling_id"])
+    plan = await update_billing_plan_on_db(db, plan_id, values)
+    if plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such plan"
+        )
+    await db.commit()
+    return plan
+
+
+async def _require_scheduling(db: AsyncDBSession, scheduling_id: int) -> None:
+    if not await scheduling_exists_on_db(db, scheduling_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No such scheduling policy",
+        )
+
+
+@dataclass(frozen=True)
+class BlockOutcome:
+    found: bool
+    blocked: bool
+    revoked: bool
+
+
+async def set_billing_block(
+    db: AsyncDBSession, pubkey: str, *, blocked: bool
+) -> BlockOutcome:
+    """Bar a user from paid entitlement, or lift the bar.
+
+    Blocking also takes back a policy billing granted — the flag alone only
+    stops future grants. An admin-assigned policy is left alone, exactly as
+    every other billing write leaves it. The subscription record stays: they
+    are still being charged, and cancellation must never be gated on the block.
+    """
+    if not await brainstorm_nsec_exists_by_pubkey_on_db(db, pubkey):
+        return BlockOutcome(found=False, blocked=False, revoked=False)
+
+    await lock_user_for_update_on_db(db, pubkey)
+    await set_billing_blocked_on_db(db, pubkey, blocked)
+
+    revoked = False
+    if blocked:
+        source = await get_scheduling_source_on_db(db, pubkey)
+        if source == SchedulingSource.BILLING.value:
+            await set_scheduling_for_pubkey_on_db(
+                db, pubkey, None, source=SchedulingSource.DEFAULT.value
+            )
+            await clear_granted_scheduling_on_db(db, pubkey)
+            revoked = True
+
+    await db.commit()
+    logger.info(
+        "%s billing_blocked set to %s (revoked=%s)", pubkey, blocked, revoked
+    )
+    return BlockOutcome(found=True, blocked=blocked, revoked=revoked)
+
+
+# What a payload unambiguously implies when Flash cannot be asked. Only the
+# endings: `activated`/`renewed` are excluded on purpose — their payloads omit
+# the period boundaries, which are the whole reason for re-fetching.
+_FALLBACK_STATUS = {
+    "subscription.expired": "expired",
+    "subscription.canceled": "canceled",
+    "subscription.past_due": "past_due",
+}
+
+
+async def apply_payload_fallback(
+    db: AsyncDBSession, *, event: str, external_ref: str | None
+) -> bool:
+    """Apply what an event implies without reading Flash. True if anything moved.
+
+    `expired` revokes now; `canceled` and `past_due` record the status, which the
+    lapse sweep and reconcile loop then act on. The event stays unprocessed, so
+    the cron still replaces this with Flash's authoritative answer.
+    """
+    status = _FALLBACK_STATUS.get(event)
+    if status is None or not external_ref:
+        return False
+    if not await lock_user_for_update_on_db(db, external_ref, skip_locked=True):
+        return False
+    existing = await get_user_subscription_on_db(db, external_ref)
+    if existing is None:
+        return False
+
+    if status == "expired":
+        resolution = resolve_entitlement(
+            EntitlementDecision.REVOKE,
+            blocked=False,
+            admin_held=is_admin_held(
+                await get_scheduling_source_on_db(db, external_ref)
+            ),
+            plan_scheduling_id=existing.granted_scheduling_id or 0,
+            existing_granted=existing.granted_scheduling_id,
+        )
+        if resolution.write_policy and resolution.source is not None:
+            await set_scheduling_for_pubkey_on_db(
+                db, external_ref, resolution.scheduling_id, source=resolution.source
+            )
+            await clear_granted_scheduling_on_db(db, external_ref)
+
+    # A fallback `canceled` sets the date, per the PRD: with no effective date
+    # of its own, the paid-through boundary is when the entitlement ends.
+    cancel_effective_date = None
+    if status == "canceled" and existing.cancel_effective_date is None:
+        cancel_effective_date = existing.current_period_end
+
+    await update_flash_status_on_db(
+        db, external_ref, status, cancel_effective_date=cancel_effective_date
+    )
+    await db.commit()
+    logger.info(
+        "%s: Flash unreachable, applied %s from the payload alone",
+        external_ref,
+        status,
+    )
+    return True
 
 
 async def _warn_if_policy_is_inert(

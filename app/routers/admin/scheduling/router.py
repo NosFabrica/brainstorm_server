@@ -4,6 +4,7 @@ from fastapi_pagination.ext.sqlalchemy import paginate
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
+from app.db_models import SchedulingSource
 from app.repos.brainstorm_nsec import bulk_set_scheduling_for_pubkeys_on_db
 from app.repos.scheduling_repo import (
     build_scheduling_users_stmt,
@@ -106,7 +107,7 @@ async def bulk_assign_scheduling_users_endpoint(
     if not await scheduling_exists_on_db(db, scheduling_id):
         raise HTTPException(status_code=404, detail="Scheduling policy not found")
     assigned = await bulk_set_scheduling_for_pubkeys_on_db(
-        db, body.pubkeys, scheduling_id, source="admin"
+        db, body.pubkeys, scheduling_id, source=SchedulingSource.ADMIN.value
     )
     return {"assigned": assigned}
 

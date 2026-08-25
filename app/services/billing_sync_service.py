@@ -15,16 +15,19 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.flash import FlashCredentialError, FlashUnavailable
 from app.core.loggr import loggr
-from app.repos.billing_repo import (
+from app.repos.flash_webhook_event_repo import (
     claim_webhook_event_on_db,
-    clear_granted_scheduling_on_db,
     mark_webhook_event_processed_on_db,
     prune_webhook_payloads_on_db,
     record_webhook_event_failure_on_db,
+    select_abandoned_webhook_events_on_db,
+)
+from app.repos.user_subscription_repo import (
+    clear_granted_scheduling_on_db,
     record_sync_failure_on_db,
     select_entitlement_candidates_on_db,
-    select_abandoned_webhook_events_on_db,
     select_reconcile_candidates_on_db,
+    update_last_event_at_on_db,
 )
 from app.repos.brainstorm_nsec import (
     get_scheduling_source_on_db,
@@ -35,9 +38,10 @@ from app.services.billing_service import (
     SETTLED_REASONS,
     EntitlementDecision,
     EntitlementReason,
-    _is_admin_held,
+    is_admin_held,
     utc_now,
     apply_entitlement,
+    apply_payload_fallback,
     decide_entitlement,
     resolve_entitlement,
 )
@@ -81,7 +85,7 @@ async def revoke_lapsed_entitlements(
         resolution = resolve_entitlement(
             decision,
             blocked=False,
-            admin_held=_is_admin_held(
+            admin_held=is_admin_held(
                 await get_scheduling_source_on_db(db, row.pubkey)
             ),
             plan_scheduling_id=row.granted_scheduling_id,
@@ -245,8 +249,20 @@ async def replay_unprocessed_events(
                 await db.commit()
                 continue
             await mark_webhook_event_processed_on_db(db, event.id, now=at)
+            await update_last_event_at_on_db(
+                db, pubkey=target.external_ref, event_timestamp=event.event_timestamp
+            )
             await db.commit()
             replayed += 1
+        except FlashUnavailable as unavailable:
+            # Same fallback as the live path: apply what the payload
+            # unambiguously implies, leave the event to come back round.
+            await db.rollback()
+            await record_webhook_event_failure_on_db(db, event.id, str(unavailable))
+            await db.commit()
+            await apply_payload_fallback(
+                db, event=event.event, external_ref=target.external_ref
+            )
         except Exception as failed:
             # Rolled back first: if the failure was itself a database error the
             # session is already aborted, and recording it would fail too —

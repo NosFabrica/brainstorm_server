@@ -260,6 +260,30 @@ async def is_billing_blocked_on_db(db: AsyncDBSession, pubkey: str) -> bool:
     return bool(result.scalar_one_or_none())
 
 
+async def get_assigned_scheduling_id_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> int | None:
+    """The explicit assignment only — None means the default policy applies."""
+    statement = select(BrainstormNsec.scheduling_id).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none()
+
+
+async def set_billing_blocked_on_db(
+    db: AsyncDBSession, pubkey: str, blocked: bool
+) -> bool:
+    """Bar (or re-admit) a user from paid entitlement. False if no such user."""
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(billing_blocked=blocked)
+    )
+    result = await db.execute(statement)
+    return result.rowcount > 0
+
+
 async def get_scheduling_source_on_db(db: AsyncDBSession, pubkey: str) -> str:
     """Who put this user on their policy: default | billing | admin."""
     statement = select(BrainstormNsec.scheduling_source).where(

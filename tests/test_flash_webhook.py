@@ -399,6 +399,14 @@ def test_the_emitter_script_signs_exactly_as_the_server_verifies():
     assert signature_matches(SECRET, 1700000000, raw, sign(SECRET, 1700000000, raw))
 
 
+def test_event_timestamp_converts_an_offset_instead_of_stripping_it():
+    """Flash sends Z today; a future non-zero offset must convert to UTC, not
+    be silently dropped — dropped, the naive value is wrong by the offset."""
+    assert parse_event_timestamp(
+        {"timestamp": "2026-08-20T16:03:12.000+02:00"}
+    ) == datetime(2026, 8, 20, 14, 3, 12)
+
+
 def test_event_timestamp_parses_flashs_iso_format():
     assert parse_event_timestamp({"timestamp": "2026-08-20T14:03:12.000Z"}) == datetime(
         2026, 8, 20, 14, 3, 12

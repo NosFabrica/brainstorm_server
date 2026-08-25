@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from app.core.flash import FlashSubscription
+
 NOW = datetime(2026, 8, 25, 12, 0, 0)
 PUBKEY = "a" * 64
 
@@ -27,8 +29,13 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
     catch it until production. This builds every one of them.
     """
     import inspect
-    from app.repos import billing_repo
+    from app.repos import (
+        billing_plan_repo,
+        flash_webhook_event_repo,
+        user_subscription_repo,
+    )
 
+    modules = (billing_plan_repo, user_subscription_repo, flash_webhook_event_repo)
     built = []
 
     async def _capture(db, statement, name):
@@ -40,7 +47,8 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
             rowcount=0,
         )
 
-    monkeypatch.setattr(billing_repo, "execute_db_statement", _capture)
+    for module in modules:
+        monkeypatch.setattr(module, "execute_db_statement", _capture)
 
     sample = {
         "db": AsyncMock(),
@@ -76,16 +84,39 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
         "admin_held": False,
         "since": NOW,
         "until": NOW,
+        "only_active": True,
+        "subscription": FlashSubscription(
+            id="7d3b",
+            status="active",
+            ref=PUBKEY,
+            subscriber_id="a91c",
+            service_id="9c1e",
+            plan_id="4f2a",
+            current_period_start=NOW,
+            current_period_end=NOW,
+            next_billing_date=NOW,
+            trial_end_date=None,
+            cancel_effective_date=None,
+        ),
+        "plan_id": 1,
+        "scheduling_id": 7,
+        "status": "canceled",
+        "values": {},
+        "subscription_tier": "priority",
+        "amount_minor": 200,
+        "currency": "USD",
+        "is_active": True,
     }
 
     functions = [
         (name, fn)
-        for name, fn in vars(billing_repo).items()
+        for module in modules
+        for name, fn in vars(module).items()
         # Defined here, not merely imported — otherwise this quietly tests
         # someone else's module.
         if name.endswith("_on_db")
         and inspect.iscoroutinefunction(fn)
-        and fn.__module__ == billing_repo.__name__
+        and fn.__module__ == module.__name__
     ]
     assert functions, "no repo functions found — did the module move?"
 

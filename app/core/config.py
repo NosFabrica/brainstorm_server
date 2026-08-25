@@ -50,8 +50,13 @@ class Settings(BaseSettings):
     # Set only during a rotation, so deliveries Flash signed before the swap are
     # still accepted. Clearing it is what ends the window.
     flash_webhook_secret_previous: str = Field(default="")
-    # Kept well under Flash's 10s webhook-ack budget: entitlement currently runs
-    # inline, so this call sits inside that window.
+    # Where checkout sends the user back. Empty = {frontend_url}/billing/return.
+    # Must exactly match a URL registered in the Flash dashboard.
+    flash_checkout_redirect_url: str = Field(default="")
+    # Routes Flash reads to the in-process fake (app/core/flash_mock.py).
+    # Test-only; with no Flash sandbox this is how the paid paths are exercised.
+    flash_mock_enabled: bool = Field(default=False)
+    # Per-attempt HTTP timeout for Flash reads.
     flash_http_timeout_seconds: float = Field(default=5.0)
     # Replay window for webhook signatures, per Flash's own reference handler.
     flash_webhook_tolerance_seconds: int = Field(default=300)

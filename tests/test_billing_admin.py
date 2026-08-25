@@ -130,7 +130,6 @@ def _row(
         current_period_end=NOW + timedelta(days=20),
         last_synced_at=synced,
         last_sync_error=error,
-        email="someone@example.com",
         billing_blocked=False,
     )
 

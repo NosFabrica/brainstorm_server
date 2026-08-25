@@ -15,14 +15,16 @@ from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
-from app.repos.billing_repo import (
+from app.repos.flash_webhook_event_repo import (
     select_exhausted_events_on_db,
     select_payment_history_on_db,
+    select_unresolved_events_on_db,
+)
+from app.repos.user_subscription_repo import (
     select_failing_syncs_on_db,
     select_policy_mismatches_on_db,
     select_stale_syncs_on_db,
     select_unrecognised_statuses_on_db,
-    select_unresolved_events_on_db,
 )
 from app.services.billing_service import (
     CANCELLED_STATUS,
@@ -108,6 +110,7 @@ async def build_divergence_report(db: AsyncDBSession) -> DivergenceReport:
 
 PAYMENT_COLUMNS = (
     "paid_at",
+    "event",
     "pubkey",
     "subscription_id",
     "invoice_id",
@@ -123,7 +126,8 @@ async def build_payment_history_csv(
 
     Not a second ledger: Flash took the money and is authoritative about it, so
     this reports what Flash told us rather than keeping a parallel record that
-    could disagree with it.
+    could disagree with it. First charges appear as `subscription.activated`
+    rows priced from the plan — that event carries no amount of its own.
     """
     rows = await select_payment_history_on_db(
         db, since=since, until=until, limit=limit

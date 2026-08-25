@@ -24,6 +24,8 @@ publishing — and routers just thin-wrap them.
 | `billing_service.py`            | 337 | Flash entitlement on the event path: the status decision table (`decide_entitlement`), the resolution truth table (`resolve_entitlement`), and `apply_entitlement`. Entitlement **is** the scheduling assignment; `user_subscription` only records why. |
 | `billing_sync_service.py`       | 288 | The periodic half: replaying events we acknowledged then dropped, revoking what lapsed, re-reading Flash for what cannot be judged locally, and pruning old payloads. Split from the above because they change for different reasons; both still decide via `billing_service`, so the rules cannot drift. |
 | `billing_visibility_service.py` | 136 | What nobody has settled: the divergence report an operator reads, and the accounting CSV. Read-only over the billing tables. |
+| `subscription_view_service.py`  | 145 | The UI-facing read side: one subscriber's view (`tier` from the scheduling assignment, Flash statuses translated on read) and the public plans list. Read-only. |
+| `leader_lock.py` | 30 | Redis leader lock, parameterized by key — generalizes the old `scheduler_lock` so the billing cron and the scheduler each hold their own. |
 | `report_relay_service.py` | 90 | Reads an author's surviving kind-1984 back from the internal relay (REQ over websocket). Returns `None` for *unknown* vs `[]` for *no reports* — see `../message_queue_tasks/CLAUDE.md`. |
 
 ## Conventions

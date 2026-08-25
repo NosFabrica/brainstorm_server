@@ -9,6 +9,7 @@ from app.schemas.request_body_schemas import SubmitFollowListBody
 from app.schemas.request_response_schemas import (
     ErrorResponseSchema,
     GetOwnLatestGraperankResponse,
+    GetSubscriptionResponse,
     GetOwnUserDataResponse,
     GetUserConnectionsResponse,
     GetUserDataResponse,
@@ -42,6 +43,12 @@ from app.services.user_service import (
     get_user_history_data,
     get_user_overview,
     get_user_stats,
+)
+from app.core.flash import FlashCredentialError, FlashUnavailable
+from app.services.billing_service import apply_entitlement
+from app.services.subscription_view_service import read_subscription_view
+from app.utils.rate_limiting.rate_limiting import (
+    validate_subscription_refresh_allowed,
 )
 from app.services.verified_cutoffs import VerifiedCutoffs
 from app.routers.user.dependencies import get_verified_cutoffs, resolve_observer
@@ -220,6 +227,47 @@ async def is_search_observer_endpoint(
     )
 
     return IsSearchObserverResponse(data=is_available)
+
+
+@router.get(
+    path="/subscription",
+    summary="The caller's subscription, as the UI displays it",
+)
+async def get_subscription_endpoint(
+    request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> GetSubscriptionResponse:
+    # Always mounted, billing configured or not: an instance without Flash
+    # answers the free default rather than 404ing every page load.
+    jwt_data: JWTData = request.state.jwt_data
+    view = await read_subscription_view(db, jwt_data.nostr_pubkey)
+    return GetSubscriptionResponse(data=view)
+
+
+@router.post(
+    path="/subscription/refresh",
+    summary="Re-read the caller's subscription from Flash and apply it",
+)
+async def refresh_subscription_endpoint(
+    request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> GetSubscriptionResponse:
+    # Takes nothing but the caller's identity — a subscription id or ref in the
+    # body would be a claim to someone else's payment.
+    jwt_data: JWTData = request.state.jwt_data
+    pubkey = jwt_data.nostr_pubkey
+    await validate_subscription_refresh_allowed(pubkey)
+
+    if settings.flash_enabled:
+        try:
+            await apply_entitlement(db, external_ref=pubkey, subscription_id=None)
+        except (FlashUnavailable, FlashCredentialError):
+            # The caller wanted the current answer; an unreadable Flash means
+            # the current answer is whatever we already hold.
+            pass
+
+    view = await read_subscription_view(db, pubkey)
+    return GetSubscriptionResponse(data=view)
 
 
 @router.post(

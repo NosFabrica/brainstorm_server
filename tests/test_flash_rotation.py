@@ -174,7 +174,10 @@ def test_a_credential_failure_mid_delivery_is_recorded_not_just_logged(monkeypat
     )
 
     db = AsyncMock()
-    asyncio.run(svc.handle_delivery(db, raw_body=BODY, delivery_timestamp=1))
+    recorded = asyncio.run(
+        svc.handle_delivery(db, raw_body=BODY, delivery_timestamp=1)
+    )
+    asyncio.run(svc.process_delivery(db, recorded))
 
     failed.assert_awaited_once()
     assert failed.await_args.args[1] == 7
@@ -207,7 +210,10 @@ def test_a_poisoned_session_still_records_the_reason(monkeypatch):
         svc, "insert_flash_webhook_event_on_db", AsyncMock(return_value=7)
     )
 
-    asyncio.run(svc.handle_delivery(db, raw_body=BODY, delivery_timestamp=1))
+    recorded = asyncio.run(
+        svc.handle_delivery(db, raw_body=BODY, delivery_timestamp=1)
+    )
+    asyncio.run(svc.process_delivery(db, recorded))
 
     assert calls == ["rollback", "record"]
 
@@ -236,6 +242,7 @@ def test_a_delivery_survives_even_if_recording_the_reason_also_fails(monkeypatch
     recorded = asyncio.run(
         svc.handle_delivery(AsyncMock(), raw_body=BODY, delivery_timestamp=1)
     )
+    asyncio.run(svc.process_delivery(AsyncMock(), recorded))
     assert recorded.event_id == 7
 
 

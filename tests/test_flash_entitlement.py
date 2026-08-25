@@ -124,8 +124,8 @@ def test_the_subscription_record_captures_plan_policy_period_and_status(billing)
     assert recorded["pubkey"] == PUBKEY
     assert recorded["billing_plan_id"] == 1
     assert recorded["granted_scheduling_id"] == PAID_SCHEDULING_ID
-    assert recorded["current_period_end"] == datetime(2026, 9, 20, 14, 3, 11)
-    assert recorded["flash_status"] == "active"
+    assert recorded["subscription"].current_period_end == datetime(2026, 9, 20, 14, 3, 11)
+    assert recorded["subscription"].status == "active"
 
 
 def test_flash_status_is_recorded_verbatim_not_translated(billing):
@@ -133,7 +133,7 @@ def test_flash_status_is_recorded_verbatim_not_translated(billing):
 
     _apply(billing)
 
-    assert billing.upsert.await_args.kwargs["flash_status"] == "trial"
+    assert billing.upsert.await_args.kwargs["subscription"].status == "trial"
 
 
 def test_what_we_granted_is_recorded_not_what_the_plan_now_says(billing):
@@ -376,7 +376,7 @@ def test_a_blocked_user_still_has_their_subscription_recorded(billing):
     _apply(billing)
 
     billing.upsert.assert_awaited_once()
-    assert billing.upsert.await_args.kwargs["flash_status"] == "active"
+    assert billing.upsert.await_args.kwargs["subscription"].status == "active"
 
 
 # ---------------------------------------------------------------------------

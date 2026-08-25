@@ -6,10 +6,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.schemas import (
     AdminStats,
     AuthSuccessfulToken,
+    BillingPlansData,
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
     FollowListIngestResult,
     OwnUserData,
+    SubscriptionView,
     PaginatedUserConnections,
     UserGraphData,
     UserHistoryInstance,
@@ -99,6 +101,14 @@ class GetOwnLatestGraperankResponse(SuccessfulResponseDataSchema):
 
 class IsSearchObserverResponse(SuccessfulResponseDataSchema):
     data: bool
+
+
+class GetSubscriptionResponse(SuccessfulResponseDataSchema):
+    data: SubscriptionView
+
+
+class GetBillingPlansResponse(SuccessfulResponseDataSchema):
+    data: BillingPlansData
 
 
 class WhitelistedPubkeys(BaseModel):

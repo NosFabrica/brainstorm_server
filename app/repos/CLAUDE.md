@@ -12,6 +12,9 @@ never touch SQLAlchemy `Select`s or Cypher strings directly.
 | `graperank_preset_repo.py` | PostgreSQL (`graperank_preset`, `graperank_preset_history`) | Builtin preset CRUD + audit-log helpers + camelCase ↔ snake_case converters |
 | `brainstorm_nostr_transferer.py` | PostgreSQL (`brainstorm_nostr_relay_transfer`) | Relay-sync state machine (per-kind cursor + completion) |
 | `user_repo.py` | **Neo4j** | All Cypher queries for the social graph (follows/mutes/reports + influence-weighted counts/paginations) |
+| `billing_plan_repo.py` | PostgreSQL (`billing_plan`) | Plan CRUD + the scheduling-id → tier lookup |
+| `user_subscription_repo.py` | PostgreSQL (`user_subscription`) | Subscription upsert, subscriber lock, reconcile/lapse candidates, divergence reads (policy mismatches, stale/failing syncs, unrecognised statuses) |
+| `flash_webhook_event_repo.py` | PostgreSQL (`flash_webhook_event`) | The inbox: insert/claim/replay/prune, unresolved + exhausted events, payment history |
 
 ## Conventions (read these once, save yourself debugging)
 

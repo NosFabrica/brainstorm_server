@@ -12,7 +12,7 @@ socket timeout.
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -25,9 +25,15 @@ logger = loggr.get_logger(__name__)
 _client: httpx.AsyncClient | None = None
 
 CONNECT_RETRIES = 3
-# Connect-level only. A response that arrived — any status — is an answer, and
-# retrying it would just ask the same question again.
-_RETRYABLE = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
+# Transient failures worth one more ask: the connection never happened, the
+# response never finished, or Flash itself answered 5xx. A 4xx is an answer.
+_RETRYABLE = (
+    httpx.ConnectTimeout,
+    httpx.ConnectError,
+    httpx.PoolTimeout,
+    httpx.ReadTimeout,
+    httpx.ReadError,
+)
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -81,14 +87,23 @@ class FlashSubscription:
     cancel_effective_date: datetime | None
 
 
-def _parse_timestamp(raw: object) -> datetime | None:
+def parse_flash_timestamp(raw: object) -> datetime | None:
+    """One ISO string → naive UTC, the epoch every billing column stores.
+
+    Converted to UTC before the tzinfo strip: Flash sends `Z` today, but a
+    non-zero offset stripped naively would be silently wrong by that offset.
+    A timestamp with no offset at all is taken as already UTC.
+    """
     if not isinstance(raw, str):
         return None
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         logger.warning("Flash sent an unparseable timestamp; treating it as absent")
         return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.replace(tzinfo=None)
 
 
 def parse_subscription(raw: dict) -> FlashSubscription:
@@ -100,11 +115,11 @@ def parse_subscription(raw: dict) -> FlashSubscription:
         subscriber_id=raw.get("subscriberId"),
         service_id=str(raw.get("serviceId") or ""),
         plan_id=str(raw.get("planId") or ""),
-        current_period_start=_parse_timestamp(raw.get("currentPeriodStart")),
-        current_period_end=_parse_timestamp(raw.get("currentPeriodEnd")),
-        next_billing_date=_parse_timestamp(raw.get("nextBillingDate")),
-        trial_end_date=_parse_timestamp(raw.get("trialEndDate")),
-        cancel_effective_date=_parse_timestamp(raw.get("cancelEffectiveDate")),
+        current_period_start=parse_flash_timestamp(raw.get("currentPeriodStart")),
+        current_period_end=parse_flash_timestamp(raw.get("currentPeriodEnd")),
+        next_billing_date=parse_flash_timestamp(raw.get("nextBillingDate")),
+        trial_end_date=parse_flash_timestamp(raw.get("trialEndDate")),
+        cancel_effective_date=parse_flash_timestamp(raw.get("cancelEffectiveDate")),
     )
 
 
@@ -112,11 +127,11 @@ _SUBSCRIPTIONS_PATH = "/api/v1/external/subscriptions"
 
 
 async def _get_with_retries(url: str, params: dict) -> httpx.Response:
-    """GET, retrying only connect-level failures."""
+    """GET, retrying transient failures and 5xx with a short backoff."""
     client = _get_client()
     for attempt in range(CONNECT_RETRIES + 1):
         try:
-            return await client.get(
+            response = await client.get(
                 url,
                 params=params,
                 headers={"Authorization": f"Bearer {settings.flash_api_key}"},
@@ -124,7 +139,10 @@ async def _get_with_retries(url: str, params: dict) -> httpx.Response:
         except _RETRYABLE as failed:
             if attempt == CONNECT_RETRIES:
                 raise FlashUnavailable(f"Could not reach Flash: {failed}") from failed
-            await asyncio.sleep(0.1 * (attempt + 1))
+        else:
+            if response.status_code < 500 or attempt == CONNECT_RETRIES:
+                return response
+        await asyncio.sleep(0.1 * (attempt + 1))
     raise AssertionError("unreachable")
 
 
@@ -139,12 +157,17 @@ async def fetch_subscription(
     Results are scoped by Flash to the account owning the API key, so a
     subscription belonging to someone else is not reachable with our credentials.
     """
-    if subscription_id:
-        params = {"subscriptionId": subscription_id}
-    elif ref:
-        params = {"ref": ref}
-    else:
+    if not subscription_id and not ref:
         raise FlashUnavailable("A subscription lookup needs a subscriptionId or a ref")
+
+    if settings.flash_mock_enabled:
+        from app.core import flash_mock
+
+        return flash_mock.lookup(subscription_id, ref)
+
+    params = (
+        {"subscriptionId": subscription_id} if subscription_id else {"ref": ref}
+    )
 
     url = settings.flash_base_url.rstrip("/") + _SUBSCRIPTIONS_PATH
     try:

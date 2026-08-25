@@ -2,7 +2,7 @@
 
 Separate from the general admin list so whoever answers "did my payment go
 through?" does not thereby inherit the ability to rotate nsec encryption keys.
-These views also carry subscriber email, which is the other reason to keep the
+These views also carry payment data, which is the other reason to keep the
 lists apart.
 
 Falls back to the administrators when unset, so an existing deployment keeps

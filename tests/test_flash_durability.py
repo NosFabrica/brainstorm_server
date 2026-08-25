@@ -25,6 +25,8 @@ PUBKEY = "a" * 64
 def _event(event_id=1, external_ref=PUBKEY, subscription_id="7d3b", attempts=0):
     return SimpleNamespace(
         id=event_id,
+        event="subscription.activated",
+        event_timestamp=NOW,
         payload={"data": {"externalRef": external_ref, "subscriptionId": subscription_id}},
         attempts=attempts,
     )

@@ -7,7 +7,7 @@ process dying straight after the 200.
 
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
@@ -18,6 +18,7 @@ from app.services.flash_webhook_service import (
     accepted_webhook_secrets,
     FlashSignatureError,
     handle_delivery,
+    process_delivery_in_background,
     verify_delivery,
 )
 
@@ -32,6 +33,7 @@ logger = loggr.get_logger(__name__)
 )
 async def receive_flash_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncDBSession = Depends(dependency=get_db),
 ):
     # Exact bytes — re-serializing would break the signature. Starlette caches
@@ -55,6 +57,10 @@ async def receive_flash_webhook(
     recorded = await handle_delivery(
         db, raw_body=raw_body, delivery_timestamp=parts.timestamp
     )
+    # Entitlement runs after the 200 is on its way: Flash expects the ack within
+    # ten seconds, and the recorded row makes the work recoverable regardless.
+    if recorded.needs_processing:
+        background_tasks.add_task(process_delivery_in_background, recorded)
     # Body is not wrapped in SuccessfulResponseDataSchema: like the .well-known
     # and NIP-11 routes, the consumer is an external system, not our client.
     # Flash reads only the status code.

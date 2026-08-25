@@ -27,6 +27,8 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/search` | `search/` | none — see [search/CLAUDE.md → vespa](../core/CLAUDE.md) |
 | `/admin/billing` | `admin/billing/` | `verify_token` + **`verify_billing_access`** — its own list, NOT `verify_admin_access`. Mounted outside `admin_router` on purpose: being on the billing list must not confer general administration, and turning admin routes off must not blind whoever handles payments. Also only mounted when `flash_enabled` |
 | `/webhooks` | `webhooks/` | none — HMAC-signed by the sender. **Only mounted when `flash_enabled`** (see `include_billing_routers` in `router.py`), so it does not exist on deployments without payments |
+| `/billing` | `billing/` | none — public plans list. **Always mounted**: an empty `plans` array is the "no billing here" signal the UI hides on |
+| `/admin/billing/dev` | `admin/billing/dev.py` | billing access; mounted only when `flash_enabled` AND `deploy_environment == LOCAL` — mock Flash state + signed synthetic webhook emitter |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
 | `/admin` | `admin/` | `verify_token` + `verify_admin_access` |
@@ -46,7 +48,7 @@ Defined in `app/utils/api_validators.py` (not here).
   - JWT bearer (`Authorization: Bearer <token>` or legacy `access_token` header), OR
   - **NIP-98** signed Nostr event (`Authorization: Nostr <base64-event>`).
   - On success sets `request.state.jwt_data: JWTData` (pubkey, expiry, is_admin).
-- **`verify_billing_access`** — Defined in `admin/billing/router.py`. Checks `app.core.billing_admin_whitelist.get_billing_pubkeys()`, which falls back to the admin whitelist when `billing_admin_whitelisted_pubkeys` is unset. Deliberately **not** coupled to `admin_enabled`: these views carry subscriber email, and whoever answers "did my payment go through?" should not thereby inherit nsec key rotation.
+- **`verify_billing_access`** — Defined in `admin/billing/router.py`. Checks `app.core.billing_admin_whitelist.get_billing_pubkeys()`, which falls back to the admin whitelist when `billing_admin_whitelisted_pubkeys` is unset. Deliberately **not** coupled to `admin_enabled`: these views carry payment data, and whoever answers "did my payment go through?" should not thereby inherit nsec key rotation.
 - **`verify_admin_access`** — Defined in `admin/router.py`. Checks `request.state.jwt_data.nostr_pubkey` against the in-memory admin whitelist (`app.core.admin_whitelist.get_whitelisted_pubkeys`, hydrated at startup from `settings.admin_whitelisted_pubkeys`).
 - Applied via `.include_router(..., dependencies=[Depends(verify_token), Depends(verify_admin_access)])` rather than per-handler.
 
@@ -70,6 +72,11 @@ Every successful response is wrapped via `SuccessfulResponseDataSchema` (in `app
 ```
 
 Each endpoint's specific response class (e.g. `GetUserDataResponse`) subclasses that wrapper and types `data` as the relevant payload schema. **Don't return a bare dict** — the contract is the wrapped shape.
+
+**Exception: the admin surface returns raw shapes.** Admin routes follow the
+PRD's admin convention — raw `response_model`, no success wrapper (`Page[...]`,
+`/admin/billing`'s divergence/resync/plans/block bodies). The wrapper exists for
+the app client's response handling; the admin UI reads models directly.
 
 **Exception: routes whose shape a third-party spec dictates.** Where an external protocol fixes the response body, the endpoint returns it unwrapped — the `.well-known` documents (`open_ranking/well_known.py` for ORE-01, `nip05/well_known.py` for NIP-05) via an explicit `JSONResponse`, and likewise the Open Ranking payloads and `nip50`'s NIP-11 document. Wrapping any of them would break the spec.
 
@@ -99,6 +106,8 @@ the `/{pubkey}` catch-all.
 | GET | `/graperankResult` | `GetOwnLatestGraperankResponse` | Latest result for caller |
 | POST | `/graperank` | `GetOwnLatestGraperankResponse` | Triggers a run; throttled by `settings.block_frequent_graperank_requests_minutes` |
 | GET | `/self` | `GetOwnUserDataResponse` | Caller's graph + history |
+| GET | `/subscription` | `GetSubscriptionResponse` | The caller's subscription as the UI shows it. Always answers, billing configured or not; `tier` derives from the scheduling assignment, `status` is the translated Flash vocabulary |
+| POST | `/subscription/refresh` | `GetSubscriptionResponse` | Re-reads Flash for the caller and applies it — the redirect-landing call and the `pending` poll. Empty body by design; per-pubkey rate limit |
 | GET | `/isSearchObserver` | `IsSearchObserverResponse` | Whether caller is searchable as an observer |
 | POST | `/assistantProfile` | `PublishAssistantProfileResponse` | Publishes kind-0 for the user's brainstorm assistant key |
 
@@ -136,7 +145,9 @@ actually gives them. Where those disagree is the bug.
 | GET | `/subscriptions` | `Page[BillingSubscriptionItem]`. `flash_status` and `scheduling_name` are separate fields on purpose — collapsing them would hide the disagreement |
 | GET | `/divergence` | Seven categories of unsettled state, each `{count, truncated, rows}`. Capped at 200 rows: a report nobody can open is no use on the day it matters |
 | POST | `/subscriptions/{pubkey}/resync` | Re-reads one subscriber from Flash now |
-| GET | `/export.csv` | Payment history for accounting, defaulting to the last 90 days. Read out of stored renewal events — deliberately not a second ledger |
+| POST / DELETE | `/subscriptions/{pubkey}/block` | Bar a user from paid entitlement / lift the bar. Blocking also revokes a billing-granted policy; admin grants are left alone |
+| GET / POST / PATCH | `/plans` | The `billing_plan` mappings — how dev and prod vaults get their rows |
+| GET | `/export.csv` | Payment history for accounting, defaulting to the last 90 days. Read out of stored `activated` + `renewed` events (`activated` priced from the plan) — deliberately not a second ledger |
 
 ### `graperank/router.py` — GrapeRank presets
 

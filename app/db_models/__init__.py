@@ -288,7 +288,8 @@ class UserSubscription(TimestampMixin, Base):
     trial_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     cancel_effective_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rail: Mapped[str | None] = mapped_column(String, nullable=True)
-    email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # Newest event timestamp seen for this subscriber; never moves backwards.
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_sync_error: Mapped[str | None] = mapped_column(String, nullable=True)
 

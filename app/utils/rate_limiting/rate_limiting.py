@@ -7,15 +7,28 @@ RATE_LIMIT = 3
 WINDOW_SECONDS = 1800  # 30 minutes
 
 
-async def validateIfRequestedTooOftenByIP(ip_address: str) -> None:
-
+async def _enforce_window(key: str, limit: int, window_seconds: int) -> None:
     redis_client = get_redis_client()
-    key = f"rate_limit:{ip_address}"
-
     current = await redis_client.incr(key)
-
     if current == 1:
-        await redis_client.expire(key, WINDOW_SECONDS)
-
-    if current > RATE_LIMIT:
+        await redis_client.expire(key, window_seconds)
+    if current > limit:
         raise HTTPException(status_code=429, detail="Too many requests")
+
+
+async def validateIfRequestedTooOftenByIP(ip_address: str) -> None:
+    await _enforce_window(f"rate_limit:{ip_address}", RATE_LIMIT, WINDOW_SECONDS)
+
+
+# Generous enough for the pending-checkout poll (every few seconds), tight
+# enough that nobody hammers Flash on our credentials through us.
+REFRESH_RATE_LIMIT = 12
+REFRESH_WINDOW_SECONDS = 60
+
+
+async def validate_subscription_refresh_allowed(pubkey: str) -> None:
+    await _enforce_window(
+        f"rate_limit:billing_refresh:{pubkey}",
+        REFRESH_RATE_LIMIT,
+        REFRESH_WINDOW_SECONDS,
+    )

@@ -10,22 +10,31 @@ Once the signature passes we know Flash sent it, so from that point the rule is
 times and then never sends it again.
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
+from app.core.flash import FlashUnavailable, parse_flash_timestamp
 from app.core.loggr import loggr
-from app.repos.billing_repo import (
+from app.repos.flash_webhook_event_repo import (
     insert_flash_webhook_event_on_db,
     mark_webhook_event_processed_on_db,
     record_webhook_event_failure_on_db,
 )
-from app.services.billing_service import SETTLED_REASONS, apply_entitlement, utc_now
+from app.repos.user_subscription_repo import update_last_event_at_on_db
+from app.services.billing_service import (
+    SETTLED_REASONS,
+    apply_entitlement,
+    apply_payload_fallback,
+    utc_now,
+)
 
 logger = loggr.get_logger(__name__)
 
@@ -95,6 +104,17 @@ class RecordedDelivery:
     subscription_id: str | None
     external_ref: str | None
     duplicate: bool
+    event_timestamp: datetime | None = None
+
+    @property
+    def needs_processing(self) -> bool:
+        """Whether anything should happen after the ack. Duplicates are already
+        owned by their original row; probes are settled on receipt."""
+        return (
+            not self.duplicate
+            and self.event_id is not None
+            and self.event != PROBE_EVENT
+        )
 
 
 def parse_signature_header(raw: str | None) -> SignatureParts | None:
@@ -158,13 +178,7 @@ def parse_event_timestamp(payload: dict) -> datetime | None:
     a retry of an old event carries a newer one, so ordering on it would let a
     stale event win.
     """
-    raw = payload.get("timestamp")
-    if not isinstance(raw, str):
-        return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
-        return None
+    return parse_flash_timestamp(payload.get("timestamp"))
 
 
 def accepted_webhook_secrets() -> tuple[str, ...]:
@@ -278,18 +292,19 @@ async def record_delivery(
         subscription_id=subscription_id,
         external_ref=external_ref,
         duplicate=not inserted,
+        event_timestamp=parse_event_timestamp(payload),
     )
 
 
 async def handle_delivery(
     db: AsyncDBSession, *, raw_body: bytes, delivery_timestamp: int
 ) -> RecordedDelivery:
-    """Record an authenticated delivery, then reconcile the subscriber.
+    """Record an authenticated delivery. Entitlement happens after the ack.
 
-    Entitlement runs after the record has committed, and its failure is never
-    allowed to change the answer: the event is already durable, so a non-2xx
-    would only make Flash redeliver something we already hold. A delivery left
-    unreconciled is recoverable; one Flash gave up on is not.
+    Flash allows ten seconds to answer and retries only three times, so nothing
+    slower than a local insert belongs before the 200. The caller schedules
+    `process_delivery` once the response is on its way; if the process dies
+    before that runs, the recovery sweep replays the row.
     """
     recorded = await record_delivery(
         db, raw_body=raw_body, delivery_timestamp=delivery_timestamp
@@ -302,16 +317,43 @@ async def handle_delivery(
             )
             await db.commit()
         logger.info("Flash credential check accepted")
-        return recorded
 
-    if recorded.duplicate:
-        # Flash retrying something we hold. The original row carries whether it
-        # was applied, and the recovery sweep retries it if not — so there is
-        # nothing to do here but acknowledge.
-        return recorded
+    return recorded
+
+
+async def process_delivery_in_background(recorded: RecordedDelivery) -> None:
+    """Entry point for the post-ack half, run as a FastAPI background task.
+
+    Opens its own session — the request's is gone by the time this runs — and
+    never raises: the event is recorded, so any failure here is recoverable by
+    the replay sweep.
+    """
+    from app.core.database import db_session
 
     try:
-        outcome = await apply_entitlement(
+        async with db_session() as db:
+            await process_delivery(db, recorded)
+    except Exception:
+        logger.exception(
+            "Processing Flash event %s failed; it is recorded and replayable",
+            recorded.event_id,
+        )
+
+
+async def process_delivery(db: AsyncDBSession, recorded: RecordedDelivery) -> None:
+    """Reconcile the subscriber a recorded delivery names.
+
+    Failure never surfaces to Flash — the event is already durable, and a
+    non-2xx was never sent, so there is nothing to signal. An unreachable Flash
+    additionally applies what the payload unambiguously implies (see
+    `apply_payload_fallback`), leaving the event unprocessed so the cron
+    re-reads the authoritative state later.
+    """
+    if not recorded.needs_processing:
+        return
+
+    try:
+        outcome = await _apply_with_db_retries(
             db,
             external_ref=recorded.external_ref,
             subscription_id=recorded.subscription_id,
@@ -322,6 +364,11 @@ async def handle_delivery(
                 await mark_webhook_event_processed_on_db(
                     db, recorded.event_id, now=utc_now()
                 )
+                await update_last_event_at_on_db(
+                    db,
+                    pubkey=recorded.external_ref,
+                    event_timestamp=recorded.event_timestamp,
+                )
             else:
                 # Nothing was decided — the event names nobody we know, or a
                 # plan we don't map. Left unprocessed with a reason so it
@@ -330,16 +377,47 @@ async def handle_delivery(
                     db, recorded.event_id, outcome.reason.value
                 )
             await db.commit()
+    except FlashUnavailable as err:
+        # Flash cannot be asked, so the convergent path is closed — but some
+        # payloads carry their own answer. The event stays unprocessed either
+        # way, so the cron still re-reads the authoritative state.
+        logger.warning(
+            "Flash unreachable while processing event %s; trying the payload "
+            "fallback",
+            recorded.event_id,
+        )
+        await _record_failure(db, recorded.event_id, err)
+        await apply_payload_fallback(
+            db, event=recorded.event, external_ref=recorded.external_ref
+        )
     except Exception as err:
-        # Includes an unreachable Flash. The event is already durable, so the
-        # reconcile loop will settle this subscriber later; failing the response
-        # would only make Flash redeliver something we hold.
         logger.exception(
             "Entitlement failed for %s; the event is recorded and replayable",
             recorded.external_ref,
         )
         await _record_failure(db, recorded.event_id, err)
-    return recorded
+
+
+# In-process attempts for a transient database failure — a deadlock, a
+# serialization abort, a connection blip. Safe to retry whole because the write
+# is convergent; anything past the cap is the cron's job.
+_DB_RETRIES = 3
+
+
+async def _apply_with_db_retries(
+    db: AsyncDBSession, *, external_ref: str | None, subscription_id: str | None
+):
+    for attempt in range(1, _DB_RETRIES + 1):
+        try:
+            return await apply_entitlement(
+                db, external_ref=external_ref, subscription_id=subscription_id
+            )
+        except (OperationalError, InterfaceError):
+            if attempt == _DB_RETRIES:
+                raise
+            await db.rollback()
+            await asyncio.sleep(0.1 * attempt)
+    raise AssertionError("unreachable")
 
 
 async def _record_failure(

@@ -77,7 +77,7 @@ def upgrade() -> None:
     sa.Column('trial_end_date', sa.DateTime(), nullable=True),
     sa.Column('cancel_effective_date', sa.DateTime(), nullable=True),
     sa.Column('rail', sa.String(), nullable=True),
-    sa.Column('email', sa.String(), nullable=True),
+    sa.Column('last_event_at', sa.DateTime(), nullable=True),
     sa.Column('last_synced_at', sa.DateTime(), nullable=True),
     sa.Column('last_sync_error', sa.String(), nullable=True),
     sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
@@ -86,7 +86,6 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['granted_scheduling_id'], ['scheduling.id'], ),
     sa.PrimaryKeyConstraint('pubkey')
     )
-    op.create_index(op.f('ix_user_subscription_email'), 'user_subscription', ['email'], unique=False)
     op.create_index(op.f('ix_user_subscription_flash_subscription_id'), 'user_subscription', ['flash_subscription_id'], unique=False)
     op.add_column('brainstorm_nsec', sa.Column('billing_blocked', sa.Boolean(), server_default='false', nullable=False))
     op.add_column('brainstorm_nsec', sa.Column('scheduling_source', sa.String(), server_default='default', nullable=False))
@@ -96,7 +95,6 @@ def downgrade() -> None:
     op.drop_column('brainstorm_nsec', 'scheduling_source')
     op.drop_column('brainstorm_nsec', 'billing_blocked')
     op.drop_index(op.f('ix_user_subscription_flash_subscription_id'), table_name='user_subscription')
-    op.drop_index(op.f('ix_user_subscription_email'), table_name='user_subscription')
     op.drop_table('user_subscription')
     op.drop_table('billing_plan')
     op.drop_index(op.f('ix_flash_webhook_event_subscription_id'), table_name='flash_webhook_event')

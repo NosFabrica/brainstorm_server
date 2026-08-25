@@ -6,7 +6,8 @@ confer general administration — see `app/core/billing_admin_whitelist.py`.
 
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import paginate
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -14,9 +15,23 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.billing_admin_whitelist import get_billing_pubkeys
 from app.core.database import get_db
 from app.core.loggr import loggr
-from app.repos.billing_repo import build_billing_subscriptions_stmt
-from app.schemas.schemas import BillingSubscriptionItem, DivergenceSection
-from app.services.billing_service import apply_entitlement, utc_now
+from app.repos.user_subscription_repo import build_billing_subscriptions_stmt
+from app.schemas.schemas import (
+    BillingBlockOutcome,
+    BillingPlanItem,
+    BillingSubscriptionItem,
+    CreateBillingPlanBody,
+    DivergenceSection,
+    UpdateBillingPlanBody,
+)
+from app.services.billing_service import (
+    apply_entitlement,
+    create_billing_plan,
+    list_billing_plans_admin,
+    set_billing_block,
+    update_billing_plan,
+    utc_now,
+)
 from app.services.billing_visibility_service import (
     build_divergence_response,
     build_payment_history_csv,
@@ -83,6 +98,73 @@ async def resync_subscription_endpoint(
     return {"applied": outcome.applied, "reason": outcome.reason.value}
 
 
+@router.post(
+    path="/subscriptions/{pubkey}/block",
+    response_model=BillingBlockOutcome,
+    summary="Billing: bar a user from paid entitlement",
+)
+async def block_subscription_endpoint(
+    pubkey: str,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    outcome = await set_billing_block(db, pubkey, blocked=True)
+    if not outcome.found:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
+    return BillingBlockOutcome(pubkey=pubkey, blocked=True, revoked=outcome.revoked)
+
+
+@router.delete(
+    path="/subscriptions/{pubkey}/block",
+    response_model=BillingBlockOutcome,
+    summary="Billing: lift the bar; the next event or resync re-grants",
+)
+async def unblock_subscription_endpoint(
+    pubkey: str,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    outcome = await set_billing_block(db, pubkey, blocked=False)
+    if not outcome.found:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
+    return BillingBlockOutcome(pubkey=pubkey, blocked=False, revoked=False)
+
+
+@router.get(
+    path="/plans",
+    response_model=list[BillingPlanItem],
+    summary="Billing: every plan mapping, active or not",
+)
+async def list_billing_plans_admin_endpoint(
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    return await list_billing_plans_admin(db)
+
+
+@router.post(
+    path="/plans",
+    response_model=BillingPlanItem,
+    status_code=status.HTTP_201_CREATED,
+    summary="Billing: map a Flash plan to what it grants",
+)
+async def create_billing_plan_endpoint(
+    body: CreateBillingPlanBody,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    return await create_billing_plan(db, body.model_dump())
+
+
+@router.patch(
+    path="/plans/{plan_id}",
+    response_model=BillingPlanItem,
+    summary="Billing: retune a plan mapping",
+)
+async def update_billing_plan_endpoint(
+    plan_id: int,
+    body: UpdateBillingPlanBody,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    return await update_billing_plan(db, plan_id, body.model_dump(exclude_none=True))
+
+
 @router.get(
     path="/export.csv",
     summary="Billing: payment history for accounting",
@@ -102,8 +184,8 @@ async def export_payment_history_endpoint(
         until=until or now,
         limit=limit,
     )
-    return Response(
-        content=csv_text,
+    return StreamingResponse(
+        iter([csv_text]),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="flash-payments.csv"'},
     )

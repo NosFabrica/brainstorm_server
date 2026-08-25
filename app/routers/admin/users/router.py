@@ -7,7 +7,7 @@ from nostr_sdk import Keys
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
-from app.db_models import TriggerSource
+from app.db_models import SchedulingSource, TriggerSource
 from app.repos.brainstorm_request_repo import (
     build_recent_active_pubkeys_stmt,
     build_recent_brainstorm_requests_stmt,
@@ -107,7 +107,7 @@ async def set_user_scheduling_endpoint(
             detail=f"Unknown scheduling policy id {body.scheduling_id}",
         )
     await set_scheduling_for_pubkey_on_db(
-        db, pubkey, body.scheduling_id, source="admin"
+        db, pubkey, body.scheduling_id, source=SchedulingSource.ADMIN.value
     )
     scheduling = await get_scheduling_on_db(db, body.scheduling_id)
     return AdminUserDetail(

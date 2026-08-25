@@ -134,14 +134,14 @@ def test_recording_a_failure_advances_the_read_clock(monkeypatch):
     """Candidates are ordered oldest-read-first and the batch is bounded, so a
     handful of permanent failures would otherwise hold the front of the queue
     forever and nobody else would ever be reconciled."""
-    from app.repos.billing_repo import record_sync_failure_on_db
+    from app.repos.user_subscription_repo import record_sync_failure_on_db
 
     captured = {}
 
     async def _capture(db, statement, name):
         captured["values"] = dict(statement.compile().params)
 
-    monkeypatch.setattr("app.repos.billing_repo.execute_db_statement", _capture)
+    monkeypatch.setattr("app.repos.user_subscription_repo.execute_db_statement", _capture)
 
     asyncio.run(record_sync_failure_on_db(AsyncMock(), PUBKEY, "vault down"))
 
