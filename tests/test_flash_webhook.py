@@ -440,7 +440,11 @@ def test_webhook_route_is_mounted_when_payments_are_configured(monkeypatch):
 
     include_billing_routers(bare)
 
-    assert [route.path for route in bare.routes] == ["/webhooks/flash"]
+    paths = [route.path for route in bare.routes]
+    assert "/webhooks/flash" in paths
+    # The operator surface is mounted by the same switch: a deployment with no
+    # Flash account has no billing to look at.
+    assert any(path.startswith("/admin/billing") for path in paths)
 
 
 def test_enabling_payments_without_credentials_fails_fast():
@@ -476,7 +480,12 @@ def test_a_delivery_we_finished_is_marked_so_replay_skips_it(
     webhook_client, insert_event, entitlement, monkeypatch
 ):
     from unittest.mock import AsyncMock as _AsyncMock
+    from app.services.billing_service import EntitlementReason
+    from types import SimpleNamespace
 
+    entitlement.return_value = SimpleNamespace(
+        applied=True, reason=EntitlementReason.GRANTED
+    )
     marked = _AsyncMock()
     monkeypatch.setattr(
         "app.services.flash_webhook_service.mark_webhook_event_processed_on_db", marked
@@ -487,6 +496,34 @@ def test_a_delivery_we_finished_is_marked_so_replay_skips_it(
 
     marked.assert_awaited_once()
     assert marked.await_args.args[1] == 1
+
+
+def test_a_delivery_that_settled_nothing_is_surfaced_not_marked_done(
+    webhook_client, insert_event, entitlement, monkeypatch
+):
+    """An event naming nobody we know would otherwise be marked processed and
+    disappear — the divergence report is where an operator finds it."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    from app.services.billing_service import EntitlementReason
+    from types import SimpleNamespace
+
+    entitlement.return_value = SimpleNamespace(
+        applied=False, reason=EntitlementReason.UNKNOWN_USER
+    )
+    marked, failed = _AsyncMock(), _AsyncMock()
+    monkeypatch.setattr(
+        "app.services.flash_webhook_service.mark_webhook_event_processed_on_db", marked
+    )
+    monkeypatch.setattr(
+        "app.services.flash_webhook_service.record_webhook_event_failure_on_db", failed
+    )
+    raw = _body()
+
+    webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
+
+    marked.assert_not_awaited()
+    failed.assert_awaited_once()
+    assert failed.await_args.args[2] == "unknown_user"
 
 
 def test_a_delivery_that_failed_is_left_for_replay(

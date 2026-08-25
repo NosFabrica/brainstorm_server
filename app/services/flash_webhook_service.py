@@ -22,8 +22,9 @@ from app.core.loggr import loggr
 from app.repos.billing_repo import (
     insert_flash_webhook_event_on_db,
     mark_webhook_event_processed_on_db,
+    record_webhook_event_failure_on_db,
 )
-from app.services.billing_service import apply_entitlement, utc_now
+from app.services.billing_service import SETTLED_REASONS, apply_entitlement, utc_now
 
 logger = loggr.get_logger(__name__)
 
@@ -266,17 +267,24 @@ async def handle_delivery(
         return recorded
 
     try:
-        await apply_entitlement(
+        outcome = await apply_entitlement(
             db,
             external_ref=recorded.external_ref,
             subscription_id=recorded.subscription_id,
         )
         if recorded.event_id is not None:
-            # Marked done so the replay pass doesn't redo work that succeeded.
-            # Left unmarked on failure: that is precisely what replay is for.
-            await mark_webhook_event_processed_on_db(
-                db, recorded.event_id, now=utc_now()
-            )
+            if outcome.reason in SETTLED_REASONS:
+                # Marked done so replay doesn't redo work that succeeded.
+                await mark_webhook_event_processed_on_db(
+                    db, recorded.event_id, now=utc_now()
+                )
+            else:
+                # Nothing was decided — the event names nobody we know, or a
+                # plan we don't map. Left unprocessed with a reason so it
+                # surfaces to an operator instead of disappearing.
+                await record_webhook_event_failure_on_db(
+                    db, recorded.event_id, outcome.reason.value
+                )
             await db.commit()
     except Exception:
         # Includes an unreachable Flash. The event is already durable, so the

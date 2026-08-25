@@ -45,6 +45,7 @@ from app.cronjobs.periodic_graperank_trigger import (
 from app.cronjobs.scheduler import scheduler_cronjob
 
 from app.core.admin_whitelist import init_admin_whitelist
+from app.core.billing_admin_whitelist import init_billing_admin_whitelist
 
 logger = loggr.get_logger(__name__)
 
@@ -75,6 +76,7 @@ async def lifespan(app: FastAPI):
 
     # initialize admin whitelist cache and log config
     init_admin_whitelist()
+    init_billing_admin_whitelist()
 
     # test connectivity with Neo4j
     await test_neo4j_driver()

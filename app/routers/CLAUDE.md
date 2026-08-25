@@ -25,6 +25,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/authChallenge` | `auth_challenge/` | none (this IS auth) |
 | `/setup` | `setup/` | none |
 | `/search` | `search/` | none — see [search/CLAUDE.md → vespa](../core/CLAUDE.md) |
+| `/admin/billing` | `admin/billing/` | `verify_token` + **`verify_billing_access`** — its own list, NOT `verify_admin_access`. Mounted outside `admin_router` on purpose: being on the billing list must not confer general administration, and turning admin routes off must not blind whoever handles payments. Also only mounted when `flash_enabled` |
 | `/webhooks` | `webhooks/` | none — HMAC-signed by the sender. **Only mounted when `flash_enabled`** (see `include_billing_routers` in `router.py`), so it does not exist on deployments without payments |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
@@ -45,6 +46,7 @@ Defined in `app/utils/api_validators.py` (not here).
   - JWT bearer (`Authorization: Bearer <token>` or legacy `access_token` header), OR
   - **NIP-98** signed Nostr event (`Authorization: Nostr <base64-event>`).
   - On success sets `request.state.jwt_data: JWTData` (pubkey, expiry, is_admin).
+- **`verify_billing_access`** — Defined in `admin/billing/router.py`. Checks `app.core.billing_admin_whitelist.get_billing_pubkeys()`, which falls back to the admin whitelist when `billing_admin_whitelisted_pubkeys` is unset. Deliberately **not** coupled to `admin_enabled`: these views carry subscriber email, and whoever answers "did my payment go through?" should not thereby inherit nsec key rotation.
 - **`verify_admin_access`** — Defined in `admin/router.py`. Checks `request.state.jwt_data.nostr_pubkey` against the in-memory admin whitelist (`app.core.admin_whitelist.get_whitelisted_pubkeys`, hydrated at startup from `settings.admin_whitelisted_pubkeys`).
 - Applied via `.include_router(..., dependencies=[Depends(verify_token), Depends(verify_admin_access)])` rather than per-handler.
 
@@ -122,6 +124,19 @@ is `/connections`' `min_influence` — a client cannot supply a threshold at all
 `/stats` returns the verified *counts*; `/overview` returns no count of its own,
 only the subject's own verdict and the two flagged fields; `/connections` rows
 each carry their own `verified` / `tier`. All of them sit on the same line.
+
+### `admin/billing/router.py` — billing visibility
+
+Gated by `verify_billing_access` (see Authentication). Answers one question in
+two halves: what Flash says we are charging someone, and what the scheduler
+actually gives them. Where those disagree is the bug.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/subscriptions` | `Page[BillingSubscriptionItem]`. `flash_status` and `scheduling_name` are separate fields on purpose — collapsing them would hide the disagreement |
+| GET | `/divergence` | Seven categories of unsettled state, each `{count, truncated, rows}`. Capped at 200 rows: a report nobody can open is no use on the day it matters |
+| POST | `/subscriptions/{pubkey}/resync` | Re-reads one subscriber from Flash now |
+| GET | `/export.csv` | Payment history for accounting, defaulting to the last 90 days. Read out of stored renewal events — deliberately not a second ledger |
 
 ### `graperank/router.py` — GrapeRank presets
 

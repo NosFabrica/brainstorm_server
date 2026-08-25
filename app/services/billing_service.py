@@ -9,26 +9,17 @@ an unrecognised status or an unmapped plan all leave the policy alone.
 
 import enum
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
-from app.core.flash import (
-    FlashCredentialError,
-    FlashSubscription,
-    FlashUnavailable,
-    fetch_subscription,
-)
+from app.core.flash import FlashSubscription, fetch_subscription
 from app.core.loggr import loggr
 from app.db_models import BillingPlan, SchedulingSource
 from app.repos.billing_repo import (
-    clear_granted_scheduling_on_db,
     get_billing_plan_on_db,
     get_user_subscription_on_db,
     lock_user_for_update_on_db,
-    record_sync_failure_on_db,
-    select_entitlement_candidates_on_db,
-    select_reconcile_candidates_on_db,
     upsert_user_subscription_on_db,
 )
 from app.repos.brainstorm_nsec import (
@@ -69,6 +60,20 @@ class EntitlementReason(enum.Enum):
     UNKNOWN_SUBSCRIPTION = "unknown_subscription"
     REFERENCE_MISMATCH = "reference_mismatch"
     BUSY = "busy"
+
+
+# Outcomes that actually decided something. Anything else leaves the event
+# unmarked so it surfaces to an operator rather than being quietly discarded.
+# Shared by the live path and the replay pass so they cannot disagree.
+SETTLED_REASONS = frozenset(
+    {
+        EntitlementReason.GRANTED,
+        EntitlementReason.REVOKED,
+        EntitlementReason.HELD,
+        EntitlementReason.BLOCKED,
+        EntitlementReason.ADMIN_OVERRIDE,
+    }
+)
 
 
 @dataclass(frozen=True)

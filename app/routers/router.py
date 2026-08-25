@@ -17,6 +17,8 @@ from app.routers.search.router import router as search_router
 from app.routers.setup.router import router as setup_router
 from app.routers.user.router import router as user_router
 from app.routers.user.router import public_router as public_user_router
+from app.routers.admin.billing.router import router as billing_admin_router
+from app.routers.admin.billing.router import verify_billing_access
 from app.routers.webhooks.flash import router as flash_webhook_router
 from app.core.config import settings
 from app.schemas.request_response_schemas import (
@@ -50,6 +52,18 @@ def include_billing_routers(target: APIRouter) -> None:
         router=flash_webhook_router,
         prefix="/webhooks",
         tags=["webhooks"],
+    )
+    # Deliberately NOT under admin_router: that applies verify_admin_access,
+    # which would mean nobody could hold billing access without also holding
+    # general administration — the opposite of the separation this exists for.
+    # Registered before admin_router so the more specific prefix is matched
+    # first; admin's sub-routers all use fixed prefixes, so neither shadows the
+    # other either way.
+    target.include_router(
+        router=billing_admin_router,
+        prefix="/admin/billing",
+        dependencies=[Depends(verify_token), Depends(verify_billing_access)],
+        tags=["admin-billing"],
     )
 
 

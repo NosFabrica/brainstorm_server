@@ -32,6 +32,7 @@ from app.repos.brainstorm_nsec import (
 )
 from app.services.flash_webhook_service import delivery_target
 from app.services.billing_service import (
+    SETTLED_REASONS,
     EntitlementDecision,
     EntitlementReason,
     _is_admin_held,
@@ -103,18 +104,6 @@ async def revoke_lapsed_entitlements(
 
     return revoked
 
-
-# Outcomes that actually decided something. Anything else leaves the event
-# unmarked so it comes back round rather than being quietly discarded.
-_SETTLED_REASONS = frozenset(
-    {
-        EntitlementReason.GRANTED,
-        EntitlementReason.REVOKED,
-        EntitlementReason.HELD,
-        EntitlementReason.BLOCKED,
-        EntitlementReason.ADMIN_OVERRIDE,
-    }
-)
 
 # Outcomes where Flash answered but nothing was written — so nothing recorded
 # that we asked, and the candidate ordering would keep re-asking about them.
@@ -246,7 +235,7 @@ async def replay_unprocessed_events(
                 subscription_id=target.subscription_id,
                 yield_if_busy=True,
             )
-            if outcome.reason not in _SETTLED_REASONS:
+            if outcome.reason not in SETTLED_REASONS:
                 # Nothing was decided — a live delivery holds this subscriber, or
                 # the event names nobody we know. Marking it done would discard
                 # the work; leaving it brings it back once the claim goes stale.

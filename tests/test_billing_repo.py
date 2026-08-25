@@ -36,6 +36,7 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
         return SimpleNamespace(
             scalar_one_or_none=lambda: None,
             scalars=lambda: SimpleNamespace(all=lambda: []),
+            all=lambda: [],
             rowcount=0,
         )
 
@@ -71,6 +72,10 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
         "older_than": NOW,
         "max_attempts": 5,
         "limit": 10,
+        "known": ["active"],
+        "admin_held": False,
+        "since": NOW,
+        "until": NOW,
     }
 
     functions = [

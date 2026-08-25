@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.schemas.error_codes import ErrorCode
 
@@ -226,3 +226,36 @@ class UserSectionsStats(BaseModel):
     muting: ConnectionStats
     reported_by: ConnectionStats
     reporting: ConnectionStats
+
+
+class BillingSubscriptionItem(BaseModel):
+    """One subscriber, with the two questions kept apart: `flash_status` is what
+    Flash says we are charging them, `scheduling_name` is what the scheduler
+    actually gives them. Disagreement between them is the bug."""
+
+    pubkey: str
+    flash_status: str
+    # Flash's own id, so an operator can deep-link into the vault rather than
+    # reading our copy of what it says.
+    flash_subscription_id: str | None = None
+    email: str | None = None
+    current_period_end: datetime | None = None
+    last_synced_at: datetime | None = None
+    last_sync_error: str | None = None
+    granted_scheduling_id: int | None = None
+    granted_scheduling_name: str | None = None
+    scheduling_id: int | None = None
+    scheduling_name: str | None = None
+    scheduling_source: str
+    billing_blocked: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DivergenceSection(BaseModel):
+    """One kind of disagreement. `truncated` is explicit because a capped list
+    that looks complete is worse than one that admits it isn't."""
+
+    count: int
+    truncated: bool
+    rows: list[dict]

@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     billing_payload_retention_days: int = Field(default=90)
     # Replay attempts before an event is left for a human rather than retried.
     billing_replay_max_attempts: int = Field(default=5)
+    # Who may see billing. Empty = fall back to admin_whitelisted_pubkeys.
+    billing_admin_whitelisted_pubkeys: str = Field(default="")
+    # A subscriber not read from Flash within this is reported as stale.
+    billing_stale_sync_hours: int = Field(default=24)
     vespa_url: str = Field(...)
     # Per-sink publish mode. False (default) = only changed scores; True =
     # re-assert every above-cutoff score each run. Re-assertion only, not deletes.

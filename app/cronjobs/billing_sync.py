@@ -38,8 +38,6 @@ from app.services.leader_lock import (
 logger = loggr.get_logger(__name__)
 
 
-
-
 async def billing_sync_cronjob() -> None:
     if not settings.billing_sync_active:
         logger.info("Billing sync inactive; not starting")
