@@ -4,8 +4,8 @@ to decide whether someone is paid; that comes from Flash's API."""
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Integer, String, and_, case, cast, func, or_, select, update
-from sqlalchemy.dialects.postgresql import array
+from sqlalchemy import Integer, String, Text, and_, case, cast, func, or_, select, update
+from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
@@ -152,11 +152,16 @@ async def prune_webhook_payloads_on_db(
     accounting export reads — silently emptying history at the retention
     boundary. The row, its dedupe key and its audit trail were never at risk.
     """
+    # Delete the keys (`#-`) rather than setting them null. jsonb_set is STRICT,
+    # so a null new_value nulls the WHOLE payload — taking the amounts the
+    # accounting export reads with it, which is the failure this function exists
+    # to avoid. Deleting also makes the run idempotent: a key set to null still
+    # satisfies the `?|` predicate below, so those rows would be rewritten every
+    # cycle forever. The path is text[]; a bound string arrives as varchar and
+    # Postgres will not coerce that to an array type, hence the explicit cast.
     redacted: Any = FlashWebhookEvent.payload
     for field in PERSONAL_PAYLOAD_FIELDS:
-        redacted = func.jsonb_set(
-            redacted, f"{{data,{field}}}", func.to_jsonb(cast(None, String))
-        )
+        redacted = redacted.op("#-")(cast(array(["data", field]), ARRAY(Text)))
 
     statement = (
         update(FlashWebhookEvent)
