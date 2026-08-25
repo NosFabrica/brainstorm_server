@@ -1,4 +1,5 @@
 import enum
+from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
@@ -209,6 +210,39 @@ class Scheduling(TimestampMixin, Base):
             postgresql_where=text("is_default"),
         ),
     )
+
+
+# Inbound Flash webhooks. An inbox, not a ledger — never read to decide whether
+# someone is paid; that comes from Flash's API. It collapses Flash's retries,
+# recovers events we acknowledged then dropped, and preserves statuses we don't
+# yet map. Rows are committed before the 200, because Flash stops retrying after
+# a few attempts and never replays.
+class FlashWebhookEvent(TimestampMixin, Base):
+    __tablename__ = "flash_webhook_event"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Unconstrained: unrecognised events are recorded, never rejected.
+    event: Mapped[str] = mapped_column(String, nullable=False)
+    # When the event happened, per Flash's body. The ordering signal.
+    event_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # When Flash *attempted delivery*, from the signature header. A retry of an
+    # old event carries a newer value, so this orders nothing — audit only.
+    delivery_timestamp: Mapped[int] = mapped_column(Integer, nullable=False)
+    subscription_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Claimed by a worker, so the recovery sweep can tell "in progress" from
+    # "abandoned". Written from the entitlement slice onward.
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    process_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Identity of one delivery. UNIQUE is what makes a retry a no-op.
+    dedupe_key: Mapped[str] = mapped_column(String, nullable=False, unique=True)
 
 
 # Built-in GrapeRank presets. One row per template (DEFAULT, PERMISSIVE, RESTRICTIVE).

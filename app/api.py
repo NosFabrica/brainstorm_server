@@ -28,6 +28,7 @@ from app.core.vespa import aclose as vespa_aclose
 from app.routers.open_ranking.errors import install_ore_error_handlers
 from app.routers.router import router as main_router
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
+from app.services.flash_webhook_service import validate_flash_config
 from app.services.nsec_encryption_service import bootstrap_keys
 from app.nostr_event_transferer.nostr_event_transferer import (
     nostr_event_recent_transferer_cronjob,
@@ -59,6 +60,15 @@ if True:  # settings.deploy_environment == DEPLOY_ENVIRONMENT_LOCAL:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Refuse to start half-configured: booting with payments enabled but no
+    # credentials looks healthy, then fails as a webhook silently rejecting every
+    # delivery while payments pile up unprocessed.
+    validate_flash_config(
+        enabled=settings.flash_enabled,
+        api_key=settings.flash_api_key,
+        webhook_secret=settings.flash_webhook_secret,
+    )
+
     await bootstrap_keys()
 
     # initialize admin whitelist cache and log config

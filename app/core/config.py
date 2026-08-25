@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     # Priority-weighted admission (w=priority+1). Off = strict highest-first.
     scheduler_fairness_enabled: bool = Field(default=False)
     periodic_graperank_pubkey: str = Field(default="")
+    # Flash payments. Off by default so self-hosted and one-click deployments —
+    # which have no Flash account — never mount the surface at all. Enabling it
+    # without credentials refuses to start (see flash_webhook_service).
+    flash_enabled: bool = Field(default=False)
+    flash_base_url: str = Field(default="https://dev.server.vault.paywithflash.com")
+    flash_api_key: str = Field(default="")
+    flash_webhook_secret: str = Field(default="")
+    # Replay window for webhook signatures, per Flash's own reference handler.
+    flash_webhook_tolerance_seconds: int = Field(default=300)
     vespa_url: str = Field(...)
     # Per-sink publish mode. False (default) = only changed scores; True =
     # re-assert every above-cutoff score each run. Re-assertion only, not deletes.

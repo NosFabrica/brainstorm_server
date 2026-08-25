@@ -17,6 +17,8 @@ from app.routers.search.router import router as search_router
 from app.routers.setup.router import router as setup_router
 from app.routers.user.router import router as user_router
 from app.routers.user.router import public_router as public_user_router
+from app.routers.webhooks.flash import router as flash_webhook_router
+from app.core.config import settings
 from app.schemas.request_response_schemas import (
     GetWhitelistedPubkeysOfObserverResponse,
     WhitelistedPubkeys,
@@ -31,6 +33,27 @@ from app.utils.api_validators import verify_token
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 router = APIRouter()
+
+
+def include_billing_routers(target: APIRouter) -> None:
+    """Mount the payment surface only where payments are configured.
+
+    Registration rather than per-handler guards: an unmounted path 404s for
+    free, there is one decision instead of one per endpoint, and the
+    unauthenticated webhook receiver does not *exist* on the self-hosted and
+    one-click deployments that have no Flash account — rather than existing and
+    rejecting.
+    """
+    if not settings.flash_enabled:
+        return
+    target.include_router(
+        router=flash_webhook_router,
+        prefix="/webhooks",
+        tags=["webhooks"],
+    )
+
+
+include_billing_routers(router)
 
 # Open Ranking provider (OREs 01/02/03/05/06/07). Mounted at root because the
 # protocol mandates exact paths (e.g. /.well-known/open-ranking.json,
