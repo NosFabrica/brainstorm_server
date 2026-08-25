@@ -72,7 +72,16 @@ def insert_event(monkeypatch) -> AsyncMock:
 
 
 @pytest.fixture
-def webhook_client(client, monkeypatch):
+def entitlement(monkeypatch) -> AsyncMock:
+    """Stubbed — this file is about receiving and recording. What entitlement
+    then does with the delivery is tests/test_flash_entitlement.py."""
+    mock = AsyncMock()
+    monkeypatch.setattr("app.services.flash_webhook_service.apply_entitlement", mock)
+    return mock
+
+
+@pytest.fixture
+def webhook_client(client, monkeypatch, entitlement):
     from app.api import app
 
     async def _fake_get_db():
@@ -283,6 +292,40 @@ def test_stale_delivery_is_refused_even_with_a_valid_signature(
 
     assert response.status_code == 400
     insert_event.assert_not_awaited()
+
+
+def test_a_recorded_delivery_is_handed_to_entitlement(webhook_client, insert_event, entitlement):
+    raw = _body()
+
+    webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
+
+    entitlement.assert_awaited_once()
+    assert entitlement.await_args.kwargs["external_ref"] == "user_18342"
+    assert entitlement.await_args.kwargs["subscription_id"] == "7d3b"
+
+
+def test_a_retry_is_still_reconciled(webhook_client, insert_event, entitlement):
+    """Skipping it would strand anyone whose first attempt failed — the write is
+    convergent, so repeating it costs nothing, and no recovery sweep exists yet."""
+    insert_event.return_value = False  # already recorded
+    raw = _body()
+
+    webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
+
+    entitlement.assert_awaited_once()
+
+
+def test_a_failing_entitlement_still_acknowledges_the_delivery(
+    webhook_client, insert_event, entitlement
+):
+    """The event is already durable. A non-2xx would only make Flash redeliver
+    something we hold — and it gives up after a few tries."""
+    entitlement.side_effect = RuntimeError("neo4j is on fire")
+    raw = _body()
+
+    response = webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
+
+    assert response.status_code == 200
 
 
 def test_retried_delivery_is_acknowledged_without_duplicating(

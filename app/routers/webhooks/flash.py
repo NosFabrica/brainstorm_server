@@ -16,7 +16,7 @@ from app.core.loggr import loggr
 from app.services.flash_webhook_service import (
     SIGNATURE_HEADER,
     FlashSignatureError,
-    record_delivery,
+    handle_delivery,
     verify_delivery,
 )
 
@@ -51,7 +51,7 @@ async def receive_flash_webhook(
         logger.warning("Flash webhook rejected: %s", rejected.reason)
         raise HTTPException(status_code=rejected.status_code, detail=rejected.reason)
 
-    recorded = await record_delivery(
+    recorded = await handle_delivery(
         db, raw_body=raw_body, delivery_timestamp=parts.timestamp
     )
     # Body is not wrapped in SuccessfulResponseDataSchema: like the .well-known

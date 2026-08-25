@@ -94,6 +94,44 @@ Append-only audit log. Same 11 params plus `change_type`, `changed_by`,
 `changed_at`. No `updated_at` — history rows don't mutate. Repos in
 `app/repos/graperank_preset_repo.py` enforce the append.
 
+### `BillingPlan` — `billing_plan`
+
+What a Flash plan grants. Data rather than config: dev and production are separate
+Flash vaults with different UUIDs, so the mapping travels with the database.
+
+| Column | Type | Notes |
+|---|---|---|
+| `flash_service_id` + `flash_plan_id` | str, **UNIQUE together** | Flash's own identifiers; how an inbound subscription is matched to a plan |
+| `subscription_tier` | str | `free \| priority`. **Named in full on purpose** — `tier` alone already means the GrapeRank influence bands (see `CONTEXT.md`) |
+| `scheduling_id` | int FK → `scheduling.id` | the policy this plan grants — the *rule* |
+| `amount_minor` | int | minor units, as Flash sends them: `200` = $2.00. Never floats |
+
+### `UserSubscription` — `user_subscription`
+
+Why a user is on the tier they're on, one row per pubkey. **Never consulted to
+decide whether someone is paid** — that is the scheduling assignment, and Flash's
+API is the authority.
+
+| Column | Type | Notes |
+|---|---|---|
+| `granted_scheduling_id` | int FK → `scheduling.id`, nullable | what we *actually granted*, distinct from `billing_plan.scheduling_id` (the rule). They diverge the moment a plan is retuned; revocation removes this, and the divergence report compares it against the live assignment |
+| `flash_status` | str | Flash's status **verbatim and unvalidated** — their set is documented as open, so an unrecognised value must land here intact rather than be coerced |
+| `current_period_end` / `cancel_effective_date` | DateTime | when entitlement lapses |
+
+### `FlashWebhookEvent` — `flash_webhook_event`
+
+An **inbox, not a ledger**. Never read to decide who is paid; it exists to collapse
+Flash's retries, recover events we acknowledged then dropped, and preserve statuses
+we don't yet map. Rows commit *before* the webhook is acknowledged — Flash stops
+retrying after a few attempts and never replays.
+
+| Column | Type | Notes |
+|---|---|---|
+| `dedupe_key` | str **UNIQUE** | identity of one delivery; the constraint is what makes a retry a no-op |
+| `event_timestamp` | DateTime | when the event *happened*, from Flash's body — the ordering signal |
+| `delivery_timestamp` | int | when Flash *attempted delivery*, from the signature header. Orders nothing: a retry of an old event carries a newer value |
+| `processing_started_at` / `processed_at` / `attempts` | — | claimed/finished markers for the recovery sweep |
+
 ## Adding a new table
 
 1. New `class Foo(TimestampMixin, Base): __tablename__ = "foo"` in `__init__.py`.

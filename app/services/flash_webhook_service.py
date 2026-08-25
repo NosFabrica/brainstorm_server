@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.loggr import loggr
 from app.repos.billing_repo import insert_flash_webhook_event_on_db
+from app.services.billing_service import apply_entitlement
 
 logger = loggr.get_logger(__name__)
 
@@ -61,6 +62,7 @@ class SignatureParts:
 class RecordedDelivery:
     event: str
     subscription_id: str | None
+    external_ref: str | None
     duplicate: bool
 
 
@@ -189,6 +191,7 @@ async def record_delivery(
     """
     event, data, payload = _read_body(raw_body)
     subscription_id = data.get("subscriptionId")
+    external_ref = data.get("externalRef")
 
     inserted = await insert_flash_webhook_event_on_db(
         db,
@@ -208,8 +211,42 @@ async def record_delivery(
         not inserted,
     )
     return RecordedDelivery(
-        event=event, subscription_id=subscription_id, duplicate=not inserted
+        event=event,
+        subscription_id=subscription_id,
+        external_ref=external_ref,
+        duplicate=not inserted,
     )
+
+
+async def handle_delivery(
+    db: AsyncDBSession, *, raw_body: bytes, delivery_timestamp: int
+) -> RecordedDelivery:
+    """Record an authenticated delivery, then reconcile the subscriber.
+
+    Entitlement runs after the record has committed, and its failure is never
+    allowed to change the answer: the event is already durable, so a non-2xx
+    would only make Flash redeliver something we already hold. A delivery left
+    unreconciled is recoverable; one Flash gave up on is not.
+    """
+    recorded = await record_delivery(
+        db, raw_body=raw_body, delivery_timestamp=delivery_timestamp
+    )
+
+    # Reconciled even when the record is a duplicate: the write is convergent, so
+    # repeating it is harmless, and until the recovery sweep exists a retry is
+    # the only second chance a failed first attempt gets.
+    try:
+        await apply_entitlement(
+            db,
+            external_ref=recorded.external_ref,
+            subscription_id=recorded.subscription_id,
+        )
+    except Exception:
+        logger.exception(
+            "Entitlement failed for %s; the event is recorded and replayable",
+            recorded.external_ref,
+        )
+    return recorded
 
 
 def validate_flash_config(enabled: bool, api_key: str, webhook_secret: str) -> None:

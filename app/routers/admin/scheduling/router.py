@@ -106,7 +106,7 @@ async def bulk_assign_scheduling_users_endpoint(
     if not await scheduling_exists_on_db(db, scheduling_id):
         raise HTTPException(status_code=404, detail="Scheduling policy not found")
     assigned = await bulk_set_scheduling_for_pubkeys_on_db(
-        db, body.pubkeys, scheduling_id
+        db, body.pubkeys, scheduling_id, source="admin"
     )
     return {"assigned": assigned}
 

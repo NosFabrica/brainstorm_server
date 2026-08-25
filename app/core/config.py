@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     flash_base_url: str = Field(default="https://dev.server.vault.paywithflash.com")
     flash_api_key: str = Field(default="")
     flash_webhook_secret: str = Field(default="")
+    # Kept well under Flash's 10s webhook-ack budget: entitlement currently runs
+    # inline, so this call sits inside that window.
+    flash_http_timeout_seconds: float = Field(default=5.0)
     # Replay window for webhook signatures, per Flash's own reference handler.
     flash_webhook_tolerance_seconds: int = Field(default=300)
     vespa_url: str = Field(...)

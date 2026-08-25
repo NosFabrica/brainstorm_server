@@ -106,7 +106,9 @@ async def set_user_scheduling_endpoint(
             status_code=422,
             detail=f"Unknown scheduling policy id {body.scheduling_id}",
         )
-    await set_scheduling_for_pubkey_on_db(db, pubkey, body.scheduling_id)
+    await set_scheduling_for_pubkey_on_db(
+        db, pubkey, body.scheduling_id, source="admin"
+    )
     scheduling = await get_scheduling_on_db(db, body.scheduling_id)
     return AdminUserDetail(
         pubkey=pubkey,

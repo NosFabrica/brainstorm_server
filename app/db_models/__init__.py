@@ -29,6 +29,14 @@ class BrainstormRequestStatus(enum.Enum):
     FAILURE = "failure"
 
 
+class SchedulingSource(enum.Enum):
+    """Who put a user on their scheduling policy. Billing declines to overrule ADMIN."""
+
+    DEFAULT = "default"
+    BILLING = "billing"
+    ADMIN = "admin"
+
+
 class TriggerSource(enum.Enum):
     MANUAL = "manual"
     SCHEDULED = "scheduled"
@@ -161,6 +169,14 @@ class BrainstormNsec(TimestampMixin, Base):
         ForeignKey("scheduling.id"),
         nullable=True,
     )
+    # See SchedulingSource. Billing only overwrites when this isn't ADMIN, so a
+    # comped user survives a lapse and stays distinguishable from a bug.
+    scheduling_source: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        server_default=SchedulingSource.DEFAULT.value,
+        default=SchedulingSource.DEFAULT.value,
+    )
 
 
 # Scheduling policies ("tiers"). DB-driven so policies (and their config) can be
@@ -210,6 +226,62 @@ class Scheduling(TimestampMixin, Base):
             postgresql_where=text("is_default"),
         ),
     )
+
+
+# What a Flash plan grants. Data rather than config: dev and production are
+# separate vaults with different UUIDs, so the mapping travels with the database.
+class BillingPlan(TimestampMixin, Base):
+    __tablename__ = "billing_plan"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    flash_service_id: Mapped[str] = mapped_column(String, nullable=False)
+    flash_plan_id: Mapped[str] = mapped_column(String, nullable=False)
+    # "subscription_tier", not "tier": CONTEXT.md already spends "tier" on the
+    # GrapeRank influence bands, which are an unrelated concept.
+    subscription_tier: Mapped[str] = mapped_column(String, nullable=False)
+    scheduling_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("scheduling.id"), nullable=False
+    )
+    # Minor units, as Flash sends them: 200 = $2.00. Integers throughout.
+    amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String, nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true", default=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("flash_service_id", "flash_plan_id", name="uq_billing_plan_flash_ids"),
+    )
+
+
+# Why a user is on the tier they're on. Never consulted to decide whether they
+# are paid — that is the scheduling assignment, and Flash's API is the authority.
+class UserSubscription(TimestampMixin, Base):
+    __tablename__ = "user_subscription"
+    pubkey: Mapped[str] = mapped_column(String, primary_key=True)
+    flash_subscription_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    flash_subscriber_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    billing_plan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("billing_plan.id"), nullable=False
+    )
+    # What we actually granted, distinct from billing_plan.scheduling_id (the
+    # rule). They diverge the moment a plan is retuned; revocation removes what
+    # was granted, and the divergence report compares this against the live
+    # assignment. NULL = recorded but nothing granted.
+    granted_scheduling_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("scheduling.id"), nullable=True
+    )
+    # Flash's status verbatim, unvalidated: their set is documented as open, so
+    # an unrecognised value must land here intact rather than be coerced.
+    flash_status: Mapped[str] = mapped_column(String, nullable=False)
+    current_period_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_billing_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    trial_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_effective_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    rail: Mapped[str | None] = mapped_column(String, nullable=True)
+    email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync_error: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 # Inbound Flash webhooks. An inbox, not a ledger — never read to decide whether
