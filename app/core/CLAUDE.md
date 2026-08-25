@@ -9,6 +9,7 @@ Shared, dependency-free infrastructure modules. Everything else imports from her
 | [`config.py`](config.py) | Pydantic `Settings`. All env vars are declared here. `settings = Settings()` is the singleton other modules import. To add a setting: add the `Field(...)` here AND mirror in `../../env.example` AND any compose file that runs this service. |
 | [`loggr.py`](loggr.py) | Logging setup. Always do `from app.core.loggr import loggr; logger = loggr.get_logger(__name__)`. Don't use `print` or stdlib `logging.getLogger` directly. |
 | [`vespa.py`](vespa.py) | Vespa HTTP client + search helpers. See section below. |
+| [`flash.py`](flash.py) | Flash subscription reads (payments). Same shared-client shape as `vespa.py` — lazy module-level `_client`, `aclose()` in the lifespan — but the **inverse failure policy**: Vespa is a mirror whose failures are swallowed, while an unreadable Flash must raise, because returning "no subscription" for a socket timeout would revoke someone who is paying. `FlashUnavailable` is transient and retried; `FlashCredentialError` is not. |
 | `database.py` | Async PostgreSQL `db_session()` context manager (asyncpg via SQLAlchemy). |
 | `redis_db.py` | `redis_client` async singleton + queue helpers. |
 | `sql_admin_panel.py` | SQLAdmin integration mounted by `app.api`. |

@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     flash_http_timeout_seconds: float = Field(default=5.0)
     # Replay window for webhook signatures, per Flash's own reference handler.
     flash_webhook_tolerance_seconds: int = Field(default=300)
+    # Periodic billing reconciliation. Unset = follows flash_enabled; set it
+    # explicitly only to stop the sweep on its own. See billing_sync_active.
+    billing_sync_enabled: bool | None = Field(default=None)
+    billing_sync_interval_seconds: int = Field(default=21600)
+    # Subscribers re-read from Flash per cycle. Bounded so a backlog drains
+    # steadily instead of hammering their API in one burst.
+    billing_reconcile_batch: int = Field(default=25)
+    # How long since a subscriber was last read from Flash before we ask again.
+    billing_reconcile_stale_after_seconds: int = Field(default=21600)
     vespa_url: str = Field(...)
     # Per-sink publish mode. False (default) = only changed scores; True =
     # re-assert every above-cutoff score each run. Re-assertion only, not deletes.
@@ -85,6 +94,23 @@ class Settings(BaseSettings):
     # the endpoints are open/unauthenticated and use the public global observer
     # plus any client-supplied `pov` per ORE-01.
     open_ranking_require_auth: bool = Field(default=False)
+
+    @property
+    def billing_sync_active(self) -> bool:
+        """Whether the billing reconciliation loop should run.
+
+        Follows `flash_enabled` unless overridden, because the two being
+        separately switchable is not a conservative default — a configured Flash
+        with the sweep off grants tiers and never takes them back, which leaks
+        quietly rather than failing.
+
+        The override exists because `flash_enabled=false` is not a safe way to
+        stop the sweep once live: it unmounts the webhook route, so Flash's
+        deliveries 404, exhaust their few retries and are lost for good.
+        """
+        if self.billing_sync_enabled is None:
+            return self.flash_enabled
+        return self.billing_sync_enabled
 
 
 settings = Settings()

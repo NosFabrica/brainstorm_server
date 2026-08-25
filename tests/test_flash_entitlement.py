@@ -18,8 +18,8 @@ import pytest
 from app.core.flash import FlashSubscription, FlashUnavailable
 from app.services.billing_service import (
     EntitlementOutcome,
+    EntitlementReason,
     apply_entitlement,
-    grants_entitlement,
 )
 
 PUBKEY = "a" * 64
@@ -27,11 +27,13 @@ PAID_SCHEDULING_ID = 7
 SUBSCRIPTION_ID = "7d3b"
 
 
-def _subscription(status: str = "active", **overrides) -> FlashSubscription:
+def _subscription(
+    status: str = "active", ref: str = PUBKEY, **overrides
+) -> FlashSubscription:
     return FlashSubscription(
         id=SUBSCRIPTION_ID,
         status=status,
-        ref=PUBKEY,
+        ref=ref,
         subscriber_id="a91c",
         service_id="9c1e",
         plan_id="4f2a",
@@ -66,6 +68,7 @@ def billing(monkeypatch):
         fetch=AsyncMock(return_value=_subscription()),
         plan=AsyncMock(return_value=_plan()),
         blocked=AsyncMock(return_value=False),
+        source=AsyncMock(return_value="default"),
         policy=AsyncMock(return_value=SimpleNamespace(id=PAID_SCHEDULING_ID, enabled=True)),
         existing=AsyncMock(return_value=None),
         set_scheduling=AsyncMock(),
@@ -76,6 +79,7 @@ def billing(monkeypatch):
         ("fetch_subscription", seams.fetch),
         ("get_billing_plan_on_db", seams.plan),
         ("is_billing_blocked_on_db", seams.blocked),
+        ("get_scheduling_source_on_db", seams.source),
         ("get_scheduling_on_db", seams.policy),
         ("get_user_subscription_for_update_on_db", seams.existing),
         ("set_scheduling_for_pubkey_on_db", seams.set_scheduling),
@@ -97,21 +101,6 @@ def _apply(billing, ref: str | None = PUBKEY) -> EntitlementOutcome:
 # ---------------------------------------------------------------------------
 # Which statuses entitle (slice 03 completes the table)
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("status", ["active", "trial"])
-def test_paid_and_trialing_subscriptions_entitle(status):
-    assert grants_entitlement(status) is True
-
-
-@pytest.mark.parametrize("status", ["pending", "past_due", "paused", "canceled", "expired"])
-def test_everything_else_does_not_entitle(status):
-    assert grants_entitlement(status) is False
-
-
-def test_a_status_we_have_never_seen_does_not_entitle():
-    """Flash documents the set as open. An unknown value must not grant."""
-    assert grants_entitlement("subscription.quantum_superposition") is False
-
-
 # ---------------------------------------------------------------------------
 # The happy path
 # ---------------------------------------------------------------------------
@@ -171,7 +160,7 @@ def test_an_unknown_reference_moves_nobody_and_is_flagged(billing):
     outcome = _apply(billing)
 
     assert outcome.applied is False
-    assert outcome.reason == "unknown_user"
+    assert outcome.reason is EntitlementReason.UNKNOWN_USER
     billing.set_scheduling.assert_not_awaited()
 
 
@@ -179,7 +168,7 @@ def test_a_missing_reference_moves_nobody(billing):
     outcome = _apply(billing, ref=None)
 
     assert outcome.applied is False
-    assert outcome.reason == "no_reference"
+    assert outcome.reason is EntitlementReason.NO_REFERENCE
     billing.set_scheduling.assert_not_awaited()
     billing.fetch.assert_not_awaited()
 
@@ -190,19 +179,31 @@ def test_an_unrecognised_plan_moves_nobody(billing):
     outcome = _apply(billing)
 
     assert outcome.applied is False
-    assert outcome.reason == "unknown_plan"
+    assert outcome.reason is EntitlementReason.UNKNOWN_PLAN
     billing.set_scheduling.assert_not_awaited()
 
 
 def test_an_unreachable_flash_moves_nobody(billing):
+    """Propagated rather than swallowed — the caller decides what it means.
+    The webhook path logs and moves on; the reconcile loop records and may stop."""
     billing.fetch.side_effect = FlashUnavailable("vault down")
+
+    with pytest.raises(FlashUnavailable):
+        _apply(billing)
+
+    billing.set_scheduling.assert_not_awaited()
+    billing.db.commit.assert_not_awaited()
+
+
+def test_a_subscription_belonging_to_someone_else_moves_nobody(billing):
+    """Both fields come from Flash, so disagreement means something is wrong —
+    and acting on it would move the wrong person's tier."""
+    billing.fetch.return_value = _subscription(ref="b" * 64)
 
     outcome = _apply(billing)
 
-    assert outcome.applied is False
-    assert outcome.reason == "sync_failed"
+    assert outcome.reason is EntitlementReason.REFERENCE_MISMATCH
     billing.set_scheduling.assert_not_awaited()
-    billing.db.commit.assert_not_awaited()
 
 
 def test_a_subscription_that_does_not_entitle_moves_nobody(billing):
@@ -271,10 +272,63 @@ def test_a_paying_user_is_granted_even_where_an_admin_last_set_the_policy(billin
     billing.set_scheduling.assert_awaited_once()
 
 
+def test_granting_to_a_comped_user_does_not_erase_the_comp(billing):
+    """Overwriting the source would let the next `expired` revoke them — the
+    comp would die by a delayed path rather than an admin decision."""
+    billing.source.return_value = "admin"
+
+    _apply(billing)
+
+    assert billing.set_scheduling.await_args.kwargs["source"] == "admin"
+    assert billing.set_scheduling.await_args.args[2] == PAID_SCHEDULING_ID
+
+
 def test_granting_hands_the_policy_back_to_billing(billing):
     _apply(billing)
 
     assert billing.set_scheduling.await_args.kwargs["source"] == "billing"
+
+
+# ---------------------------------------------------------------------------
+# Revocation through the event path
+# ---------------------------------------------------------------------------
+def test_an_ended_subscription_loses_the_policy(billing):
+    billing.fetch.return_value = _subscription(status="expired")
+
+    outcome = _apply(billing)
+
+    assert outcome.reason is EntitlementReason.REVOKED
+    args, kwargs = billing.set_scheduling.await_args
+    assert args[2] is None
+    assert kwargs["source"] == "default"
+
+
+def test_revocation_clears_the_recorded_grant(billing):
+    billing.existing.return_value = SimpleNamespace(granted_scheduling_id=PAID_SCHEDULING_ID)
+    billing.fetch.return_value = _subscription(status="expired")
+
+    _apply(billing)
+
+    assert billing.upsert.await_args.kwargs["granted_scheduling_id"] is None
+
+
+def test_an_admin_grant_is_not_revoked_by_an_ended_subscription(billing):
+    billing.source.return_value = "admin"
+    billing.fetch.return_value = _subscription(status="expired")
+
+    outcome = _apply(billing)
+
+    assert outcome.reason is EntitlementReason.ADMIN_OVERRIDE
+    billing.set_scheduling.assert_not_awaited()
+
+
+def test_a_failed_renewal_leaves_the_policy_alone(billing):
+    billing.fetch.return_value = _subscription(status="past_due")
+
+    outcome = _apply(billing)
+
+    assert outcome.reason is EntitlementReason.HELD
+    billing.set_scheduling.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +340,7 @@ def test_a_blocked_user_is_never_granted_even_while_paying(billing):
     outcome = _apply(billing)
 
     assert outcome.applied is False
-    assert outcome.reason == "blocked"
+    assert outcome.reason is EntitlementReason.BLOCKED
     billing.set_scheduling.assert_not_awaited()
 
 

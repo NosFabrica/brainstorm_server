@@ -7,20 +7,32 @@ converge), and uncertainty never costs a user their tier — an unreachable Flas
 an unrecognised status or an unmapped plan all leave the policy alone.
 """
 
+import enum
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
-from app.core.flash import FlashSubscription, FlashUnavailable, fetch_subscription
+from app.core.flash import (
+    FlashCredentialError,
+    FlashSubscription,
+    FlashUnavailable,
+    fetch_subscription,
+)
 from app.core.loggr import loggr
 from app.db_models import BillingPlan, SchedulingSource
 from app.repos.billing_repo import (
+    clear_granted_scheduling_on_db,
     get_billing_plan_on_db,
     get_user_subscription_for_update_on_db,
+    record_sync_failure_on_db,
+    select_entitlement_candidates_on_db,
+    select_reconcile_candidates_on_db,
     upsert_user_subscription_on_db,
 )
 from app.repos.brainstorm_nsec import (
     brainstorm_nsec_exists_by_pubkey_on_db,
+    get_scheduling_source_on_db,
     is_billing_blocked_on_db,
     set_scheduling_for_pubkey_on_db,
 )
@@ -28,18 +40,156 @@ from app.repos.scheduling_repo import get_scheduling_on_db
 
 logger = loggr.get_logger(__name__)
 
-# An allow-list, so an unrecognised status never grants. Revocation is slice 03.
+# Flash's status set is documented as OPEN, so both of these are allow-lists and
+# anything unlisted falls through to HOLD. That asymmetry is the whole design:
+# a status we don't recognise can neither grant a tier nor take one away.
 ENTITLING_STATUSES = frozenset({"active", "trial"})
+ENDED_STATUSES = frozenset({"expired", "paused"})
+CANCELLED_STATUS = "canceled"
+
+
+class EntitlementDecision(enum.Enum):
+    """What a status says to do with the user's policy."""
+
+    GRANT = "grant"
+    HOLD = "hold"
+    REVOKE = "revoke"
+
+
+class EntitlementReason(enum.Enum):
+    GRANTED = "granted"
+    REVOKED = "revoked"
+    HELD = "held"
+    BLOCKED = "blocked"
+    ADMIN_OVERRIDE = "admin_override"
+    NO_REFERENCE = "no_reference"
+    UNKNOWN_USER = "unknown_user"
+    UNKNOWN_PLAN = "unknown_plan"
+    UNKNOWN_SUBSCRIPTION = "unknown_subscription"
+    REFERENCE_MISMATCH = "reference_mismatch"
 
 
 @dataclass(frozen=True)
 class EntitlementOutcome:
     applied: bool
-    reason: str
+    reason: EntitlementReason
 
 
-def grants_entitlement(flash_status: str) -> bool:
-    return flash_status in ENTITLING_STATUSES
+@dataclass(frozen=True)
+class Resolution:
+    """Everything decided, before anything is written.
+
+    Pulling the truth table out of the write path is the point: which of
+    (decision, blocked, admin_held) produces which effect is one readable
+    function rather than a sequence of interleaved conditionals.
+    """
+
+    write_policy: bool
+    scheduling_id: int | None
+    source: str | None
+    granted_scheduling_id: int | None
+    reason: EntitlementReason
+
+
+def resolve_entitlement(
+    decision: EntitlementDecision,
+    *,
+    blocked: bool,
+    admin_held: bool,
+    plan_scheduling_id: int,
+    existing_granted: int | None,
+) -> Resolution:
+    """The whole truth table, in one place. Pure."""
+    if decision is EntitlementDecision.GRANT:
+        if blocked:
+            return Resolution(
+                write_policy=False,
+                scheduling_id=None,
+                source=None,
+                granted_scheduling_id=existing_granted,
+                reason=EntitlementReason.BLOCKED,
+            )
+        # Billing never erases an admin grant: the user gets what they are
+        # paying for, and the comp's protection from a later lapse survives it.
+        # Overwriting the source here would let the next `expired` revoke them.
+        source = (
+            SchedulingSource.ADMIN.value
+            if admin_held
+            else SchedulingSource.BILLING.value
+        )
+        return Resolution(
+            write_policy=True,
+            scheduling_id=plan_scheduling_id,
+            source=source,
+            granted_scheduling_id=plan_scheduling_id,
+            reason=EntitlementReason.GRANTED,
+        )
+
+    if decision is EntitlementDecision.REVOKE:
+        if admin_held:
+            return Resolution(
+                write_policy=False,
+                scheduling_id=None,
+                source=None,
+                granted_scheduling_id=existing_granted,
+                reason=EntitlementReason.ADMIN_OVERRIDE,
+            )
+        # Back to the default policy and out of billing's hands — the same state
+        # as a user who never subscribed.
+        return Resolution(
+            write_policy=True,
+            scheduling_id=None,
+            source=SchedulingSource.DEFAULT.value,
+            granted_scheduling_id=None,
+            reason=EntitlementReason.REVOKED,
+        )
+
+    # HOLD carries the previous grant forward: the policy is untouched, so the
+    # record of what they hold must be too.
+    return Resolution(
+        write_policy=False,
+        scheduling_id=None,
+        source=None,
+        granted_scheduling_id=existing_granted,
+        reason=EntitlementReason.HELD,
+    )
+
+
+def _is_admin_held(source: str) -> bool:
+    return source == SchedulingSource.ADMIN.value
+
+
+def decide_entitlement(
+    flash_status: str,
+    *,
+    cancel_effective_date: datetime | None,
+    current_period_end: datetime | None,
+    now: datetime,
+) -> EntitlementDecision:
+    """What this status means for the user's policy. Pure.
+
+    HOLD is the default for everything uncertain — a failed renewal Flash is
+    still retrying, a cancellation whose paid period hasn't run out, a status we
+    have never seen. We only REVOKE where the ending is not in doubt.
+    """
+    if flash_status in ENTITLING_STATUSES:
+        return EntitlementDecision.GRANT
+    if flash_status in ENDED_STATUSES:
+        return EntitlementDecision.REVOKE
+    if flash_status == CANCELLED_STATUS:
+        # Flash words this in the past tense — "ended by the subscriber or by
+        # you" — so a cancellation with no future end date has already happened.
+        # A date is what defers it, and until then they keep what they paid for.
+        ends_at = cancel_effective_date or current_period_end
+        if ends_at is not None and now < ends_at:
+            return EntitlementDecision.HOLD
+        return EntitlementDecision.REVOKE
+    return EntitlementDecision.HOLD
+
+
+def _utc_now() -> datetime:
+    """Naive UTC — the epoch every Flash timestamp is normalized to on the way in."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def apply_entitlement(
@@ -56,26 +206,40 @@ async def apply_entitlement(
         # A plain-link signup with no reference of ours. Recorded upstream;
         # nothing here can safely be attributed to a user.
         logger.warning("Flash subscription %s carries no reference", subscription_id)
-        return EntitlementOutcome(applied=False, reason="no_reference")
+        return EntitlementOutcome(applied=False, reason=EntitlementReason.NO_REFERENCE)
 
     if not await brainstorm_nsec_exists_by_pubkey_on_db(db, external_ref):
         logger.warning(
             "Flash reference %s matches no user; leaving every tier alone",
             external_ref,
         )
-        return EntitlementOutcome(applied=False, reason="unknown_user")
+        return EntitlementOutcome(applied=False, reason=EntitlementReason.UNKNOWN_USER)
 
-    try:
-        subscription = await fetch_subscription(subscription_id=subscription_id)
-    except FlashUnavailable as unavailable:
-        logger.warning(
-            "Could not read Flash for %s (%s); no tier changed", external_ref, unavailable
-        )
-        return EntitlementOutcome(applied=False, reason="sync_failed")
+    # Propagated, not swallowed: the caller decides what a failure means. The
+    # webhook path logs and moves on (the event is recorded and replayable);
+    # the reconcile loop records it against the subscriber and, for a credential
+    # failure, stops rather than repeating it once per row.
+    subscription = await fetch_subscription(
+        subscription_id=subscription_id, ref=None if subscription_id else external_ref
+    )
 
     if subscription is None:
         logger.warning("Flash has no subscription %s; no tier changed", subscription_id)
-        return EntitlementOutcome(applied=False, reason="unknown_subscription")
+        return EntitlementOutcome(applied=False, reason=EntitlementReason.UNKNOWN_SUBSCRIPTION)
+
+    if subscription.ref and subscription.ref != external_ref:
+        # The event named one user and Flash's record names another. Both come
+        # from Flash, so disagreement means something is wrong — and acting on
+        # it would move the wrong person's tier.
+        logger.error(
+            "Flash subscription %s is for %s, not %s; no tier changed",
+            subscription.id,
+            subscription.ref,
+            external_ref,
+        )
+        return EntitlementOutcome(
+            applied=False, reason=EntitlementReason.REFERENCE_MISMATCH
+        )
 
     plan = await get_billing_plan_on_db(
         db,
@@ -89,9 +253,9 @@ async def apply_entitlement(
             subscription.service_id,
             subscription.plan_id,
         )
-        return EntitlementOutcome(applied=False, reason="unknown_plan")
+        return EntitlementOutcome(applied=False, reason=EntitlementReason.UNKNOWN_PLAN)
 
-    return await _grant_and_record(db, external_ref, subscription, plan)
+    return await _grant_and_record(db, external_ref, subscription, plan, _utc_now())
 
 
 async def _grant_and_record(
@@ -99,42 +263,30 @@ async def _grant_and_record(
     pubkey: str,
     subscription: FlashSubscription,
     plan: BillingPlan,
+    now: datetime,
 ) -> EntitlementOutcome:
     # Locks the row for this transaction, so two deliveries for one subscriber
     # can't interleave into a policy and a record that disagree.
     existing = await get_user_subscription_for_update_on_db(db, pubkey)
 
-    entitled = grants_entitlement(subscription.status)
-    # Blocking is the only thing that withholds a tier from someone paying for
-    # it. An admin assignment does NOT: it stops billing taking a tier away
-    # (slice 03), never stops someone receiving what they are charged for.
-    blocked = await is_billing_blocked_on_db(db, pubkey)
-    granting = entitled and not blocked
-
-    # When we aren't granting, carry the previous grant forward rather than
-    # blanking it: a `past_due` or unrecognised status must leave the user's
-    # policy alone, and slice 03 needs to know what there is to take back.
-    granted_scheduling_id = (
-        plan.scheduling_id
-        if granting
-        else (existing.granted_scheduling_id if existing else None)
+    resolution = resolve_entitlement(
+        decide_entitlement(
+            subscription.status,
+            cancel_effective_date=subscription.cancel_effective_date,
+            current_period_end=subscription.current_period_end,
+            now=now,
+        ),
+        blocked=await is_billing_blocked_on_db(db, pubkey),
+        admin_held=_is_admin_held(await get_scheduling_source_on_db(db, pubkey)),
+        plan_scheduling_id=plan.scheduling_id,
+        existing_granted=existing.granted_scheduling_id if existing else None,
     )
 
-    if granting:
-        policy = await get_scheduling_on_db(db, plan.scheduling_id)
-        if policy is not None and not policy.enabled:
-            # They bought a tier that will never run. Grant it anyway — the fix
-            # is re-enabling the policy, which repairs everyone at once, whereas
-            # withholding would scatter paying users onto free. But this is
-            # someone being charged for nothing, so it is not report-later news.
-            logger.error(
-                "PAYING USER ON DISABLED POLICY: %s granted scheduling policy %s, "
-                "which is disabled and will never run",
-                pubkey,
-                plan.scheduling_id,
-            )
+    if resolution.write_policy and resolution.source is not None:
+        if resolution.reason is EntitlementReason.GRANTED:
+            await _warn_if_policy_is_inert(db, pubkey, plan.scheduling_id)
         await set_scheduling_for_pubkey_on_db(
-            db, pubkey, granted_scheduling_id, source=SchedulingSource.BILLING.value
+            db, pubkey, resolution.scheduling_id, source=resolution.source
         )
 
     await upsert_user_subscription_on_db(
@@ -145,7 +297,7 @@ async def _grant_and_record(
         billing_plan_id=plan.id,
         # What we actually gave, not what the plan currently says it gives —
         # retuning a plan later must not strand whoever it already granted.
-        granted_scheduling_id=granted_scheduling_id,
+        granted_scheduling_id=resolution.granted_scheduling_id,
         flash_status=subscription.status,
         current_period_start=subscription.current_period_start,
         current_period_end=subscription.current_period_end,
@@ -155,19 +307,31 @@ async def _grant_and_record(
     )
     await db.commit()
 
-    if blocked:
-        logger.warning(
-            "%s is blocked from paid entitlement; subscription recorded, nothing granted",
-            pubkey,
-        )
-        return EntitlementOutcome(applied=False, reason="blocked")
-    if not entitled:
-        logger.info(
-            "Flash reports %s as %s; recorded, no tier granted",
-            pubkey,
-            subscription.status,
-        )
-        return EntitlementOutcome(applied=False, reason="not_entitled")
+    logger.info(
+        "%s: Flash reports %s, outcome %s",
+        pubkey,
+        subscription.status,
+        resolution.reason.value,
+    )
+    return EntitlementOutcome(
+        applied=resolution.write_policy, reason=resolution.reason
+    )
 
-    logger.info("%s granted scheduling policy %s", pubkey, granted_scheduling_id)
-    return EntitlementOutcome(applied=True, reason="granted")
+
+async def _warn_if_policy_is_inert(
+    db: AsyncDBSession, pubkey: str, scheduling_id: int
+) -> None:
+    """A disabled policy will never run, so this is someone charged for nothing.
+
+    Granted anyway: re-enabling the policy repairs everyone at once, where
+    withholding would scatter paying users onto free. But it is not
+    report-later news.
+    """
+    policy = await get_scheduling_on_db(db, scheduling_id)
+    if policy is not None and not policy.enabled:
+        logger.error(
+            "PAYING USER ON DISABLED POLICY: %s granted scheduling policy %s, "
+            "which is disabled and will never run",
+            pubkey,
+            scheduling_id,
+        )

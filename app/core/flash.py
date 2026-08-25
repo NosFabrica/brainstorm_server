@@ -4,12 +4,13 @@ Flash's own view is the authority on who is paid — not the webhook body, which
 omits the period boundaries and can arrive out of order. Everything that grants
 or revokes entitlement reads through here.
 
-The read here is deliberately plain — one call, no retry taxonomy, no recovery
-sweep. Hardening it is slice 04's job. What matters now is the invariant it
-carries: any failure raises `FlashUnavailable`, and a caller that cannot read
-Flash must leave every user's policy exactly as it found it.
+The distinction this module exists to protect: "Flash says they are not a
+subscriber" is a fact, returned as None and acted on. "We could not ask Flash"
+is not, and raises — because confusing the two revokes a paying user over a
+socket timeout.
 """
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -22,6 +23,11 @@ logger = loggr.get_logger(__name__)
 
 # One shared client, lazily built and reused — same pattern as app/core/vespa.py.
 _client: httpx.AsyncClient | None = None
+
+CONNECT_RETRIES = 3
+# Connect-level only. A response that arrived — any status — is an answer, and
+# retrying it would just ask the same question again.
+_RETRYABLE = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -43,6 +49,15 @@ async def aclose() -> None:
 
 class FlashUnavailable(Exception):
     """Flash could not be read. Never a reason to move anyone's tier."""
+
+
+class FlashCredentialError(Exception):
+    """Flash refused our credentials.
+
+    Deliberately not a subclass of FlashUnavailable: both leave every policy
+    alone, but this one will fail identically forever, so it must not be retried
+    and must not be buried among transient noise.
+    """
 
 
 @dataclass(frozen=True)
@@ -96,15 +111,33 @@ def parse_subscription(raw: dict) -> FlashSubscription:
 _SUBSCRIPTIONS_PATH = "/api/v1/external/subscriptions"
 
 
+async def _get_with_retries(url: str, params: dict) -> httpx.Response:
+    """GET, retrying only connect-level failures."""
+    client = _get_client()
+    for attempt in range(CONNECT_RETRIES + 1):
+        try:
+            return await client.get(
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {settings.flash_api_key}"},
+            )
+        except _RETRYABLE as failed:
+            if attempt == CONNECT_RETRIES:
+                raise FlashUnavailable(f"Could not reach Flash: {failed}") from failed
+            await asyncio.sleep(0.1 * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
 async def fetch_subscription(
     *, subscription_id: str | None = None, ref: str | None = None
 ) -> FlashSubscription | None:
     """Look a subscription up by Flash's id, or by our own reference.
 
-    Returns None when Flash simply has no such subscription — a fact, not a
-    failure. Anything that leaves us *unsure* raises `FlashUnavailable`, because
-    the two must never be confused: one means "they are not a subscriber", the
-    other means "do not touch anything".
+    Returns None when Flash has no such subscription — a fact. Raises when we
+    could not find out, which is not.
+
+    Results are scoped by Flash to the account owning the API key, so a
+    subscription belonging to someone else is not reachable with our credentials.
     """
     if subscription_id:
         params = {"subscriptionId": subscription_id}
@@ -115,22 +148,67 @@ async def fetch_subscription(
 
     url = settings.flash_base_url.rstrip("/") + _SUBSCRIPTIONS_PATH
     try:
-        response = await _get_client().get(
-            url,
-            params=params,
-            headers={"Authorization": f"Bearer {settings.flash_api_key}"},
+        response = await _get_with_retries(url, params)
+    except FlashUnavailable:
+        raise
+    except Exception as failed:
+        # Catch-all on purpose. A bare httpx error escaping here (InvalidURL is
+        # not an HTTPError, for one) would abort a whole reconcile batch instead
+        # of being recorded against one subscriber.
+        raise FlashUnavailable(f"Could not reach Flash: {failed!r}") from failed
+
+    if response.status_code in (401, 403):
+        # Never echo the body or the key — this is the error most likely to be
+        # pasted into a ticket.
+        raise FlashCredentialError(
+            f"Flash refused our credentials ({response.status_code})"
         )
-        response.raise_for_status()
+    if response.status_code >= 400:
+        raise FlashUnavailable(f"Flash answered {response.status_code}")
+
+    try:
         body = response.json()
-    except httpx.HTTPStatusError as failed:
-        # Never log the response body — it carries subscriber PII.
-        raise FlashUnavailable(
-            f"Flash answered {failed.response.status_code}"
-        ) from failed
-    except (httpx.HTTPError, ValueError) as failed:
-        raise FlashUnavailable(f"Could not read Flash: {failed}") from failed
+    except ValueError as failed:
+        raise FlashUnavailable("Flash sent a body we could not read") from failed
+    if not isinstance(body, dict):
+        raise FlashUnavailable("Flash sent a body we could not read")
+
+    if body.get("livemode") is False:
+        # There is no Flash sandbox today, so this should not happen — but a
+        # test-mode key granting real paid tiers is worth noticing loudly.
+        logger.error("Flash answered in test mode; the API key may be wrong")
 
     subscriptions = body.get("subscriptions") if isinstance(body, dict) else None
-    if not subscriptions:
+    if not isinstance(subscriptions, list) or not subscriptions:
         return None
-    return parse_subscription(subscriptions[0])
+
+    chosen = _choose_subscription(subscriptions, subscription_id)
+    if chosen is None:
+        return None
+    try:
+        return parse_subscription(chosen)
+    except (AttributeError, TypeError) as failed:
+        raise FlashUnavailable("Flash sent a subscription we could not read") from failed
+
+
+def _choose_subscription(
+    subscriptions: list, subscription_id: str | None
+) -> dict | None:
+    """Pick the one we asked about.
+
+    Flash returns an array and documents no ordering, and a re-subscribe leaves
+    more than one row under a single `ref` — so taking the first would sometimes
+    hand back the expired one and revoke someone who is paying.
+
+    Asked by id, only that id will do. Asked by ref, prefer a subscription that
+    still entitles; among several, the one that runs longest.
+    """
+    rows = [row for row in subscriptions if isinstance(row, dict)]
+    if not rows:
+        return None
+
+    if subscription_id:
+        return next((row for row in rows if row.get("id") == subscription_id), None)
+
+    live = [row for row in rows if row.get("status") in ("active", "trial")] or rows
+    return max(live, key=lambda row: str(row.get("currentPeriodEnd") or ""))

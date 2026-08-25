@@ -242,6 +242,9 @@ async def handle_delivery(
             subscription_id=recorded.subscription_id,
         )
     except Exception:
+        # Includes an unreachable Flash. The event is already durable, so the
+        # reconcile loop will settle this subscriber later; failing the response
+        # would only make Flash redeliver something we hold.
         logger.exception(
             "Entitlement failed for %s; the event is recorded and replayable",
             recorded.external_ref,

@@ -1,8 +1,8 @@
 """Data access for the billing tables."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
@@ -110,6 +110,87 @@ async def upsert_user_subscription_on_db(
         .on_conflict_do_update(
             index_elements=["pubkey"],
             set_={k: v for k, v in values.items() if k != "pubkey"},
+        )
+    )
+    await execute_db_statement(db, statement, __name__)
+
+
+async def select_entitlement_candidates_on_db(
+    db: AsyncDBSession,
+) -> list[UserSubscription]:
+    """Every subscription still holding a granted policy.
+
+    Deliberately unfiltered: judging which of these has actually lapsed is
+    `decide_entitlement`'s job, and duplicating any part of that rule as a SQL
+    predicate would give the two room to disagree. The candidate set is bounded
+    by the number of paying users, so a full read costs nothing.
+    """
+    statement = select(UserSubscription).where(
+        UserSubscription.granted_scheduling_id.is_not(None)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return list(result.scalars().all())
+
+
+async def clear_granted_scheduling_on_db(db: AsyncDBSession, pubkey: str) -> None:
+    """Forget what we granted, once it has been taken back."""
+    statement = (
+        update(UserSubscription)
+        .where(UserSubscription.pubkey == pubkey)
+        .values(granted_scheduling_id=None)
+    )
+    await execute_db_statement(db, statement, __name__)
+
+
+async def select_reconcile_candidates_on_db(
+    db: AsyncDBSession, *, now: datetime, stale_after: timedelta, limit: int
+) -> list[UserSubscription]:
+    """Subscribers whose real state only Flash can settle.
+
+    Three groups, all of them rows where reading locally proves nothing:
+    those mid-dunning, those still recorded current past the period they paid
+    for, and those we simply haven't asked about in a while. Ordered oldest-read
+    first so a bounded batch works through the backlog rather than re-asking
+    about the same few.
+    """
+    statement = (
+        select(UserSubscription)
+        .where(
+            or_(
+                UserSubscription.flash_status == "past_due",
+                and_(
+                    UserSubscription.flash_status == "active",
+                    UserSubscription.current_period_end.is_not(None),
+                    UserSubscription.current_period_end <= now,
+                ),
+                UserSubscription.last_synced_at.is_(None),
+                UserSubscription.last_synced_at <= now - stale_after,
+            )
+        )
+        .order_by(UserSubscription.last_synced_at.asc().nullsfirst())
+        .limit(limit)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return list(result.scalars().all())
+
+
+async def record_sync_failure_on_db(
+    db: AsyncDBSession, pubkey: str, reason: str
+) -> None:
+    """Note that we could not read Flash for this subscriber.
+
+    Stamps `last_synced_at` even though nothing synced, because the candidate
+    query orders by it: leaving it stale would park a permanently-failing
+    subscriber at the head of a bounded batch forever, starving everyone behind
+    them. They come back on the normal staleness cadence instead, and
+    `last_sync_error` is what says the last attempt failed.
+    """
+    statement = (
+        update(UserSubscription)
+        .where(UserSubscription.pubkey == pubkey)
+        .values(
+            last_sync_error=reason,
+            last_synced_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
     )
     await execute_db_statement(db, statement, __name__)

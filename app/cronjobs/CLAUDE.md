@@ -28,16 +28,36 @@ Triggers a periodic GrapeRank run for the *platform observer*
 - The result of the periodic run is what populates Vespa for search (only this observer's scores get mirrored — see [../message_queue_tasks/CLAUDE.md](../message_queue_tasks/CLAUDE.md)).
 - **Don't run on multiple replicas** unless you also add a lock. Two processes will create two parallel requests every interval.
 
+### `billing_sync.py`
+
+Periodic billing reconciliation, off unless Flash is configured
+(`settings.billing_sync_active` follows `flash_enabled` — the two being
+separately switchable would let grants happen while revocations never do).
+
+Two duties per cycle, in order of how far they can be trusted:
+
+1. **Revoke what has provably lapsed** — locally decidable, no network.
+2. **Re-read Flash for what is not** — `past_due` rows, ones still recorded
+   `active` past their period end, and anything not asked about lately. Flash
+   retries an undelivered webhook a few times and then never replays it, so this
+   is the only path that recovers one.
+
+- **Safe on N replicas** — both duties are idempotent, so racing replicas
+  converge. No leader lock yet, deliberately.
+- Its lifespan `finally` **awaits** the cancelled task before `flash_aclose()`:
+  a cancelled reconcile can still be mid-GET, and closing the shared client
+  under it would look like a Flash outage on every shutdown.
+
 ## Conventions
 
-- Each cronjob is a self-contained `async def run_<name>()` coroutine. No shared scheduler — `asyncio.sleep` in the loop is the rhythm.
+- Each cronjob is a self-contained `async def <name>_cronjob()` coroutine. No shared scheduler — `asyncio.sleep` in the loop is the rhythm.
 - All sleep intervals come from `settings.*`, never hard-coded.
 - Catch broad exceptions inside the loop so one bad cycle doesn't kill the task. Log + continue.
 - Acquire a `db_session()` *inside* the loop body, not outside. A session that lives for the whole cron lifetime will hold a connection forever.
 
 ## Wiring a new cronjob
 
-1. New `app/cronjobs/<name>.py` with `async def run_<name>()`.
-2. In `app/api.py` lifespan startup, add `<name>_task = asyncio.create_task(run_<name>())`.
+1. New `app/cronjobs/<name>.py` with `async def <name>_cronjob()`.
+2. In `app/api.py` lifespan startup, add `<name>_task = asyncio.create_task(<name>_cronjob())`.
 3. In the same lifespan's `finally:`, add `<name>_task.cancel()` + `await asyncio.gather(<name>_task, return_exceptions=True)`.
 4. Add the cadence setting to `app/core/config.py` and `env.example`.
