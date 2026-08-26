@@ -4,7 +4,8 @@ from enum import Enum
 
 
 class ErrorCode(str, Enum):
-    # Server's job payload was malformed - missing fields, bad types, or unparseable graperank_params.
+    # Server's job payload was malformed - missing fields, bad types, or
+    # unparseable graperank_params.
     MALFORMED_PARAMS = "MALFORMED_PARAMS"
 
     # Observer has no (or too few) eligible users in the graph; algorithm has nothing to score.

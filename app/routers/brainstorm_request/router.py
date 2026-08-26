@@ -10,7 +10,6 @@ from app.services.brainstorm_request_service import (
     get_brainstorm_request_by_id,
 )
 
-
 router = APIRouter()
 
 
@@ -24,7 +23,6 @@ async def get_brainstorm_request_endpoint(
     brainstorm_request_id: int,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> BrainstormRequestResponse:
-
     result: BrainstormRequestInstance = await get_brainstorm_request_by_id(
         db=db,
         brainstorm_request_id=brainstorm_request_id,
@@ -43,7 +41,6 @@ async def create_brainstorm_request_endpoint(
     brainstorm_request_creation_body: CreateBrainstormRequestBody,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> BrainstormRequestResponse:
-
     result: BrainstormRequestInstance = await create_brainstorm_request(
         db=db,
         algorithm=brainstorm_request_creation_body.algorithm,

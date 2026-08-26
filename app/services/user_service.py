@@ -5,50 +5,10 @@ import json
 from typing import Literal, NamedTuple
 
 from fastapi import HTTPException, status
+from nostr_sdk import Keys
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.redis_db import redis_client
-from app.db_models import BrainstormNsec, BrainstormRequestStatus
-from app.message_queue_tasks.process_strfry_event import (
-    FOLLOWED_BY_KEY_PREFIX,
-    MUTED_BY_KEY_PREFIX,
-    REPORTED_BY_KEY_PREFIX,
-)
-from app.neo4j_db.driver import driver as neo4j_driver
-from app.repos.brainstorm_nsec import select_brainstorm_nsec_history_fields_on_db
-from app.repos.brainstorm_request_repo import (
-    count_brainstorm_requests_with_priority_over_one_on_db,
-    select_latest_brainstorm_request_on_db,
-)
-from app.repos.observer_whitelist_repo import (
-    select_whitelisted_pubkeys_of_observer,
-)
-from app.repos.user_repo import (
-    OutboundCounts,
-    OutboundOverview,
-    get_all_section_stats,
-    get_counts_and_influence,
-    get_outbound_counts_and_influence,
-    get_paginated_flagged_connections,
-    get_paginated_section_connections,
-    get_user_graph_data as _repo_get_user_graph_data,
-)
-from app.schemas.schemas import (
-    BrainstormRequestInstance,
-    PaginatedUserConnections,
-    UserConnectionCounts,
-    UserConnectionItem,
-    UserGraphData,
-    UserHistoryInstance,
-    UserOverviewData,
-    UserSectionsStats,
-)
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
-from nostr_sdk import Keys
-from app.services.brainstorm_request_service import (
-    brainstorm_request_db_obj_to_schema_converter,
-)
-from app.services.verified_cutoffs import VerifiedCutoffs
-from app.utils.neo4j_values import safe_float
 
 # Tier boundaries match the FE (high ≥ 0.5, trusted ≥ 0.2, neutral ≥ 0.07).
 # The verified line separating "low" from "unverified" is preset-driven on all
@@ -61,12 +21,55 @@ from app.core.tier_thresholds import (  # noqa: E402,F401
     TIER_MEDIUM,
     TIER_MEDIUM_HIGH,
 )
+from app.db_models import BrainstormNsec, BrainstormRequestStatus
+from app.message_queue_tasks.process_strfry_event import (
+    FOLLOWED_BY_KEY_PREFIX,
+    MUTED_BY_KEY_PREFIX,
+    REPORTED_BY_KEY_PREFIX,
+)
+from app.neo4j_db.driver import driver as neo4j_driver
+from app.repos.brainstorm_nsec import select_brainstorm_nsec_history_fields_on_db
+from app.repos.brainstorm_request_repo import (
+    count_brainstorm_requests_with_priority_over_one_on_db,
+    select_latest_brainstorm_request_on_db,
+)
+from app.repos.observer_whitelist_repo import select_whitelisted_pubkeys_of_observer
+from app.repos.user_repo import (
+    OutboundCounts,
+    OutboundOverview,
+    get_all_section_stats,
+    get_counts_and_influence,
+    get_outbound_counts_and_influence,
+    get_paginated_flagged_connections,
+    get_paginated_section_connections,
+)
+from app.repos.user_repo import get_user_graph_data as _repo_get_user_graph_data
+from app.schemas.schemas import (
+    BrainstormRequestInstance,
+    PaginatedUserConnections,
+    UserConnectionCounts,
+    UserConnectionItem,
+    UserGraphData,
+    UserHistoryInstance,
+    UserOverviewData,
+    UserSectionsStats,
+)
+from app.services.brainstorm_request_service import (
+    brainstorm_request_db_obj_to_schema_converter,
+)
+from app.services.verified_cutoffs import VerifiedCutoffs
+from app.utils.neo4j_values import safe_float
 
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 50
 
 ConnectionKind = Literal[
-    "followed_by", "following", "muted_by", "muting", "reported_by", "reporting",
+    "followed_by",
+    "following",
+    "muted_by",
+    "muting",
+    "reported_by",
+    "reporting",
     # Virtual kind: DISTINCT flagged users across any relationship.
     "flagged",
 ]
@@ -94,7 +97,7 @@ def _decode_cursor(cursor: str) -> tuple[float, str]:
 
 
 async def _redis_inbound_count(prefix: str, pubkey: str) -> int:
-    return int(await redis_client.scard(f"{prefix}{pubkey}"))
+    return int(await redis_client.scard(f"{prefix}{pubkey}"))  # type: ignore[misc]
 
 
 async def _neo4j_outbound_counts_and_influence(
@@ -143,7 +146,6 @@ def brainstorm_nsec_db_obj_to_user_history_schema_converter(
 async def get_own_latest_graperank(
     db: AsyncDBSession, pubkey: str
 ) -> BrainstormRequestInstance | None:
-
     db_obj = await select_latest_brainstorm_request_on_db(db, pubkey)
     if not db_obj:
         return None
@@ -166,7 +168,6 @@ async def get_user_graph_data(
     pubkey: str,
     observer: str | None = None,
 ) -> UserGraphData:
-
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
     trusted_reporters_key = (
         f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
@@ -178,7 +179,9 @@ async def get_user_graph_data(
 
 
 async def get_user_history_data(db: AsyncDBSession, pubkey: str) -> UserHistoryInstance:
-    brainstorm_nsec_db_obj = await select_brainstorm_nsec_history_fields_on_db(db, pubkey)
+    brainstorm_nsec_db_obj = await select_brainstorm_nsec_history_fields_on_db(
+        db, pubkey
+    )
     return brainstorm_nsec_db_obj_to_user_history_schema_converter(
         brainstorm_nsec_db_obj=brainstorm_nsec_db_obj,
     )
@@ -376,5 +379,4 @@ async def get_user_connections(
 async def get_whitelisted_pubkeys_of_observer(
     db: AsyncDBSession, pubkey: str, threshold: float = 0.02
 ) -> list[str]:
-
     return await select_whitelisted_pubkeys_of_observer(db, pubkey, threshold)

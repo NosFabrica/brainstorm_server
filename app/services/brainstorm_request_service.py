@@ -13,11 +13,11 @@ from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
 )
 from app.schemas.schemas import BrainstormRequestInstance, GrapeRankError
-from app.services.scheduler_lanes import enqueue_calc_request
 from app.services.graperank_preset_service import (
     normalize_preset,
     resolve_preset_params,
 )
+from app.services.scheduler_lanes import enqueue_calc_request
 
 
 def brainstorm_request_db_obj_to_schema_converter(
@@ -43,7 +43,9 @@ def brainstorm_request_db_obj_to_schema_converter(
         algorithm=brainstorm_request_db_obj.algorithm,
         parameters=brainstorm_request_db_obj.parameters,
         how_many_others_with_priority=how_many_others_with_priority,
-        internal_publication_status=brainstorm_request_db_obj.status_internal_brainstorm_publication,
+        internal_publication_status=(
+            brainstorm_request_db_obj.status_internal_brainstorm_publication
+        ),
         ta_status=brainstorm_request_db_obj.status_ta_publication,
         pubkey=brainstorm_request_db_obj.pubkey,
         trigger_source=brainstorm_request_db_obj.trigger_source,

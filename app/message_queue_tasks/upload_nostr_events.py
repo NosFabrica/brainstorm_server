@@ -4,13 +4,7 @@ from contextlib import contextmanager
 from datetime import timedelta
 from typing import NamedTuple
 
-from nostr_sdk import (  # type: ignore
-    Client,
-    ClientMessage,
-    Event,
-    Keys,
-    NostrSigner,
-)
+from nostr_sdk import Client, ClientMessage, Event, Keys, NostrSigner  # type: ignore
 
 from app.core.config import settings
 from app.core.database import db_session
@@ -36,7 +30,6 @@ from app.repos.brainstorm_nsec import (
 from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
     update_brainstorm_request_publish_duration_by_id_on_db,
-    update_brainstorm_request_status_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
 )
 from app.services.publish_drift import resolve_full_sync
@@ -265,7 +258,7 @@ async def init_nostr_client(secret_key_nsec: str) -> Client:
         try:
             await client.add_relay(relay)
             relay_count += 1
-        except:
+        except Exception:
             logger.error(f"Bad relay {relay}")
     if relay_count == 0:
         raise Exception("No good relay available, shutting down!")
@@ -570,7 +563,7 @@ async def process_nostr_upload_message(message: dict):
         vespa_n_failed = 0
         try:
             with _timed(timings, "vespa"):
-                logger.info(f"Pushing scores to Vespa...")
+                logger.info("Pushing scores to Vespa...")
                 vespa_n_failed = await upsert_scores_to_vespa(
                     grape_rank_result=grape_rank_result,
                     observer=observer,
@@ -578,7 +571,7 @@ async def process_nostr_upload_message(message: dict):
                     vespa_full_sync=vespa_full_sync,
                 )
             vespa_search_available = True
-            logger.info(f"Done pushing scores to Vespa!")
+            logger.info("Done pushing scores to Vespa!")
         except Exception as e:
             # Don't fail the whole request — Nostr is the source of truth
             # and has already been written. Vespa is a search-side mirror.

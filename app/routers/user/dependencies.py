@@ -6,10 +6,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
-from app.services.verified_cutoffs import (
-    VerifiedCutoffs,
-    resolve_verified_cutoffs,
-)
+from app.services.verified_cutoffs import VerifiedCutoffs, resolve_verified_cutoffs
 from app.utils.api_validators import verify_token_optional
 from app.utils.auth.auth_models import JWTData
 from app.utils.observer import default_observer_pubkey

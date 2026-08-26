@@ -13,7 +13,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-
 # ---- ORE-02: /stats/pubkey ----
 
 
@@ -189,8 +188,7 @@ def ore_responses(*, batch_cap: int | None = None) -> dict[int | str, dict[str, 
     }
     if batch_cap is not None:
         responses[413] = _error(
-            f"Request exceeds the provider's limit of {batch_cap} pubkeys "
-            f"per call."
+            f"Request exceeds the provider's limit of {batch_cap} pubkeys " f"per call."
         )
     responses[422] = _error(
         "Invalid request field, unsupported `algorithm`, missing `pov` for a "
