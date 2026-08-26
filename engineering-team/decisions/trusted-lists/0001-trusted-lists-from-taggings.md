@@ -402,13 +402,23 @@ resolve-in-flight.
 ## Blast radius
 
 **Touched:** `app/db_models/__init__.py`, a new Alembic revision, a new repo
-module for the two tables, `app/message_queue_tasks/process_strfry_event.py`
+module for the two tables (`app/repos/tagging_repo.py`),
+`app/repos/user_repo.py` (one new batched query,
+`get_qualifying_asserters_for_observer` — the per-observer rank read D3
+chose lives with the other Neo4j queries per `app/neo4j_db/CLAUDE.md`'s
+"queries live in user_repo" rule; adding a parallel module for one query
+would have violated it), `app/message_queue_tasks/process_strfry_event.py`
 (one dispatch branch), `app/nostr_event_transferer/nostr_event_transferer.py`
 (a new `tagging_ev_kinds` list + its sync call — **not** `ev_kinds`, per D10),
-a new service module, a new router under `app/routers/admin/`,
-`app/routers/admin/router.py` (registration), `app/core/config.py` +
-`env.example` (three settings), and the directory `CLAUDE.md` files those
-touch.
+new service modules (`tagging_parse`, `trusted_list_build`,
+`trusted_list_service`), a new router under `app/routers/admin/trusted_lists/`,
+`app/routers/admin/router.py` (registration), the response schemas —
+`app/schemas/trusted_list_schemas.py` (new) registered in
+`app/schemas/request_response_schemas.py` per the repo's envelope convention
+(every wrapped response subclasses `SuccessfulResponseDataSchema` there),
+`app/core/config.py` + `env.example` (**four** settings — the fourth,
+`trusted_list_relay`, is the Q3 assumption's env-retargeting knob), and the
+directory `CLAUDE.md` files those touch.
 
 **Considered and deliberately left unmodified:**
 `app/message_queue_tasks/backfill_redis_relationships.py`. It is the second

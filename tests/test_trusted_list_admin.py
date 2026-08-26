@@ -271,3 +271,76 @@ def test_neo4j_failure_aborts_before_publishing(monkeypatch):
     with pytest.raises(RuntimeError):
         asyncio.run(svc.generate_trusted_lists_for_observer(OBSERVER))
     spy.assert_not_awaited()
+
+
+# --- U13: one tag's publish failure must not abort the rest (AC14) ---------
+
+
+def test_publish_failure_is_isolated_per_tag(monkeypatch):
+    """Two tags in the dictionary; the FIRST publish blows up. The second tag
+    must still publish, the failure must be reported per-tag with its error,
+    and the failed tag's slot must stay current so retraction can't wipe it."""
+    from app.repos.tagging_repo import DictionaryEntry
+
+    _patch_service_reads(
+        monkeypatch, taggings=4, asserters=["b" * 64], qualifying=["b" * 64]
+    )
+    entries = [
+        DictionaryEntry(
+            tag_event_id="c" * 64,
+            tag_author_pubkey="d" * 64,
+            slug="podcaster",
+            name="Podcaster",
+            description="",
+            uses=2,
+        ),
+        DictionaryEntry(
+            tag_event_id="e" * 64,
+            tag_author_pubkey="d" * 64,
+            slug="chef",
+            name="Chef",
+            description="",
+            uses=1,
+        ),
+    ]
+    monkeypatch.setattr(svc, "get_dictionary_on_db", AsyncMock(return_value=entries))
+    monkeypatch.setattr(
+        svc,
+        "get_taggings_for_tag_on_db",
+        AsyncMock(return_value=[("9" * 64, 1.0)]),
+    )
+    monkeypatch.setattr(svc, "_connect", AsyncMock(return_value=MagicMock()))
+    publish = AsyncMock(side_effect=[RuntimeError("relay rejected"), None])
+    monkeypatch.setattr(svc, "_publish", publish)
+    # Empty relay read-back: nothing previously published, nothing to retract.
+    monkeypatch.setattr(svc, "_fetch_published_tl_slots", AsyncMock(return_value={}))
+
+    result = asyncio.run(svc.generate_trusted_lists_for_observer(OBSERVER))
+
+    assert publish.await_count == 2  # the second tag was still attempted
+    assert result.published == 1
+    assert result.failed == 1
+    by_slug = {t.slug: t for t in result.tags}
+    assert by_slug["podcaster"].status == "failed"
+    assert "relay rejected" in by_slug["podcaster"].error
+    assert by_slug["chef"].status == "published"
+    # AC14's other half: the failed slot is still a current d-tag, so a
+    # hypothetical stale set containing it would NOT be retracted.
+    assert (
+        svc.plan_retractions(
+            [by_slug["podcaster"].d_tag], {t.d_tag for t in result.tags}
+        )
+        == []
+    )
+
+
+# --- U9's third case: unauthenticated → 401 (AC11) -------------------------
+
+
+def test_trigger_rejects_unauthenticated_caller():
+    """No Authorization at all — the raw app, no dependency overrides."""
+    from fastapi.testclient import TestClient
+
+    raw_client = TestClient(app)
+    resp = raw_client.post(f"/admin/trustedLists/{OBSERVER}")
+    assert resp.status_code == 401
