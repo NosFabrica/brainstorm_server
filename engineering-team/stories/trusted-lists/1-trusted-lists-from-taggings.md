@@ -191,3 +191,31 @@ The full suite's one prior "pre-existing failure"
 (`test_relay_deletions_integration`) turned out to be environmental — it
 fails against a populated foreign relay and passes against the clean isolated
 one — so the honest baseline for the suite is green.
+
+## Implementation scope notes (J3 item 2)
+
+Two touches sat outside the blast radius as originally declared; both are now
+named in the ADR's corrected Blast radius section, justified as follows:
+
+- **`app/repos/user_repo.py`** gained one batched query,
+  `get_qualifying_asserters_for_observer`. This is where the per-observer rank
+  read (ADR D3) has to live: `app/neo4j_db/CLAUDE.md` rules that *all* Cypher
+  lives in `user_repo.py`, so "a new repo module" could not lawfully hold a
+  Neo4j query. The black reformatting of that file's untouched functions is
+  incidental gate-parity work (it left the baseline failure set, see the
+  deviation section above).
+- **`app/schemas/trusted_list_schemas.py` (new) +
+  `app/schemas/request_response_schemas.py` (two lines)**: the endpoint's
+  response shape. Required by the repo's envelope convention — every wrapped
+  response subclasses `SuccessfulResponseDataSchema` in
+  `request_response_schemas.py` — and by `app/models/CLAUDE.md`'s rule that
+  HTTP-boundary types live in `app/schemas/`, not in the service. The original
+  blast radius simply forgot that a new endpoint implies its schema files.
+- **`app/core/config.py`** gained four settings, not the declared three: the
+  fourth, `trusted_list_relay`, is the ADR Q3 assumption's retarget-by-env
+  knob, added when the operator ratified proceeding under that assumption.
+
+Two planned handles (U9's 401-unauthenticated case; U13, AC14's per-tag
+publish-failure isolation) were found dropped at J3 and are now implemented in
+`tests/test_trusted_list_admin.py` — no removal is being defended; they were
+owed and are paid.
