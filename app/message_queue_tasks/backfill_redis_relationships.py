@@ -46,9 +46,7 @@ async def _redis_has_relationship_data(redis_client) -> bool:
 async def _count_nostr_users() -> int:
     # Fast: neo4j keeps a label-count store, so this is effectively O(1).
     async with neo4j_driver.session() as neo4j_session:
-        result = await neo4j_session.run(
-            "MATCH (n:NostrUser) RETURN count(n) AS total"
-        )
+        result = await neo4j_session.run("MATCH (n:NostrUser) RETURN count(n) AS total")
         record = await result.single()
         return int(record["total"]) if record else 0
 
@@ -80,9 +78,7 @@ async def _backfill_relationship(
         pending = 0
 
         async with neo4j_driver.session() as neo4j_session:
-            result = await neo4j_session.run(
-                cypher, cursor=cursor, page=PAGE_SIZE
-            )
+            result = await neo4j_session.run(cypher, cursor=cursor, page=PAGE_SIZE)
             async for record in result:
                 source = record["source"]
                 for target in record["targets"]:

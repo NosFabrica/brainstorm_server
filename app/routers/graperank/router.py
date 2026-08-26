@@ -2,29 +2,25 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
-from app.routers.admin.router import verify_admin_access
 from app.repos.brainstorm_nsec import (
     get_graperank_custom_params_by_pubkey_on_db,
     get_graperank_preset_by_pubkey_on_db,
     set_graperank_custom_params_by_pubkey_on_db,
     set_graperank_preset_by_pubkey_on_db,
 )
+from app.routers.admin.router import verify_admin_access
+from app.schemas.graperank_schemas import GrapeRankPresetParams, GrapeRankPresetTemplate
 from app.schemas.request_body_schemas import SetGrapeRankPresetBody
 from app.schemas.request_response_schemas import (
     GrapeRankPreset,
     GrapeRankPresetResponse,
     GrapeRankPresetsResponse,
 )
-from app.schemas.graperank_schemas import (
-    GrapeRankPresetParams,
-    GrapeRankPresetTemplate,
-)
 from app.services.graperank_preset_service import (
     list_graperank_presets,
     normalize_preset,
 )
 from app.utils.auth.auth_models import JWTData
-
 
 router = APIRouter()
 
@@ -65,10 +61,13 @@ async def set_graperank_preset_endpoint(
         if stored is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No custom params stored — call PUT /user/graperank/preset/custom with values first",
+                detail="No custom params stored — "
+                "call PUT /user/graperank/preset/custom with values first",
             )
 
-    await set_graperank_preset_by_pubkey_on_db(db, jwt_data.nostr_pubkey, body.preset.value)
+    await set_graperank_preset_by_pubkey_on_db(
+        db, jwt_data.nostr_pubkey, body.preset.value
+    )
     return GrapeRankPresetResponse(data=GrapeRankPreset(preset=body.preset))
 
 

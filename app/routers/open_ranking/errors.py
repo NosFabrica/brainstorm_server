@@ -20,13 +20,12 @@ from fastapi.exception_handlers import (
     request_validation_exception_handler,
 )
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.routers.open_ranking.availability import PovComputing
 from app.routers.open_ranking.capabilities import CAPABILITY_DOC
 from app.routers.open_ranking.common import ore_error_response
-
 
 WELL_KNOWN_PATH = "/.well-known/open-ranking.json"
 
@@ -47,7 +46,7 @@ def _header_safe(reason: str) -> str:
 
 async def _ore_http_exception(
     request: Request, exc: StarletteHTTPException
-) -> JSONResponse:
+) -> Response:
     if not _is_ore_request(request):
         return await http_exception_handler(request, exc)
     headers = dict(exc.headers or {})
@@ -61,7 +60,7 @@ async def _ore_http_exception(
 
 async def _ore_validation_exception(
     request: Request, exc: RequestValidationError
-) -> JSONResponse:
+) -> Response:
     if not _is_ore_request(request):
         return await request_validation_exception_handler(request, exc)
     errors = exc.errors()
@@ -80,7 +79,7 @@ async def _ore_validation_exception(
     return ore_error_response(status_code, reason)
 
 
-async def _ore_pov_computing(request: Request, exc: PovComputing) -> JSONResponse:
+async def _ore_pov_computing(request: Request, exc: PovComputing) -> Response:
     return JSONResponse(
         status_code=202,
         content={"status": "computing", "retry_after": exc.retry_after},
@@ -95,6 +94,11 @@ def install_ore_error_handlers(app: FastAPI) -> None:
     """Register the ORE error shape on an app. Handlers self-scope to ORE
     paths and delegate everything else to FastAPI's defaults, so installing
     them app-wide is safe."""
-    app.add_exception_handler(StarletteHTTPException, _ore_http_exception)
-    app.add_exception_handler(RequestValidationError, _ore_validation_exception)
-    app.add_exception_handler(PovComputing, _ore_pov_computing)
+    # The stubs want handlers of the Exception base, but starlette dispatches
+    # by the registered class, so subclass-typed handlers are correct — the
+    # mismatch is parameter contravariance in the stub, not a bug here.
+    app.add_exception_handler(StarletteHTTPException, _ore_http_exception)  # type: ignore[arg-type]
+    app.add_exception_handler(
+        RequestValidationError, _ore_validation_exception  # type: ignore[arg-type]
+    )
+    app.add_exception_handler(PovComputing, _ore_pov_computing)  # type: ignore[arg-type]

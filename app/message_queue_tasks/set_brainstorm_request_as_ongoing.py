@@ -1,13 +1,9 @@
-import asyncio
-import json
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.db_models import BrainstormRequestStatus
-
 from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_result_by_id_on_db,
 )
-from app.neo4j_db.driver import driver as neo4j_driver
 
 logger = loggr.get_logger(__name__)
 
@@ -18,7 +14,6 @@ STRFRY_EVENTS_QUEUE_NAME = "strfry:events"
 
 
 async def process_job_started_message(message: dict):
-
     request_id = message["id"]
 
     async with db_session() as db:

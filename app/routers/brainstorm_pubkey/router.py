@@ -1,5 +1,3 @@
-from app.schemas.schemas import BrainstormPubkeyInstance, BrainstormRequestInstance
-from app.services.brainstorm_request_service import create_brainstorm_request
 from fastapi import APIRouter, Depends
 from nostr_sdk import Keys
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -7,9 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.database import get_db
 from app.repos.brainstorm_nsec import select_brainstorm_nsec_by_pubkey_on_db
 from app.schemas.request_response_schemas import BrainstormPubkeyResponse
+from app.schemas.schemas import BrainstormPubkeyInstance, BrainstormRequestInstance
 from app.services.brainstorm_pubkey_service import get_or_create_brainstorm_pubkey
+from app.services.brainstorm_request_service import create_brainstorm_request
 from app.utils.api_validators import validate_nostr_pubkey
-
 
 router = APIRouter()
 
@@ -18,7 +17,8 @@ router = APIRouter()
     path="/{nostr_pubkey}",
     tags=[],
     dependencies=[],
-    summary="Get a Branstorm Pubkey endpoint. This will get the Pubkey for the Trusted Assertions of a given Nostr Pubkey."
+    summary="Get a Branstorm Pubkey endpoint. This will get the Pubkey "
+    "for the Trusted Assertions of a given Nostr Pubkey."
     + "If it doesn't exist, it is generated, and a new GrapeRank score calculation is triggered.",
 )
 async def get_brainstorm_pubkey_endpoint(

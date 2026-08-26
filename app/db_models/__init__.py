@@ -1,4 +1,5 @@
 import enum
+from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
@@ -83,9 +84,7 @@ class BrainstormRequest(TimestampMixin, Base):
     graperank_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Wall-clock seconds to publish this run's TAs (set on publish success).
     # Feeds the scheduler's measured median publish duration.
-    publish_duration_seconds: Mapped[float | None] = mapped_column(
-        Float, nullable=True
-    )
+    publish_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     # manual/scheduled/admin/periodic — drives priority-lane routing.
     trigger_source: Mapped[str] = mapped_column(
         String(128),
@@ -168,9 +167,7 @@ class Scheduling(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     # How often a user on this policy is recalculated (consumed by the
     # scheduler, issue 03). Stored in seconds for uniform, sub-day granularity.
-    schedule_interval_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False
-    )
+    schedule_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     # Scheduling priority; higher is served first. Policies sharing a priority
     # share a lane (issue 02/03 routing).
     priority: Mapped[int] = mapped_column(
@@ -220,9 +217,15 @@ class GrapeRankPreset(TimestampMixin, Base):
     report_rating: Mapped[float] = mapped_column(Float, nullable=False)
     report_confidence: Mapped[float] = mapped_column(Float, nullable=False)
     follow_confidence_of_observer: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_followers_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_reporters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_muters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
+    verified_followers_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
+    verified_reporters_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
+    verified_muters_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
 
 
 class ObserverWhitelist(TimestampMixin, Base):
@@ -251,11 +254,17 @@ class GrapeRankPresetHistory(Base):
     report_rating: Mapped[float] = mapped_column(Float, nullable=False)
     report_confidence: Mapped[float] = mapped_column(Float, nullable=False)
     follow_confidence_of_observer: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_followers_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_reporters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_muters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
+    verified_followers_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
+    verified_reporters_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
+    verified_muters_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
     change_type: Mapped[str] = mapped_column(String, nullable=False)
     changed_by: Mapped[str | None] = mapped_column(String, nullable=True)
-    changed_at: Mapped[DateTime] = mapped_column(
+    changed_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

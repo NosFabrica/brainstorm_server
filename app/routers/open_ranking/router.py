@@ -23,7 +23,6 @@ from app.routers.open_ranking.search import router as search_router
 from app.routers.open_ranking.stats import router as stats_router
 from app.routers.open_ranking.well_known import router as well_known_router
 
-
 router = APIRouter()
 
 # Capability document MUST be discoverable without auth (ORE-01).
