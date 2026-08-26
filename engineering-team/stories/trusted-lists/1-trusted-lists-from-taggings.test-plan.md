@@ -130,6 +130,14 @@ that the operator can tell the two cases apart, so two handles exist for that:
 
 Both are fast-suite handles over the service's return value, no relay involved.
 
+**Level change recorded during implementation (J3 item 3).** I9 and I10 —
+"read failure aborts before publishing" — were planned as integration handles
+but implemented as fast handles in `tests/test_trusted_list_admin.py`. The
+load-bearing assertion is *zero publishes occurred*, which is observable by
+patching the publish boundary and needs no live backend; forcing a real
+Postgres/Neo4j outage mid-test would add fragility without strengthening the
+claim. No handle was dropped.
+
 ## Pre-implementation failure spot-check
 
 Per J2 item 4, the plan must assert against code that does not exist yet.
