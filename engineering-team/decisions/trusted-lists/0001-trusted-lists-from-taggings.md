@@ -263,6 +263,32 @@ Rejected: adding 39999 to `ev_kinds` and widening `_is_graph_db_populated` to
 filter for graph kinds. It fixes the immediate break but leaves one list
 carrying two meanings, so the next kind added re-opens the same trap.
 
+### D11 — Retraction fires only from a trustworthy view
+
+The retraction pass reads back this Observer's live kind-30392 slots (scoped to
+their own signing key, filtered on the `tl-tag-` prefix) and empties any slot
+not in the current run's set. Two refinements the naive form gets wrong:
+
+**An empty dictionary must NOT return early.** Every tag falling out is the
+commonest retraction case; returning early there would leave stale lists
+asserting membership forever.
+
+**But emptiness is only actionable when we know why.** Three outcomes produce
+zero lists, and they are not equivalent:
+
+| Outcome | View | Retract? |
+|---|---|---|
+| Nothing ingested (`no_taggings_ingested`) | broken — un-synced relay | **no** |
+| No qualifying asserters (`no_qualifying_asserters`) | broken — Observer likely unscored | **no** |
+| Taggings + qualifying asserters, no tag met the use threshold | trustworthy | **yes** |
+
+Retracting on either broken view would wipe every live list the Observer has on
+the strength of data we already know is missing — the same failure class as
+D1-B's silent under-recall, but destructive instead of merely incomplete.
+
+If the read-back scan itself fails, the run retracts nothing and logs: leaving
+stale lists in place is strictly safer than guessing.
+
 ## Consequences
 
 **Enables**
