@@ -337,6 +337,39 @@ before merge:
   additive and cheap; adding them speculatively and wrongly is a wire claim we
   would have to retract.
 
+### Empirical finding, 2026-08-26 — Q1 is answered, and the answer is "no"
+
+Measured against the live local relay stack (`infra-strfry-1` on :7777 and
+`infra-strfry2-1` on :7778, the hosts `NOSTR_TRANSFER_TO_RELAY` and
+`NOSTR_UPLOAD_TA_EVENTS_RELAY` point at):
+
+| Kind | Events held (each relay) |
+|---|---|
+| 39999 | 76 |
+| 39998 | 0 |
+| 30382 | 0 |
+| 0 | 0 |
+
+The 76 kind-39999 events are **not taggings**. All 76 come from a single
+author, carry exactly one tag — `["d", "<uuid>"]` — and hold base64 encrypted
+content. No `z` tag of any kind, so no tag-element or tagging concept is
+present. Kind 39999 is a general Decentralized-Lists item kind, and this is
+some other application's private encrypted data riding it.
+
+Two consequences:
+
+1. **Q1/Q2 are answered for this environment: no taggings arrive here.** The
+   feature will be correctly inert on this stack, and reports so via AC15's
+   `empty_reason = no_taggings_ingested` rather than looking like a quiet day.
+   Wiring a sync source (tapestry's taggings live behind its `dcosl` preset on
+   `dcosl.brainstorm.world` / `.social`) remains a deployment question for
+   @vitorpamplona / David — it is configuration, not code.
+2. **AC3 is load-bearing, not hypothetical.** Foreign kind-39999 traffic
+   demonstrably exists on the very relays we read. Running the parser over all
+   76 real events yields `0 tag elements, 0 taggings, 76 correctly ignored` —
+   the `z`-tag discrimination is what stands between this feature and ingesting
+   another app's encrypted blobs as trust assertions.
+
 Q1 and Q3 are also the two flags raised at Gate A and accepted as
 resolve-in-flight.
 
