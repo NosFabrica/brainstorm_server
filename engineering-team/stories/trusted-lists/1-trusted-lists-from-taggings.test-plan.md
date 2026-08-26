@@ -24,7 +24,7 @@ backend), `I*` = integration suite (real Postgres + Neo4j).
 | AC8 membership predicate + ordering | U6 | `test_membership_requires_cutoff_and_net_positive`, `test_members_ordered_by_applications_then_pubkey` | `tests/test_trusted_list_membership.py` | fast |
 | AC9 TL wire shape (all tags + content JSON) | U7 | `test_tl_event_wire_shape` | `tests/test_trusted_list_wire.py` | fast |
 | AC9 `description` carried from tag element | U8 | `test_tl_carries_tag_description` | `tests/test_trusted_list_wire.py` | fast |
-| AC10 signed by the Observer's assistant nsec | I7 | `test_tl_author_is_observer_assistant_pubkey` | `tests/integration/test_trusted_list_integration.py` | integration |
+| AC10 signed by the Observer's assistant nsec | I7 → U18 + I11 | *substituted* — fast: `test_signing_pubkey_is_derived_from_the_observers_own_nsec` (`tests/test_trusted_list_admin.py`) asserts the key derives from the Observer's stored nsec via the same repo call the TA path uses; integration: I11's relay read-back is author-scoped to that signing key, so a wrong signer would return zero slots and fail every assertion. Recorded at J3 — the planned `test_tl_author_is_observer_assistant_pubkey` was never written under that name; coverage is equivalent, and this row now points at tests that exist. | fast + integration |
 | AC11 admin-only trigger (200 / 403 / 401) | U9 | `test_trigger_requires_admin[…]` (3 cases) | `tests/test_trusted_list_admin.py` | fast |
 | AC11 Observer is a path param, not the caller | U10 | `test_trigger_targets_path_observer_not_caller` | `tests/test_trusted_list_admin.py` | fast |
 | AC12 empty dictionary → 200, zero publishes | U11 | `test_empty_dictionary_publishes_nothing` | `tests/test_trusted_list_admin.py` | fast |
