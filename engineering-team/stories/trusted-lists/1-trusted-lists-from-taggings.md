@@ -163,3 +163,31 @@ Testable from the outside. Each criterion gets at least one test handle.
    unverified and is a hard dependency of AC1/AC2.
 4. **Does `GET /setup/{pubkey}` need kind-10040 designation rows for 30392?**
    It returns only the five `30382:*` rows today (`app/routers/setup/router.py:14-33`).
+
+## Gate-command deviation (approved)
+
+`poe check_all` cannot pass in this repo: the **baseline is red at HEAD**,
+before this story's diff — `check_fmt` aborts the sequence with 38 files
+needing reformat, and behind it sit 52 isort, 129 flake8 and 92 mypy findings
+(see the 2026-08-25 OPEN.md row; the Light profile's "Instrument
+preconditions" claim about this repo is false).
+
+**Operator decision (Vinney, 2026-08-26): parity evidence substitutes for the
+green gate for this story.** The inherited baseline is a different timeline's
+responsibility; it may be fixed as a bonus on this branch or a separate PR.
+
+Parity evidence, each stage run in the foreground with the exit code captured
+by brace-redirect, this diff vs a stashed clean tree:
+
+| Stage | Baseline (clean tree) | With this diff |
+|---|---|---|
+| `black --check` | 38 files | **36 files** (2 pre-existing files fixed in passing; failure set otherwise identical) |
+| `isort --check` | 52 errors | 52 errors (identical set) |
+| `flake8` | 129 findings | 129 findings (identical set) |
+| `mypy` | 92 errors / 33 files (141 checked) | 92 errors / 33 files (**148** checked — 7 new files, zero new errors) |
+| `pytest ./tests` | — | **550 passed, 0 failed** against the live local stack (Postgres, Neo4j, Redis, isolated strfry) |
+
+The full suite's one prior "pre-existing failure"
+(`test_relay_deletions_integration`) turned out to be environmental — it
+fails against a populated foreign relay and passes against the clean isolated
+one — so the honest baseline for the suite is green.
