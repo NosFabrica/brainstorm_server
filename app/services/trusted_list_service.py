@@ -18,10 +18,20 @@ current so the retraction pass cannot wipe the healthy list still on the relay.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from nostr_sdk import Client, EventBuilder, Keys, Kind, NostrSigner, Tag  # type: ignore
+from nostr_sdk import (  # type: ignore
+    Client,
+    EventBuilder,
+    Filter,
+    Keys,
+    Kind,
+    NostrSigner,
+    PublicKey,
+    Tag,
+)
 
 from app.core.config import settings
 from app.core.database import db_session
@@ -38,6 +48,7 @@ from app.repos.tagging_repo import (
 )
 from app.repos.user_repo import get_qualifying_asserters_for_observer
 from app.services.trusted_list_build import (
+    D_TAG_PREFIX,
     TRUSTED_LIST_KIND,
     build_trusted_list_content,
     build_trusted_list_tags,
@@ -49,6 +60,9 @@ logger = loggr.get_logger(__name__)
 
 # Why a run produced no lists. AC15: an operator must be able to tell an
 # un-synced relay from a quiet day, because the two look identical downstream.
+# An Observer holds tens of TLs, so one bounded fetch covers the whole set.
+RETRACTION_SCAN_LIMIT = 500
+
 EMPTY_REASON_NO_TAGGINGS = "no_taggings_ingested"
 EMPTY_REASON_NO_QUALIFYING_ASSERTERS = "no_qualifying_asserters"
 EMPTY_REASON_NO_TAGS_MET_THRESHOLD = "no_tags_met_use_threshold"
@@ -101,6 +115,58 @@ async def _publish(client: Client, tags: list[list[str]], content: str) -> None:
     output = await client.send_event(event)
     if output.failed:
         raise RuntimeError(str(output.failed))
+
+
+async def _fetch_published_tl_slots(client: Client, signing_pubkey: str) -> dict:
+    """This Observer's live kind-30392 slots, as {d_tag: already_retracted}.
+
+    Scoped by author to the Observer's own assistant key, so a run for X can
+    never see — let alone retract — Y's lists. Filtered again on the `tl-tag-`
+    prefix so a slot published by some other derivation (tapestry's pin-derived
+    `tl-pin-` lists, if a relay mirrors both) is never touched.
+
+    Unlike the taggings read, REQ recall is not a concern here: an Observer has
+    tens of TLs, far below strfry's maxFilterLimit.
+    """
+    flt = (
+        Filter()
+        .kinds([Kind(TRUSTED_LIST_KIND)])
+        .authors([PublicKey.parse(signing_pubkey)])
+        .limit(RETRACTION_SCAN_LIMIT)
+    )
+    events = await client.fetch_events(flt, timeout=timedelta(seconds=30))
+    slots: dict[str, bool] = {}
+    for event in events.to_vec():
+        d_tag = None
+        retracted = False
+        for tag in json.loads(event.as_json()).get("tags", []):
+            if not tag:
+                continue
+            if tag[0] == "d" and len(tag) >= 2:
+                d_tag = tag[1]
+            elif tag[0] == "status" and len(tag) >= 2 and tag[1] == "retracted":
+                retracted = True
+        if d_tag and d_tag.startswith(f"{D_TAG_PREFIX}-"):
+            # Keep the most pessimistic view across duplicates: if any copy is
+            # unretracted we still owe a retraction.
+            slots[d_tag] = slots.get(d_tag, True) and retracted
+    return slots
+
+
+def _parse_d_tag_slug(d_tag: str, observer: str) -> tuple[str, str] | None:
+    """(tag_author8, slug) from `tl-tag-<observer8>-<tagAuthor8>-<slug>`.
+
+    Slugs may contain `-`, so split only the fixed leading fields. Returns None
+    for a slot belonging to a different Observer.
+    """
+    prefix = f"{D_TAG_PREFIX}-{observer[:8]}-"
+    if not d_tag.startswith(prefix):
+        return None
+    rest = d_tag.removeprefix(prefix)
+    author8, _, slug = rest.partition("-")
+    if not author8 or not slug:
+        return None
+    return author8, slug
 
 
 async def generate_trusted_lists_for_observer(
@@ -157,8 +223,17 @@ async def generate_trusted_lists_for_observer(
 
     result.dictionary_size = len(dictionary)
     if not dictionary:
+        # NOTE: deliberately does NOT return early. An empty dictionary reached
+        # from a TRUSTWORTHY view — we hold taggings AND this Observer has
+        # qualifying asserters — means every tag legitimately fell out, and its
+        # stale lists must be retracted. That is the commonest retraction case.
+        #
+        # The two earlier returns above are the untrustworthy views (nothing
+        # ingested; Observer never scored). Those must never reach the
+        # retraction pass: an empty result caused by a broken relay sync or an
+        # unscored Observer would otherwise wipe every live list this Observer
+        # has. Emptiness is only actionable when we know why it is empty.
         result.empty_reason = EMPTY_REASON_NO_TAGS_MET_THRESHOLD
-        return result
 
     # --- write phase: per-tag failures are isolated -------------------------
     client = await _connect(nsec)
@@ -209,6 +284,60 @@ async def generate_trusted_lists_for_observer(
             tag_result.error = str(exc)
             result.failed += 1
         result.tags.append(tag_result)
+
+    # --- retraction pass (AC13) --------------------------------------------
+    # `current_d_tags` includes tags whose publish FAILED. That inclusion is the
+    # safety rule (AC14): a transient relay error must never let this pass empty
+    # a healthy live list. Scoped to this Observer's own signing key, so a run
+    # for X cannot touch Y's slots.
+    try:
+        published_slots = await _fetch_published_tl_slots(client, result.signing_pubkey)
+    except Exception as exc:  # noqa: BLE001
+        # Can't enumerate what's live -> retract nothing. Publishing above
+        # already succeeded; skipping retraction leaves stale lists in place,
+        # which is strictly safer than guessing and wiping good ones.
+        logger.error(
+            "TL retraction scan failed for observer %s (retracting nothing): %s",
+            observer_pubkey,
+            exc,
+        )
+        return result
+
+    for stale_d_tag in plan_retractions(list(published_slots), current_d_tags):
+        if published_slots.get(stale_d_tag):
+            continue  # already carries the retracted marker — idempotent
+        parsed = _parse_d_tag_slug(stale_d_tag, observer_pubkey)
+        if parsed is None:
+            continue
+        author8, slug = parsed
+        try:
+            await _publish(
+                client,
+                build_trusted_list_tags(
+                    observer=observer_pubkey,
+                    tag_event_id="",
+                    tag_author_pubkey=author8,
+                    slug=slug,
+                    name=slug,
+                    description="",
+                    members=[],
+                    cutoff=cutoff,
+                    min_rank=settings.trusted_list_min_rank,
+                    retracted=True,
+                ),
+                "",
+            )
+            result.retracted += 1
+            result.tags.append(
+                TagResult(
+                    slug=slug,
+                    d_tag=stale_d_tag,
+                    tag_event_id="",
+                    status="retracted",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("TL retraction failed for %s: %s", stale_d_tag, exc)
 
     return result
 

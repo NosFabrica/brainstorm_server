@@ -94,3 +94,29 @@ def run_with_db_and_graph(work, nodes: dict[str, float | None], observer: str):
             await engine.dispose()
 
     return asyncio.run(_go())
+
+
+def neo_driver():
+    """A fresh Neo4j driver bound to whatever loop calls this."""
+    return AsyncGraphDatabase.driver(
+        settings.neo4j_db_url,
+        auth=(settings.neo4j_db_username, settings.neo4j_db_password),
+    )
+
+
+async def seed_influence(nodes: dict[str, float], observer: str) -> None:
+    """Set `influence_<observer>` on each pubkey. Awaited inside the caller's
+    own loop so it composes with end-to-end service tests."""
+    influence_key = f"influence_{observer}"
+    driver = neo_driver()
+    try:
+        async with driver.session() as session:
+            for pk, influence in nodes.items():
+                await session.run(
+                    f"MERGE (u:NostrUser {{pubkey: $pk}}) "
+                    f"SET u.`{influence_key}` = $inf",
+                    pk=pk,
+                    inf=influence,
+                )
+    finally:
+        await driver.close()

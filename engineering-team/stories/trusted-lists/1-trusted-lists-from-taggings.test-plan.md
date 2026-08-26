@@ -28,7 +28,10 @@ backend), `I*` = integration suite (real Postgres + Neo4j).
 | AC11 admin-only trigger (200 / 403 / 401) | U9 | `test_trigger_requires_admin[…]` (3 cases) | `tests/test_trusted_list_admin.py` | fast |
 | AC11 Observer is a path param, not the caller | U10 | `test_trigger_targets_path_observer_not_caller` | `tests/test_trusted_list_admin.py` | fast |
 | AC12 empty dictionary → 200, zero publishes | U11 | `test_empty_dictionary_publishes_nothing` | `tests/test_trusted_list_admin.py` | fast |
-| AC13 stale TL retraction, idempotent | I8 | `test_stale_tl_is_retracted_once` | `tests/integration/test_trusted_list_integration.py` | integration |
+| AC13 retraction only fires from a TRUSTWORTHY view (empty store / unscored Observer must retract nothing) | U17 | `test_untrustworthy_empty_view_never_retracts` | `tests/test_trusted_list_retraction.py` | fast |
+| AC13 publish → retract → idempotent, end-to-end on a live relay | I11 | `test_publish_retract_idempotence_and_observer_scoping` | `tests/integration/test_trusted_list_publish_integration.py` | integration |
+| AC13/S3 a run for one Observer never retracts another's slots | I11 | (same test) | `tests/integration/test_trusted_list_publish_integration.py` | integration |
+| AC9 title + description on the actually-published event | I11 | (same test) | `tests/integration/test_trusted_list_publish_integration.py` | integration |
 | AC14 publish failure does not trigger retraction of that slot | U12 | `test_failed_publish_keeps_dtag_current` | `tests/test_trusted_list_retraction.py` | fast |
 | AC14 one tag's failure does not abort the rest | U13 | `test_publish_failure_is_isolated_per_tag` | `tests/test_trusted_list_retraction.py` | fast |
 | AC15 per-tag counts in the response | U15 | `test_response_reports_per_tag_counts` | `tests/test_trusted_list_admin.py` | fast |
