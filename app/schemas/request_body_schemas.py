@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.graperank_schemas import GrapeRankPresetTemplate
 from app.schemas.nostr_event import NostrEvent
@@ -27,13 +27,16 @@ class SetUserSchedulingBody(BaseModel):
 
 
 class CreateSchedulingBody(BaseModel):
-    name: str
-    schedule_interval_seconds: int
+    # Bounded because Swagger's "Try it out" sends the schema example verbatim,
+    # and the router cannot tell that from a deliberate body. A 0 cadence makes
+    # is_overdue always true, so everyone on the policy is recalculated forever.
+    name: str = Field(min_length=1)
+    schedule_interval_seconds: int = Field(gt=0)
     priority: int = 0
     enabled: bool = True
     is_default: bool = False
-    manual_quota_limit: int = 20
-    manual_quota_window_seconds: int = 604800
+    manual_quota_limit: int = Field(default=20, ge=1)
+    manual_quota_window_seconds: int = Field(default=604800, gt=0)
 
 
 class BulkAssignSchedulingBody(BaseModel):
@@ -41,10 +44,12 @@ class BulkAssignSchedulingBody(BaseModel):
 
 
 class UpdateSchedulingBody(BaseModel):
-    name: str | None = None
-    schedule_interval_seconds: int | None = None
+    """Partial: only supplied fields change. Same bounds as create."""
+
+    name: str | None = Field(default=None, min_length=1)
+    schedule_interval_seconds: int | None = Field(default=None, gt=0)
     priority: int | None = None
     enabled: bool | None = None
     is_default: bool | None = None
-    manual_quota_limit: int | None = None
-    manual_quota_window_seconds: int | None = None
+    manual_quota_limit: int | None = Field(default=None, ge=1)
+    manual_quota_window_seconds: int | None = Field(default=None, gt=0)
