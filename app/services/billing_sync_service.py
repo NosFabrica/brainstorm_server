@@ -133,6 +133,7 @@ async def reconcile_subscriptions(
     *,
     limit: int,
     stale_after: timedelta,
+    abandon_pending_after: timedelta,
     now: datetime | None = None,
 ) -> ReconcileResult:
     """Re-read Flash for subscribers no event has settled.
@@ -145,7 +146,12 @@ async def reconcile_subscriptions(
     """
     at = now or utc_now()
     candidates = await select_reconcile_candidates_on_db(
-        db, now=at, stale_after=stale_after, limit=limit
+        db,
+        now=at,
+        stale_after=stale_after,
+        limit=limit,
+        abandon_pending_after=abandon_pending_after,
+        abandoned_error=EntitlementReason.UNKNOWN_SUBSCRIPTION.value,
     )
 
     reconciled = failed = 0

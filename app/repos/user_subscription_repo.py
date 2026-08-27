@@ -3,7 +3,7 @@ divergence reads that compare it against the live scheduling assignment."""
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Select, and_, func, or_, select, update
+from sqlalchemy import Select, and_, case, func, not_, or_, select, update
 from sqlalchemy.orm import aliased
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -54,6 +54,7 @@ async def upsert_user_subscription_on_db(
         "cancel_effective_date": subscription.cancel_effective_date,
         "last_synced_at": datetime.now(timezone.utc).replace(tzinfo=None),
         "last_sync_error": None,
+        "sync_error_since": None,
     }
     statement = (
         pg_insert(UserSubscription)
@@ -140,7 +141,13 @@ async def update_last_event_at_on_db(
 
 
 async def select_reconcile_candidates_on_db(
-    db: AsyncDBSession, *, now: datetime, stale_after: timedelta, limit: int
+    db: AsyncDBSession,
+    *,
+    now: datetime,
+    stale_after: timedelta,
+    limit: int,
+    abandon_pending_after: timedelta,
+    abandoned_error: str,
 ) -> list[UserSubscription]:
     """Subscribers whose real state only Flash can settle.
 
@@ -150,6 +157,19 @@ async def select_reconcile_candidates_on_db(
     those we simply haven't asked about in a while. Ordered oldest-read first so
     a bounded batch works through the backlog rather than re-asking about the
     same few.
+
+    Minus one group that will never settle: a checkout that never confirmed and
+    that Flash has since forgotten. Re-reading it can only return the same
+    answer, and the paths that could revive the subscriber — an `activated`
+    webhook, a refresh, an operator resync — all bypass this query.
+
+    Narrow on purpose. Only where nothing was ever granted, so nothing is at
+    stake; only for the error meaning Flash answered and had nothing, never one
+    meaning we could not ask; and only once it has said so for the whole window,
+    measured from `sync_error_since` — how long *this failure* has run, not how
+    old the row is. A subscriber can sit legitimately pending for weeks, so row
+    age would write them off on their first blip.
+    `select_failing_syncs_on_db` keeps them visible after we stop asking.
     """
     statement = (
         select(UserSubscription)
@@ -169,7 +189,16 @@ async def select_reconcile_candidates_on_db(
                 ),
                 UserSubscription.last_synced_at.is_(None),
                 UserSubscription.last_synced_at <= now - stale_after,
-            )
+            ),
+            not_(
+                and_(
+                    UserSubscription.flash_status == "pending",
+                    UserSubscription.granted_scheduling_id.is_(None),
+                    UserSubscription.last_sync_error == abandoned_error,
+                    UserSubscription.sync_error_since.is_not(None),
+                    UserSubscription.sync_error_since <= now - abandon_pending_after,
+                )
+            ),
         )
         .order_by(UserSubscription.last_synced_at.asc().nullsfirst())
         .limit(limit)
@@ -189,12 +218,26 @@ async def record_sync_failure_on_db(
     them. They come back on the normal staleness cadence instead, and
     `last_sync_error` is what says the last attempt failed.
     """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     statement = (
         update(UserSubscription)
         .where(UserSubscription.pubkey == pubkey)
         .values(
             last_sync_error=reason,
-            last_synced_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            last_synced_at=now,
+            # Only a *change* of reason restarts the clock. The same reason
+            # repeating is the same failure continuing, and re-stamping it would
+            # make a permanent failure look permanently fresh.
+            sync_error_since=case(
+                (
+                    and_(
+                        UserSubscription.last_sync_error == reason,
+                        UserSubscription.sync_error_since.is_not(None),
+                    ),
+                    UserSubscription.sync_error_since,
+                ),
+                else_=now,
+            ),
         )
     )
     await execute_db_statement(db, statement, __name__)

@@ -78,6 +78,9 @@ async def billing_sync_cronjob() -> None:
                     stale_after=timedelta(
                         seconds=settings.billing_reconcile_stale_after_seconds
                     ),
+                    abandon_pending_after=timedelta(
+                        seconds=settings.billing_abandon_pending_after_seconds
+                    ),
                 )
                 await prune_webhook_payloads(
                     db,

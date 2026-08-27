@@ -258,7 +258,13 @@ async def apply_entitlement(
     )
 
     if subscription is None:
-        logger.warning("Flash has no subscription %s; no tier changed", subscription_id)
+        # Named by ref, not by id: every caller here looks up by reference, so
+        # interpolating the id alone identifies nobody.
+        logger.warning(
+            "Flash has no subscription for %s (id %s); no tier changed",
+            external_ref,
+            subscription_id or "not given",
+        )
         return EntitlementOutcome(applied=False, reason=EntitlementReason.UNKNOWN_SUBSCRIPTION)
 
     if subscription.ref and subscription.ref != external_ref:

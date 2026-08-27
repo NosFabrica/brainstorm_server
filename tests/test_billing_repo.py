@@ -77,6 +77,8 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
         "reason": "because",
         "now": NOW,
         "stale_after": timedelta(minutes=5),
+        "abandon_pending_after": timedelta(hours=24),
+        "abandoned_error": "unknown_subscription",
         "older_than": NOW,
         "max_attempts": 5,
         "limit": 10,

@@ -292,6 +292,11 @@ class UserSubscription(TimestampMixin, Base):
     last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_sync_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    # When the *current* error first appeared. `last_synced_at` moves on every
+    # attempt and `updated_at` on every write, so neither can answer "how long
+    # has this been failing" — which is the only question that separates a
+    # blip from something that will never resolve. Cleared by a successful read.
+    sync_error_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 # Inbound Flash webhooks. An inbox, not a ledger — never read to decide whether

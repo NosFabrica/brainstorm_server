@@ -56,7 +56,11 @@ def reconcile(monkeypatch):
 def _run(reconcile, limit=25):
     return asyncio.run(
         reconcile_subscriptions(
-            reconcile.db, limit=limit, stale_after=timedelta(hours=6), now=NOW
+            reconcile.db,
+            limit=limit,
+            stale_after=timedelta(hours=6),
+            abandon_pending_after=timedelta(hours=24),
+            now=NOW,
         )
     )
 
@@ -161,6 +165,20 @@ def test_flash_having_no_such_subscription_is_not_counted_as_reconciled(reconcil
     assert result.reconciled == 0
     assert result.failed == 1
     reconcile.record_error.assert_awaited_once()
+
+
+def test_the_sweep_asks_for_abandoned_checkouts_to_be_left_out(reconcile):
+    """The window and the error string are the query's, not the sweep's — but a
+    caller that forgot to pass them would silently sweep them forever.
+
+    What the query then does with them is `tests/integration/
+    test_billing_reconcile_candidates_integration.py`.
+    """
+    _run(reconcile)
+
+    kwargs = reconcile.candidates.await_args.kwargs
+    assert kwargs["abandon_pending_after"] == timedelta(hours=24)
+    assert kwargs["abandoned_error"] == EntitlementReason.UNKNOWN_SUBSCRIPTION.value
 
 
 def test_an_unmapped_plan_also_advances_the_read_clock(reconcile):
