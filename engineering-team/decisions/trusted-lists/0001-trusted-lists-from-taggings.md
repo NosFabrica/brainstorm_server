@@ -496,6 +496,18 @@ certainty  = 1 − ρ^input                (ρ = rigor)
 score      = round( max(average × certainty, 0) × 100 )   — integer 0–100
 ```
 
+
+**Units — normative.** Internally everything is the unit interval: weights,
+`average` (after clamping), `certainty`, and their product all live in
+[0, 1]. The wire carries the estate's Rank quantum: **× 100, rounded, as an
+integer string** — `1.0 → "100"`, `0.5 → "50"`, `0.375 → "38"`; resolution is
+1 point = 0.01, identical to how Rank quantizes Influence (`CONTEXT.md`:
+`round(Influence × 100)`). The float never appears on the wire, and no
+consumer should divide by anything other than 100 to recover it. Vespa stores
+it as the same int8 0–100 cell type as `quality_scores`. (Since
+`certainty = 1 − ρ^input < 1` strictly, a literal 100 appears only once
+rounding crosses 99.5 — i.e. `input ≥ log(0.005)/log(ρ) ≈ 7.6` at ρ = 0.5.)
+
 Properties this buys, all inherited from the spec rather than argued fresh:
 bounded output; **mass beats count** (ten 0.03-influence appliers yield
 `input=0.3 → confidence≈0.19`; two 0.5s yield `input=1.0 → confidence=0.5`);
