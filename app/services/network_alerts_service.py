@@ -36,10 +36,7 @@ from app.repos.user_repo import (
     count_verified_muters,
     get_network_alert_candidates,
 )
-from app.schemas.request_response_schemas import (
-    NetworkAlertItem,
-    NetworkAlertsData,
-)
+from app.schemas.request_response_schemas import NetworkAlertItem, NetworkAlertsData
 from app.services.verified_cutoffs import VerifiedCutoffs
 from app.utils.neo4j_values import safe_float, safe_int
 

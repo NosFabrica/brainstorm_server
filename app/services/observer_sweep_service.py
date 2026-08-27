@@ -63,7 +63,9 @@ def parse_ta_scan(lines: Iterable[str]) -> dict[str, set[str]]:
         n += 1
     logger.info(
         "parsed TA scan: %d events, %d signers, %d bad lines",
-        n, len(by_signer), bad,
+        n,
+        len(by_signer),
+        bad,
     )
     return dict(by_signer)
 

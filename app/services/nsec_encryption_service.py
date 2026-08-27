@@ -22,11 +22,7 @@ from sqlalchemy import func, select, update
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.db_models import BrainstormNsec
-from app.utils.encryption import (
-    current_keys,
-    load_keys_from_file,
-    write_keys_to_file,
-)
+from app.utils.encryption import current_keys, load_keys_from_file, write_keys_to_file
 
 logger = loggr.get_logger(__name__)
 
@@ -125,9 +121,9 @@ async def count_encrypted_rows() -> int:
     async with db_session() as db:
         return (
             await db.execute(
-                select(func.count()).select_from(BrainstormNsec).where(
-                    BrainstormNsec.encrypted_nsec.is_not(None)
-                )
+                select(func.count())
+                .select_from(BrainstormNsec)
+                .where(BrainstormNsec.encrypted_nsec.is_not(None))
             )
         ).scalar_one()
 

@@ -1,19 +1,18 @@
 import asyncio
-from datetime import timedelta
-from collections import deque
-
-from app.core.loggr import loggr
-from nostr_sdk import Client, Filter, Kind, Timestamp, Event
-from tqdm import tqdm
-import os
-from collections import deque
 import time
-from app.core.database import db_session
+from collections import deque
+from datetime import timedelta
+
+from nostr_sdk import Client, Event, Filter, Kind, Timestamp
+
 from app.core.config import settings
+from app.core.database import db_session
+from app.core.loggr import loggr
 from app.repos.brainstorm_nostr_transferer import (
     get_nostr_transfer_status_by_kind_from_db,
     upsert_nostr_transfer_status_on_db,
 )
+from app.services.tagging_parse import TAGGING_KIND
 
 logger = loggr.get_logger(__name__)
 
@@ -25,13 +24,23 @@ ev_kinds: list[tuple[Kind, int]] = [
     (Kind(5), 1800000),
 ]
 
+# Taggings sync. DELIBERATELY SEPARATE from `ev_kinds` above — see ADR
+# trusted-lists/0001 D10. `ev_kinds` means "the kinds the follow/mute/report
+# graph is built from", and `backfill_redis_relationships._is_graph_db_populated`
+# reads it with exactly that meaning: it gates the one-time Redis relationship
+# backfill on EVERY listed kind having a completed transfer row. Appending
+# kind 39999 there would silently disable that backfill until the taggings
+# transfer completed. Taggings are not a graph-relationship kind.
+tagging_ev_kinds: list[tuple[Kind, int]] = [
+    (Kind(TAGGING_KIND), 100000),
+]
+
 
 LIMIT = 300
 SEEN_CACHE_SIZE = 5000
 
 
 async def publish_event(event: Event, relay_client: Client) -> None:
-
     try:
         result = await relay_client.send_event(event)
         if result.failed:
@@ -54,9 +63,8 @@ async def nostr_event_transferer():
     await relay_sender_client.connect()
 
     async with db_session() as db:
-
-        for kind, estimated_events in ev_kinds:
-
+        # Taggings ride the same sync loop but a separate list (ADR D10).
+        for kind, estimated_events in [*ev_kinds, *tagging_ev_kinds]:
             logger.info(f"Getting events of Kind {kind.as_u16()}")
 
             started_at = time.time()
@@ -90,7 +98,9 @@ async def nostr_event_transferer():
 
             while True:
                 logger.info(
-                    f"Progress on Kind {kind.as_u16()}: {total_events}/{estimated_events} { round(total_events / estimated_events, 4)*100}%"
+                    f"Progress on Kind {kind.as_u16()}: "
+                    f"{total_events}/{estimated_events} "
+                    f"{round(total_events / estimated_events, 4) * 100}%"
                 )
                 new_events = 0
                 flt = Filter().kinds([kind]).limit(LIMIT)
@@ -204,9 +214,7 @@ async def nostr_event_recent_transferer():
     await relay_sender_client.connect()
 
     async with db_session() as db:
-
         for kind, _ in ev_kinds:
-
             started_at = time.time()
 
             status = await get_nostr_transfer_status_by_kind_from_db(

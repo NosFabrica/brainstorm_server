@@ -8,9 +8,9 @@ from sqladmin.authentication import AuthenticationBackend
 from app.core.config import settings
 from app.core.database import engine
 from app.db_models import (
-    BrainstormRequest,
-    BrainstormNsec,
     BrainstormNostrRelayTransfer,
+    BrainstormNsec,
+    BrainstormRequest,
 )
 from app.utils.auth.auth_util import (
     sql_admin_create_jwt_token,
@@ -55,7 +55,18 @@ def add_sql_admin_panel(app: FastAPI):
     admin = Admin(app, engine, authentication_backend=authentication_backend)
 
     class BrainstormRequestAdmin(ModelView, model=BrainstormRequest):
-        column_list = [BrainstormRequest.private_id, BrainstormRequest.password, BrainstormRequest.status, BrainstormRequest.status_ta_publication, BrainstormRequest.status_internal_brainstorm_publication, BrainstormRequest.parameters, BrainstormRequest.algorithm, BrainstormRequest.count_values, BrainstormRequest.created_at, BrainstormRequest.updated_at]  # type: ignore
+        column_list = [  # type: ignore
+            BrainstormRequest.private_id,
+            BrainstormRequest.password,
+            BrainstormRequest.status,
+            BrainstormRequest.status_ta_publication,
+            BrainstormRequest.status_internal_brainstorm_publication,
+            BrainstormRequest.parameters,
+            BrainstormRequest.algorithm,
+            BrainstormRequest.count_values,
+            BrainstormRequest.created_at,
+            BrainstormRequest.updated_at,
+        ]
 
     admin.add_view(BrainstormRequestAdmin)
 

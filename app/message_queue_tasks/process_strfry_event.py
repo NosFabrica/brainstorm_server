@@ -1,19 +1,24 @@
 import json
 
+from neo4j import AsyncSession as AsyncNeoSession
+
+from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import redis_client
 from app.core.vespa import PROFILE_FIELDS as KIND_0_PROFILE_FIELDS
 from app.core.vespa import upsert_profile
+from app.repos.tagging_repo import upsert_tag_element_on_db, upsert_user_tagging_on_db
 from app.services.report_graph_service import (
     diff_author_targets,
     extract_report_targets,
     surviving_report_targets,
 )
 from app.services.report_relay_service import fetch_author_user_reports
-from neo4j import AsyncDriver as AsyncNeoDriver
-import time
-from tqdm import tqdm
-from itertools import islice
+from app.services.tagging_parse import (
+    TAGGING_KIND,
+    parse_tag_element,
+    parse_user_tagging,
+)
 
 BATCH_SIZE = 100  # Adjust as needed
 
@@ -24,8 +29,7 @@ REPORTED_BY_KEY_PREFIX = "reported_by:"
 logger = loggr.get_logger(__name__)
 
 
-async def process_strfry_event(session: AsyncNeoDriver, event: dict):
-
+async def process_strfry_event(session: AsyncNeoSession, event: dict):
     kind = event.get("kind")
 
     if kind == 0:
@@ -48,6 +52,10 @@ async def process_strfry_event(session: AsyncNeoDriver, event: dict):
         # logger.info("Consuming event of kind 5")
         return await process_event_kind_5(session, event)
 
+    if kind == TAGGING_KIND:
+        # Tag elements and taggings are both kind 39999, told apart by `z`.
+        return await process_event_kind_39999(event)
+
 
 # Canonical kind-0 field -> candidate keys in PRIORITY order (canonical first,
 # deprecated aliases after). We store ONLY the canonical field, picking the first
@@ -57,7 +65,7 @@ async def process_strfry_event(session: AsyncNeoDriver, event: dict):
 # these as kind-0 *tags* rather than in `content`. See docs/search-vs-tapestry.md
 # §8.4.1. Keys must be the canonical PROFILE_FIELDS (KIND_0_PROFILE_FIELDS).
 _FIELD_RESOLUTION: dict[str, tuple[str, ...]] = {
-    "name": ("name", "username"),            # NIP-24: username deprecated -> name
+    "name": ("name", "username"),  # NIP-24: username deprecated -> name
     "display_name": ("display_name", "displayName"),
     "about": ("about",),
     "picture": ("picture",),
@@ -69,9 +77,9 @@ _FIELD_RESOLUTION: dict[str, tuple[str, ...]] = {
 }
 
 # Guard against drift between the resolution table and the Vespa schema fields.
-assert set(_FIELD_RESOLUTION) == set(KIND_0_PROFILE_FIELDS), (
-    "FIELD_RESOLUTION keys must match vespa.PROFILE_FIELDS"
-)
+assert set(_FIELD_RESOLUTION) == set(
+    KIND_0_PROFILE_FIELDS
+), "FIELD_RESOLUTION keys must match vespa.PROFILE_FIELDS"
 
 
 def _extract_kind0_profile(event: dict) -> dict:
@@ -134,7 +142,7 @@ async def process_event_kind_0(event: dict):
     await upsert_profile(pubkey=publisher, profile=profile)
 
 
-async def create_pubkey_index(session: AsyncNeoDriver):
+async def create_pubkey_index(session: AsyncNeoSession):
     query = """
     CREATE CONSTRAINT nostr_user_pubkey IF NOT EXISTS
     FOR (u:NostrUser)
@@ -144,8 +152,7 @@ async def create_pubkey_index(session: AsyncNeoDriver):
     await session.run(query)
 
 
-async def process_event_kind_1984(session: AsyncNeoDriver, event: dict):
-
+async def process_event_kind_1984(session: AsyncNeoSession, event: dict):
     publisher = event["pubkey"]
     reported_pubkeys = extract_report_targets(event)
 
@@ -168,8 +175,7 @@ async def process_event_kind_1984(session: AsyncNeoDriver, event: dict):
     )
 
 
-async def process_event_kind_10000(session: AsyncNeoDriver, event: dict):
-
+async def process_event_kind_10000(session: AsyncNeoSession, event: dict):
     publisher = event["pubkey"]
     # Extract followed pubkeys from tags [["p","pubkey1"], ...]
     muted_pubkeys = [tag[1] for tag in event.get("tags", []) if tag[0] == "p"]
@@ -223,8 +229,7 @@ async def process_event_kind_10000(session: AsyncNeoDriver, event: dict):
     )
 
 
-async def process_event_kind_3(session: AsyncNeoDriver, event: dict):
-
+async def process_event_kind_3(session: AsyncNeoSession, event: dict):
     publisher = event["pubkey"]
     # Extract followed pubkeys from tags [["p","pubkey1"], ...]
     followed_pubkeys = [tag[1] for tag in event.get("tags", []) if tag[0] == "p"]
@@ -295,7 +300,7 @@ async def _update_reverse_sets(
     await pipe.execute()
 
 
-async def _current_report_targets(session: AsyncNeoDriver, author: str) -> set[str]:
+async def _current_report_targets(session: AsyncNeoSession, author: str) -> set[str]:
     cypher = """
     OPTIONAL MATCH (pub:NostrUser {pubkey: $author})-[:REPORTS]->(t:NostrUser)
     RETURN collect(t.pubkey) AS targets
@@ -305,7 +310,7 @@ async def _current_report_targets(session: AsyncNeoDriver, author: str) -> set[s
     return set(record["targets"]) if record else set()
 
 
-async def process_event_kind_5(session: AsyncNeoDriver, event: dict):
+async def process_event_kind_5(session: AsyncNeoSession, event: dict):
     """NIP-09 deletion: reconcile the author's report edges against the relay.
 
     strfry purges the retracted 1984 before this kind-5 reaches us and the purge
@@ -371,3 +376,24 @@ async def process_event_kind_5(session: AsyncNeoDriver, event: dict):
             len(diff.to_add),
             len(diff.to_remove),
         )
+
+
+async def process_event_kind_39999(event: dict):
+    """Persist a kind-39999 tag element or tagging.
+
+    Both shapes ride the same kind and are distinguished by their `z` tag; an
+    event matching neither concept is foreign traffic and is dropped silently
+    (kind 39999 is a general Decentralized-Lists item kind, so unrelated events
+    legitimately arrive here). Malformed events are dropped the same way — a bad
+    event must never stall the queue for the good ones behind it.
+    """
+    element = parse_tag_element(event)
+    tagging = parse_user_tagging(event)
+    if element is None and tagging is None:
+        return
+
+    async with db_session() as db:
+        if element is not None:
+            await upsert_tag_element_on_db(db, element)
+        elif tagging is not None:
+            await upsert_user_tagging_on_db(db, tagging)
