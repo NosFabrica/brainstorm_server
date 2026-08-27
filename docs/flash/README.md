@@ -10,6 +10,7 @@ Working docs for the Flash payments integration. Code lives in
 | [`pending-checkouts.md`](pending-checkouts.md) | Why a subscription row exists before anything is granted, what happens to a checkout nobody finishes, and how the reconcile sweep treats it |
 | [`credential-rotation.md`](credential-rotation.md) | Rotating the API key and the webhook signing secret, including the compromised-key path |
 | [`api-observations.md`](api-observations.md) | Where Flash's dev environment behaves differently from their documentation, with evidence, and the open questions for them |
+| [`optimisations.md`](optimisations.md) | Hardening and cleanups worth doing but not built — webhook rate limiting, the missing "active past its period" check, and others |
 
 ## Source hierarchy
 

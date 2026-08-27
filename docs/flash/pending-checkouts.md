@@ -138,10 +138,15 @@ A row drops out of `select_reconcile_candidates_on_db` only when all of these ho
   at stake. A row that *did* grant and then goes unknown is a real anomaly; keep asking about it forever.
 - `last_sync_error = 'unknown_subscription'` — Flash answered and had nothing. An outage or a credential
   failure raises rather than returning nothing, so those keep retrying.
-- `sync_error_since` older than `billing_abandon_pending_after_seconds` (default 24h).
+- `sync_error_since` older than `billing_abandon_pending_after_seconds` (default 6h).
 
-The sweep runs every `billing_sync_interval_seconds` (6h) over a bounded batch, so at the default that is
-four further reads after the first unknown before the row drops out.
+The sweep runs every `billing_sync_interval_seconds` (also 6h) over a bounded batch, so at the defaults
+the answer has to come back the same way twice before the row drops out.
+
+Two observations rather than four, because the only thing the window guards against is Flash answering
+200 with an empty list for a subscription that really exists — every other failure raises rather than
+returning nothing — and the discard it normally means is never undone. The window is not free either: it
+is also how long the subscriber is shown "confirming your payment" for a payment that will not confirm.
 
 Every path that could revive the subscriber bypasses this query entirely: an `activated` webhook upserts
 the row outright, `POST /user/subscription/refresh` reads Flash on demand, and the admin resync endpoint

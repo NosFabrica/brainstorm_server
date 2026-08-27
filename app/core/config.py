@@ -70,8 +70,12 @@ class Settings(BaseSettings):
     # How long since a subscriber was last read from Flash before we ask again.
     billing_reconcile_stale_after_seconds: int = Field(default=21600)
     # A checkout that never confirmed and that Flash no longer knows about is
-    # abandoned, not pending: stop re-reading it once the row is this old.
-    billing_abandon_pending_after_seconds: int = Field(default=86400)
+    # abandoned, not pending: stop re-reading it once the failure is this old.
+    # One sweep interval, so the answer has to repeat before we act — the only
+    # thing this guards against is Flash answering 200 with an empty list for a
+    # subscription that exists, and the discard it usually means is not undone.
+    # It also gates what the subscriber is shown, so longer is not free.
+    billing_abandon_pending_after_seconds: int = Field(default=21600)
     # Replay of events we acknowledged and then dropped.
     billing_replay_batch: int = Field(default=25)
     # How long a claim is honoured before the event is treated as abandoned.
