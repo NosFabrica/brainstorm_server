@@ -93,10 +93,28 @@ stateDiagram-v2
     Active --> [*]: expired or canceled, policy revoked
 ```
 
-`Abandoned` is not a status and not a deletion. It is the absence of one predicate in one query: the row
-keeps its `pending` status and its `unknown_subscription` error, stays in the admin subscriptions list and
-in the divergence report's failing syncs, and simply stops costing a Flash call every cycle. Nothing in
-the system deletes a `user_subscription` row.
+`Abandoned` is not a status and not a deletion. It is one named condition — `AbandonRule` in
+`user_subscription_repo` — negated by the sweep and asserted by the report. The row keeps its `pending`
+status and its `unknown_subscription` error, stays in the admin subscriptions list, and simply stops
+costing a Flash call every cycle. Nothing in the system deletes a `user_subscription` row.
+
+Deliberately *not* a second value in `last_sync_error`. That column records what Flash said; "abandoned"
+is an interpretation of what Flash said in the light of our own row, and storing an interpretation gives
+you two fields that can disagree about one event.
+
+## Where they show up
+
+Not in `failing_syncs`, and not in `stale_syncs`. Both are bounded at 200 rows and neither is ordered, so
+which rows come back is arbitrary once there are more than that — and abandoned checkouts are the one
+failure that is both expected and unbounded in number. Left in, they would displace the credential error
+or the lost paying subscriber those sections exist to surface, and all an operator would see is
+`truncated: true`. `stale_syncs` is the worse of the two: dropping a row from the sweep freezes its
+`last_synced_at` by design, so every abandoned row would age into "not read recently enough to trust"
+within a day and stay there for good.
+
+They get their own section instead, `abandoned_checkouts`, carrying pubkey, subscription id and
+`sync_error_since`. Individually they are unremarkable. The count is the point: a spike is not a billing
+fault but a broken checkout, and nothing else in the report would show it.
 
 ## Measuring "how long"
 

@@ -17,8 +17,12 @@ from sqlalchemy import text
 
 from app.core.database import db_session, engine
 from app.repos.user_subscription_repo import (
+    AbandonRule,
     record_sync_failure_on_db,
+    select_abandoned_checkouts_on_db,
+    select_failing_syncs_on_db,
     select_reconcile_candidates_on_db,
+    select_stale_syncs_on_db,
 )
 from app.services.billing_service import EntitlementReason
 
@@ -28,6 +32,7 @@ NOW = datetime(2026, 8, 27, 12, 0, 0)
 ABANDON_AFTER = timedelta(hours=24)
 STALE_AFTER = timedelta(hours=6)
 UNKNOWN = EntitlementReason.UNKNOWN_SUBSCRIPTION.value
+ABANDONED_RULE = AbandonRule(after=ABANDON_AFTER, error=UNKNOWN)
 
 LONG_AGO = NOW - timedelta(days=7)
 RECENTLY = NOW - timedelta(hours=1)
@@ -143,8 +148,7 @@ def test_an_abandoned_checkout_drops_out_and_everything_else_stays():
                     now=NOW,
                     stale_after=STALE_AFTER,
                     limit=500,
-                    abandon_pending_after=ABANDON_AFTER,
-                    abandoned_error=UNKNOWN,
+                    abandoned=ABANDONED_RULE,
                 )
                 selected = {row.pubkey for row in rows}
 
@@ -152,6 +156,60 @@ def test_an_abandoned_checkout_drops_out_and_everything_else_stays():
                 assert STILL_YOUNG in selected, "dropped a checkout still in its window"
                 assert GRANTED in selected, "stopped watching a subscriber with a policy"
                 assert OTHER_ERROR in selected, "an outage was treated as abandonment"
+
+                await _cleanup(db)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_an_abandoned_checkout_leaves_the_alarming_sections_for_its_own():
+    """The report exists so a genuine failure cannot hide among benign rows.
+
+    Both sections it would otherwise sit in are bounded and unordered, and
+    abandoned checkouts are the one failure that is both expected and unbounded
+    in number — so they get counted, not mixed in.
+    """
+    async def _run():
+        try:
+            async with db_session() as db:
+                await _cleanup(db)
+                await _seed(db, ABANDONED, error=UNKNOWN, since=LONG_AGO)
+                await _seed(db, OTHER_ERROR, error="vault down", since=LONG_AGO)
+                await db.commit()
+
+                failing = {
+                    row.pubkey
+                    for row in await select_failing_syncs_on_db(
+                        db, limit=500, now=NOW, abandoned=ABANDONED_RULE
+                    )
+                }
+                assert ABANDONED not in failing, "abandoned checkout crowds the failures"
+                assert OTHER_ERROR in failing, "a real failure was hidden"
+
+                # We stopped reading them, so their read clock is frozen by
+                # design — every one would otherwise age in here within a day.
+                stale = {
+                    row.pubkey
+                    for row in await select_stale_syncs_on_db(
+                        db,
+                        older_than=NOW - timedelta(hours=24),
+                        limit=500,
+                        now=NOW,
+                        abandoned=ABANDONED_RULE,
+                    )
+                }
+                assert ABANDONED not in stale, "abandoned checkout leaked into stale syncs"
+                assert OTHER_ERROR in stale
+
+                counted = {
+                    row.pubkey
+                    for row in await select_abandoned_checkouts_on_db(
+                        db, limit=500, now=NOW, abandoned=ABANDONED_RULE
+                    )
+                }
+                assert counted == {ABANDONED}, "the abandoned section disagrees with the sweep"
 
                 await _cleanup(db)
         finally:

@@ -174,6 +174,7 @@ def test_a_divergence_report_names_each_disagreement(billing_client, monkeypatch
             unresolved_events=[],
             unrecognised_statuses=[],
             exhausted_events=[],
+            abandoned_checkouts=[],
         )
     )
     monkeypatch.setattr(
@@ -251,6 +252,7 @@ def test_billing_visibility_survives_general_administration_being_off(
                 unresolved_events=[],
                 unrecognised_statuses=[],
                 exhausted_events=[],
+                abandoned_checkouts=[],
             )
         ),
     )

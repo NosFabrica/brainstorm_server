@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from app.core.flash import FlashSubscription
+from app.repos.user_subscription_repo import AbandonRule
 
 NOW = datetime(2026, 8, 25, 12, 0, 0)
 PUBKEY = "a" * 64
@@ -77,8 +78,9 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
         "reason": "because",
         "now": NOW,
         "stale_after": timedelta(minutes=5),
-        "abandon_pending_after": timedelta(hours=24),
-        "abandoned_error": "unknown_subscription",
+        "abandoned": AbandonRule(
+            after=timedelta(hours=24), error="unknown_subscription"
+        ),
         "older_than": NOW,
         "max_attempts": 5,
         "limit": 10,

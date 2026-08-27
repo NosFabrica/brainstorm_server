@@ -21,6 +21,8 @@ from app.repos.flash_webhook_event_repo import (
     select_unresolved_events_on_db,
 )
 from app.repos.user_subscription_repo import (
+    AbandonRule,
+    select_abandoned_checkouts_on_db,
     select_failing_syncs_on_db,
     select_policy_mismatches_on_db,
     select_stale_syncs_on_db,
@@ -30,6 +32,7 @@ from app.services.billing_service import (
     CANCELLED_STATUS,
     ENDED_STATUSES,
     ENTITLING_STATUSES,
+    EntitlementReason,
     utc_now,
 )
 
@@ -47,8 +50,9 @@ ROW_LIMIT = 200
 
 @dataclass(frozen=True)
 class DivergenceReport:
-    """Six kinds of disagreement, plus admin overrides — which are not a fault,
-    but must be visible or a genuine failed write hides among them."""
+    """Seven kinds of disagreement, plus admin overrides and abandoned
+    checkouts — which are not faults, but must be visible somewhere, and must
+    not be *here*, or a genuine failed write hides among them."""
 
     policy_mismatch: list
     admin_overrides: list
@@ -57,6 +61,7 @@ class DivergenceReport:
     unresolved_events: list
     unrecognised_statuses: list
     exhausted_events: list
+    abandoned_checkouts: list
 
 
 def _section(rows: list) -> dict:
@@ -82,11 +87,17 @@ async def build_divergence_response(db: AsyncDBSession) -> dict[str, dict]:
         "unresolved_events": _section(report.unresolved_events),
         "unrecognised_statuses": _section(report.unrecognised_statuses),
         "exhausted_events": _section(report.exhausted_events),
+        "abandoned_checkouts": _section(report.abandoned_checkouts),
     }
 
 
 async def build_divergence_report(db: AsyncDBSession) -> DivergenceReport:
-    stale_before = utc_now() - timedelta(hours=settings.billing_stale_sync_hours)
+    now = utc_now()
+    stale_before = now - timedelta(hours=settings.billing_stale_sync_hours)
+    abandoned = AbandonRule(
+        after=timedelta(seconds=settings.billing_abandon_pending_after_seconds),
+        error=EntitlementReason.UNKNOWN_SUBSCRIPTION.value,
+    )
     return DivergenceReport(
         policy_mismatch=await select_policy_mismatches_on_db(
             db, admin_held=False, limit=ROW_LIMIT
@@ -95,15 +106,20 @@ async def build_divergence_report(db: AsyncDBSession) -> DivergenceReport:
             db, admin_held=True, limit=ROW_LIMIT
         ),
         stale_syncs=await select_stale_syncs_on_db(
-            db, older_than=stale_before, limit=ROW_LIMIT
+            db, older_than=stale_before, limit=ROW_LIMIT, now=now, abandoned=abandoned
         ),
-        failing_syncs=await select_failing_syncs_on_db(db, limit=ROW_LIMIT),
+        failing_syncs=await select_failing_syncs_on_db(
+            db, limit=ROW_LIMIT, now=now, abandoned=abandoned
+        ),
         unresolved_events=await select_unresolved_events_on_db(db, limit=ROW_LIMIT),
         unrecognised_statuses=await select_unrecognised_statuses_on_db(
             db, known=KNOWN_STATUSES
         ),
         exhausted_events=await select_exhausted_events_on_db(
             db, max_attempts=settings.billing_replay_max_attempts, limit=ROW_LIMIT
+        ),
+        abandoned_checkouts=await select_abandoned_checkouts_on_db(
+            db, limit=ROW_LIMIT, now=now, abandoned=abandoned
         ),
     )
 

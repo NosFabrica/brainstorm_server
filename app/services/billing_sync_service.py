@@ -23,6 +23,7 @@ from app.repos.flash_webhook_event_repo import (
     select_abandoned_webhook_events_on_db,
 )
 from app.repos.user_subscription_repo import (
+    AbandonRule,
     clear_granted_scheduling_on_db,
     record_sync_failure_on_db,
     select_entitlement_candidates_on_db,
@@ -150,8 +151,10 @@ async def reconcile_subscriptions(
         now=at,
         stale_after=stale_after,
         limit=limit,
-        abandon_pending_after=abandon_pending_after,
-        abandoned_error=EntitlementReason.UNKNOWN_SUBSCRIPTION.value,
+        abandoned=AbandonRule(
+            after=abandon_pending_after,
+            error=EntitlementReason.UNKNOWN_SUBSCRIPTION.value,
+        ),
     )
 
     reconciled = failed = 0

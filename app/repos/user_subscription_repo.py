@@ -1,6 +1,7 @@
 """Data access for `user_subscription` — one row per subscriber, plus the
 divergence reads that compare it against the live scheduling assignment."""
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Select, and_, case, func, not_, or_, select, update
@@ -16,6 +17,40 @@ from app.db_models import (
     SchedulingSource,
     UserSubscription,
 )
+
+
+@dataclass(frozen=True)
+class AbandonRule:
+    """A checkout nobody finished, in one place.
+
+    Flash discards a pending checkout whose payment never confirms, so the
+    subscription stops existing on their side and every lookup answers with
+    nothing. Those rows are real and stay, but there is no longer anything to
+    ask about — so the sweep skips them and the two report sections that mean
+    "someone look at this" leave them out.
+
+    One definition because it has four users pulling in opposite directions:
+    negated by the sweep and by both report sections, asserted by the section
+    that counts them. Written twice, they would drift and a row would be both
+    written off and still alarming.
+    """
+
+    after: timedelta
+    error: str
+
+    def condition(self, now: datetime):
+        return and_(
+            # Never granted anything, so nothing is at stake in letting it go.
+            # The same error against a row that DID grant is an anomaly, and
+            # has to stay loud however long it has been true.
+            UserSubscription.flash_status == "pending",
+            UserSubscription.granted_scheduling_id.is_(None),
+            # Flash answered and had nothing. Being unable to ask — an outage,
+            # a credential failure — raises instead, and must keep retrying.
+            UserSubscription.last_sync_error == self.error,
+            UserSubscription.sync_error_since.is_not(None),
+            UserSubscription.sync_error_since <= now - self.after,
+        )
 
 
 async def get_user_subscription_on_db(
@@ -146,8 +181,7 @@ async def select_reconcile_candidates_on_db(
     now: datetime,
     stale_after: timedelta,
     limit: int,
-    abandon_pending_after: timedelta,
-    abandoned_error: str,
+    abandoned: AbandonRule,
 ) -> list[UserSubscription]:
     """Subscribers whose real state only Flash can settle.
 
@@ -190,15 +224,7 @@ async def select_reconcile_candidates_on_db(
                 UserSubscription.last_synced_at.is_(None),
                 UserSubscription.last_synced_at <= now - stale_after,
             ),
-            not_(
-                and_(
-                    UserSubscription.flash_status == "pending",
-                    UserSubscription.granted_scheduling_id.is_(None),
-                    UserSubscription.last_sync_error == abandoned_error,
-                    UserSubscription.sync_error_since.is_not(None),
-                    UserSubscription.sync_error_since <= now - abandon_pending_after,
-                )
-            ),
+            not_(abandoned.condition(now)),
         )
         .order_by(UserSubscription.last_synced_at.asc().nullsfirst())
         .limit(limit)
@@ -339,9 +365,19 @@ async def select_policy_mismatches_on_db(
 
 
 async def select_stale_syncs_on_db(
-    db: AsyncDBSession, *, older_than: datetime, limit: int
+    db: AsyncDBSession,
+    *,
+    older_than: datetime,
+    limit: int,
+    now: datetime,
+    abandoned: AbandonRule,
 ) -> list:
-    """Subscribers we have not read from Flash recently enough to trust."""
+    """Subscribers we have not read from Flash recently enough to trust.
+
+    Abandoned checkouts are excluded because *we* stopped reading them: their
+    `last_synced_at` is frozen by design, so they would otherwise every one of
+    them age into this section within a day and never leave.
+    """
     statement = select(
         UserSubscription.pubkey,
         UserSubscription.flash_status,
@@ -350,19 +386,49 @@ async def select_stale_syncs_on_db(
         or_(
             UserSubscription.last_synced_at.is_(None),
             UserSubscription.last_synced_at <= older_than,
-        )
+        ),
+        not_(abandoned.condition(now)),
     ).limit(limit)
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())
 
 
-async def select_failing_syncs_on_db(db: AsyncDBSession, *, limit: int) -> list:
-    """Subscribers whose last read from Flash failed."""
+async def select_failing_syncs_on_db(
+    db: AsyncDBSession, *, limit: int, now: datetime, abandoned: AbandonRule
+) -> list:
+    """Subscribers whose last read from Flash failed and still matters.
+
+    Bounded and unordered, so which rows come back is arbitrary once there are
+    more than `limit` of them. Abandoned checkouts are the one failure that is
+    both expected and unbounded in number — left in, they would displace the
+    credential error or the lost paying subscriber this section exists to show.
+    """
     statement = select(
         UserSubscription.pubkey,
         UserSubscription.last_sync_error,
         UserSubscription.last_synced_at,
-    ).where(UserSubscription.last_sync_error.is_not(None)).limit(limit)
+    ).where(
+        UserSubscription.last_sync_error.is_not(None),
+        not_(abandoned.condition(now)),
+    ).limit(limit)
+    result = await execute_db_statement(db, statement, __name__)
+    return list(result.all())
+
+
+async def select_abandoned_checkouts_on_db(
+    db: AsyncDBSession, *, limit: int, now: datetime, abandoned: AbandonRule
+) -> list:
+    """Checkouts that were started, never paid for, and given up on.
+
+    Individually unremarkable — Flash documents the discard. Worth a section of
+    their own so the count is visible: a spike is not a billing fault but a
+    broken checkout, which nothing else in this report would show.
+    """
+    statement = select(
+        UserSubscription.pubkey,
+        UserSubscription.flash_subscription_id,
+        UserSubscription.sync_error_since,
+    ).where(abandoned.condition(now)).limit(limit)
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())
 

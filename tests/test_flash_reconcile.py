@@ -176,9 +176,9 @@ def test_the_sweep_asks_for_abandoned_checkouts_to_be_left_out(reconcile):
     """
     _run(reconcile)
 
-    kwargs = reconcile.candidates.await_args.kwargs
-    assert kwargs["abandon_pending_after"] == timedelta(hours=24)
-    assert kwargs["abandoned_error"] == EntitlementReason.UNKNOWN_SUBSCRIPTION.value
+    rule = reconcile.candidates.await_args.kwargs["abandoned"]
+    assert rule.after == timedelta(hours=24)
+    assert rule.error == EntitlementReason.UNKNOWN_SUBSCRIPTION.value
 
 
 def test_an_unmapped_plan_also_advances_the_read_clock(reconcile):
