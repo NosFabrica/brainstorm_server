@@ -438,3 +438,118 @@ re-check this module.
 - The **kind-30382 signing/publishing path** and the GrapeRank queue flow: this
   story adds a parallel publisher and does not modify
   `upload_nostr_events.py`.
+
+---
+
+## Amendment 2026-08-27 — D12: weighted member confidence (GrapeRank interpreter)
+
+**Status:** Proposed — pending confirmation from the team conversation in
+flight; wire details below may shift before implementation.
+
+### Why
+
+v1 membership is a binary gate plus a head-count: an asserter either clears
+`rank >= 3` or doesn't, and past the gate every asserter counts as exactly 1.
+Ten rank-3 taggers therefore outweigh two rank-90 taggers — the opposite of
+what a web-of-trust should say. Issue #73 §3 anticipated this ("It might also
+be measured as the sum of the rank of each Tagging author rather than an
+integer count"); the immediate forcing function is search: if the TL carries a
+per-member confidence, Vespa's rank profile reads a number instead of
+re-deriving trust math at query time.
+
+### Decision
+
+Score each member with **GrapeRank's interpreter formula**
+(`specs/graperank.md`, "weight of one data point"), applied single-hop over
+the live taggings on one (tag, target) pair — not a new formula, the estate's
+existing one, so one trust vocabulary covers follows, mutes, reports, and now
+taggings.
+
+Mapping, with the spec's symbols:
+
+```
+data point = one live tagging (asserter x, polarity p)
+    rating r          = +1 when applied (p >= 0.5), −1 when disputed (p <= −0.5);
+                        neutral (the reserved open interval) contributes nothing
+    edge confidence c = 1.0        (a tagging is a deliberate, targeted act —
+                                    unlike a follow, which is ambient; a
+                                    taggingConfidence parameter slot exists in
+                                    principle but is not introduced)
+    attenuation α     = 1.0        (single-hop aggregation; there is no chain
+                                    to attenuate)
+    weight w          = c × influence(x) × α  =  influence(x)
+                        (the asserter's Influence in THIS Observer's WoT —
+                         the same `influence_<observer>` the gate reads)
+
+input      = Σ w                over the pair's live taggings
+average    = Σ (w × r) / input          (0 when input = 0)
+confidence = 1 − ρ^input                (ρ = rigor)
+score      = round( max(average × confidence, 0) × 100 )   — integer 0–100
+```
+
+Properties this buys, all inherited from the spec rather than argued fresh:
+bounded output; **mass beats count** (ten 0.03-influence appliers yield
+`input=0.3 → confidence≈0.19`; two 0.5s yield `input=1.0 → confidence=0.5`);
+disputes subtract by weight, and a dispute-dominant pair clamps to 0 rather
+than going negative on the wire — the weighted successor of v1's
+`applications > disputes`.
+
+**Rigor:** present in the formula, **not yet a knob**. `ρ = 0.5` (the spec
+default) as a module constant, published on the event (below) for
+reproducibility; promoting it to a setting is a later, cheap change. Per the
+operator: we are not tuning rigor yet, only using the formula that carries it.
+
+### What stays
+
+- **The dictionary floor stays at `rank >= 3`, unchanged.** Weighting does not
+  replace the gate — it governs confidence *within* a list; the gate snips the
+  long tail out of the dictionary entirely. Operator-confirmed rationale:
+  ranks 3–5 are a mix of new users and scammers, but **2 and below is almost
+  entirely scammers** — a weight-only design would still let a horde of
+  rank-1 asserters instantiate the tag itself. The floor is the spam valve;
+  the weights are the ranking.
+- `TRUSTED_LIST_CUTOFF` keeps its raw-count meaning (≥ cutoff applied
+  taggings) as a coarse floor alongside the score.
+
+### Membership predicate (v2)
+
+member iff `applications >= cutoff` **and** `score >= 1` — the second clause
+is the weighted successor of `applications > disputes` (net-negative or
+negligible-weight pairs round to 0 and drop out). Ordering: score desc, then
+pubkey asc (stable republish unchanged).
+
+### Wire
+
+No new shape — tapestry's TL format already reserves the slot. `p` tags gain
+the third element: `["p", <pubkey>, "", "<score>"]` (empty relay position,
+score as string — the layout tapestry's deployed reader already parses, and
+the `includeScoreInTL` branch its ADR 0010 left off by default). The content
+JSON gains `"score"` per member alongside the existing
+`endorsements`/`disputes` counts. One new metadata tag `["rigor", "0.5"]`
+joins `cutoff`/`min-rank` so a consumer can reproduce the number. `metric`
+stays `tag-membership` — the score is additive information, not a new metric.
+
+Vespa consumption: the score is an int8 0–100 per (observer, member) — the
+same quantum and shape as the existing `quality_scores` tensor, by design.
+
+### Implementation deltas (when confirmed)
+
+- `get_qualifying_asserters_for_observer` returns `{pubkey: influence}`
+  instead of a bare list (the query already reads the value).
+- `compute_members` becomes the weighted fold above; takes
+  `(target, polarity, weight)` triples.
+- `build_trusted_list_tags` / content emit the score; ordering flips to
+  score desc.
+- Story: AC8 (membership predicate + ordering) and AC9 (wire shape) amended;
+  new AC for the weighting itself (mass-beats-count, dispute clamp,
+  rigor-published). Test plan follows.
+- Not touched: the gate (D4), ingest, the dictionary query, signing,
+  retraction (D7/D11), the admin surface, AC15 diagnosability.
+
+### Rejected alternative
+
+Plain `Σ influence(applied) − Σ influence(disputed)`: simpler, but unbounded
+(needs ad-hoc normalization to publish on a 0–100 quantum), has no
+diminishing-returns behavior (2× the sybils buys 2× the score forever,
+whereas `1 − ρ^input` saturates), and introduces a second trust formula into
+an estate that already standardized one.
