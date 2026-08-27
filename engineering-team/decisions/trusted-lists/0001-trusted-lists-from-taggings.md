@@ -479,7 +479,13 @@ Mapping, with the spec's symbols:
 ```
 data point = one live tagging (asserter x, polarity p)
     rating r          = +1 when applied (p >= 0.5), −1 when disputed (p <= −0.5);
-                        neutral (the reserved open interval) contributes nothing
+                        an ABSENT polarity tag is an apply: r = +1 (the
+                        common case — most taggings carry no polarity tag at
+                        all; read_polarity defaults to 1.0 per tags.md).
+                        "Neutral" means only an EXPLICIT value inside the
+                        reserved open interval (−0.5, 0.5), e.g. a literal
+                        polarity 0 — that band is reserved for the future
+                        graded-valence arc and contributes nothing
     edge confidence c = 1.0        (a tagging is a deliberate, targeted act —
                                     unlike a follow, which is ambient; a
                                     taggingConfidence parameter slot exists in
