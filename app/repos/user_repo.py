@@ -1,6 +1,5 @@
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
-from neo4j import AsyncDriver as AsyncNeoDriver
 from neo4j import AsyncSession as AsyncNeoSession
 
 from app.core.tier_thresholds import (
@@ -17,12 +16,11 @@ from app.schemas.schemas import (
     UserGraphData,
 )
 
-
 # ----------------- Helper Function -----------------
 
 
 async def _get_pubkeys_with_influence(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkey: str,
     observer: str | None,
     relation: str,
@@ -39,7 +37,7 @@ async def _get_pubkeys_with_influence(
 
     query = f"""
     MATCH {match_clause}
-    RETURN 
+    RETURN
         other.pubkey AS pubkey,
         other[$influence_key] AS influence
     """
@@ -58,7 +56,7 @@ async def _get_pubkeys_with_influence(
 
 # Follows
 async def get_list_of_pubkeys_following_user(
-    session: AsyncNeoDriver, pubkey: str, observer: str | None = None
+    session: AsyncNeoSession, pubkey: str, observer: str | None = None
 ) -> list[UserConnection]:
     return await _get_pubkeys_with_influence(
         session, pubkey, observer, relation="FOLLOWS", direction="incoming"
@@ -66,7 +64,7 @@ async def get_list_of_pubkeys_following_user(
 
 
 async def get_list_of_pubkeys_that_user_follows(
-    session: AsyncNeoDriver, pubkey: str, observer: str | None = None
+    session: AsyncNeoSession, pubkey: str, observer: str | None = None
 ) -> list[UserConnection]:
     return await _get_pubkeys_with_influence(
         session, pubkey, observer, relation="FOLLOWS", direction="outgoing"
@@ -75,7 +73,7 @@ async def get_list_of_pubkeys_that_user_follows(
 
 # Mutes
 async def get_list_of_pubkeys_muting_user(
-    session: AsyncNeoDriver, pubkey: str, observer: str | None = None
+    session: AsyncNeoSession, pubkey: str, observer: str | None = None
 ) -> list[UserConnection]:
     return await _get_pubkeys_with_influence(
         session, pubkey, observer, relation="MUTES", direction="incoming"
@@ -83,7 +81,7 @@ async def get_list_of_pubkeys_muting_user(
 
 
 async def get_list_of_pubkeys_that_user_mutes(
-    session: AsyncNeoDriver, pubkey: str, observer: str | None = None
+    session: AsyncNeoSession, pubkey: str, observer: str | None = None
 ) -> list[UserConnection]:
     return await _get_pubkeys_with_influence(
         session, pubkey, observer, relation="MUTES", direction="outgoing"
@@ -92,7 +90,7 @@ async def get_list_of_pubkeys_that_user_mutes(
 
 # Reports
 async def get_list_of_pubkeys_reporting_user(
-    session: AsyncNeoDriver, pubkey: str, observer: str | None = None
+    session: AsyncNeoSession, pubkey: str, observer: str | None = None
 ) -> list[UserConnection]:
     return await _get_pubkeys_with_influence(
         session, pubkey, observer, relation="REPORTS", direction="incoming"
@@ -100,7 +98,7 @@ async def get_list_of_pubkeys_reporting_user(
 
 
 async def get_list_of_pubkeys_that_user_reports(
-    session: AsyncNeoDriver, pubkey: str, observer: str | None = None
+    session: AsyncNeoSession, pubkey: str, observer: str | None = None
 ) -> list[UserConnection]:
     return await _get_pubkeys_with_influence(
         session, pubkey, observer, relation="REPORTS", direction="outgoing"
@@ -111,7 +109,7 @@ async def get_list_of_pubkeys_that_user_reports(
 
 
 # Number of users following a given pubkey
-async def count_following_user(session: AsyncNeoDriver, pubkey: str) -> int:
+async def count_following_user(session: AsyncNeoSession, pubkey: str) -> int:
     query = """
     MATCH (:NostrUser)-[:FOLLOWS]->(user:NostrUser {pubkey: $pubkey})
     RETURN COUNT(*) AS count
@@ -123,7 +121,7 @@ async def count_following_user(session: AsyncNeoDriver, pubkey: str) -> int:
 
 
 # Number of users that a given pubkey follows
-async def count_user_follows(session: AsyncNeoDriver, pubkey: str) -> int:
+async def count_user_follows(session: AsyncNeoSession, pubkey: str) -> int:
     query = """
     MATCH (user:NostrUser {pubkey: $pubkey})-[:FOLLOWS]->(:NostrUser)
     RETURN COUNT(*) AS count
@@ -136,7 +134,7 @@ async def count_user_follows(session: AsyncNeoDriver, pubkey: str) -> int:
 
 # Which of the given pubkeys follow at least one user (i.e. are schedulable).
 async def pubkeys_following_someone(
-    session: AsyncNeoDriver, pubkeys: list[str]
+    session: AsyncNeoSession, pubkeys: list[str]
 ) -> set[str]:
     if not pubkeys:
         return set()
@@ -153,7 +151,7 @@ async def pubkeys_following_someone(
 
 
 # Number of users muting a given pubkey
-async def count_muting_user(session: AsyncNeoDriver, pubkey: str) -> int:
+async def count_muting_user(session: AsyncNeoSession, pubkey: str) -> int:
     query = """
     MATCH (:NostrUser)-[:MUTES]->(user:NostrUser {pubkey: $pubkey})
     RETURN COUNT(*) AS count
@@ -165,7 +163,7 @@ async def count_muting_user(session: AsyncNeoDriver, pubkey: str) -> int:
 
 
 # Number of users that a given pubkey mutes
-async def count_user_mutes(session: AsyncNeoDriver, pubkey: str) -> int:
+async def count_user_mutes(session: AsyncNeoSession, pubkey: str) -> int:
     query = """
     MATCH (user:NostrUser {pubkey: $pubkey})-[:MUTES]->(:NostrUser)
     RETURN COUNT(*) AS count
@@ -180,7 +178,7 @@ async def count_user_mutes(session: AsyncNeoDriver, pubkey: str) -> int:
 
 
 # Number of users reporting a given pubkey
-async def count_reporting_user(session: AsyncNeoDriver, pubkey: str) -> int:
+async def count_reporting_user(session: AsyncNeoSession, pubkey: str) -> int:
     query = """
     MATCH (:NostrUser)-[:REPORTS]->(user:NostrUser {pubkey: $pubkey})
     RETURN COUNT(*) AS count
@@ -192,7 +190,7 @@ async def count_reporting_user(session: AsyncNeoDriver, pubkey: str) -> int:
 
 
 # Number of users that a given pubkey reports
-async def count_user_reports(session: AsyncNeoDriver, pubkey: str) -> int:
+async def count_user_reports(session: AsyncNeoSession, pubkey: str) -> int:
     query = """
     MATCH (user:NostrUser {pubkey: $pubkey})-[:REPORTS]->(:NostrUser)
     RETURN COUNT(*) AS count
@@ -204,15 +202,15 @@ async def count_user_reports(session: AsyncNeoDriver, pubkey: str) -> int:
 
 
 async def get_influence_for_observer(
-    session: AsyncNeoDriver, pubkey: str, observer_pubkey: str
+    session: AsyncNeoSession, pubkey: str, observer_pubkey: str
 ) -> float | None:
     """
     Returns the value of 'influence_<observer_pubkey>' for the NostrUser with pubkey.
     Returns None if the user or property does not exist.
     """
     property_name = f"influence_{observer_pubkey}"
-    query = f"""
-    MATCH (user:NostrUser {{pubkey: $pubkey}})
+    query = """
+    MATCH (user:NostrUser {pubkey: $pubkey})
     RETURN user[$property_name] AS influence
     """
 
@@ -222,7 +220,7 @@ async def get_influence_for_observer(
 
 
 async def get_qualifying_asserters_for_observer(
-    # Typed as the real session type, not the AsyncNeoDriver annotation used by
+    # Typed as the real session type, not the AsyncNeoSession annotation used by
     # this module's older queries — that one is wrong (they all call .run() on a
     # session) and mypy flags it at user_repo.py:47,119,131,...
     session: AsyncNeoSession,
@@ -310,7 +308,7 @@ _OUTBOUND_COUNT_BLOCKS = """
 
 
 async def get_counts_and_influence(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
 ) -> OutboundCounts:
@@ -338,7 +336,7 @@ async def get_counts_and_influence(
 
 
 async def get_outbound_counts_and_influence(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
     trusted_reporters_key: str,
@@ -453,7 +451,7 @@ def _build_tier_predicate(tier: str | None) -> str:
     return _expand(_TIER_PREDICATES[tier])
 
 
-def _tier_band_params() -> dict[str, float]:
+def _tier_band_params() -> dict[str, Any]:
     """The band bounds as Cypher params. Constants, never caller input: every
     `_TIER_PREDICATES` expander binds the same three, so /stats counts, the
     `?tier=` filter and a row's `tier` can't disagree on where a band starts."""
@@ -489,7 +487,7 @@ def _row_to_item(row: dict) -> UserConnectionItem:
 
 
 async def get_paginated_section_connections(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
     trusted_reporters_key: str,
@@ -620,7 +618,7 @@ async def get_paginated_section_connections(
 
 
 async def get_paginated_flagged_connections(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
     trusted_reporters_key: str,
@@ -726,7 +724,7 @@ _STATS_KINDS: list[tuple[str, str, str]] = [
 
 
 async def get_all_section_stats(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
     trusted_reporters_key: str,
@@ -801,7 +799,7 @@ async def get_all_section_stats(
 
 
 async def get_user_graph_data(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
     trusted_reporters_key: str,
@@ -908,7 +906,7 @@ async def get_user_graph_data(
 
 
 async def batch_influence_for_pubkeys(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkeys: list[str],
     observer_pubkey: str,
 ) -> dict[str, float | None]:
@@ -933,7 +931,7 @@ async def batch_influence_for_pubkeys(
 
 
 async def get_top_inbound_by_influence(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkey: str,
     observer_pubkey: str,
     relation: str,
@@ -969,7 +967,7 @@ async def get_top_inbound_by_influence(
 
 
 async def get_all_shortest_follow_paths(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     from_pubkey: str,
     to_pubkey: str,
     max_hops: int,
@@ -1108,7 +1106,7 @@ LIMIT $max_candidates
 
 
 async def get_network_alert_candidates(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     observer_pubkey: str,
     influence_key: str,
     hops_key: str,
@@ -1142,7 +1140,7 @@ async def get_network_alert_candidates(
 
 
 async def count_above_cutoff_followers_capped(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkeys: list[str],
     influence_key: str,
     cutoff: float,
@@ -1206,7 +1204,7 @@ async def count_above_cutoff_followers_capped(
 
 
 async def count_verified_muters(
-    session: AsyncNeoDriver,
+    session: AsyncNeoSession,
     pubkeys: list[str],
     influence_key: str,
     verified_threshold: float,

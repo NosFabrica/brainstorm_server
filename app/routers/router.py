@@ -1,34 +1,28 @@
 import hashlib
 
-from fastapi import Query
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
-
+from app.repos.observer_whitelist_repo import select_observer_whitelist_updated_at
 from app.routers.admin.router import router as admin_router
 from app.routers.auth_challenge.router import router as auth_challenge_router
-from app.routers.graph.router import router as graph_router
 from app.routers.graperank.router import router as graperank_router
+from app.routers.graph.router import router as graph_router
 from app.routers.network_alerts.router import router as network_alerts_router
 from app.routers.nip05.router import router as nip05_router
 from app.routers.nip50.router import router as nip50_router
 from app.routers.open_ranking.router import router as open_ranking_router
 from app.routers.search.router import router as search_router
 from app.routers.setup.router import router as setup_router
-from app.routers.user.router import router as user_router
 from app.routers.user.router import public_router as public_user_router
+from app.routers.user.router import router as user_router
 from app.schemas.request_response_schemas import (
     GetWhitelistedPubkeysOfObserverResponse,
     WhitelistedPubkeys,
 )
-from app.repos.observer_whitelist_repo import (
-    select_observer_whitelist_updated_at,
-)
-from app.services.user_service import (
-    get_whitelisted_pubkeys_of_observer,
-)
+from app.services.user_service import get_whitelisted_pubkeys_of_observer
 from app.utils.api_validators import verify_token
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 router = APIRouter()
 
@@ -131,6 +125,9 @@ router.include_router(
     tags=[],
     dependencies=[],
     summary="Get all the trusted pubkeys given the view of an observer",
+    # The OpenAPI shape stays the envelope; the union annotation below exists
+    # for the type checker (the 304 path returns a bare Response).
+    response_model=GetWhitelistedPubkeysOfObserverResponse,
 )
 async def get_whitelisted_pubkeys_of_observer_endpoint(
     request: Request,
@@ -141,8 +138,7 @@ async def get_whitelisted_pubkeys_of_observer_endpoint(
     # less. Asking below the cutoff is meaningless here.
     threshold: float = Query(default=0.02, ge=0.02, le=1.0),
     db: AsyncDBSession = Depends(dependency=get_db),
-) -> GetWhitelistedPubkeysOfObserverResponse:
-
+) -> GetWhitelistedPubkeysOfObserverResponse | Response:
     # Cheap meta-read (no scores detoast) → ETag. Lets an unchanged whitelist
     # short-circuit to 304 before we scan/serialize the ~99k-key blob.
     updated_at = await select_observer_whitelist_updated_at(db, observer_pubkey)

@@ -19,7 +19,7 @@ never touch SQLAlchemy `Select`s or Cypher strings directly.
 
 Every public function is `async def` and takes the session/driver as the first
 positional arg: SQL repos take `AsyncSession`, `user_repo.py` takes
-`AsyncNeoDriver`. Don't sneak in sync calls.
+`AsyncNeoSession` (a Neo4j *session*, aliased; it was long mis-aliased as `AsyncNeoDriver` until the 2026-08-26 gate-greening). Don't sneak in sync calls.
 
 ### Transactions live in the caller
 

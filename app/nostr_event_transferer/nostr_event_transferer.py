@@ -1,20 +1,18 @@
 import asyncio
-from datetime import timedelta
-from collections import deque
-
-from app.core.loggr import loggr
-from nostr_sdk import Client, Filter, Kind, Timestamp, Event
-from tqdm import tqdm
-import os
-from collections import deque
 import time
-from app.core.database import db_session
+from collections import deque
+from datetime import timedelta
+
+from nostr_sdk import Client, Event, Filter, Kind, Timestamp
+
 from app.core.config import settings
-from app.services.tagging_parse import TAGGING_KIND
+from app.core.database import db_session
+from app.core.loggr import loggr
 from app.repos.brainstorm_nostr_transferer import (
     get_nostr_transfer_status_by_kind_from_db,
     upsert_nostr_transfer_status_on_db,
 )
+from app.services.tagging_parse import TAGGING_KIND
 
 logger = loggr.get_logger(__name__)
 
@@ -43,7 +41,6 @@ SEEN_CACHE_SIZE = 5000
 
 
 async def publish_event(event: Event, relay_client: Client) -> None:
-
     try:
         result = await relay_client.send_event(event)
         if result.failed:
@@ -66,10 +63,8 @@ async def nostr_event_transferer():
     await relay_sender_client.connect()
 
     async with db_session() as db:
-
         # Taggings ride the same sync loop but a separate list (ADR D10).
         for kind, estimated_events in [*ev_kinds, *tagging_ev_kinds]:
-
             logger.info(f"Getting events of Kind {kind.as_u16()}")
 
             started_at = time.time()
@@ -103,7 +98,9 @@ async def nostr_event_transferer():
 
             while True:
                 logger.info(
-                    f"Progress on Kind {kind.as_u16()}: {total_events}/{estimated_events} { round(total_events / estimated_events, 4)*100}%"
+                    f"Progress on Kind {kind.as_u16()}: "
+                    f"{total_events}/{estimated_events} "
+                    f"{round(total_events / estimated_events, 4) * 100}%"
                 )
                 new_events = 0
                 flt = Filter().kinds([kind]).limit(LIMIT)
@@ -217,9 +214,7 @@ async def nostr_event_recent_transferer():
     await relay_sender_client.connect()
 
     async with db_session() as db:
-
         for kind, _ in ev_kinds:
-
             started_at = time.time()
 
             status = await get_nostr_transfer_status_by_kind_from_db(

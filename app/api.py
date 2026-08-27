@@ -1,47 +1,46 @@
 import asyncio
-from contextlib import asynccontextmanager
 import random
 import string
 import time
+from contextlib import asynccontextmanager
 
-from app.message_queue_tasks.message_queue_consumer import (
-    consume_job_started_messages,
-    consume_messages,
-    consume_nostr_upload_messages,
-    consume_neo4j_write_messages,
-    consume_strfry_plugin_messages,
-    wait_until_graph_db_is_populated,
-)
-from app.message_queue_tasks.backfill_redis_relationships import (
-    backfill_redis_relationships_if_needed,
-)
-from app.neo4j_db.driver import test_neo4j_driver
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi_pagination import add_pagination
 
+from app.core.admin_whitelist import init_admin_whitelist
 from app.core.config import settings
 from app.core.loggr import loggr
 from app.core.sql_admin_panel import add_sql_admin_panel
 from app.core.vespa import aclose as vespa_aclose
-from app.routers.open_ranking.errors import install_ore_error_handlers
-from app.routers.router import router as main_router
-from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
-from app.services.nsec_encryption_service import bootstrap_keys
-from app.nostr_event_transferer.nostr_event_transferer import (
-    nostr_event_recent_transferer_cronjob,
-    nostr_event_transferer,
-)
 from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
     fail_stale_ongoing_brainstorm_requests_cronjob,
 )
-from app.cronjobs.periodic_graperank_trigger import (
-    periodic_graperank_trigger_cronjob,
-)
+from app.cronjobs.periodic_graperank_trigger import periodic_graperank_trigger_cronjob
 from app.cronjobs.scheduler import scheduler_cronjob
+from app.message_queue_tasks.backfill_redis_relationships import (
+    backfill_redis_relationships_if_needed,
+)
+from app.message_queue_tasks.message_queue_consumer import (
+    consume_job_started_messages,
+    consume_messages,
+    consume_neo4j_write_messages,
+    consume_nostr_upload_messages,
+    consume_strfry_plugin_messages,
+    wait_until_graph_db_is_populated,
+)
+from app.neo4j_db.driver import test_neo4j_driver
 
-from app.core.admin_whitelist import init_admin_whitelist
+# recent_transferer kept for the commented-out spawn below.
+from app.nostr_event_transferer.nostr_event_transferer import (  # noqa: F401
+    nostr_event_recent_transferer_cronjob,
+    nostr_event_transferer,
+)
+from app.routers.open_ranking.errors import install_ore_error_handlers
+from app.routers.router import router as main_router
+from app.services.nsec_encryption_service import bootstrap_keys
+from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
 
 logger = loggr.get_logger(__name__)
 
@@ -89,7 +88,8 @@ async def lifespan(app: FastAPI):
         logger.info("Finished populating your Graph Database!! Enjoy Brainstorm!!")
     else:
         logger.info(
-            "Skipping intial nostr relay full sync... if you want to do it, modify the env variables and restart."
+            "Skipping intial nostr relay full sync... "
+            "if you want to do it, modify the env variables and restart."
         )
     # start the regular update cronjob task
     # regular_update_task = asyncio.create_task(nostr_event_recent_transferer_cronjob())
@@ -102,9 +102,7 @@ async def lifespan(app: FastAPI):
     fail_stale_ongoing_task = asyncio.create_task(
         fail_stale_ongoing_brainstorm_requests_cronjob()
     )
-    periodic_graperank_task = asyncio.create_task(
-        periodic_graperank_trigger_cronjob()
-    )
+    periodic_graperank_task = asyncio.create_task(periodic_graperank_trigger_cronjob())
     scheduler_task = asyncio.create_task(scheduler_cronjob())
 
     try:

@@ -1,4 +1,3 @@
-from app.utils.auth.auth_models import JWTData
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.core.admin_whitelist import get_whitelisted_pubkeys
@@ -7,13 +6,14 @@ from app.core.loggr import loggr
 from app.routers.admin.activity.router import router as activity_router
 from app.routers.admin.graperank.router import router as graperank_router
 from app.routers.admin.nsec_encryption.router import router as nsec_encryption_router
+from app.routers.admin.scheduling.router import router as scheduling_router
 from app.routers.admin.stats.router import router as stats_router
 from app.routers.admin.trusted_lists.router import router as trusted_lists_router
-from app.routers.admin.scheduling.router import router as scheduling_router
 from app.routers.admin.users.router import router as users_router
 from app.routers.brainstorm_pubkey.router import router as brainstorm_pubkey_router
 from app.routers.brainstorm_request.router import router as brainstorm_request_router
 from app.utils.api_validators import verify_token
+from app.utils.auth.auth_models import JWTData
 
 logger = loggr.get_logger(__name__)
 

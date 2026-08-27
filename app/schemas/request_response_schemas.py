@@ -3,6 +3,11 @@ from typing import Any
 from fastapi import status
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.graperank_schemas import (
+    BuiltinPresetTemplate,
+    GrapeRankPresetParams,
+    GrapeRankPresetTemplate,
+)
 from app.schemas.schemas import (
     AdminStats,
     AuthSuccessfulToken,
@@ -17,11 +22,6 @@ from app.schemas.schemas import (
     UserSectionsStats,
 )
 from app.schemas.trusted_list_schemas import TrustedListRunData
-from app.schemas.graperank_schemas import (
-    BuiltinPresetTemplate,
-    GrapeRankPresetParams,
-    GrapeRankPresetTemplate,
-)
 
 
 class BaseResponseDataSchema(BaseModel):
