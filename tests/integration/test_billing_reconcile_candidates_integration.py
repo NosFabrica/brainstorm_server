@@ -11,6 +11,7 @@ subscriber is written off for someone else's error.
 
 import asyncio
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
@@ -34,8 +35,10 @@ STALE_AFTER = timedelta(hours=6)
 UNKNOWN = EntitlementReason.UNKNOWN_SUBSCRIPTION.value
 ABANDONED_RULE = AbandonRule(after=ABANDON_AFTER, error=UNKNOWN)
 
-LONG_AGO = NOW - timedelta(days=7)
+LONG_AGO = NOW - timedelta(days=30)
 RECENTLY = NOW - timedelta(hours=1)
+READ_JUST_NOW = NOW - timedelta(minutes=5)
+READ_LAST_MONTH = NOW - timedelta(days=30)
 
 # Probe pubkeys, 64 hex like the real thing.
 ABANDONED = "a" * 63 + "1"
@@ -46,7 +49,9 @@ CLOCK = "a" * 63 + "5"
 PROBES = (ABANDONED, STILL_YOUNG, GRANTED, OTHER_ERROR, CLOCK)
 
 
-async def _seed(db, pubkey, *, granted=None, error=None, since=None, status="pending"):
+async def _seed(
+    db, pubkey, *, granted=None, error=None, since=None, status="pending", synced=None
+):
     await db.execute(
         text(
             """
@@ -55,7 +60,7 @@ async def _seed(db, pubkey, *, granted=None, error=None, since=None, status="pen
                granted_scheduling_id, flash_status, last_sync_error,
                sync_error_since, last_synced_at, created_at, updated_at)
             VALUES (:pubkey, :sub, NULL, :granted, :status, :error,
-                    :since, :long_ago, :long_ago, :long_ago)
+                    :since, :synced, :long_ago, :long_ago)
             """
         ),
         {
@@ -65,6 +70,7 @@ async def _seed(db, pubkey, *, granted=None, error=None, since=None, status="pen
             "status": status,
             "error": error,
             "since": since,
+            "synced": synced if synced is not None else READ_JUST_NOW,
             "long_ago": LONG_AGO,
         },
     )
@@ -157,6 +163,28 @@ def test_an_abandoned_checkout_drops_out_and_everything_else_stays():
                 assert GRANTED in selected, "stopped watching a subscriber with a policy"
                 assert OTHER_ERROR in selected, "an outage was treated as abandonment"
 
+                # The sweep asks in SQL, the user-facing view asks in Python.
+                # The two answering differently is how someone ends up written
+                # off in one place and still "confirming your payment" in the
+                # other, so they are checked against the same rows. Every probe
+                # is `pending` and so matches the query's positive half — which
+                # is what makes "absent from the batch" mean "abandoned" here.
+                everything = (
+                    await db.execute(
+                        text(
+                            "SELECT * FROM user_subscription WHERE pubkey = ANY(:keys)"
+                        ),
+                        {"keys": list(PROBES)},
+                    )
+                ).mappings()
+                for row in everything:
+                    in_python = ABANDONED_RULE.matches(SimpleNamespace(**row), NOW)
+                    in_sql = row["pubkey"] not in selected
+                    assert in_python == in_sql, (
+                        f"{row['pubkey'][-1]}: python says abandoned={in_python}, "
+                        f"sql says {in_sql}"
+                    )
+
                 await _cleanup(db)
         finally:
             await engine.dispose()
@@ -175,8 +203,16 @@ def test_an_abandoned_checkout_leaves_the_alarming_sections_for_its_own():
         try:
             async with db_session() as db:
                 await _cleanup(db)
-                await _seed(db, ABANDONED, error=UNKNOWN, since=LONG_AGO)
-                await _seed(db, OTHER_ERROR, error="vault down", since=LONG_AGO)
+                # Read long enough ago to be genuinely stale, so the assertion
+                # below turns on the exclusion rather than on the clock.
+                await _seed(
+                    db, ABANDONED, error=UNKNOWN, since=LONG_AGO,
+                    synced=READ_LAST_MONTH,
+                )
+                await _seed(
+                    db, OTHER_ERROR, error="vault down", since=LONG_AGO,
+                    synced=READ_LAST_MONTH,
+                )
                 await db.commit()
 
                 failing = {

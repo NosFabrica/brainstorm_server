@@ -146,3 +146,37 @@ four further reads after the first unknown before the row drops out.
 Every path that could revive the subscriber bypasses this query entirely: an `activated` webhook upserts
 the row outright, `POST /user/subscription/refresh` reads Flash on demand, and the admin resync endpoint
 does the same. Giving up on the sweep does not close the door.
+
+## What the subscriber sees
+
+Once the row is abandoned, `read_subscription_view` presents it as **no billing record at all** — status
+`none`, no period, no manage link — rather than as a payment being confirmed.
+
+Without that, `_UI_STATUS` maps `pending` to `pending` unconditionally, so someone who abandoned a
+checkout would be shown "confirming your payment" indefinitely, for a payment that will never confirm and
+with nothing offering them a way to start again. It is the one place the stale row was visible to a user,
+and the row exists for the sweep's benefit, not theirs.
+
+This is the same `AbandonRule`, asked in Python via `matches()` instead of in SQL via `condition()`. The
+two live next to each other deliberately, and an integration test runs both over the same rows, because
+the failure mode is silent: a subscriber written off by one and still "confirming" to the other.
+
+## Why we stop rather than keep checking
+
+The tempting refinement is to back off rather than stop — re-read an abandoned row weekly instead of never
+— on the grounds that the sweep is the only thing that recovers an `activated` Flash never delivered, so a
+subscriber who came back and paid would otherwise be stranded.
+
+That was built and then removed, because the argument does not survive contact with the API. **Flash has
+no endpoint that lists subscriptions** — only `?ref=` and `?subscriptionId=` (see
+[`api-observations.md`](api-observations.md)). So a first-time subscriber who pays, whose webhook is lost,
+and who never returns to the redirect page has no row, is asked about by nothing, and is invisible
+permanently. That is the common case, and it is unfixable with the API as it stands.
+
+Retrying abandoned rows weekly would insure a handful of subscribers against a failure we cannot insure
+anyone else against — for a case that additionally requires the webhook to fail all three of Flash's
+retries *and* the user to never land on the return page, which per Flash's own documentation always
+follows a successful checkout. Consistency and simplicity both say stop.
+
+If "someone paid and we never noticed" turns out to matter, the fix is a list endpoint from Flash and a
+reconcile that runs in the other direction — not a special case for rows that happen to have a handle.

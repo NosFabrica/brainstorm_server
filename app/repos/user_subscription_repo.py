@@ -52,6 +52,22 @@ class AbandonRule:
             UserSubscription.sync_error_since <= now - self.after,
         )
 
+    def matches(self, row, now: datetime) -> bool:
+        """The same question, asked of a row already in hand.
+
+        Deliberately beside `condition` rather than wherever it was needed: the
+        sweep asks in SQL and the user-facing view asks in Python, and the two
+        answering differently is how a subscriber ends up written off in one
+        place and still "confirming your payment" in the other.
+        """
+        return (
+            row.flash_status == "pending"
+            and row.granted_scheduling_id is None
+            and row.last_sync_error == self.error
+            and row.sync_error_since is not None
+            and row.sync_error_since <= now - self.after
+        )
+
 
 async def get_user_subscription_on_db(
     db: AsyncDBSession, pubkey: str

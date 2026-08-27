@@ -46,7 +46,7 @@ Pin `--at` to repeat a delivery byte-for-byte and see the retry path
 
 Confirms both Flash credentials work, independently, so a failure says which
 one. Used at step 4 of a rotation — see
-[`../docs/flash-credential-rotation.md`](../docs/flash-credential-rotation.md).
+[`../docs/flash/credential-rotation.md`](../docs/flash/credential-rotation.md).
 Exit code is 0 only if everything checked passed. Also stdlib-only.
 
 ### Search testing helpers (`search_*.sh`, `search_open_ranking.py`)

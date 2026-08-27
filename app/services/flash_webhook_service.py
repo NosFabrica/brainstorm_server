@@ -456,7 +456,7 @@ def describe_rotation_state(previous_secret: str) -> str | None:
     return (
         "FLASH_WEBHOOK_SECRET_PREVIOUS is set: deliveries signed with the "
         "superseded secret are still accepted. Clear it once Flash has caught "
-        "up — see docs/flash-credential-rotation.md."
+        "up — see docs/flash/credential-rotation.md."
     )
 
 

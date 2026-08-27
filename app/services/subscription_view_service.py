@@ -8,6 +8,7 @@ Flash's status vocabulary is translated here, on read: the client's
 passed through would render as paid.
 """
 
+from datetime import timedelta
 from urllib.parse import quote
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -19,15 +20,24 @@ from app.repos.billing_plan_repo import (
     get_plan_by_scheduling_id_on_db,
     select_billing_plans_on_db,
 )
-from app.repos.user_subscription_repo import get_user_subscription_on_db
+from app.repos.user_subscription_repo import AbandonRule, get_user_subscription_on_db
 from app.repos.scheduling_repo import (
     get_default_scheduling_on_db,
     get_scheduling_on_db,
 )
 from app.repos.brainstorm_nsec import get_assigned_scheduling_id_on_db
 from app.schemas.schemas import BillingPlanView, BillingPlansData, SubscriptionView
+from app.services.billing_service import EntitlementReason, utc_now
 
 FREE_TIER = "free"
+
+
+def _abandon_rule() -> AbandonRule:
+    """One rule, read from settings in both places that ask."""
+    return AbandonRule(
+        after=timedelta(seconds=settings.billing_abandon_pending_after_seconds),
+        error=EntitlementReason.UNKNOWN_SUBSCRIPTION.value,
+    )
 
 # Flash subscription status → the UI's vocabulary. `past_due` reads as `grace`
 # because the user is inside Flash's dunning and still entitled —
@@ -68,6 +78,13 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
     """What one signed-in user has. Every field present, always."""
     tier = await _resolve_tier(db, pubkey)
     row = await get_user_subscription_on_db(db, pubkey)
+
+    # A checkout Flash discarded is not a payment being confirmed, it is no
+    # subscription at all — and the row only survives it because the sweep needs
+    # a handle. Presenting it as one keeps "confirming your payment" on screen
+    # for a user whose payment will never confirm, with no way to start again.
+    if row is not None and _abandon_rule().matches(row, utc_now()):
+        row = None
 
     manage_url = None
     if row is not None and settings.flash_enabled:
