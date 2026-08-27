@@ -461,7 +461,16 @@ re-deriving trust math at query time.
 
 Score each member with **GrapeRank's interpreter formula**
 (`specs/graperank.md`, "weight of one data point"), applied single-hop over
-the live taggings on one (tag, target) pair — not a new formula, the estate's
+the live taggings on one (tag, target) pair. The
+input→certainty transformation is the one already in the estate.s code:
+`convertInputToConfidence(input, rigor)` in tapestry.s
+`src/algos/personalizedGrapeRank/calculateGrapeRank.js:77-83`
+(`certainty = 1 − exp(−input × −ln(rigor))`, the closed form of
+`1 − ρ^input` — the spec notes the identity). The published score is
+`certainty × average`, which **equals raw certainty exactly whenever a member
+has no disputes** (average = 1, the common case); a contested member.s score
+is discounted by the dispute mass rather than inflated by it — raw certainty
+of *total* input would rise with disputes, since a dispute adds weight — not a new formula, the estate's
 existing one, so one trust vocabulary covers follows, mutes, reports, and now
 taggings.
 
@@ -483,8 +492,8 @@ data point = one live tagging (asserter x, polarity p)
 
 input      = Σ w                over the pair's live taggings
 average    = Σ (w × r) / input          (0 when input = 0)
-confidence = 1 − ρ^input                (ρ = rigor)
-score      = round( max(average × confidence, 0) × 100 )   — integer 0–100
+certainty  = 1 − ρ^input                (ρ = rigor)
+score      = round( max(average × certainty, 0) × 100 )   — integer 0–100
 ```
 
 Properties this buys, all inherited from the spec rather than argued fresh:
