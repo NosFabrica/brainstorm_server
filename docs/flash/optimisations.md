@@ -35,10 +35,9 @@ minutes per IP is generous for a misconfigured integration and tight for a flood
 
 **Keep the counter in Redis, never the database.** A forged delivery deliberately
 leaves no trace — writing unverified bodies would turn a public endpoint into an
-unauthenticated write primitive that anyone could use to fill a table. That rule
-comes from the build spec in `.scratch/payments-flash/build/` at the workspace
-root. An expiring Redis counter
-keyed on IP keeps that property — nothing an attacker controls persists.
+unauthenticated write primitive that anyone could use to fill a table. An
+expiring Redis counter keyed on IP keeps that property — nothing an attacker
+controls persists.
 
 **The client IP is real, which is not obvious.** `request.client.host` would
 normally be the ingress pod behind an NGINX ingress, making a per-IP limit either
@@ -70,9 +69,9 @@ because we are reading those rows fine every cycle, and `policy_mismatch` misses
 it because the policy matches what was granted.
 
 That is the one signal separating "Flash is slow" from "we are giving away the
-paid tier". It is not hypothetical: on 2026-08-27 four subscriptions sat `active`
-17 hours past their `nextBillingDate` with no `subscription.renewed`, and nothing
-would have told an operator. See [`api-observations.md`](api-observations.md).
+paid tier". It is not hypothetical: four subscriptions have sat `active` well
+past their `nextBillingDate` with no `subscription.renewed`, and nothing would
+have told an operator.
 
 Deliberately not an automatic revocation — `revoke_lapsed_entitlements` refuses
 to judge those rows for good reason, since locally a missed renewal event is

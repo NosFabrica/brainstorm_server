@@ -6,9 +6,8 @@ payment never confirms, and why the reconcile sweep eventually stops asking abou
 For the whole payment path this sits inside — signup, renewal, cancellation, and what repairs a missed
 event — see [`lifecycle.md`](lifecycle.md).
 
-Source of truth for Flash's own behaviour is `docs/PAYMENTS.md` in the **brainstorm workspace root**
-(alongside this repo, not inside it) — the document Flash gave us. `docs.paywithflash.com` documents an
-older product and is actively misleading; do not answer questions from it.
+Source of truth for Flash's own behaviour is the integration document Flash gave us, not
+`docs.paywithflash.com` — that documents an older product and is actively misleading.
 
 ## What Flash does
 
@@ -74,7 +73,7 @@ Flash's doc asks for a confirming state on `status=pending`.
 So the row is the handle that makes both work, and its cost is that a checkout nobody completed leaves one
 behind. That is a reason to stop *sweeping* it, never to stop *recording* it.
 
-Not to be confused with the pending-checkout subsystem the PRD deletes — email correlation, a 30-minute
+Not to be confused with an earlier design's pending-checkout records — email correlation, a 30-minute
 matching window, an admin queue for unmatched payments. All of that was replaced by `ref`. This row is
 just the ordinary subscription record carrying Flash's status verbatim.
 
@@ -177,7 +176,7 @@ subscriber who came back and paid would otherwise be stranded.
 
 That was built and then removed, because the argument does not survive contact with the API. **Flash has
 no endpoint that lists subscriptions** — only `?ref=` and `?subscriptionId=` (see
-[`api-observations.md`](api-observations.md)). So a first-time subscriber who pays, whose webhook is lost,
+only `?ref=` or `?subscriptionId=`). So a first-time subscriber who pays, whose webhook is lost,
 and who never returns to the redirect page has no row, is asked about by nothing, and is invisible
 permanently. That is the common case, and it is unfixable with the API as it stands.
 

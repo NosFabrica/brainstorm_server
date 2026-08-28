@@ -1,9 +1,8 @@
 # The payment lifecycle, end to end
 
-Every part that touches a payment, in the order it touches it. Read this first;
-[`pending-checkouts.md`](pending-checkouts.md) then covers the one path that goes
-nowhere, and [`api-observations.md`](api-observations.md) covers where Flash's
-dev environment does not behave as documented.
+Every part that touches a payment, in the order it touches it. The one path that
+goes nowhere — a checkout nobody finishes — is
+[`pending-checkouts.md`](pending-checkouts.md).
 
 ## The pieces
 
@@ -154,8 +153,8 @@ There is one hole this cannot close, and it is worth knowing rather than
 discovering: the sweep reads `user_subscription`, so **a subscriber with no row
 is asked about by nothing**. Someone who paid, whose webhook was lost, and who
 never returned to the redirect page is invisible permanently — and Flash offers
-no endpoint that lists subscriptions, so nothing can enumerate them either. See
-[`api-observations.md`](api-observations.md).
+no endpoint that lists subscriptions — it answers only `?ref=` or
+`?subscriptionId=` — so nothing can enumerate them either.
 
 ## What can never happen
 
@@ -182,5 +181,5 @@ result looks right.
 | Paid but no tier | `flash_webhook_event` for their `externalRef`; then `failing_syncs` in `/admin/billing/divergence` |
 | Tier but no payment | `policy_mismatch` and `admin_overrides` in the same report |
 | "Confirming your payment" that never resolves | [`pending-checkouts.md`](pending-checkouts.md) |
-| Never renewed | `api-observations.md` — renewals are unproven in Flash's dev environment |
+| Never renewed | `flash_webhook_event` for a `subscription.renewed`; if absent, nothing was billed |
 | An operator needs it fixed now | `POST /admin/billing/subscriptions/{pubkey}/resync` |
