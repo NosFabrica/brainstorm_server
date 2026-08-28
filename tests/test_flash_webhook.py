@@ -590,3 +590,47 @@ def test_a_delivery_that_failed_is_left_for_replay(
 
     assert response.status_code == 200
     marked.assert_not_awaited()
+
+
+def test_the_flash_mock_cannot_be_enabled_outside_local():
+    """The mock answers Flash reads from fabricated state. Anywhere real that
+    means entitlement is decided from data nobody paid for — grants based on
+    nothing. It is the one piece of the dev machinery whose safety rests on a
+    default rather than on a route that was never mounted."""
+    with pytest.raises(FlashConfigError) as excinfo:
+        validate_flash_config(
+            enabled=True,
+            api_key="sk_live_x",
+            webhook_secret="whsec_x",
+            base_url="https://vault.example.com",
+            mock_enabled=True,
+            deploy_environment="PRODUCTION",
+        )
+
+    message = str(excinfo.value)
+    assert "flash_mock_enabled" in message
+    assert "sk_live_x" not in message
+
+
+def test_the_flash_mock_is_allowed_locally():
+    validate_flash_config(
+        enabled=True,
+        api_key="sk_live_x",
+        webhook_secret="whsec_x",
+        base_url="https://vault.example.com",
+        mock_enabled=True,
+        deploy_environment="LOCAL",
+    )
+
+
+def test_the_mock_check_does_not_fire_when_payments_are_off():
+    """With Flash disabled nothing reads Flash at all, so the mock is inert —
+    refusing to boot over it would block a legitimate local configuration."""
+    validate_flash_config(
+        enabled=False,
+        api_key="",
+        webhook_secret="",
+        base_url="",
+        mock_enabled=True,
+        deploy_environment="PRODUCTION",
+    )

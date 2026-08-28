@@ -29,6 +29,7 @@ from app.repos.flash_webhook_event_repo import (
     record_webhook_event_failure_on_db,
 )
 from app.repos.user_subscription_repo import update_last_event_at_on_db
+from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
 from app.services.billing_service import (
     SETTLED_REASONS,
     apply_entitlement,
@@ -461,7 +462,12 @@ def describe_rotation_state(previous_secret: str) -> str | None:
 
 
 def validate_flash_config(
-    enabled: bool, api_key: str, webhook_secret: str, base_url: str
+    enabled: bool,
+    api_key: str,
+    webhook_secret: str,
+    base_url: str,
+    mock_enabled: bool = False,
+    deploy_environment: str = DEPLOY_ENVIRONMENT_LOCAL,
 ) -> None:
     """Refuse to start half-configured.
 
@@ -475,6 +481,18 @@ def validate_flash_config(
     """
     if not enabled:
         return
+
+    # The mock answers Flash reads from fabricated state. Anywhere but local
+    # that means entitlement is decided from data nobody paid for. Every other
+    # piece of the dev machinery is safe by construction — a route that is
+    # never mounted — and this is the one that rests on a default.
+    if mock_enabled and deploy_environment != DEPLOY_ENVIRONMENT_LOCAL:
+        raise FlashConfigError(
+            "flash_mock_enabled is true outside LOCAL "
+            f"(deploy_environment={deploy_environment}). Entitlement would be "
+            "decided from fabricated subscription state."
+        )
+
     missing = [
         name
         for name, value in (
