@@ -47,10 +47,10 @@ flowchart LR
     ent --> usub
     ent -->|"the grant"| nsec
     plan -.->|"plan to policy"| ent
-    portal -.->|"user cancels here"| flash
     view --> usub
     view --> nsec
     sub --> view
+    sub -.->|"manage_url, cancel"| portal
 ```
 
 Two things that diagram is trying to make obvious. **Entitlement is the write to
