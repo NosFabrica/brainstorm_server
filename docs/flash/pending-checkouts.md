@@ -3,6 +3,9 @@
 Why a subscription row exists before anyone has been granted anything, what happens to it when the
 payment never confirms, and why the reconcile sweep eventually stops asking about it.
 
+For the whole payment path this sits inside — signup, renewal, cancellation, and what repairs a missed
+event — see [`lifecycle.md`](lifecycle.md).
+
 Source of truth for Flash's own behaviour is `docs/PAYMENTS.md` in the **brainstorm workspace root**
 (alongside this repo, not inside it) — the document Flash gave us. `docs.paywithflash.com` documents an
 older product and is actively misleading; do not answer questions from it.
@@ -47,7 +50,7 @@ flowchart TD
     M --> N["last_sync_error = unknown_subscription, sync_error_since stamped once"]
     N --> O{"Failing for longer than the abandon window?"}
     O -->|"no"| M
-    O -->|"yes"| P["Row leaves the sweep. Never deleted, still in the divergence report"]
+    O -->|"yes"| P["Leaves the sweep and the alarming report sections.<br/>Counted under abandoned_checkouts; the subscriber<br/>is shown 'not subscribed'. The row is never deleted"]
 ```
 
 Two asymmetries worth noticing. The webhook path looks Flash up by `subscriptionId`, taken from the

@@ -34,9 +34,10 @@ billing-refresh limiters, not a new mechanism. Something like 20 rejections per 
 minutes per IP is generous for a misconfigured integration and tight for a flood.
 
 **Keep the counter in Redis, never the database.** A forged delivery deliberately
-[leaves no trace](../../.scratch/payments-flash/build/01-webhook-received-and-verified.md):
-writing unverified bodies would turn a public endpoint into an unauthenticated
-write primitive that anyone could use to fill a table. An expiring Redis counter
+leaves no trace — writing unverified bodies would turn a public endpoint into an
+unauthenticated write primitive that anyone could use to fill a table. That rule
+comes from the build spec in `.scratch/payments-flash/build/` at the workspace
+root. An expiring Redis counter
 keyed on IP keeps that property — nothing an attacker controls persists.
 
 **The client IP is real, which is not obvious.** `request.client.host` would

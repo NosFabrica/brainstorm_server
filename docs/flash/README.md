@@ -7,6 +7,7 @@ Working docs for the Flash payments integration. Code lives in
 
 | Doc | What it answers |
 |---|---|
+| [`lifecycle.md`](lifecycle.md) | **Start here.** Every part that touches a payment, in the order it touches it — signup, the states a live subscription moves through, what repairs a missed event, and the rules that hold across all of it |
 | [`pending-checkouts.md`](pending-checkouts.md) | Why a subscription row exists before anything is granted, what happens to a checkout nobody finishes, and how the reconcile sweep treats it |
 | [`credential-rotation.md`](credential-rotation.md) | Rotating the API key and the webhook signing secret, including the compromised-key path |
 | [`api-observations.md`](api-observations.md) | Where Flash's dev environment behaves differently from their documentation, with evidence, and the open questions for them |
