@@ -249,3 +249,20 @@ def test_the_sweep_can_be_stopped_without_unmounting_the_webhook(monkeypatch):
     monkeypatch.setattr(settings, "billing_sync_enabled", False)
 
     assert settings.billing_sync_active is False
+
+
+def test_the_abandon_window_is_shorter_than_the_sweep_that_applies_it():
+    """Both were 21600s, so a row became eligible at the exact moment the cycle
+    evaluating it ran — and on staging it lost that race by milliseconds and
+    waited a further six hours.
+
+    The window is a *minimum* age, and the sweep can only act on cycle
+    boundaries, so anything >= the interval makes the first eligible cycle a
+    coin flip. Shorter by a margin makes it deterministic: by the time a cycle
+    looks, the row has been eligible for a while."""
+    from app.core.config import settings
+
+    assert (
+        settings.billing_abandon_pending_after_seconds
+        < settings.billing_sync_interval_seconds
+    ), "the abandon window must be shorter than the cycle that applies it"

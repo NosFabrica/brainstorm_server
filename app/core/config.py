@@ -71,11 +71,17 @@ class Settings(BaseSettings):
     billing_reconcile_stale_after_seconds: int = Field(default=21600)
     # A checkout that never confirmed and that Flash no longer knows about is
     # abandoned, not pending: stop re-reading it once the failure is this old.
-    # One sweep interval, so the answer has to repeat before we act — the only
-    # thing this guards against is Flash answering 200 with an empty list for a
+    # Long enough that the answer has to repeat before we act — the only thing
+    # this guards against is Flash answering 200 with an empty list for a
     # subscription that exists, and the discard it usually means is not undone.
     # It also gates what the subscriber is shown, so longer is not free.
-    billing_abandon_pending_after_seconds: int = Field(default=21600)
+    #
+    # Deliberately SHORTER than billing_sync_interval_seconds. The window is a
+    # minimum age and the sweep can only act on cycle boundaries, so at exactly
+    # one interval a row becomes eligible the instant the cycle evaluating it
+    # runs — on staging that race was lost by milliseconds and the row waited
+    # another six hours. The margin makes the first eligible cycle deterministic.
+    billing_abandon_pending_after_seconds: int = Field(default=18000)
     # Replay of events we acknowledged and then dropped.
     billing_replay_batch: int = Field(default=25)
     # How long a claim is honoured before the event is treated as abandoned.

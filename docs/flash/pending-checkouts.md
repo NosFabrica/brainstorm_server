@@ -140,15 +140,25 @@ A row drops out of `select_reconcile_candidates_on_db` only when all of these ho
   at stake. A row that *did* grant and then goes unknown is a real anomaly; keep asking about it forever.
 - `last_sync_error = 'unknown_subscription'` — Flash answered and had nothing. An outage or a credential
   failure raises rather than returning nothing, so those keep retrying.
-- `sync_error_since` older than `billing_abandon_pending_after_seconds` (default 6h).
+- `sync_error_since` older than `billing_abandon_pending_after_seconds` (default 5h).
 
-The sweep runs every `billing_sync_interval_seconds` (also 6h) over a bounded batch, so at the defaults
-the answer has to come back the same way twice before the row drops out.
+That window is deliberately **shorter** than `billing_sync_interval_seconds` (6h), and the margin is the
+point rather than an accident of tuning. The window is a *minimum age* and the sweep can only act on
+cycle boundaries, so at exactly one interval a row becomes eligible at the instant the cycle evaluating
+it runs — decided by sub-millisecond ordering. On staging that race was lost and the row waited another
+full six hours. At 5h against a 6h cycle the row has been eligible for an hour by the time anything
+looks, so the first eligible cycle is deterministic. `test_the_abandon_window_is_shorter_than_the_sweep_that_applies_it`
+holds the invariant.
 
-Two observations rather than four, because the only thing the window guards against is Flash answering
-200 with an empty list for a subscription that really exists — every other failure raises rather than
-returning nothing — and the discard it normally means is never undone. The window is not free either: it
-is also how long the subscriber is shown "confirming your payment" for a payment that will not confirm.
+So one failed read, not two: the sweep reads at t=0 and stamps the clock, and the row is already excluded
+when the next cycle comes round at t=6h. That is enough, because the only thing the window guards against
+is Flash answering 200 with an empty list for a subscription that really exists — every other failure
+raises rather than returning nothing — and the discard it normally means is never undone.
+
+The window is not free, and it is worth being exact about what it costs. The subscriber stops being shown
+"confirming your payment" at `sync_error_since` + 5h precisely, because
+[the view asks in Python at read time](#what-the-subscriber-sees) rather than waiting for a cycle. The
+sweep exclusion lands separately, at the first cycle boundary after that. Two clocks, one rule.
 
 Every path that could revive the subscriber bypasses this query entirely: an `activated` webhook upserts
 the row outright, `POST /user/subscription/refresh` reads Flash on demand, and the admin resync endpoint
