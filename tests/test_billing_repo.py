@@ -43,7 +43,8 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
         built.append(statement)
         return SimpleNamespace(
             scalar_one_or_none=lambda: None,
-            scalars=lambda: SimpleNamespace(all=lambda: []),
+            scalar_one=lambda: 0,
+            scalars=lambda: SimpleNamespace(all=lambda: [], first=lambda: None),
             all=lambda: [],
             rowcount=0,
         )
@@ -76,6 +77,8 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
         "trial_end_date": None,
         "cancel_effective_date": None,
         "reason": "because",
+        "resolution": "attributed",
+        "resolved_by": PUBKEY,
         "error": "unknown_plan",
         "now": NOW,
         "stale_after": timedelta(minutes=5),
@@ -153,7 +156,8 @@ def _built(monkeypatch, module, fn, **kwargs):
         captured.append(statement)
         return SimpleNamespace(
             scalar_one_or_none=lambda: None,
-            scalars=lambda: SimpleNamespace(all=lambda: []),
+            scalar_one=lambda: 0,
+            scalars=lambda: SimpleNamespace(all=lambda: [], first=lambda: None),
             all=lambda: [],
             rowcount=0,
         )

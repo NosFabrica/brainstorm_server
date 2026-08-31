@@ -468,6 +468,7 @@ def new_plan(monkeypatch):
         exists=AsyncMock(return_value=True),
         insert=AsyncMock(return_value=_plan()),
         reset=AsyncMock(return_value=2),
+        by_flash_ids=AsyncMock(return_value=None),
     )
     seams.db.commit.side_effect = lambda: calls.append("commit")
     seams.reset.side_effect = lambda *a, **k: calls.append("reset") or 2
@@ -475,6 +476,7 @@ def new_plan(monkeypatch):
         ("scheduling_exists_on_db", seams.exists),
         ("insert_billing_plan_on_db", seams.insert),
         ("reset_events_awaiting_plan_on_db", seams.reset),
+        ("get_billing_plan_on_db", seams.by_flash_ids),
     ):
         monkeypatch.setattr(f"app.services.billing_service.{name}", mock)
     return seams
@@ -515,3 +517,99 @@ def test_a_plan_that_cannot_be_created_frees_nothing(new_plan):
 
     new_plan.reset.assert_not_awaited()
     new_plan.db.commit.assert_not_awaited()
+
+
+def test_flash_ids_already_mapped_are_refused_in_words(new_plan):
+    """The pair is unique in the schema; an admin retyping a live pair should
+    read why rather than a constraint violation."""
+    new_plan.by_flash_ids.return_value = _plan()
+
+    with pytest.raises(HTTPException) as caught:
+        _create(new_plan)
+
+    assert caught.value.status_code == 409
+    assert isinstance(caught.value.detail, str)
+
+
+# ---------------------------------------------------------------------------
+# Correcting a mapping — the only repair mechanism there is
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def edit_plan(new_plan, monkeypatch):
+    new_plan.current = AsyncMock(return_value=_plan())
+    new_plan.update = AsyncMock(return_value=_plan())
+    new_plan.subscribers = AsyncMock(return_value=0)
+    for name, mock in (
+        ("get_billing_plan_by_id_on_db", new_plan.current),
+        ("update_billing_plan_on_db", new_plan.update),
+        ("count_subscriptions_for_plan_on_db", new_plan.subscribers),
+    ):
+        monkeypatch.setattr(f"app.services.billing_service.{name}", mock)
+    return new_plan
+
+
+def _update(edit_plan, values):
+    from app.services.billing_service import update_billing_plan
+
+    return asyncio.run(update_billing_plan(edit_plan.db, 1, values))
+
+
+def test_a_price_is_editable_whoever_is_on_the_plan(edit_plan):
+    """Nothing can verify a transcribed price, so correcting one by hand is the
+    only repair there is — and it must not depend on nobody having bought it."""
+    edit_plan.subscribers.return_value = 3
+
+    _update(edit_plan, {"amount_minor": 1000})
+
+    assert edit_plan.update.await_args.args[2] == {"amount_minor": 1000}
+
+
+def test_flash_ids_are_editable_while_nobody_has_bought_the_plan(edit_plan):
+    """The common case: a row that was misconfigured and never sold."""
+    _update(edit_plan, {"flash_plan_id": "beef"})
+
+    assert edit_plan.update.await_args.args[2] == {"flash_plan_id": "beef"}
+
+
+def test_rewriting_flash_ids_under_a_subscriber_is_refused_with_the_way_out(
+    edit_plan,
+):
+    """It would retroactively change what those people bought."""
+    edit_plan.subscribers.return_value = 2
+
+    with pytest.raises(HTTPException) as caught:
+        _update(edit_plan, {"flash_service_id": "other"})
+
+    assert caught.value.status_code == 409
+    assert "deactivate" in caught.value.detail
+    edit_plan.update.assert_not_awaited()
+
+
+def test_resending_the_same_flash_ids_is_not_a_re_identification(edit_plan):
+    """A form that sends the ids back unchanged is not a rewrite, and must not
+    be refused for a plan people are on."""
+    edit_plan.subscribers.return_value = 2
+
+    _update(edit_plan, {"flash_service_id": "9c1e", "flash_plan_id": "4f2a"})
+
+    edit_plan.update.assert_awaited_once()
+    edit_plan.reset.assert_not_awaited()
+
+
+def test_correcting_a_flash_id_frees_the_events_that_were_waiting_on_it(edit_plan):
+    """Same reason creating a mapping does: those events already spent their
+    attempts, so the typo fix would otherwise leave a subscriber unentitled."""
+    _update(edit_plan, {"flash_plan_id": "beef"})
+
+    kwargs = edit_plan.reset.await_args.kwargs
+    assert kwargs["flash_plan_id"] == "beef"
+    assert kwargs["error"] == EntitlementReason.UNKNOWN_PLAN.value
+
+
+def test_editing_a_plan_that_does_not_exist_is_a_404(edit_plan):
+    edit_plan.current.return_value = None
+
+    with pytest.raises(HTTPException) as caught:
+        _update(edit_plan, {"sort_order": 3})
+
+    assert caught.value.status_code == 404

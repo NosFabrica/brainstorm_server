@@ -356,6 +356,11 @@ class FlashWebhookEvent(TimestampMixin, Base):
         Integer, nullable=False, server_default="0", default=0
     )
     process_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Who settled this by hand, and as what. Null for everything the automatic
+    # path decided — a hand-granted entitlement should be as traceable as one a
+    # webhook produced.
+    resolved_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String, nullable=True)
     # Identity of one delivery. UNIQUE is what makes a retry a no-op.
     dedupe_key: Mapped[str] = mapped_column(String, nullable=False, unique=True)
 

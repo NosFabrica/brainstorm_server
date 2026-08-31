@@ -167,6 +167,38 @@ never returned to the redirect page is invisible permanently — and Flash offer
 no endpoint that lists subscriptions — it answers only `?ref=` or
 `?subscriptionId=` — so nothing can enumerate them either.
 
+## A signup that named nobody
+
+Flash's plain link carries no `externalRef` of ours, so the payment never
+becomes a `user_subscription` row — it exists only as a webhook event with
+`no_reference`, which is not a settled reason, so the sweep re-checks it
+forever. Someone paid and got nothing.
+
+These show as `unresolved_events` on `GET /admin/billing/divergence`, carrying
+the subscription, service and plan ids plus the subscriber's email and name —
+the last two read out of the payload for reference-less rows only, because
+matching "I paid with jane@example.com" against a list whose emails you cannot
+see is impossible. The workflow is driven by the subscriber contacting us, not
+by us emailing them.
+
+| Outcome | Endpoint |
+|---|---|
+| It is theirs | `POST /admin/billing/unresolved/{subscription_id}/attribute`, body `{"pubkey": …}` |
+| Not a customer | `POST /admin/billing/unresolved/{subscription_id}/dismiss` |
+
+Attributing confirms the subscription with Flash and then runs
+`apply_entitlement` unaltered — the same read, the same plan lookup, the same
+truth table a webhook goes through — so a hand-grant cannot disagree with what
+the next event produces. `scheduling_source` stays `billing`: the grant really
+did come from a payment. It refuses a pubkey that already holds a different
+subscription, and a subscription somebody else already holds; re-attributing to
+the same person is a no-op, so a retry after a half-finished attempt is safe.
+
+Both outcomes write `processed_at`, `resolution` (`attributed` / `dismissed`)
+and `resolved_by` on **every** open event for that subscription id. That is what
+stops the sweep, and what hands the payload back to the ordinary prune below.
+Cancelling and refunding stay in Flash, which took the money.
+
 ## Data retention
 
 Every verified delivery is stored whole, body and all, in `flash_webhook_event`.
@@ -232,3 +264,4 @@ result looks right.
 | "Confirming your payment" that never resolves | [`pending-checkouts.md`](pending-checkouts.md) |
 | Never renewed | `flash_webhook_event` for a `subscription.renewed`; if absent, nothing was billed |
 | An operator needs it fixed now | `POST /admin/billing/subscriptions/{pubkey}/resync` |
+| Paid through the plain link, so nothing names them | `unresolved_events` in the same report; then [attribute or dismiss](#a-signup-that-named-nobody) |

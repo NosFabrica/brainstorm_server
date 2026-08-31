@@ -308,6 +308,30 @@ def test_a_period_can_be_cleared_back_to_null(billing_client, monkeypatch):
     }
 
 
+def test_a_flash_id_typo_is_a_one_field_edit(billing_client, monkeypatch):
+    """They used to be rejected outright, which turned a typo in a row nobody
+    ever bought into a create-plus-deactivate dance."""
+    update = AsyncMock(return_value=_plan_row(flash_plan_id="beef"))
+    monkeypatch.setattr("app.routers.admin.billing.router.update_billing_plan", update)
+
+    response = billing_client.patch(
+        "/admin/billing/plans/1", json={"flash_plan_id": "beef"}
+    )
+
+    assert response.status_code == 200
+    assert update.await_args.args[2] == {"flash_plan_id": "beef"}
+
+
+def test_a_flash_id_cannot_be_nulled(billing_client):
+    """Every field here defaults to None, so an explicit null has to be caught
+    before `exclude_unset` writes it to a NOT NULL column."""
+    response = billing_client.patch(
+        "/admin/billing/plans/1", json={"flash_service_id": None}
+    )
+
+    assert response.status_code == 422
+
+
 def test_a_billing_period_count_without_a_unit_is_refused(billing_client):
     """Unit and count are formatted as a pair; a count alone renders as nothing
     and would read as "every 2"."""
@@ -564,3 +588,107 @@ def test_flashs_record_is_not_readable_without_billing_access(client, monkeypatc
         client.get(f"/admin/billing/subscriptions/{PUBKEY}/flash").status_code == 403
     )
     assert client.get("/admin/billing/unresolved/7d3b/flash").status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Acting on a signup that named nobody
+# ---------------------------------------------------------------------------
+def _resolution(subscription_id="7d3b", resolution="attributed", pubkey=None):
+    from app.services.billing_service import EntitlementReason, ResolutionOutcome
+
+    return ResolutionOutcome(
+        subscription_id=subscription_id,
+        resolution=EntitlementReason(resolution),
+        pubkey=pubkey,
+        applied=pubkey is not None,
+        events_settled=1,
+    )
+
+
+def test_attributing_names_the_admin_who_did_it(billing_client, caller, monkeypatch):
+    """Taken from the JWT, never from the body — an audit trail the caller can
+    write is not one."""
+    attribute = AsyncMock(return_value=_resolution(pubkey=PUBKEY))
+    monkeypatch.setattr(
+        "app.routers.admin.billing.router.attribute_unresolved_subscription", attribute
+    )
+
+    response = billing_client.post(
+        "/admin/billing/unresolved/7d3b/attribute", json={"pubkey": PUBKEY}
+    )
+
+    assert response.status_code == 200
+    assert attribute.await_args.kwargs["subscription_id"] == "7d3b"
+    assert attribute.await_args.kwargs["pubkey"] == PUBKEY
+    assert attribute.await_args.kwargs["acting_pubkey"] == caller.pubkey
+    assert response.json()["resolution"] == "attributed"
+
+
+def test_dismissing_names_the_admin_who_did_it(billing_client, caller, monkeypatch):
+    dismiss = AsyncMock(return_value=_resolution(resolution="dismissed"))
+    monkeypatch.setattr(
+        "app.routers.admin.billing.router.dismiss_unresolved_subscription", dismiss
+    )
+
+    response = billing_client.post("/admin/billing/unresolved/7d3b/dismiss")
+
+    assert response.status_code == 200
+    assert dismiss.await_args.kwargs["acting_pubkey"] == caller.pubkey
+    assert response.json() == {
+        "subscription_id": "7d3b",
+        "resolution": "dismissed",
+        "pubkey": None,
+        "applied": False,
+        "events_settled": 1,
+    }
+
+
+def test_something_that_is_not_a_pubkey_never_reaches_the_grant(
+    billing_client, monkeypatch
+):
+    attribute = AsyncMock()
+    monkeypatch.setattr(
+        "app.routers.admin.billing.router.attribute_unresolved_subscription", attribute
+    )
+
+    response = billing_client.post(
+        "/admin/billing/unresolved/7d3b/attribute", json={"pubkey": "nostr:jane"}
+    )
+
+    assert response.status_code == 422
+    attribute.assert_not_awaited()
+
+
+def test_an_unreachable_flash_is_told_apart_from_a_dead_key(
+    billing_client, monkeypatch
+):
+    """Same distinction the read path makes: retrying helps for one and never
+    helps for the other."""
+    from app.core.flash import FlashCredentialError, FlashUnavailable
+
+    for failure, expected in (
+        (FlashUnavailable("socket timed out"), 503),
+        (FlashCredentialError("Flash refused our credentials (401)"), 502),
+    ):
+        monkeypatch.setattr(
+            "app.routers.admin.billing.router.attribute_unresolved_subscription",
+            AsyncMock(side_effect=failure),
+        )
+        response = billing_client.post(
+            "/admin/billing/unresolved/7d3b/attribute", json={"pubkey": PUBKEY}
+        )
+        assert response.status_code == expected
+        assert isinstance(response.json()["detail"], str)
+
+
+def test_a_signup_cannot_be_resolved_without_billing_access(client, monkeypatch):
+    monkeypatch.setattr(settings, "billing_admin_whitelisted_pubkeys", OTHER)
+    wl.init_billing_admin_whitelist()
+
+    assert (
+        client.post(
+            "/admin/billing/unresolved/7d3b/attribute", json={"pubkey": PUBKEY}
+        ).status_code
+        == 403
+    )
+    assert client.post("/admin/billing/unresolved/7d3b/dismiss").status_code == 403

@@ -106,6 +106,22 @@ async def get_user_subscription_on_db(
     return result.scalar_one_or_none()
 
 
+async def get_user_subscription_by_flash_id_on_db(
+    db: AsyncDBSession, flash_subscription_id: str
+) -> UserSubscription | None:
+    """Whoever already holds one Flash subscription, if anyone does.
+
+    The other direction of the same table, and the only way to tell an
+    unattributed signup from one that has already been resolved — the pubkey is
+    exactly what an unattributed one does not have.
+    """
+    statement = select(UserSubscription).where(
+        UserSubscription.flash_subscription_id == flash_subscription_id
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalars().first()
+
+
 async def upsert_user_subscription_on_db(
     db: AsyncDBSession,
     *,
@@ -140,6 +156,19 @@ async def upsert_user_subscription_on_db(
         )
     )
     await execute_db_statement(db, statement, __name__)
+
+
+async def count_subscriptions_for_plan_on_db(
+    db: AsyncDBSession, billing_plan_id: int
+) -> int:
+    """How many people bought this mapping. Zero is what makes its Flash ids
+    editable — rewriting them under a subscriber would retroactively change
+    what that person bought."""
+    statement = select(func.count()).where(
+        UserSubscription.billing_plan_id == billing_plan_id
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one()
 
 
 async def select_entitlement_candidates_on_db(

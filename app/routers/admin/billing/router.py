@@ -4,6 +4,7 @@ Mounted outside the admin router on purpose. Being on the billing list must not
 confer general administration — see `app/core/billing_admin_whitelist.py`.
 """
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -22,16 +23,20 @@ from app.core.flash import (
 from app.core.loggr import loggr
 from app.repos.user_subscription_repo import build_billing_subscriptions_stmt
 from app.schemas.schemas import (
+    AttributeUnresolvedBody,
     BillingBlockOutcome,
     BillingPlanItem,
     BillingSubscriptionItem,
     CreateBillingPlanBody,
     DivergenceSection,
+    UnresolvedResolutionOutcome,
     UpdateBillingPlanBody,
 )
 from app.services.billing_service import (
     apply_entitlement,
+    attribute_unresolved_subscription,
     create_billing_plan,
+    dismiss_unresolved_subscription,
     list_billing_plans_admin,
     set_billing_block,
     update_billing_plan,
@@ -134,6 +139,33 @@ async def unblock_subscription_endpoint(
     return BillingBlockOutcome(pubkey=pubkey, blocked=False, revoked=False)
 
 
+@contextmanager
+def _flash_failure_as_http():
+    """The two ways asking Flash can fail, told apart.
+
+    503 is us not having been able to ask; 502 is our credential being refused —
+    reported rather than retried, since it will fail identically forever. Shared
+    by every operator path that talks to Flash so an outage and a dead API key
+    cannot come back as the same thing on one endpoint and not another.
+    """
+    try:
+        yield
+    except FlashCredentialError as refused:
+        logger.error("Flash refused our credentials on an operator action: %s", refused)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Flash refused our credentials. The API key needs attention; "
+            "retrying will not help.",
+        ) from refused
+    except FlashUnavailable as unreachable:
+        logger.warning("Could not read Flash for an operator action: %s", unreachable)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not reach Flash, so we do not know what it says. "
+            "Nothing was changed.",
+        ) from unreachable
+
+
 async def _read_flash_record(
     request: Request, *, subscription_id: str | None = None, ref: str | None = None
 ) -> dict:
@@ -142,32 +174,16 @@ async def _read_flash_record(
     Read-only by construction: nothing here applies entitlement, so the stored
     row and the scheduling assignment are exactly as they were afterwards.
 
-    The three answers are kept apart because acting on the wrong one dismisses a
-    real customer: 404 is Flash saying there is no such subscription, 503 is us
-    not having been able to ask, and 502 is our credential being refused —
-    reported rather than retried, since it will fail identically forever.
+    404 is Flash saying there is no such subscription, kept apart from the two
+    failures above because acting on the wrong one dismisses a real customer.
     """
     jwt_data: JWTData = request.state.jwt_data
     await validate_flash_record_read_allowed(jwt_data.nostr_pubkey)
 
-    try:
+    with _flash_failure_as_http():
         record = await fetch_subscription_raw(
             subscription_id=subscription_id, ref=ref
         )
-    except FlashCredentialError as refused:
-        logger.error("Flash refused our credentials on an operator lookup: %s", refused)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Flash refused our credentials. The API key needs attention; "
-            "retrying will not help.",
-        ) from refused
-    except FlashUnavailable as unreachable:
-        logger.warning("Could not read Flash for an operator lookup: %s", unreachable)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not reach Flash, so we do not know what it says. "
-            "Nothing was changed.",
-        ) from unreachable
 
     if record is None:
         raise HTTPException(
@@ -196,6 +212,55 @@ async def read_unresolved_flash_record_endpoint(
     # has — hence a second sub-resource rather than one two-parameter endpoint
     # nobody could call with both.
     return await _read_flash_record(request, subscription_id=subscription_id)
+
+
+def _resolution_response(outcome) -> UnresolvedResolutionOutcome:
+    return UnresolvedResolutionOutcome(
+        subscription_id=outcome.subscription_id,
+        resolution=outcome.resolution.value,
+        pubkey=outcome.pubkey,
+        applied=outcome.applied,
+        events_settled=outcome.events_settled,
+    )
+
+
+@router.post(
+    path="/unresolved/{subscription_id}/attribute",
+    response_model=UnresolvedResolutionOutcome,
+    summary="Billing: attach a signup that named nobody to the user who made it",
+)
+async def attribute_unresolved_endpoint(
+    request: Request,
+    subscription_id: str,
+    body: AttributeUnresolvedBody,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    jwt_data: JWTData = request.state.jwt_data
+    with _flash_failure_as_http():
+        outcome = await attribute_unresolved_subscription(
+            db,
+            subscription_id=subscription_id,
+            pubkey=body.pubkey,
+            acting_pubkey=jwt_data.nostr_pubkey,
+        )
+    return _resolution_response(outcome)
+
+
+@router.post(
+    path="/unresolved/{subscription_id}/dismiss",
+    response_model=UnresolvedResolutionOutcome,
+    summary="Billing: write a signup off as not a customer",
+)
+async def dismiss_unresolved_endpoint(
+    request: Request,
+    subscription_id: str,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    jwt_data: JWTData = request.state.jwt_data
+    outcome = await dismiss_unresolved_subscription(
+        db, subscription_id=subscription_id, acting_pubkey=jwt_data.nostr_pubkey
+    )
+    return _resolution_response(outcome)
 
 
 @router.get(

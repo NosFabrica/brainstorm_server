@@ -19,14 +19,20 @@ from app.db_models import BillingPlan, SchedulingSource
 from fastapi import HTTPException, status
 
 from app.repos.billing_plan_repo import (
+    get_billing_plan_by_id_on_db,
     get_billing_plan_on_db,
     insert_billing_plan_on_db,
     select_billing_plans_on_db,
     update_billing_plan_on_db,
 )
-from app.repos.flash_webhook_event_repo import reset_events_awaiting_plan_on_db
+from app.repos.flash_webhook_event_repo import (
+    reset_events_awaiting_plan_on_db,
+    settle_unresolved_events_on_db,
+)
 from app.repos.user_subscription_repo import (
     clear_granted_scheduling_on_db,
+    count_subscriptions_for_plan_on_db,
+    get_user_subscription_by_flash_id_on_db,
     get_user_subscription_on_db,
     lock_user_for_update_on_db,
     update_flash_status_on_db,
@@ -71,6 +77,11 @@ class EntitlementReason(enum.Enum):
     UNKNOWN_SUBSCRIPTION = "unknown_subscription"
     REFERENCE_MISMATCH = "reference_mismatch"
     BUSY = "busy"
+    # Decided by an admin, never returned by `apply_entitlement`: a signup that
+    # named nobody, attached by hand to the person who made it, or written off
+    # as not a customer.
+    ATTRIBUTED = "attributed"
+    DISMISSED = "dismissed"
 
 
 # Outcomes that actually decided something. Anything else leaves the event
@@ -83,6 +94,8 @@ SETTLED_REASONS = frozenset(
         EntitlementReason.HELD,
         EntitlementReason.BLOCKED,
         EntitlementReason.ADMIN_OVERRIDE,
+        EntitlementReason.ATTRIBUTED,
+        EntitlementReason.DISMISSED,
     }
 )
 
@@ -366,6 +379,11 @@ async def create_billing_plan(db: AsyncDBSession, values: dict) -> BillingPlan:
     replayable against a plan that then failed to commit would fail identically.
     """
     await _require_scheduling(db, values["scheduling_id"])
+    await _require_unused_flash_ids(
+        db,
+        flash_service_id=values["flash_service_id"],
+        flash_plan_id=values["flash_plan_id"],
+    )
     plan = await insert_billing_plan_on_db(db, **values)
     waiting = await reset_events_awaiting_plan_on_db(
         db,
@@ -387,15 +405,73 @@ async def create_billing_plan(db: AsyncDBSession, values: dict) -> BillingPlan:
 async def update_billing_plan(
     db: AsyncDBSession, plan_id: int, values: dict
 ) -> BillingPlan:
+    """Correct a mapping in place. Every transcribed value is editable, because
+    Flash exposes no way to read one back and this is the only repair there is.
+
+    The Flash ids are the exception, and only while someone is on the plan.
+    """
     if "scheduling_id" in values:
         await _require_scheduling(db, values["scheduling_id"])
-    plan = await update_billing_plan_on_db(db, plan_id, values)
-    if plan is None:
+    current = await get_billing_plan_by_id_on_db(db, plan_id)
+    if current is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No such plan"
         )
+
+    service_id = values.get("flash_service_id", current.flash_service_id)
+    plan_ref = values.get("flash_plan_id", current.flash_plan_id)
+    reidentified = (service_id, plan_ref) != (
+        current.flash_service_id,
+        current.flash_plan_id,
+    )
+    if reidentified:
+        subscribers = await count_subscriptions_for_plan_on_db(db, plan_id)
+        if subscribers:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"{subscribers} subscriber(s) bought this mapping, so its "
+                    "Flash ids are fixed. Create a new mapping with the right "
+                    "ids and deactivate this one."
+                ),
+            )
+        await _require_unused_flash_ids(
+            db, flash_service_id=service_id, flash_plan_id=plan_ref
+        )
+
+    plan = await update_billing_plan_on_db(db, plan_id, values)
+    waiting = 0
+    if reidentified:
+        # The same reason `create_billing_plan` does this: the events that
+        # failed against the wrong ids have already spent their attempts, so
+        # correcting a typo would otherwise leave a paying subscriber
+        # unentitled with nothing on the surface saying a step remains.
+        waiting = await reset_events_awaiting_plan_on_db(
+            db,
+            flash_service_id=service_id,
+            flash_plan_id=plan_ref,
+            error=EntitlementReason.UNKNOWN_PLAN.value,
+        )
     await db.commit()
+    if waiting:
+        logger.info(
+            "Mapping %s/%s freed %s event(s) to be replayed", service_id, plan_ref, waiting
+        )
     return plan
+
+
+async def _require_unused_flash_ids(
+    db: AsyncDBSession, *, flash_service_id: str, flash_plan_id: str
+) -> None:
+    """The pair is unique, and an admin typing a live pair should read why
+    rather than a constraint violation."""
+    if await get_billing_plan_on_db(
+        db, flash_service_id=flash_service_id, flash_plan_id=flash_plan_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Another plan mapping already uses those Flash ids",
+        )
 
 
 async def _require_scheduling(db: AsyncDBSession, scheduling_id: int) -> None:
@@ -444,6 +520,155 @@ async def set_billing_block(
         "%s billing_blocked set to %s (revoked=%s)", pubkey, blocked, revoked
     )
     return BlockOutcome(found=True, blocked=blocked, revoked=revoked)
+
+
+@dataclass(frozen=True)
+class ResolutionOutcome:
+    subscription_id: str
+    resolution: EntitlementReason
+    pubkey: str | None
+    applied: bool
+    events_settled: int
+
+
+# Why an attribution could not be carried out, in the caller's terms. Every one
+# of these leaves the event unsettled, so the row stays in the report and the
+# admin can act again once the cause is gone.
+_ATTRIBUTION_REFUSALS: dict[EntitlementReason, tuple[int, str]] = {
+    EntitlementReason.UNKNOWN_USER: (
+        status.HTTP_404_NOT_FOUND,
+        "No such user. Check the pubkey.",
+    ),
+    EntitlementReason.UNKNOWN_SUBSCRIPTION: (
+        status.HTTP_404_NOT_FOUND,
+        "Flash has no subscription with this id, so there is nothing to attribute.",
+    ),
+    EntitlementReason.REFERENCE_MISMATCH: (
+        status.HTTP_409_CONFLICT,
+        "Flash says this subscription already belongs to a different user.",
+    ),
+    EntitlementReason.UNKNOWN_PLAN: (
+        status.HTTP_409_CONFLICT,
+        "This subscription is for a plan nothing maps yet. Map the plan first, "
+        "then attribute it.",
+    ),
+    EntitlementReason.BUSY: (
+        status.HTTP_409_CONFLICT,
+        "This user is being reconciled right now. Try again in a moment.",
+    ),
+    EntitlementReason.NO_REFERENCE: (
+        status.HTTP_409_CONFLICT,
+        "No pubkey to attribute this to.",
+    ),
+}
+
+
+async def attribute_unresolved_subscription(
+    db: AsyncDBSession,
+    *,
+    subscription_id: str,
+    pubkey: str,
+    acting_pubkey: str,
+) -> ResolutionOutcome:
+    """Attach a signup that named nobody to the person who made it.
+
+    The grant is `apply_entitlement`, unaltered — the same read of Flash, the
+    same plan lookup, the same truth table a webhook goes through. Hand-building
+    the row here would let an admin's grant disagree with what the next event
+    produces, which is the one thing this must not be able to do.
+
+    The event is settled after the grant, in its own transaction: settling first
+    would write off a signup whose grant then failed, while a grant whose settle
+    fails comes back as the no-op branch below and is settled on the retry.
+    """
+    holder = await get_user_subscription_by_flash_id_on_db(db, subscription_id)
+    if holder is not None and holder.pubkey != pubkey:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This subscription is already attributed to another user.",
+        )
+
+    applied = False
+    if holder is None:
+        # One subscription per user: overwriting the row would strand whatever
+        # they are already paying for, with nothing saying it happened.
+        existing = await get_user_subscription_on_db(db, pubkey)
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This user already holds subscription "
+                f"{existing.flash_subscription_id}. Resolve that one first.",
+            )
+
+        outcome = await apply_entitlement(
+            db, external_ref=pubkey, subscription_id=subscription_id
+        )
+        if outcome.reason not in SETTLED_REASONS:
+            code, detail = _ATTRIBUTION_REFUSALS[outcome.reason]
+            raise HTTPException(status_code=code, detail=detail)
+        applied = outcome.applied
+
+    settled = await settle_unresolved_events_on_db(
+        db,
+        subscription_id=subscription_id,
+        now=utc_now(),
+        resolution=EntitlementReason.ATTRIBUTED.value,
+        resolved_by=acting_pubkey,
+    )
+    await db.commit()
+    logger.info(
+        "%s attributed Flash subscription %s to %s (%s event(s) settled)",
+        acting_pubkey,
+        subscription_id,
+        pubkey,
+        settled,
+    )
+    return ResolutionOutcome(
+        subscription_id=subscription_id,
+        resolution=EntitlementReason.ATTRIBUTED,
+        pubkey=pubkey,
+        applied=applied,
+        events_settled=settled,
+    )
+
+
+async def dismiss_unresolved_subscription(
+    db: AsyncDBSession, *, subscription_id: str, acting_pubkey: str
+) -> ResolutionOutcome:
+    """Write a signup off as not a customer. Grants nothing.
+
+    Flash is not consulted: dismissing says this is nobody's payment to receive,
+    and a subscription Flash no longer recognises is exactly the kind of row
+    that needs writing off. Refunds and cancellation stay with Flash, which took
+    the money.
+    """
+    settled = await settle_unresolved_events_on_db(
+        db,
+        subscription_id=subscription_id,
+        now=utc_now(),
+        resolution=EntitlementReason.DISMISSED.value,
+        resolved_by=acting_pubkey,
+    )
+    if not settled:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No unresolved signup with this subscription id.",
+        )
+    await db.commit()
+    logger.info(
+        "%s dismissed Flash subscription %s as not a customer (%s event(s) settled)",
+        acting_pubkey,
+        subscription_id,
+        settled,
+    )
+    return ResolutionOutcome(
+        subscription_id=subscription_id,
+        resolution=EntitlementReason.DISMISSED,
+        pubkey=None,
+        applied=False,
+        events_settled=settled,
+    )
 
 
 # What a payload unambiguously implies when Flash cannot be asked. Only the

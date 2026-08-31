@@ -125,6 +125,43 @@ async def mark_webhook_event_processed_on_db(
     await execute_db_statement(db, statement, __name__)
 
 
+async def settle_unresolved_events_on_db(
+    db: AsyncDBSession,
+    *,
+    subscription_id: str,
+    now: datetime,
+    resolution: str,
+    resolved_by: str,
+) -> int:
+    """Mark every still-open delivery for one subscription decided by hand.
+
+    Every delivery, not one: a plain-link signup that also renewed has more than
+    one event carrying the same unattributable id, and leaving the siblings open
+    would keep the sweep re-checking a subscription somebody has already
+    resolved.
+
+    Writing `processed_at` is what stops that re-checking, and it is also what
+    makes the row prunable — an unattributed event is never processed, so its
+    payload keeps the subscriber's email for as long as it takes to match them,
+    and ages out normally from the moment it is settled.
+    """
+    statement = (
+        update(FlashWebhookEvent)
+        .where(
+            FlashWebhookEvent.subscription_id == subscription_id,
+            FlashWebhookEvent.processed_at.is_(None),
+        )
+        .values(
+            processed_at=now,
+            process_error=None,
+            resolution=resolution,
+            resolved_by=resolved_by,
+        )
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.rowcount
+
+
 async def record_webhook_event_failure_on_db(
     db: AsyncDBSession, event_id: int, reason: str
 ) -> None:

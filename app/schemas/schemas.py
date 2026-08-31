@@ -437,8 +437,15 @@ class UpdateBillingPlanBody(BaseModel):
 
     Dumped with `exclude_unset`, not `exclude_none` — clearing a period or a
     blurb back to null is a real edit, and `exclude_none` would silently drop it.
+
+    The Flash ids are accepted here but refused by the service once anyone has
+    bought the mapping: a typo in a row nobody ever sold is a one-field fix,
+    while rewriting the ids under a subscriber would retroactively change what
+    they bought.
     """
 
+    flash_service_id: str | None = Field(default=None, min_length=1)
+    flash_plan_id: str | None = Field(default=None, min_length=1)
     scheduling_id: int | None = None
     amount_minor: int | None = Field(default=None, ge=0)
     currency: str | None = None
@@ -450,8 +457,35 @@ class UpdateBillingPlanBody(BaseModel):
     excludes: CopyLines | None = Field(default=None, max_length=_COPY_LINES_MAX)
     is_active: bool | None = None
 
+    @model_validator(mode="after")
+    def _flash_ids_are_never_cleared(self) -> "UpdateBillingPlanBody":
+        # `None` is the "not sent" default for every field here, so an explicit
+        # null on a NOT NULL column has to be caught before `exclude_unset`
+        # turns it into a write.
+        for field in ("flash_service_id", "flash_plan_id"):
+            if field in self.model_fields_set and getattr(self, field) is None:
+                raise ValueError(f"{field} cannot be cleared")
+        return self
+
 
 class BillingBlockOutcome(BaseModel):
     pubkey: str
     blocked: bool
     revoked: bool
+
+
+class AttributeUnresolvedBody(BaseModel):
+    """Who a signup that named nobody actually belongs to."""
+
+    pubkey: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+
+class UnresolvedResolutionOutcome(BaseModel):
+    subscription_id: str
+    # `attributed` or `dismissed` — the same vocabulary the event row now carries.
+    resolution: str
+    pubkey: str | None
+    # Whether a scheduling policy was actually written. False for a dismissal,
+    # and for an attribution to a blocked user or onto a lapsed subscription.
+    applied: bool
+    events_settled: int
