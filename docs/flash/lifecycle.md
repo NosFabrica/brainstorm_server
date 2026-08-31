@@ -142,7 +142,7 @@ none of the above can be the only path. Every cycle, in this order:
 | `replay_unprocessed_events` | An event we recorded and acknowledged but died before processing. Recorded before the 200 precisely so this is possible |
 | `revoke_lapsed_entitlements` | A paid period that ran out and whose `expired` never arrived. Pure DB, no Flash call |
 | `reconcile_subscriptions` | Everything only Flash can settle: `past_due`, `pending`, still-`active` past its period end, renewing within the hour, or simply not read in a while |
-| `prune_webhook_payloads` | Personal data in stored payloads, past the retention window |
+| `prune_webhook_payloads` | Personal data in stored payloads, past the retention window — see [Data retention](#data-retention) |
 
 Two kinds of row leave `reconcile_subscriptions` for good, because re-reading
 them can only return the answer we already have: a checkout Flash discarded
@@ -165,6 +165,44 @@ is asked about by nothing**. Someone who paid, whose webhook was lost, and who
 never returned to the redirect page is invisible permanently — and Flash offers
 no endpoint that lists subscriptions — it answers only `?ref=` or
 `?subscriptionId=` — so nothing can enumerate them either.
+
+## Data retention
+
+Every verified delivery is stored whole, body and all, in `flash_webhook_event`.
+Flash's payloads carry the subscriber's `email`, `name`, `about` and
+`picture_url` alongside the accounting fields — amounts, currency, invoice ids,
+dates, the `externalRef` pubkey.
+
+`prune_webhook_payloads` runs each cycle and **deletes those four keys** from
+`payload.data`. It does not null the payload. Nulling would take the amounts
+with it, and the amounts are what the accounting export reads — history would
+quietly empty itself at the retention boundary. So what survives a prune is
+everything except those four keys: the row, its dedupe key, the event type, the
+timestamps, the attempt counters, and the whole accounting side of the body,
+all of them indefinitely. Deleting rather than blanking also makes the job
+idempotent — a key present but null still matches "has personal data" and would
+be rewritten every cycle forever.
+
+**Unprocessed events are exempt.** The prune only touches rows whose
+`processed_at` is set. An event that named nobody we could match is still
+waiting to be applied, and replay reads its payload to find the subscriber —
+redacting it would make it permanently unreplayable. That exemption is what
+keeps someone who paid but could not be attributed contactable: their email is
+in that unresolved row, and it is the only place we have it.
+
+`BILLING_PAYLOAD_RETENTION_DAYS` is **180**, and the number is the card dispute
+window. A chargeback commonly arrives up to 120 days after the charge, so a
+90-day window redacts the payer's name and email before a dispute can even
+land, leaving us unable to answer it. 180 clears that with margin while staying
+bounded: the outer edge for some dispute reasons is around 540 days, which is
+close enough to "keep forever" that it stops being a retention policy at all.
+Lightning payments are irreversible, so none of this protects that rail — the
+window exists solely for the card one.
+
+Be honest about the trade: this is a privacy cost, not a free win. It holds real
+customers' email and name for twice as long as before. Changing the number is a
+decision about which of those two risks you would rather carry, and the dispute
+window is the thing to check before moving it.
 
 ## What can never happen
 

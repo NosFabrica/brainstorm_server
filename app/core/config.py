@@ -86,8 +86,13 @@ class Settings(BaseSettings):
     billing_replay_batch: int = Field(default=25)
     # How long a claim is honoured before the event is treated as abandoned.
     billing_replay_stale_after_seconds: int = Field(default=300)
-    # Personal data (email, name) is dropped from stored events after this.
-    billing_payload_retention_days: int = Field(default=90)
+    # Personal data (email, name, about, picture) is dropped from stored events
+    # after this. Sized by the card dispute window: a chargeback commonly lands
+    # up to 120 days after the charge, so anything under that redacts the payer
+    # before we could answer one. Lightning is irreversible and needs none of it.
+    # Longer is not free — it holds real people's email and name for longer.
+    # See docs/flash/lifecycle.md, "Data retention".
+    billing_payload_retention_days: int = Field(default=180)
     # Replay attempts before an event is left for a human rather than retried.
     billing_replay_max_attempts: int = Field(default=5)
     # Who may see billing. Empty = fall back to admin_whitelisted_pubkeys.
