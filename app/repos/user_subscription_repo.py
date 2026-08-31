@@ -69,6 +69,29 @@ class AbandonRule:
         )
 
 
+def settled_condition():
+    """A subscription that has run its course, with nothing left to ask about.
+
+    `expired` is the one status Flash's state machine has no exit from: a
+    subscriber who comes back gets a new subscription id, which arrives as an
+    `activated` webhook and upserts the row outright. So re-reading these can
+    only ever return `expired` again — once per sweep, per churned subscriber,
+    for as long as the row exists.
+
+    Narrow on three counts. Only `expired`, never `paused` or `canceled`:
+    a pause is reversible by definition and a cancellation is still on its way
+    to expiring, so both are rows where asking Flash still does work. Only where
+    nothing is granted, so a tier cannot be left standing on a dead
+    subscription. And only with no outstanding error, because a row we stop
+    reading can never clear one — it would sit in `failing_syncs` for good.
+    """
+    return and_(
+        UserSubscription.flash_status == "expired",
+        UserSubscription.granted_scheduling_id.is_(None),
+        UserSubscription.last_sync_error.is_(None),
+    )
+
+
 async def get_user_subscription_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> UserSubscription | None:
@@ -220,6 +243,11 @@ async def select_reconcile_candidates_on_db(
     old the row is. A subscriber can sit legitimately pending for weeks, so row
     age would write them off on their first blip.
     `select_failing_syncs_on_db` keeps them visible after we stop asking.
+
+    Minus one more that has already settled: an expired subscription holding no
+    policy. The stale clause below would otherwise re-read every subscriber who
+    ever churned, once per cycle, forever — a cost that only grows, for an
+    answer that cannot change. See `settled_condition`.
     """
     statement = (
         select(UserSubscription)
@@ -241,6 +269,7 @@ async def select_reconcile_candidates_on_db(
                 UserSubscription.last_synced_at <= now - stale_after,
             ),
             not_(abandoned.condition(now)),
+            not_(settled_condition()),
         )
         .order_by(UserSubscription.last_synced_at.asc().nullsfirst())
         .limit(limit)
@@ -322,7 +351,9 @@ def build_billing_subscriptions_stmt() -> Select:
         select(
             UserSubscription.pubkey,
             UserSubscription.flash_status,
+            UserSubscription.current_period_start,
             UserSubscription.current_period_end,
+            UserSubscription.next_billing_date,
             UserSubscription.last_synced_at,
             UserSubscription.last_sync_error,
             UserSubscription.flash_subscription_id,
@@ -390,9 +421,10 @@ async def select_stale_syncs_on_db(
 ) -> list:
     """Subscribers we have not read from Flash recently enough to trust.
 
-    Abandoned checkouts are excluded because *we* stopped reading them: their
-    `last_synced_at` is frozen by design, so they would otherwise every one of
-    them age into this section within a day and never leave.
+    Abandoned checkouts and settled subscriptions are both excluded because
+    *we* stopped reading them: their `last_synced_at` is frozen by design, so
+    they would otherwise every one of them age into this section within a day
+    and never leave.
     """
     statement = select(
         UserSubscription.pubkey,
@@ -404,6 +436,7 @@ async def select_stale_syncs_on_db(
             UserSubscription.last_synced_at <= older_than,
         ),
         not_(abandoned.condition(now)),
+        not_(settled_condition()),
     ).limit(limit)
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())

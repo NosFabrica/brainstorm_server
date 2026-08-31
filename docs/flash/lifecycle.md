@@ -144,6 +144,16 @@ none of the above can be the only path. Every cycle, in this order:
 | `reconcile_subscriptions` | Everything only Flash can settle: `past_due`, `pending`, still-`active` past its period end, renewing within the hour, or simply not read in a while |
 | `prune_webhook_payloads` | Personal data in stored payloads, past the retention window |
 
+Two kinds of row leave `reconcile_subscriptions` for good, because re-reading
+them can only return the answer we already have: a checkout Flash discarded
+(see [`pending-checkouts.md`](pending-checkouts.md)) and an **expired
+subscription holding no policy**. Without the second, the sweep's "not read in a
+while" clause re-reads every subscriber who ever churned, once per cycle,
+forever — a cost that grows with the life of the deployment. `paused` and
+`canceled` rows keep being read: a pause is reversible and a cancellation is
+still on its way to expiring. Anyone who comes back arrives as an `activated`
+webhook, which upserts the row outright rather than going through the sweep.
+
 The lapse sweep deliberately **refuses to judge** a `past_due` row, or an
 `active` one past its period end. Locally those are indistinguishable from
 "renewal succeeded and we missed the event", and revoking on that ambiguity would

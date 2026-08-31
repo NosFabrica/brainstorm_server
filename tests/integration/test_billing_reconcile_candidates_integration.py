@@ -48,6 +48,16 @@ OTHER_ERROR = "a" * 63 + "4"
 CLOCK = "a" * 63 + "5"
 PROBES = (ABANDONED, STILL_YOUNG, GRANTED, OTHER_ERROR, CLOCK)
 
+# Kept apart from PROBES: those are all `pending`, which is what lets the
+# cross-check below read "absent from the batch" as "abandoned". These are not.
+SETTLED = "b" * 63 + "1"
+SETTLED_GRANTED = "b" * 63 + "2"
+SETTLED_ERRORED = "b" * 63 + "3"
+PAUSED = "b" * 63 + "4"
+CANCELED = "b" * 63 + "5"
+SETTLED_PROBES = (SETTLED, SETTLED_GRANTED, SETTLED_ERRORED, PAUSED, CANCELED)
+ALL_PROBES = PROBES + SETTLED_PROBES
+
 
 async def _seed(
     db, pubkey, *, granted=None, error=None, since=None, status="pending", synced=None
@@ -91,7 +101,7 @@ async def _row(db, pubkey):
 async def _cleanup(db):
     await db.execute(
         text("DELETE FROM user_subscription WHERE pubkey = ANY(:keys)"),
-        {"keys": list(PROBES)},
+        {"keys": list(ALL_PROBES)},
     )
     await db.commit()
 
@@ -246,6 +256,82 @@ def test_an_abandoned_checkout_leaves_the_alarming_sections_for_its_own():
                     )
                 }
                 assert counted == {ABANDONED}, "the abandoned section disagrees with the sweep"
+
+                await _cleanup(db)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_a_settled_subscription_stops_being_read_and_the_unsettled_stay():
+    """Churn is unbounded and expired is terminal, so re-reading it is pure cost.
+
+    Every probe here is stale enough to be picked up by the sweep's
+    last-read clause, which is the one that would otherwise hold every dead row
+    forever — so absence from the batch means the settled rule fired, not that
+    the row failed to qualify in the first place.
+    """
+    async def _run():
+        try:
+            async with db_session() as db:
+                await _cleanup(db)
+
+                # Ran its course, holds nothing, Flash answered cleanly.
+                await _seed(
+                    db, SETTLED, status="expired", synced=READ_LAST_MONTH,
+                )
+                # Expired but still holding a policy: a tier standing on a dead
+                # subscription is the anomaly the sweep exists to catch.
+                await _seed(
+                    db, SETTLED_GRANTED, status="expired", granted=4,
+                    synced=READ_LAST_MONTH,
+                )
+                # Dropping this one would strand the error: a row we no longer
+                # read can never clear it, so it would sit in failing_syncs for
+                # good.
+                await _seed(
+                    db, SETTLED_ERRORED, status="expired", error="vault down",
+                    since=LONG_AGO, synced=READ_LAST_MONTH,
+                )
+                # A pause is reversible and a cancellation is still on its way
+                # to expiring. Asking Flash about either still does work.
+                await _seed(db, PAUSED, status="paused", synced=READ_LAST_MONTH)
+                await _seed(db, CANCELED, status="canceled", synced=READ_LAST_MONTH)
+                await db.commit()
+
+                selected = {
+                    row.pubkey
+                    for row in await select_reconcile_candidates_on_db(
+                        db,
+                        now=NOW,
+                        stale_after=STALE_AFTER,
+                        limit=500,
+                        abandoned=ABANDONED_RULE,
+                    )
+                }
+
+                assert SETTLED not in selected, "still re-reading a settled subscription"
+                assert SETTLED_GRANTED in selected, "stopped watching a live tier"
+                assert SETTLED_ERRORED in selected, "settled a row with an open error"
+                assert PAUSED in selected, "a pause is reversible"
+                assert CANCELED in selected, "a cancellation has not expired yet"
+
+                # Same freeze as the abandoned checkouts: we stopped reading it,
+                # so its read clock never moves again and it would age in here
+                # within a day and never leave.
+                stale = {
+                    row.pubkey
+                    for row in await select_stale_syncs_on_db(
+                        db,
+                        older_than=NOW - timedelta(hours=24),
+                        limit=500,
+                        now=NOW,
+                        abandoned=ABANDONED_RULE,
+                    )
+                }
+                assert SETTLED not in stale, "settled subscription leaked into stale syncs"
+                assert PAUSED in stale, "a row we still read must stay visible"
 
                 await _cleanup(db)
         finally:
