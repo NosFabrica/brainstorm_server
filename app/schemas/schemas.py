@@ -238,7 +238,12 @@ class BillingSubscriptionItem(BaseModel):
     # Flash's own id, so an operator can deep-link into the vault rather than
     # reading our copy of what it says.
     flash_subscription_id: str | None = None
+    # The billing dates as Flash reports them. next_billing_date is what
+    # answers "when is this person charged again" — without it an operator
+    # cannot tell a renewal that is due from one that has silently stopped.
+    current_period_start: datetime | None = None
     current_period_end: datetime | None = None
+    next_billing_date: datetime | None = None
     last_synced_at: datetime | None = None
     last_sync_error: str | None = None
     granted_scheduling_id: int | None = None
