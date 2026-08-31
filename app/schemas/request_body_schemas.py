@@ -35,6 +35,9 @@ class CreateSchedulingBody(BaseModel):
     priority: int = 0
     enabled: bool = True
     is_default: bool = False
+    # Whether this policy may appear on the public pricing page. `name` is what
+    # the picker shows, so this form is where a tier is defined outright.
+    is_public: bool = False
     manual_quota_limit: int = Field(default=20, ge=1)
     manual_quota_window_seconds: int = Field(default=604800, gt=0)
 
@@ -51,5 +54,6 @@ class UpdateSchedulingBody(BaseModel):
     priority: int | None = None
     enabled: bool | None = None
     is_default: bool | None = None
+    is_public: bool | None = None
     manual_quota_limit: int | None = Field(default=None, ge=1)
     manual_quota_window_seconds: int | None = Field(default=None, gt=0)

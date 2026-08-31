@@ -55,8 +55,9 @@ flowchart LR
 
 Two things that diagram is trying to make obvious. **Entitlement is the write to
 `brainstorm_nsec.scheduling_id`** — `user_subscription` only records why, and the
-UI's `tier` is read back from the scheduling assignment rather than the billing
+UI reads the *policy* back from the scheduling assignment rather than the billing
 row, so it structurally cannot claim something the scheduler is not delivering.
+That policy **is** the tier: there is no tier string on any column or response.
 And **every arrow into entitlement is followed by a read of Flash's API**: an
 event says something changed, the API says what it now is.
 
@@ -79,7 +80,7 @@ sequenceDiagram
     S->>F: GET /subscriptions?ref=<pubkey>
     F-->>S: the subscription, verbatim
     S->>S: decide, grant, upsert
-    S-->>UI: status + tier
+    S-->>UI: status + policy + the plan they bought
 
     F->>S: POST /webhooks/flash (subscription.activated)
     S->>S: verify HMAC, record, 200

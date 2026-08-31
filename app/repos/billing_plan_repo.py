@@ -30,8 +30,14 @@ async def get_billing_plan_on_db(
 async def select_billing_plans_on_db(
     db: AsyncDBSession, *, only_active: bool = False
 ) -> list[BillingPlan]:
-    """All plan mappings, oldest first. `only_active` narrows to sellable ones."""
-    statement = select(BillingPlan).order_by(BillingPlan.id.asc())
+    """All plan mappings in display order. `only_active` narrows to sellable ones.
+
+    `sort_order` then `id`: the picker renders the order it is given, and the id
+    tiebreak means a fresh install needs no seeding.
+    """
+    statement = select(BillingPlan).order_by(
+        BillingPlan.sort_order.asc(), BillingPlan.id.asc()
+    )
     if only_active:
         statement = statement.where(BillingPlan.is_active.is_(True))
     result = await execute_db_statement(db, statement, __name__)
@@ -46,46 +52,35 @@ async def get_billing_plan_by_id_on_db(
     return result.scalar_one_or_none()
 
 
-async def get_plan_by_scheduling_id_on_db(
-    db: AsyncDBSession, scheduling_id: int
-) -> BillingPlan | None:
-    """The plan granting a policy — how a scheduling assignment maps back to a
-    subscription tier name.
-
-    Deliberately NOT filtered on `is_active`: that flag hides a plan from the
-    pricing page, and a subscriber on a hidden or retired plan is still
-    scheduled on what it granted — reporting them "free" would be a lie.
-    Active wins only as a tiebreak when several plans grant one policy.
-    """
-    statement = (
-        select(BillingPlan)
-        .where(BillingPlan.scheduling_id == scheduling_id)
-        .order_by(BillingPlan.is_active.desc(), BillingPlan.id.asc())
-        .limit(1)
-    )
-    result = await execute_db_statement(db, statement, __name__)
-    return result.scalar_one_or_none()
-
-
 async def insert_billing_plan_on_db(
     db: AsyncDBSession,
     *,
     flash_service_id: str,
     flash_plan_id: str,
-    subscription_tier: str,
     scheduling_id: int,
     amount_minor: int,
     currency: str,
     is_active: bool,
+    billing_period_unit: str | None = None,
+    billing_period_count: int | None = None,
+    sort_order: int = 0,
+    blurb: str | None = None,
+    includes: list[str] | None = None,
+    excludes: list[str] | None = None,
 ) -> BillingPlan:
     plan = BillingPlan(
         flash_service_id=flash_service_id,
         flash_plan_id=flash_plan_id,
-        subscription_tier=subscription_tier,
         scheduling_id=scheduling_id,
         amount_minor=amount_minor,
         currency=currency,
         is_active=is_active,
+        billing_period_unit=billing_period_unit,
+        billing_period_count=billing_period_count,
+        sort_order=sort_order,
+        blurb=blurb,
+        includes=includes,
+        excludes=excludes,
     )
     db.add(plan)
     await db.flush()

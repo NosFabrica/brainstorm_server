@@ -15,11 +15,11 @@ from app.routers.admin.router import verify_admin_access
 
 
 def _policy(id=1, name="Weekly", interval=604800, priority=0, enabled=True,
-            is_default=True, limit=20, window=604800):
+            is_default=True, limit=20, window=604800, is_public=False):
     return SimpleNamespace(
         id=id, name=name, schedule_interval_seconds=interval, priority=priority,
         enabled=enabled, is_default=is_default, manual_quota_limit=limit,
-        manual_quota_window_seconds=window,
+        manual_quota_window_seconds=window, is_public=is_public,
     )
 
 
@@ -63,6 +63,43 @@ def test_create_scheduling_policy(admin_client, monkeypatch):
     assert response.status_code == 201
     assert response.json()["name"] == "Daily"
     assert create.await_count == 1
+
+
+def test_a_policy_is_private_unless_an_operator_puts_it_on_sale(
+    admin_client, monkeypatch
+):
+    """This form is where a tier is now defined — name, cadence, quota, queue
+    priority and whether it is on sale. Off by default so an internal policy
+    cannot reach a public pricing page merely by existing."""
+    create = AsyncMock(return_value=_policy(id=5, name="Internal"))
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.create_scheduling_on_db", create
+    )
+
+    response = admin_client.post(
+        "/admin/scheduling",
+        json={"name": "Internal", "schedule_interval_seconds": 86400},
+    )
+
+    assert response.status_code == 201
+    assert create.await_args.kwargs["is_public"] is False
+    assert response.json()["is_public"] is False
+
+
+def test_a_policy_can_be_withdrawn_from_the_pricing_page(admin_client, monkeypatch):
+    update = AsyncMock(return_value=_policy(id=2, name="Paid", is_public=False))
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.scheduling_exists_on_db",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.update_scheduling_on_db", update
+    )
+
+    response = admin_client.patch("/admin/scheduling/2", json={"is_public": False})
+
+    assert response.status_code == 200
+    assert update.await_args.kwargs == {"is_public": False}
 
 
 def test_create_as_default_unsets_previous_default(admin_client, monkeypatch):

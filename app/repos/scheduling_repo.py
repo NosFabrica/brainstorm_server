@@ -33,6 +33,21 @@ async def get_default_scheduling_on_db(db: AsyncDBSession) -> Scheduling | None:
     return result.scalar_one_or_none()
 
 
+async def select_public_scheduling_on_db(db: AsyncDBSession) -> list[Scheduling]:
+    """The policies that may reach the public pricing page, default first.
+
+    Default first because it is the one option nobody can buy, so it has a
+    placement rule rather than a sort field; plans carry their own `sort_order`.
+    """
+    statement = (
+        select(Scheduling)
+        .where(Scheduling.is_public.is_(True))
+        .order_by(Scheduling.is_default.desc(), Scheduling.id.asc())
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return list(result.scalars().all())
+
+
 async def scheduling_exists_on_db(db: AsyncDBSession, scheduling_id: int) -> bool:
     statement = select(Scheduling.id).where(Scheduling.id == scheduling_id)
     result = await execute_db_statement(db, statement, __name__)
@@ -48,6 +63,7 @@ async def create_scheduling_on_db(
     is_default: bool,
     manual_quota_limit: int,
     manual_quota_window_seconds: int,
+    is_public: bool = False,
 ) -> Scheduling:
     row = Scheduling(
         name=name,
@@ -57,6 +73,7 @@ async def create_scheduling_on_db(
         is_default=is_default,
         manual_quota_limit=manual_quota_limit,
         manual_quota_window_seconds=manual_quota_window_seconds,
+        is_public=is_public,
     )
     db.add(row)
     await db.flush()

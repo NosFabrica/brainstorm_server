@@ -175,6 +175,7 @@ def test_a_divergence_report_names_each_disagreement(billing_client, monkeypatch
             unrecognised_statuses=[],
             exhausted_events=[],
             abandoned_checkouts=[],
+            retired_plan_subscribers=[],
         )
     )
     monkeypatch.setattr(
@@ -187,6 +188,142 @@ def test_a_divergence_report_names_each_disagreement(billing_client, monkeypatch
     body = response.json()
     assert body["policy_mismatch"]["count"] == 1
     assert body["stale_syncs"]["count"] == 0
+
+
+def test_subscribers_on_a_retired_plan_are_visible_and_reachable_in_flash(
+    billing_client, monkeypatch
+):
+    """Withdrawing a plan from sale leaves people on it. Nothing else on this
+    surface would say they exist, and ending it is Flash's to do — so the row
+    carries the subscription id the admin view links out on."""
+    monkeypatch.setattr(
+        "app.services.billing_visibility_service.build_divergence_report",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                policy_mismatch=[],
+                admin_overrides=[],
+                stale_syncs=[],
+                failing_syncs=[],
+                unresolved_events=[],
+                unrecognised_statuses=[],
+                exhausted_events=[],
+                abandoned_checkouts=[],
+                retired_plan_subscribers=[
+                    SimpleNamespace(
+                        _mapping={"pubkey": PUBKEY, "flash_subscription_id": "7d3b"}
+                    )
+                ],
+            )
+        ),
+    )
+
+    body = billing_client.get("/admin/billing/divergence").json()
+
+    section = body["retired_plan_subscribers"]
+    assert section["count"] == 1
+    assert section["rows"][0]["flash_subscription_id"] == "7d3b"
+
+
+def test_nothing_here_offers_to_cancel_a_subscription():
+    """There is no Flash cancel API. A cancel of ours would revoke the tier
+    while Flash kept charging — worse than doing nothing — so the affordance is
+    a link into Flash, never a route."""
+    from app.routers.admin.billing.router import router
+
+    assert not [r for r in router.routes if "cancel" in r.path]
+
+
+# ---------------------------------------------------------------------------
+# Editing a plan mapping — the only repair mechanism there is
+# ---------------------------------------------------------------------------
+def _plan_row(**overrides):
+    return SimpleNamespace(
+        **{
+            "id": 1,
+            "flash_service_id": "9c1e",
+            "flash_plan_id": "4f2a",
+            "scheduling_id": 7,
+            "amount_minor": 200,
+            "currency": "USD",
+            "billing_period_unit": "month",
+            "billing_period_count": 1,
+            "sort_order": 0,
+            "blurb": None,
+            "includes": None,
+            "excludes": None,
+            "is_active": True,
+            "created_at": NOW,
+            "updated_at": NOW,
+            **overrides,
+        }
+    )
+
+
+def test_a_plan_mapping_carries_every_transcribed_value(billing_client, monkeypatch):
+    """Flash has no plans endpoint, so nothing can verify price, currency or
+    period — which is exactly why all of them have to be visible and editable."""
+    monkeypatch.setattr(
+        "app.routers.admin.billing.router.list_billing_plans_admin",
+        AsyncMock(return_value=[_plan_row(sort_order=2, blurb="Best value")]),
+    )
+
+    row = billing_client.get("/admin/billing/plans").json()[0]
+
+    assert row["billing_period_unit"] == "month"
+    assert row["billing_period_count"] == 1
+    assert row["sort_order"] == 2
+    assert row["blurb"] == "Best value"
+    assert "subscription_tier" not in row
+
+
+def test_a_patch_writes_only_the_fields_it_was_sent(billing_client, monkeypatch):
+    """A PATCH writes every field it includes, and an untouched form is how a
+    staging policy ended up named "string" with a zero cadence."""
+    update = AsyncMock(return_value=_plan_row(sort_order=5))
+    monkeypatch.setattr(
+        "app.routers.admin.billing.router.update_billing_plan", update
+    )
+
+    billing_client.patch("/admin/billing/plans/1", json={"sort_order": 5})
+
+    assert update.await_args.args[2] == {"sort_order": 5}
+
+
+def test_a_period_can_be_cleared_back_to_null(billing_client, monkeypatch):
+    """`exclude_none` would drop this silently, leaving a wrong period on a row
+    an admin believes they just corrected."""
+    update = AsyncMock(return_value=_plan_row(billing_period_unit=None))
+    monkeypatch.setattr(
+        "app.routers.admin.billing.router.update_billing_plan", update
+    )
+
+    billing_client.patch(
+        "/admin/billing/plans/1",
+        json={"billing_period_unit": None, "billing_period_count": None},
+    )
+
+    assert update.await_args.args[2] == {
+        "billing_period_unit": None,
+        "billing_period_count": None,
+    }
+
+
+def test_a_billing_period_count_without_a_unit_is_refused(billing_client):
+    """Unit and count are formatted as a pair; a count alone renders as nothing
+    and would read as "every 2"."""
+    response = billing_client.post(
+        "/admin/billing/plans",
+        json={
+            "flash_service_id": "9c1e",
+            "flash_plan_id": "4f2a",
+            "scheduling_id": 7,
+            "amount_minor": 200,
+            "currency": "USD",
+            "billing_period_count": 2,
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_an_operator_can_force_one_subscriber_to_resynchronise(
@@ -253,6 +390,7 @@ def test_billing_visibility_survives_general_administration_being_off(
                 unrecognised_statuses=[],
                 exhausted_events=[],
                 abandoned_checkouts=[],
+                retired_plan_subscribers=[],
             )
         ),
     )
@@ -270,3 +408,159 @@ def test_the_billing_surface_is_absent_where_payments_are_not_configured(monkeyp
     include_billing_routers(bare)
 
     assert bare.routes == []
+
+
+# ---------------------------------------------------------------------------
+# Flash's own record, at the source
+# ---------------------------------------------------------------------------
+class _FakeRedis:
+    """Enough of redis for the fixed-window limiter."""
+
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = {}
+
+    async def incr(self, key: str) -> int:
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return self.counts[key]
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        return True
+
+
+@pytest.fixture
+def flash_record_client(billing_client, monkeypatch):
+    """The real limiter, over a fake redis — so the wiring is under test, not stubbed."""
+    fake = _FakeRedis()
+    monkeypatch.setattr(
+        "app.utils.rate_limiting.rate_limiting.get_redis_client", lambda: fake
+    )
+    return billing_client
+
+
+RAW_BODY = {
+    "livemode": True,
+    "subscriptions": [
+        {"id": "old", "status": "expired", "ref": PUBKEY},
+        {"id": "7d3b", "status": "active", "ref": PUBKEY},
+    ],
+}
+
+
+def _raw_returns(monkeypatch, value=None, raises=None):
+    mock = AsyncMock(return_value=value, side_effect=raises)
+    monkeypatch.setattr(
+        "app.routers.admin.billing.router.fetch_subscription_raw", mock
+    )
+    return mock
+
+
+def test_a_subscriber_is_looked_up_by_our_own_reference(
+    flash_record_client, monkeypatch
+):
+    raw = _raw_returns(monkeypatch, RAW_BODY)
+
+    response = flash_record_client.get(f"/admin/billing/subscriptions/{PUBKEY}/flash")
+
+    assert response.status_code == 200
+    assert raw.await_args.kwargs == {"subscription_id": None, "ref": PUBKEY}
+
+
+def test_an_unresolved_signup_is_looked_up_by_the_only_handle_it_has(
+    flash_record_client, monkeypatch
+):
+    """It has no pubkey, so its Flash id is the sole way to inspect it."""
+    raw = _raw_returns(monkeypatch, RAW_BODY)
+
+    response = flash_record_client.get("/admin/billing/unresolved/7d3b/flash")
+
+    assert response.status_code == 200
+    assert raw.await_args.kwargs == {"subscription_id": "7d3b", "ref": None}
+
+
+def test_flashs_body_arrives_unmodified_including_the_rows_we_would_discard(
+    flash_record_client, monkeypatch
+):
+    """The disambiguation our normal lookup performs is the thing being checked."""
+    _raw_returns(monkeypatch, RAW_BODY)
+
+    body = flash_record_client.get(
+        f"/admin/billing/subscriptions/{PUBKEY}/flash"
+    ).json()
+
+    assert body == RAW_BODY
+
+
+def test_reading_flashs_record_applies_nothing(flash_record_client, monkeypatch):
+    _raw_returns(monkeypatch, RAW_BODY)
+    applied = AsyncMock()
+    monkeypatch.setattr("app.routers.admin.billing.router.apply_entitlement", applied)
+
+    flash_record_client.get(f"/admin/billing/subscriptions/{PUBKEY}/flash")
+
+    applied.assert_not_awaited()
+
+
+def test_no_such_subscription_and_could_not_ask_are_told_apart(
+    flash_record_client, monkeypatch
+):
+    """Acting on the wrong one dismisses a real customer."""
+    from app.core.flash import FlashUnavailable
+
+    _raw_returns(monkeypatch, None)
+    absent = flash_record_client.get(f"/admin/billing/subscriptions/{PUBKEY}/flash")
+
+    _raw_returns(monkeypatch, raises=FlashUnavailable("socket timed out"))
+    unreachable = flash_record_client.get(
+        f"/admin/billing/subscriptions/{PUBKEY}/flash"
+    )
+
+    assert absent.status_code == 404
+    assert unreachable.status_code == 503
+    # The frontend renders `detail` as a string, never a dict.
+    assert isinstance(absent.json()["detail"], str)
+    assert isinstance(unreachable.json()["detail"], str)
+
+
+def test_a_refused_credential_is_reported_rather_than_retried(
+    flash_record_client, monkeypatch
+):
+    from app.core.config import settings
+    from app.core.flash import FlashCredentialError
+
+    raw = _raw_returns(
+        monkeypatch, raises=FlashCredentialError("Flash refused our credentials (401)")
+    )
+
+    response = flash_record_client.get(
+        f"/admin/billing/subscriptions/{PUBKEY}/flash"
+    )
+
+    assert response.status_code == 502
+    assert response.status_code != 503  # not mistaken for a passing outage
+    assert raw.await_count == 1
+    assert settings.flash_api_key not in response.text
+
+
+def test_the_control_cannot_be_turned_into_a_quota_incident(
+    flash_record_client, monkeypatch
+):
+    from app.utils.rate_limiting import rate_limiting
+
+    raw = _raw_returns(monkeypatch, RAW_BODY)
+    url = f"/admin/billing/subscriptions/{PUBKEY}/flash"
+
+    for _ in range(rate_limiting.FLASH_RECORD_RATE_LIMIT):
+        assert flash_record_client.get(url).status_code == 200
+
+    assert flash_record_client.get(url).status_code == 429
+    assert raw.await_count == rate_limiting.FLASH_RECORD_RATE_LIMIT
+
+
+def test_flashs_record_is_not_readable_without_billing_access(client, monkeypatch):
+    monkeypatch.setattr(settings, "billing_admin_whitelisted_pubkeys", OTHER)
+    wl.init_billing_admin_whitelist()
+
+    assert (
+        client.get(f"/admin/billing/subscriptions/{PUBKEY}/flash").status_code == 403
+    )
+    assert client.get("/admin/billing/unresolved/7d3b/flash").status_code == 403

@@ -96,15 +96,25 @@ Append-only audit log. Same 11 params plus `change_type`, `changed_by`,
 
 ### `BillingPlan` — `billing_plan`
 
-What a Flash plan grants. Data rather than config: dev and production are separate
-Flash vaults with different UUIDs, so the mapping travels with the database.
+A **way to buy a policy**. Data rather than config: dev and production are separate
+Flash vaults with different UUIDs, so the mapping travels with the database. There
+is **no tier column** — the policy a subscriber holds *is* their tier, and several
+plans may sell one policy (monthly beside yearly, a replacement beside the row it
+retires) with all of them granting identically.
+
+Everything except the ids is a **hand transcription of the Flash dashboard**: Flash
+has no plans endpoint, so nothing can verify these and correcting them by hand is
+the only repair mechanism there is.
 
 | Column | Type | Notes |
 |---|---|---|
 | `flash_service_id` + `flash_plan_id` | str, **UNIQUE together** | Flash's own identifiers; how an inbound subscription is matched to a plan |
-| `subscription_tier` | str | `free \| priority`. **Named in full on purpose** — `tier` alone already means the GrapeRank influence bands (see `CONTEXT.md`) |
-| `scheduling_id` | int FK → `scheduling.id` | the policy this plan grants — the *rule* |
+| `scheduling_id` | int FK → `scheduling.id` | the policy this plan grants — the *rule*, and the tier |
 | `amount_minor` | int | minor units, as Flash sends them: `200` = $2.00. Never floats |
+| `billing_period_unit` / `billing_period_count` | str / int, both nullable | how often Flash charges, as a unit and a count rather than a matched string — the client formats "every 2 weeks" from the pair and an unrecognised unit still renders. `"once"` with a null count is reserved for Flash's coming one-off type; it sells but grants nothing automatically |
+| `sort_order` | int | display order in the picker, ties broken by `id`. **Not `scheduling.priority`** — that is the scheduler's queue lane, and it cannot order two plans inside one policy |
+| `blurb` / `includes` / `excludes` | str / JSONB / JSONB, nullable | admin-editable plan copy, **plain text only**; markup stored here would be rendered on a public pricing page |
+| `is_active` | bool | **sellable, and nothing else**. Never filtered in the entitlement lookup — doing so made retiring a plan freeze and un-revoke everyone on it |
 
 ### `UserSubscription` — `user_subscription`
 
@@ -131,7 +141,7 @@ retrying after a few attempts and never replays.
 | `event_timestamp` | DateTime | when the event *happened*, from Flash's body — the ordering signal |
 | `delivery_timestamp` | int | when Flash *attempted delivery*, from the signature header. Orders nothing: a retry of an old event carries a newer value |
 | `processing_started_at` / `processed_at` / `attempts` | — | claimed/finished markers. The webhook path sets `processing_started_at` **at insert** — it is the worker — or the sweep would treat every in-flight delivery as abandoned |
-| `payload` | JSONB, **nullable** | nulled after `BILLING_PAYLOAD_RETENTION_DAYS`, and only once `processed_at` is set. The row survives, so the dedupe key and audit trail outlive the personal data; pruning one still waiting to be applied would silently make it unreplayable |
+| `payload` | JSONB, **nullable** | the four personal keys are deleted from it after `BILLING_PAYLOAD_RETENTION_DAYS`, and only once `processed_at` is set. The payload itself is never nulled — the amounts the accounting export reads live in it. Pruning one still waiting to be applied would silently make it unreplayable. See [`docs/flash/lifecycle.md`](../../docs/flash/lifecycle.md) |
 
 ## Adding a new table
 

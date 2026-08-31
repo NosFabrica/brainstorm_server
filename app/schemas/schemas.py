@@ -1,6 +1,14 @@
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_serializer,
+    model_validator,
+)
 
 from app.schemas.error_codes import ErrorCode
 
@@ -113,6 +121,7 @@ class SchedulingItem(BaseModel):
     priority: int
     enabled: bool
     is_default: bool
+    is_public: bool
     manual_quota_limit: int
     manual_quota_window_seconds: int
 
@@ -265,23 +274,70 @@ class DivergenceSection(BaseModel):
     rows: list[dict]
 
 
-class SubscriptionView(BaseModel):
-    """What the UI shows a signed-in user. Every field always present — the
-    client's `normalize()` fails silently as "free" on a missing one."""
+class SubscriptionPolicyView(BaseModel):
+    """What the subscriber receives. This is their tier — there is no string.
 
-    tier: str
+    `is_default` is what "free" used to mean: the policy everyone holds without
+    buying anything. The client compares nothing against a known name.
+    """
+
+    id: int
+    name: str
+    schedule_interval_seconds: int
+    is_default: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SubscriptionPlanView(BaseModel):
+    """What this person actually bought, read through their billing row.
+
+    Deliberately not "their policy's current price": a subscriber on a retired
+    or repriced plan still pays what they signed up for, and matching by policy
+    would quote them a price they are not charged. `is_active` false is how the
+    UI knows to tell them their plan is no longer offered.
+    """
+
+    amount_minor: int
+    currency: str
+    is_active: bool
+    billing_period_unit: str | None
+    billing_period_count: int | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SubscriptionView(BaseModel):
+    """What the UI shows a signed-in user. Every field always present.
+
+    No tier string and no `rail`: Flash's subscription object carries no
+    payment-method field, and a permanently-null one reads as "unknown yet"
+    rather than "unknowable". All three dates come straight off the row —
+    nothing here is derived by date arithmetic.
+    """
+
+    # Null only on an instance with no scheduling policies at all, which is a
+    # broken install rather than a state to render.
+    policy: SubscriptionPolicyView | None
+    plan: SubscriptionPlanView | None
     status: str
+    current_period_start: datetime | None
     current_period_end: datetime | None
+    next_billing_date: datetime | None
     # Set once the subscriber has cancelled but the paid period is still
     # running. Flash reports that state as `active` with a date, so status
     # alone cannot distinguish "renews on the 1st" from "ends on the 1st" —
     # they are still entitled either way, which is why this is a field rather
     # than a status.
     cancel_effective_date: datetime | None
-    rail: str | None
     manage_url: str | None
 
-    @field_serializer("current_period_end", "cancel_effective_date")
+    @field_serializer(
+        "current_period_start",
+        "current_period_end",
+        "next_billing_date",
+        "cancel_effective_date",
+    )
     def _utc_wire_format(self, value: datetime | None) -> str | None:
         # Stored naive UTC; serialized with an explicit Z or `new Date()` in
         # the browser reads it as local time, shifting it by the viewer's offset.
@@ -291,15 +347,26 @@ class SubscriptionView(BaseModel):
 
 
 class BillingPlanView(BaseModel):
-    """One pricing-page entry. `checkout_url` is complete except `ref`, which
-    the client appends; null on the free entry."""
+    """One row of the pricing picker, rendered in the order it is returned.
 
-    tier: str
-    name: str
+    Grouping key is `policy_id`, the card title is `policy_name`, and
+    paid-vs-free is `is_default` — no vocabulary the client has to recognise.
+    `checkout_url` is complete except `ref`, which the client appends; null on
+    a row nobody can buy.
+    """
+
+    policy_id: int
+    policy_name: str
+    schedule_interval_seconds: int
+    is_default: bool
+    billing_period_unit: str | None
+    billing_period_count: int | None
     amount_minor: int
     currency: str
-    schedule_interval_seconds: int
     checkout_url: str | None
+    blurb: str | None
+    includes: list[str] | None
+    excludes: list[str] | None
 
 
 class BillingPlansData(BaseModel):
@@ -307,42 +374,80 @@ class BillingPlansData(BaseModel):
 
 
 class BillingPlanItem(CreatedAndUpdatedAtModel):
-    """One plan mapping, as an operator sees it. Ids only — no secrets live here."""
+    """One plan mapping, as an operator sees it. Ids only — no secrets live here.
+
+    Every transcribed value is here because every one of them is editable:
+    Flash exposes no way to read a plan back, so correcting the row by hand is
+    the only repair mechanism there is.
+    """
 
     id: int
     flash_service_id: str
     flash_plan_id: str
-    subscription_tier: str
     scheduling_id: int
     amount_minor: int
     currency: str
+    billing_period_unit: str | None
+    billing_period_count: int | None
+    sort_order: int
+    blurb: str | None
+    includes: list[str] | None
+    excludes: list[str] | None
     is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
 
 
-# The UI whitelists exact lowercase literals with no trim or toLowerCase, so a
-# "Priority" written here would read as free everywhere. Enforced at the write.
-_TIER_PATTERN = r"^[a-z][a-z0-9_-]*$"
+# Plan copy is plain text, bounded. Markup stored here would be rendered on a
+# public page, which is stored XSS; the client escapes it, and these caps stop
+# one admin edit from becoming an unreadable pricing card.
+_BLURB_MAX = 280
+_COPY_LINE_MAX = 120
+_COPY_LINES_MAX = 20
+
+CopyLines = list[Annotated[str, StringConstraints(min_length=1, max_length=_COPY_LINE_MAX)]]
 
 
 class CreateBillingPlanBody(BaseModel):
     flash_service_id: str
     flash_plan_id: str
-    subscription_tier: str = Field(pattern=_TIER_PATTERN)
     scheduling_id: int
     amount_minor: int = Field(ge=0)
     currency: str
+    # Unit and count, never a matched string: "every 2 weeks", "/mo" and the
+    # $0.10/day rehearsal plan all format from the pair. `once` is reserved for
+    # Flash's coming one-off type and carries no count.
+    billing_period_unit: str | None = Field(default=None, min_length=1, max_length=32)
+    billing_period_count: int | None = Field(default=None, ge=1)
+    sort_order: int = 0
+    blurb: str | None = Field(default=None, max_length=_BLURB_MAX)
+    includes: CopyLines | None = Field(default=None, max_length=_COPY_LINES_MAX)
+    excludes: CopyLines | None = Field(default=None, max_length=_COPY_LINES_MAX)
     is_active: bool = True
+
+    @model_validator(mode="after")
+    def _count_needs_a_unit(self) -> "CreateBillingPlanBody":
+        if self.billing_period_count is not None and self.billing_period_unit is None:
+            raise ValueError("billing_period_count needs a billing_period_unit")
+        return self
 
 
 class UpdateBillingPlanBody(BaseModel):
-    """Partial update; only supplied fields change."""
+    """Partial update; only the fields actually sent change.
 
-    subscription_tier: str | None = Field(default=None, pattern=_TIER_PATTERN)
+    Dumped with `exclude_unset`, not `exclude_none` — clearing a period or a
+    blurb back to null is a real edit, and `exclude_none` would silently drop it.
+    """
+
     scheduling_id: int | None = None
     amount_minor: int | None = Field(default=None, ge=0)
     currency: str | None = None
+    billing_period_unit: str | None = Field(default=None, min_length=1, max_length=32)
+    billing_period_count: int | None = Field(default=None, ge=1)
+    sort_order: int | None = None
+    blurb: str | None = Field(default=None, max_length=_BLURB_MAX)
+    includes: CopyLines | None = Field(default=None, max_length=_COPY_LINES_MAX)
+    excludes: CopyLines | None = Field(default=None, max_length=_COPY_LINES_MAX)
     is_active: bool | None = None
 
 

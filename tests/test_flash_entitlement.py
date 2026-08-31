@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
 from app.core.flash import FlashSubscription, FlashUnavailable
 from app.services.billing_service import (
@@ -51,7 +52,12 @@ def _plan(scheduling_id: int = PAID_SCHEDULING_ID) -> SimpleNamespace:
         id=1,
         flash_service_id="9c1e",
         flash_plan_id="4f2a",
-        subscription_tier="priority",
+        billing_period_unit="month",
+        billing_period_count=1,
+        sort_order=0,
+        blurb=None,
+        includes=None,
+        excludes=None,
         scheduling_id=scheduling_id,
         amount_minor=200,
         currency="USD",
@@ -346,6 +352,34 @@ def test_an_admin_grant_is_not_revoked_by_an_ended_subscription(billing):
     billing.set_scheduling.assert_not_awaited()
 
 
+# ---------------------------------------------------------------------------
+# A plan withdrawn from sale
+# ---------------------------------------------------------------------------
+def test_a_subscriber_on_a_retired_plan_is_still_granted_on_renewal(billing):
+    """Retiring a plan stops it being sold. It does not strand whoever bought
+    it while it was — they are still paying, and still owed what they bought."""
+    billing.plan.return_value = _plan()
+    billing.plan.return_value.is_active = False
+
+    outcome = _apply(billing)
+
+    assert outcome.reason is EntitlementReason.GRANTED
+    assert billing.set_scheduling.await_args.args[2] == PAID_SCHEDULING_ID
+
+
+def test_a_subscriber_on_a_retired_plan_is_still_revoked_when_it_ends(billing):
+    """The half that used to be impossible: nothing downstream of the plan
+    lookup consults `is_active`, so an ending is applied like any other."""
+    billing.plan.return_value = _plan()
+    billing.plan.return_value.is_active = False
+    billing.fetch.return_value = _subscription(status="expired")
+
+    outcome = _apply(billing)
+
+    assert outcome.reason is EntitlementReason.REVOKED
+    assert billing.set_scheduling.await_args.args[2] is None
+
+
 def test_a_failed_renewal_leaves_the_policy_alone(billing):
     billing.fetch.return_value = _subscription(status="past_due")
 
@@ -407,3 +441,77 @@ def test_a_failed_record_commits_nothing(billing):
         _apply(billing)
 
     billing.db.commit.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Creating the missing mapping is the whole fix, not the first half of it
+# ---------------------------------------------------------------------------
+PLAN_VALUES = {
+    "flash_service_id": "9c1e",
+    "flash_plan_id": "4f2a",
+    "billing_period_unit": "month",
+    "billing_period_count": 1,
+    "sort_order": 0,
+    "scheduling_id": PAID_SCHEDULING_ID,
+    "amount_minor": 200,
+    "currency": "USD",
+    "is_active": True,
+}
+
+
+@pytest.fixture
+def new_plan(monkeypatch):
+    calls: list[str] = []
+    seams = SimpleNamespace(
+        db=AsyncMock(),
+        calls=calls,
+        exists=AsyncMock(return_value=True),
+        insert=AsyncMock(return_value=_plan()),
+        reset=AsyncMock(return_value=2),
+    )
+    seams.db.commit.side_effect = lambda: calls.append("commit")
+    seams.reset.side_effect = lambda *a, **k: calls.append("reset") or 2
+    for name, mock in (
+        ("scheduling_exists_on_db", seams.exists),
+        ("insert_billing_plan_on_db", seams.insert),
+        ("reset_events_awaiting_plan_on_db", seams.reset),
+    ):
+        monkeypatch.setattr(f"app.services.billing_service.{name}", mock)
+    return seams
+
+
+def _create(new_plan):
+    from app.services.billing_service import create_billing_plan
+
+    return asyncio.run(create_billing_plan(new_plan.db, dict(PLAN_VALUES)))
+
+
+def test_mapping_a_plan_frees_the_events_that_were_waiting_on_it(new_plan):
+    """Otherwise the admin has made the mapping and still has an unentitled
+    paying subscriber, with nothing saying a second step remains."""
+    _create(new_plan)
+
+    new_plan.reset.assert_awaited_once()
+    kwargs = new_plan.reset.await_args.kwargs
+    assert kwargs["flash_service_id"] == "9c1e"
+    assert kwargs["flash_plan_id"] == "4f2a"
+    assert kwargs["error"] == EntitlementReason.UNKNOWN_PLAN.value
+
+
+def test_the_mapping_and_the_events_it_heals_commit_together(new_plan):
+    """An event made replayable against a plan that never landed would fail
+    identically on the next pass."""
+    _create(new_plan)
+
+    assert new_plan.calls == ["reset", "commit"]
+
+
+def test_a_plan_that_cannot_be_created_frees_nothing(new_plan):
+    """No mapping, so nothing is waiting on one."""
+    new_plan.exists.return_value = False
+
+    with pytest.raises(HTTPException):
+        _create(new_plan)
+
+    new_plan.reset.assert_not_awaited()
+    new_plan.db.commit.assert_not_awaited()

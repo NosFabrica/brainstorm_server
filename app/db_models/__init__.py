@@ -225,6 +225,11 @@ class Scheduling(TimestampMixin, Base):
     is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # Whether this policy may reach /billing/plans. Off by default so an
+    # internal policy cannot leak onto a public pricing page by being created.
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
 
     __table_args__ = (
         # At most one default policy: partial unique index over the truthy rows.
@@ -244,15 +249,33 @@ class BillingPlan(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     flash_service_id: Mapped[str] = mapped_column(String, nullable=False)
     flash_plan_id: Mapped[str] = mapped_column(String, nullable=False)
-    # "subscription_tier", not "tier": CONTEXT.md already spends "tier" on the
-    # GrapeRank influence bands, which are an unrelated concept.
-    subscription_tier: Mapped[str] = mapped_column(String, nullable=False)
+    # The policy this plan grants. It IS the tier: several plans may point at
+    # one policy (monthly beside yearly, a replacement beside the row it
+    # retires) and all of them grant identically.
     scheduling_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("scheduling.id"), nullable=False
     )
     # Minor units, as Flash sends them: 200 = $2.00. Integers throughout.
     amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String, nullable=False)
+    # How often Flash charges, as a unit and a count rather than a matched
+    # string: the client formats "every 2 weeks" from the pair and an
+    # unrecognised unit still renders. Both null on a plan whose period we have
+    # not transcribed; "once" with a null count is reserved for Flash's coming
+    # one-off type, which sells but grants nothing automatically.
+    billing_period_unit: Mapped[str | None] = mapped_column(String, nullable=True)
+    billing_period_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Display order in the picker. Not `scheduling.priority` — that is the
+    # scheduler's queue lane, and it cannot order two plans inside one policy.
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    # Admin-editable plan copy, shaped like the includes/excludes Flash is
+    # adding. Plain text only — stored markup on a public page is stored XSS.
+    blurb: Mapped[str | None] = mapped_column(String, nullable=True)
+    includes: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    excludes: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Sellable, and nothing else. Never filtered in the entitlement lookup.
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true", default=True
     )
@@ -287,6 +310,9 @@ class UserSubscription(TimestampMixin, Base):
     next_billing_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     trial_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     cancel_effective_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Kept, but off the wire: Flash's subscription object has no payment-method
+    # field, so this is structurally always null. Re-exposing it is one line the
+    # day they publish one; inferring it is how we'd invent a payment method.
     rail: Mapped[str | None] = mapped_column(String, nullable=True)
     # Newest event timestamp seen for this subscriber; never moves backwards.
     last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
