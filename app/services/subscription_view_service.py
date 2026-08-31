@@ -97,6 +97,7 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
         tier=tier,
         status=_translate(row.flash_status if row else None, tier=tier),
         current_period_end=row.current_period_end if row else None,
+        cancel_effective_date=row.cancel_effective_date if row else None,
         rail=row.rail if row else None,
         manage_url=manage_url,
     )

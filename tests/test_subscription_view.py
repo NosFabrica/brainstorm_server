@@ -102,7 +102,7 @@ def _stub_view(
 def test_the_contract_shape_for_a_user_with_no_subscription(
     subscription_client, monkeypatch
 ):
-    """Enveloped under `data`; all five fields present; exact literals."""
+    """Enveloped under `data`; every field present; exact literals."""
     _stub_view(monkeypatch)
 
     body = subscription_client.get("/user/subscription").json()
@@ -111,12 +111,14 @@ def test_the_contract_shape_for_a_user_with_no_subscription(
         "tier",
         "status",
         "current_period_end",
+        "cancel_effective_date",
         "rail",
         "manage_url",
     }
     assert body["data"]["tier"] == "free"
     assert body["data"]["status"] == "none"
     assert body["data"]["current_period_end"] is None
+    assert body["data"]["cancel_effective_date"] is None
     assert body["data"]["rail"] is None
     assert body["data"]["manage_url"] is None
 
@@ -131,6 +133,7 @@ def test_the_contract_shape_for_a_paying_subscriber(
         row=SimpleNamespace(
             flash_status="active",
             current_period_end=NOW,
+            cancel_effective_date=None,
             rail=None,
             billing_plan_id=1,
         ),
@@ -147,6 +150,34 @@ def test_the_contract_shape_for_a_paying_subscriber(
     assert data["manage_url"].endswith("/subscriptions/portal/9c1e")
 
 
+def test_a_cancelled_subscription_still_reads_active_and_carries_its_end_date(
+    subscription_client, monkeypatch
+):
+    """Flash reports a cancellation that has not taken effect as `active` with
+    a cancelEffectiveDate, and they really are still entitled — so the status
+    stays `active` and the date is what tells the UI it will not renew. Reading
+    "cancelled" off the status instead would strip a tier they have paid for."""
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    _stub_view(
+        monkeypatch,
+        tier="priority",
+        row=SimpleNamespace(
+            flash_status="active",
+            current_period_end=NOW,
+            cancel_effective_date=NOW,
+            rail=None,
+            billing_plan_id=1,
+        ),
+        plan=SimpleNamespace(flash_service_id="9c1e"),
+    )
+
+    data = subscription_client.get("/user/subscription").json()["data"]
+
+    assert data["status"] == "active", "a paid period still running is not cancelled"
+    assert data["tier"] == "priority"
+    assert data["cancel_effective_date"] == "2026-08-25T12:00:00Z"
+
+
 def test_tier_comes_from_the_policy_not_the_billing_record(
     subscription_client, monkeypatch
 ):
@@ -158,6 +189,7 @@ def test_tier_comes_from_the_policy_not_the_billing_record(
         row=SimpleNamespace(
             flash_status="active",
             current_period_end=NOW,
+            cancel_effective_date=None,
             rail=None,
             billing_plan_id=1,
         ),

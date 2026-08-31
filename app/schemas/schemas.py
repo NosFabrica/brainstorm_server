@@ -272,10 +272,16 @@ class SubscriptionView(BaseModel):
     tier: str
     status: str
     current_period_end: datetime | None
+    # Set once the subscriber has cancelled but the paid period is still
+    # running. Flash reports that state as `active` with a date, so status
+    # alone cannot distinguish "renews on the 1st" from "ends on the 1st" —
+    # they are still entitled either way, which is why this is a field rather
+    # than a status.
+    cancel_effective_date: datetime | None
     rail: str | None
     manage_url: str | None
 
-    @field_serializer("current_period_end")
+    @field_serializer("current_period_end", "cancel_effective_date")
     def _utc_wire_format(self, value: datetime | None) -> str | None:
         # Stored naive UTC; serialized with an explicit Z or `new Date()` in
         # the browser reads it as local time, shifting it by the viewer's offset.
