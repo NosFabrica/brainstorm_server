@@ -146,29 +146,20 @@ async def _get_with_retries(url: str, params: dict) -> httpx.Response:
     raise AssertionError("unreachable")
 
 
-async def fetch_subscription(
-    *, subscription_id: str | None = None, ref: str | None = None
-) -> FlashSubscription | None:
-    """Look a subscription up by Flash's id, or by our own reference.
-
-    Returns None when Flash has no such subscription — a fact. Raises when we
-    could not find out, which is not.
-
-    Results are scoped by Flash to the account owning the API key, so a
-    subscription belonging to someone else is not reachable with our credentials.
-    """
+def _lookup_params(subscription_id: str | None, ref: str | None) -> dict:
+    """Flash supports exactly two lookups, and never both at once."""
     if not subscription_id and not ref:
         raise FlashUnavailable("A subscription lookup needs a subscriptionId or a ref")
+    return {"subscriptionId": subscription_id} if subscription_id else {"ref": ref}
 
-    if settings.flash_mock_enabled:
-        from app.core import flash_mock
 
-        return flash_mock.lookup(subscription_id, ref)
+async def _read_subscriptions_body(params: dict) -> dict:
+    """The one request every lookup makes, and the one place its failures are named.
 
-    params = (
-        {"subscriptionId": subscription_id} if subscription_id else {"ref": ref}
-    )
-
+    Shared so the parsed and raw reads cannot drift on what counts as "Flash
+    said no" versus "we could not ask", which is the distinction this module
+    exists to protect.
+    """
     url = settings.flash_base_url.rstrip("/") + _SUBSCRIPTIONS_PATH
     try:
         response = await _get_with_retries(url, params)
@@ -201,7 +192,30 @@ async def fetch_subscription(
         # test-mode key granting real paid tiers is worth noticing loudly.
         logger.error("Flash answered in test mode; the API key may be wrong")
 
-    subscriptions = body.get("subscriptions") if isinstance(body, dict) else None
+    return body
+
+
+async def fetch_subscription(
+    *, subscription_id: str | None = None, ref: str | None = None
+) -> FlashSubscription | None:
+    """Look a subscription up by Flash's id, or by our own reference.
+
+    Returns None when Flash has no such subscription — a fact. Raises when we
+    could not find out, which is not.
+
+    Results are scoped by Flash to the account owning the API key, so a
+    subscription belonging to someone else is not reachable with our credentials.
+    """
+    params = _lookup_params(subscription_id, ref)
+
+    if settings.flash_mock_enabled:
+        from app.core import flash_mock
+
+        return flash_mock.lookup(subscription_id, ref)
+
+    body = await _read_subscriptions_body(params)
+
+    subscriptions = body.get("subscriptions")
     if not isinstance(subscriptions, list) or not subscriptions:
         return None
 
@@ -212,6 +226,35 @@ async def fetch_subscription(
         return parse_subscription(chosen)
     except (AttributeError, TypeError) as failed:
         raise FlashUnavailable("Flash sent a subscription we could not read") from failed
+
+
+async def fetch_subscription_raw(
+    *, subscription_id: str | None = None, ref: str | None = None
+) -> dict | None:
+    """Flash's own answer, as it arrived — every row, not the one we would pick.
+
+    `fetch_subscription` collapses a multi-row answer down to the subscription
+    that decides entitlement. That collapse is the thing an operator comparing
+    our stored row against Flash needs to see through, so this returns the body
+    unmodified: `livemode` and the whole `subscriptions` array.
+
+    Same contract otherwise — None means Flash holds no such subscription,
+    raising means we could not find out.
+    """
+    params = _lookup_params(subscription_id, ref)
+
+    if settings.flash_mock_enabled:
+        from app.core import flash_mock
+
+        rows = flash_mock.lookup_raw(subscription_id, ref)
+        return {"livemode": True, "subscriptions": rows} if rows else None
+
+    body = await _read_subscriptions_body(params)
+
+    subscriptions = body.get("subscriptions")
+    if not isinstance(subscriptions, list) or not subscriptions:
+        return None
+    return body
 
 
 def _choose_subscription(

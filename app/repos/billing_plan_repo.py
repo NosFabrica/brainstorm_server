@@ -10,11 +10,18 @@ from app.db_models import BillingPlan
 async def get_billing_plan_on_db(
     db: AsyncDBSession, *, flash_service_id: str, flash_plan_id: str
 ) -> BillingPlan | None:
-    """The plan a Flash subscription belongs to. None if we don't map it."""
+    """The plan a Flash subscription belongs to. None if we don't map it.
+
+    Deliberately NOT filtered on `is_active` — that flag means *sellable* and
+    nothing else. Filtering here made retiring a plan unmap everyone on it: the
+    lookup sits ahead of all status handling, so their renewals stopped landing
+    *and their expiry and cancellation could never be applied*, which turned
+    withdrawing a plan from sale into granting a permanent comp.
+    `select_billing_plans_on_db(only_active=True)` is where the flag belongs.
+    """
     statement = select(BillingPlan).where(
         BillingPlan.flash_service_id == flash_service_id,
         BillingPlan.flash_plan_id == flash_plan_id,
-        BillingPlan.is_active.is_(True),
     )
     result = await execute_db_statement(db, statement, __name__)
     return result.scalar_one_or_none()

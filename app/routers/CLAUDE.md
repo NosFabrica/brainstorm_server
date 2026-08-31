@@ -106,7 +106,7 @@ the `/{pubkey}` catch-all.
 | GET | `/graperankResult` | `GetOwnLatestGraperankResponse` | Latest result for caller |
 | POST | `/graperank` | `GetOwnLatestGraperankResponse` | Triggers a run; throttled by `settings.block_frequent_graperank_requests_minutes` |
 | GET | `/self` | `GetOwnUserDataResponse` | Caller's graph + history |
-| GET | `/subscription` | `GetSubscriptionResponse` | The caller's subscription as the UI shows it. Always answers, billing configured or not; `tier` derives from the scheduling assignment, `status` is the translated Flash vocabulary |
+| GET | `/subscription` | `GetSubscriptionResponse` | The caller's subscription as the UI shows it. Always answers, billing configured or not. `policy` is what they receive (their scheduling assignment — there is no tier string), `plan` is what they actually bought read through `billing_plan_id`, the three dates come straight off the row, and `status` is the translated Flash vocabulary derived from `policy.is_default`. No `rail` — Flash exposes no payment method |
 | POST | `/subscription/refresh` | `GetSubscriptionResponse` | Re-reads Flash for the caller and applies it — the redirect-landing call and the `pending` poll. Empty body by design; per-pubkey rate limit |
 | GET | `/isSearchObserver` | `IsSearchObserverResponse` | Whether caller is searchable as an observer |
 | POST | `/assistantProfile` | `PublishAssistantProfileResponse` | Publishes kind-0 for the user's brainstorm assistant key |
@@ -143,10 +143,10 @@ actually gives them. Where those disagree is the bug.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/subscriptions` | `Page[BillingSubscriptionItem]`. `flash_status` and `scheduling_name` are separate fields on purpose — collapsing them would hide the disagreement |
-| GET | `/divergence` | Seven categories of unsettled state, each `{count, truncated, rows}`. Capped at 200 rows: a report nobody can open is no use on the day it matters |
+| GET | `/divergence` | Nine categories of unsettled state, each `{count, truncated, rows}`. Capped at 200 rows: a report nobody can open is no use on the day it matters |
 | POST | `/subscriptions/{pubkey}/resync` | Re-reads one subscriber from Flash now |
 | POST / DELETE | `/subscriptions/{pubkey}/block` | Bar a user from paid entitlement / lift the bar. Blocking also revokes a billing-granted policy; admin grants are left alone |
-| GET / POST / PATCH | `/plans` | The `billing_plan` mappings — how dev and prod vaults get their rows |
+| GET / POST / PATCH | `/plans` | The `billing_plan` mappings — how dev and prod vaults get their rows. Everything except the Flash ids is editable, because Flash has no plans endpoint and hand-correction is the only repair there is. `PATCH` dumps with `exclude_unset`, so clearing a period or a blurb to null is a real edit rather than a dropped field |
 | GET | `/export.csv` | Payment history for accounting, defaulting to the last 90 days. Read out of stored `activated` + `renewed` events (`activated` priced from the plan) — deliberately not a second ledger |
 
 ### `graperank/router.py` — GrapeRank presets

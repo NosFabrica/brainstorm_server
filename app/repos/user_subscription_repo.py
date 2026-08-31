@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.database import execute_db_statement
 from app.core.flash import FlashSubscription
 from app.db_models import (
+    BillingPlan,
     BrainstormNsec,
     Scheduling,
     SchedulingSource,
@@ -478,6 +479,37 @@ async def select_abandoned_checkouts_on_db(
         UserSubscription.flash_subscription_id,
         UserSubscription.sync_error_since,
     ).where(abandoned.condition(now)).limit(limit)
+    result = await execute_db_statement(db, statement, __name__)
+    return list(result.all())
+
+
+async def select_retired_plan_subscribers_on_db(
+    db: AsyncDBSession, *, limit: int
+) -> list:
+    """Subscribers still on a plan we have withdrawn from sale.
+
+    Not a fault — retiring a plan is an ordinary operation and these people keep
+    renewing exactly as before. Visible because nothing else would say they
+    exist: they are being charged for something no one can buy any more, and
+    ending that is a decision a human takes, in Flash, one subscription at a
+    time. `flash_subscription_id` is here so the admin view can link straight to
+    it; we have no cancel of our own to offer, and must not appear to.
+
+    Settled rows are excluded for the same reason they are everywhere else —
+    a churned subscriber on a retired plan is nobody's outstanding work.
+    """
+    statement = (
+        select(
+            UserSubscription.pubkey,
+            UserSubscription.flash_subscription_id,
+            UserSubscription.flash_status,
+            UserSubscription.billing_plan_id,
+            UserSubscription.granted_scheduling_id,
+        )
+        .join(BillingPlan, BillingPlan.id == UserSubscription.billing_plan_id)
+        .where(BillingPlan.is_active.is_(False), not_(settled_condition()))
+        .limit(limit)
+    )
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())
 

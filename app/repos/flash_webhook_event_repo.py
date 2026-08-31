@@ -184,13 +184,41 @@ async def prune_webhook_payloads_on_db(
 
 
 async def select_unresolved_events_on_db(db: AsyncDBSession, *, limit: int) -> list:
-    """Deliveries that named nobody we could match, so nothing was applied."""
+    """Every delivery that failed to apply, with enough of itself to act on.
+
+    Broader than "named nobody": anything unprocessed carrying an error, which
+    is also where an unmapped plan lands. So the row has to say which of those
+    it is — the service and plan ids are the mapping an admin would create, and
+    the reference is what says whether there was a user to find at all.
+
+    Contact details are read out of the payload for the reference-less rows
+    ONLY. Where there is a reference the subscriber is already ours to look up,
+    and copying their email into an operational report would be personal data
+    nothing here needs.
+    """
+    payload = FlashWebhookEvent.payload["data"]
+    external_ref = payload["externalRef"].astext
+    # An empty ref is as absent as a missing one — that is how the entitlement
+    # path reads it, and the two must agree on which rows count as unattributed.
+    unattributed = or_(external_ref.is_(None), external_ref == "")
     statement = (
         select(
             FlashWebhookEvent.id,
             FlashWebhookEvent.event,
             FlashWebhookEvent.created_at,
             FlashWebhookEvent.process_error,
+            # Named as the rest of the codebase names it: the admin view turns
+            # this key into a link into Flash.
+            FlashWebhookEvent.subscription_id.label("flash_subscription_id"),
+            external_ref.label("external_ref"),
+            payload["serviceId"].astext.label("flash_service_id"),
+            payload["planId"].astext.label("flash_plan_id"),
+            case(
+                (unattributed, payload["email"].astext), else_=None
+            ).label("subscriber_email"),
+            case(
+                (unattributed, payload["name"].astext), else_=None
+            ).label("subscriber_name"),
         )
         .where(
             FlashWebhookEvent.processed_at.is_(None),
@@ -201,6 +229,35 @@ async def select_unresolved_events_on_db(db: AsyncDBSession, *, limit: int) -> l
     )
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())
+
+
+async def reset_events_awaiting_plan_on_db(
+    db: AsyncDBSession, *, flash_service_id: str, flash_plan_id: str, error: str
+) -> int:
+    """Make the events that failed for want of this plan replayable again.
+
+    Creating the mapping is otherwise only half a fix: the events that hit the
+    missing plan have already spent their attempts, so a paying subscriber would
+    stay unentitled until their next renewal. Clearing both the error and the
+    attempt count hands them back to the replay pass.
+
+    Narrowed to rows that failed for exactly this reason, so a delivery held up
+    by something else does not get a free extra life. `processing_started_at` is
+    left alone: a claim someone is currently working is still theirs.
+    """
+    payload = FlashWebhookEvent.payload["data"]
+    statement = (
+        update(FlashWebhookEvent)
+        .where(
+            FlashWebhookEvent.processed_at.is_(None),
+            FlashWebhookEvent.process_error == error,
+            payload["serviceId"].astext == flash_service_id,
+            payload["planId"].astext == flash_plan_id,
+        )
+        .values(attempts=0, process_error=None)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.rowcount
 
 
 async def select_exhausted_events_on_db(

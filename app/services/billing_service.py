@@ -24,6 +24,7 @@ from app.repos.billing_plan_repo import (
     select_billing_plans_on_db,
     update_billing_plan_on_db,
 )
+from app.repos.flash_webhook_event_repo import reset_events_awaiting_plan_on_db
 from app.repos.user_subscription_repo import (
     clear_granted_scheduling_on_db,
     get_user_subscription_on_db,
@@ -356,9 +357,30 @@ async def list_billing_plans_admin(db: AsyncDBSession) -> list[BillingPlan]:
 
 
 async def create_billing_plan(db: AsyncDBSession, values: dict) -> BillingPlan:
+    """Map a Flash plan, and heal whatever was waiting on that mapping.
+
+    The events that arrived before the mapping existed have already spent their
+    replay attempts, so without this the admin has created the plan and still
+    has an unentitled paying subscriber — with nothing on the surface saying a
+    second step remains. Same transaction as the insert: an event made
+    replayable against a plan that then failed to commit would fail identically.
+    """
     await _require_scheduling(db, values["scheduling_id"])
     plan = await insert_billing_plan_on_db(db, **values)
+    waiting = await reset_events_awaiting_plan_on_db(
+        db,
+        flash_service_id=plan.flash_service_id,
+        flash_plan_id=plan.flash_plan_id,
+        error=EntitlementReason.UNKNOWN_PLAN.value,
+    )
     await db.commit()
+    if waiting:
+        logger.info(
+            "Mapping %s/%s freed %s event(s) to be replayed",
+            plan.flash_service_id,
+            plan.flash_plan_id,
+            waiting,
+        )
     return plan
 
 

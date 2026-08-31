@@ -25,6 +25,7 @@ from app.repos.user_subscription_repo import (
     select_abandoned_checkouts_on_db,
     select_failing_syncs_on_db,
     select_policy_mismatches_on_db,
+    select_retired_plan_subscribers_on_db,
     select_stale_syncs_on_db,
     select_unrecognised_statuses_on_db,
 )
@@ -50,9 +51,10 @@ ROW_LIMIT = 200
 
 @dataclass(frozen=True)
 class DivergenceReport:
-    """Seven kinds of disagreement, plus admin overrides and abandoned
-    checkouts — which are not faults, but must be visible somewhere, and must
-    not be *here*, or a genuine failed write hides among them."""
+    """Six kinds of disagreement, plus admin overrides, abandoned checkouts and
+    subscribers on a retired plan — which are not faults, but must be visible
+    somewhere, and must not be *here*, or a genuine failed write hides among
+    them."""
 
     policy_mismatch: list
     admin_overrides: list
@@ -62,6 +64,7 @@ class DivergenceReport:
     unrecognised_statuses: list
     exhausted_events: list
     abandoned_checkouts: list
+    retired_plan_subscribers: list
 
 
 def _section(rows: list) -> dict:
@@ -88,6 +91,7 @@ async def build_divergence_response(db: AsyncDBSession) -> dict[str, dict]:
         "unrecognised_statuses": _section(report.unrecognised_statuses),
         "exhausted_events": _section(report.exhausted_events),
         "abandoned_checkouts": _section(report.abandoned_checkouts),
+        "retired_plan_subscribers": _section(report.retired_plan_subscribers),
     }
 
 
@@ -120,6 +124,9 @@ async def build_divergence_report(db: AsyncDBSession) -> DivergenceReport:
         ),
         abandoned_checkouts=await select_abandoned_checkouts_on_db(
             db, limit=ROW_LIMIT, now=now, abandoned=abandoned
+        ),
+        retired_plan_subscribers=await select_retired_plan_subscribers_on_db(
+            db, limit=ROW_LIMIT
         ),
     )
 

@@ -16,6 +16,7 @@ from app.core.flash import (
     FlashCredentialError,
     FlashUnavailable,
     fetch_subscription,
+    fetch_subscription_raw,
     parse_subscription,
 )
 
@@ -56,6 +57,10 @@ def _responds(status=200, json=None, calls=None):
 
 def _fetch(**kwargs):
     return asyncio.run(fetch_subscription(**kwargs))
+
+
+def _fetch_raw(**kwargs):
+    return asyncio.run(fetch_subscription_raw(**kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -313,3 +318,80 @@ def test_an_unexpected_error_is_still_reported_as_unavailable():
 
     with pytest.raises(FlashUnavailable):
         _fetch(ref="a" * 64)
+
+
+# ---------------------------------------------------------------------------
+# The raw read — what Flash actually said
+# ---------------------------------------------------------------------------
+def test_the_raw_read_hands_back_flashs_body_untouched():
+    body = {"livemode": True, "subscriptions": [SUBSCRIPTION]}
+    _transport(_responds(json=body))
+
+    assert _fetch_raw(ref="a" * 64) == body
+
+
+def test_the_raw_read_keeps_every_row_the_normal_lookup_would_discard():
+    """The multi-row case is exactly what an operator is trying to see: the
+    parsed lookup picks one, and that choice is what they are checking."""
+    dead = {**SUBSCRIPTION, "id": "old", "status": "expired"}
+    _transport(_responds(json={"livemode": True, "subscriptions": [dead, SUBSCRIPTION]}))
+
+    raw = _fetch_raw(ref="a" * 64)
+
+    assert raw is not None
+    assert [row["id"] for row in raw["subscriptions"]] == ["old", "7d3b"]
+
+
+def test_the_raw_read_is_looked_up_by_either_handle():
+    calls = []
+    _transport(_responds(json={"subscriptions": [SUBSCRIPTION]}, calls=calls))
+
+    _fetch_raw(ref="a" * 64)
+    _fetch_raw(subscription_id="7d3b")
+
+    assert calls[0].url.params["ref"] == "a" * 64
+    assert calls[1].url.params["subscriptionId"] == "7d3b"
+
+
+def test_the_raw_read_needs_a_handle_to_look_up_by():
+    with pytest.raises(FlashUnavailable):
+        _fetch_raw()
+
+
+def test_the_raw_read_reports_no_such_subscription_as_absence():
+    _transport(_responds(json={"livemode": True, "subscriptions": []}))
+
+    assert _fetch_raw(ref="nobody") is None
+
+
+def test_the_raw_read_never_reports_an_outage_as_absence():
+    _transport(_responds(status=503))
+
+    with pytest.raises(FlashUnavailable):
+        _fetch_raw(ref="a" * 64)
+
+
+def test_the_raw_read_does_not_retry_a_refused_credential():
+    attempts = []
+    _transport(_responds(status=401, calls=attempts))
+
+    with pytest.raises(FlashCredentialError):
+        _fetch_raw(ref="a" * 64)
+    assert len(attempts) == 1
+
+
+def test_the_raw_read_carries_no_credential_and_no_response_headers():
+    from app.core.config import settings
+
+    _transport(
+        lambda request: httpx.Response(
+            200,
+            json={"livemode": True, "subscriptions": [SUBSCRIPTION]},
+            headers={"x-flash-trace": "leak-me"},
+        )
+    )
+
+    raw = _fetch_raw(ref="a" * 64)
+
+    assert settings.flash_api_key not in str(raw)
+    assert "leak-me" not in str(raw)

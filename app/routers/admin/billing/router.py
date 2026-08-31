@@ -14,6 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.billing_admin_whitelist import get_billing_pubkeys
 from app.core.database import get_db
+from app.core.flash import (
+    FlashCredentialError,
+    FlashUnavailable,
+    fetch_subscription_raw,
+)
 from app.core.loggr import loggr
 from app.repos.user_subscription_repo import build_billing_subscriptions_stmt
 from app.schemas.schemas import (
@@ -37,6 +42,7 @@ from app.services.billing_visibility_service import (
     build_payment_history_csv,
 )
 from app.utils.auth.auth_models import JWTData
+from app.utils.rate_limiting.rate_limiting import validate_flash_record_read_allowed
 
 logger = loggr.get_logger(__name__)
 
@@ -126,6 +132,70 @@ async def unblock_subscription_endpoint(
     if not outcome.found:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
     return BillingBlockOutcome(pubkey=pubkey, blocked=False, revoked=False)
+
+
+async def _read_flash_record(
+    request: Request, *, subscription_id: str | None = None, ref: str | None = None
+) -> dict:
+    """Flash's own body, verbatim, for whichever handle the caller has.
+
+    Read-only by construction: nothing here applies entitlement, so the stored
+    row and the scheduling assignment are exactly as they were afterwards.
+
+    The three answers are kept apart because acting on the wrong one dismisses a
+    real customer: 404 is Flash saying there is no such subscription, 503 is us
+    not having been able to ask, and 502 is our credential being refused —
+    reported rather than retried, since it will fail identically forever.
+    """
+    jwt_data: JWTData = request.state.jwt_data
+    await validate_flash_record_read_allowed(jwt_data.nostr_pubkey)
+
+    try:
+        record = await fetch_subscription_raw(
+            subscription_id=subscription_id, ref=ref
+        )
+    except FlashCredentialError as refused:
+        logger.error("Flash refused our credentials on an operator lookup: %s", refused)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Flash refused our credentials. The API key needs attention; "
+            "retrying will not help.",
+        ) from refused
+    except FlashUnavailable as unreachable:
+        logger.warning("Could not read Flash for an operator lookup: %s", unreachable)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not reach Flash, so we do not know what it says. "
+            "Nothing was changed.",
+        ) from unreachable
+
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Flash has no subscription for this record.",
+        )
+    return record
+
+
+@router.get(
+    path="/subscriptions/{pubkey}/flash",
+    summary="Billing: what Flash says about one subscriber, unmodified",
+)
+async def read_subscriber_flash_record_endpoint(request: Request, pubkey: str):
+    return await _read_flash_record(request, ref=pubkey)
+
+
+@router.get(
+    path="/unresolved/{subscription_id}/flash",
+    summary="Billing: what Flash says about a signup we could not attribute",
+)
+async def read_unresolved_flash_record_endpoint(
+    request: Request, subscription_id: str
+):
+    # An unresolved signup has no pubkey, so its Flash id is the only handle it
+    # has — hence a second sub-resource rather than one two-parameter endpoint
+    # nobody could call with both.
+    return await _read_flash_record(request, subscription_id=subscription_id)
 
 
 @router.get(

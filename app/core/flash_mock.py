@@ -31,10 +31,43 @@ def clear() -> None:
 def lookup(
     subscription_id: str | None, ref: str | None
 ) -> FlashSubscription | None:
-    if subscription_id:
-        return _subscriptions.get(subscription_id)
-    matches = [row for row in _subscriptions.values() if row.ref == ref]
+    matches = _matches(subscription_id, ref)
     if not matches:
         return None
     live = [row for row in matches if row.status in ("active", "trial")] or matches
     return max(live, key=lambda row: row.current_period_end or datetime.min)
+
+
+def lookup_raw(subscription_id: str | None, ref: str | None) -> list[dict]:
+    """Every match, in Flash's own field names — the shape `fetch_subscription_raw`
+    hands to an operator, so the local fake exercises the multi-row case too."""
+    return [_as_flash_row(row) for row in _matches(subscription_id, ref)]
+
+
+def _matches(
+    subscription_id: str | None, ref: str | None
+) -> list[FlashSubscription]:
+    if subscription_id:
+        found = _subscriptions.get(subscription_id)
+        return [found] if found else []
+    return [row for row in _subscriptions.values() if row.ref == ref]
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat(timespec="milliseconds") + "Z" if value else None
+
+
+def _as_flash_row(row: FlashSubscription) -> dict:
+    return {
+        "id": row.id,
+        "status": row.status,
+        "ref": row.ref,
+        "subscriberId": row.subscriber_id,
+        "serviceId": row.service_id,
+        "planId": row.plan_id,
+        "currentPeriodStart": _iso(row.current_period_start),
+        "currentPeriodEnd": _iso(row.current_period_end),
+        "nextBillingDate": _iso(row.next_billing_date),
+        "trialEndDate": _iso(row.trial_end_date),
+        "cancelEffectiveDate": _iso(row.cancel_effective_date),
+    }

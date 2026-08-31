@@ -32,3 +32,17 @@ async def validate_subscription_refresh_allowed(pubkey: str) -> None:
         REFRESH_RATE_LIMIT,
         REFRESH_WINDOW_SECONDS,
     )
+
+
+# An operator clicking through a report, not a poll — and every click spends our
+# Flash quota on our credentials, so a stuck menu can't become an incident.
+FLASH_RECORD_RATE_LIMIT = 30
+FLASH_RECORD_WINDOW_SECONDS = 60
+
+
+async def validate_flash_record_read_allowed(operator_pubkey: str) -> None:
+    await _enforce_window(
+        f"rate_limit:billing_flash_record:{operator_pubkey}",
+        FLASH_RECORD_RATE_LIMIT,
+        FLASH_RECORD_WINDOW_SECONDS,
+    )
