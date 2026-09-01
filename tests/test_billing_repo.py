@@ -210,50 +210,64 @@ def test_a_retired_plan_is_no_longer_offered_for_sale(monkeypatch):
     assert "is_active" in str(sellable.whereclause)
 
 
-def test_an_unresolved_row_says_which_signup_and_which_plan_it_came_from(monkeypatch):
-    """An admin reading this has to be able to tell "no reference" from "a plan
-    we never mapped", and act on either without going to look for the payload."""
+def _unresolved_sql(monkeypatch):
+    """Both halves of what was one query, as SQL."""
     from app.repos import flash_webhook_event_repo
 
-    statement = _sql(
-        _built(
-            monkeypatch,
-            flash_webhook_event_repo,
-            flash_webhook_event_repo.select_unresolved_events_on_db,
-            limit=200,
+    return tuple(
+        _sql(_built(monkeypatch, flash_webhook_event_repo, selector, limit=200))
+        for selector in (
+            flash_webhook_event_repo.select_unresolved_signups_on_db,
+            flash_webhook_event_repo.select_unmapped_plan_events_on_db,
         )
     )
 
-    for column in (
-        "flash_subscription_id",
-        "external_ref",
-        "flash_service_id",
-        "flash_plan_id",
-        "'serviceId'",
-        "'planId'",
-    ):
-        assert column in statement
+
+def test_the_split_loses_no_event_that_needs_attention(monkeypatch):
+    """"Named nobody" and "a plan we never mapped" are two fixes, so they are two
+    sections — but only if the predicates are exact complements. Split badly and
+    an event needing attention simply stops being reported."""
+    signups, plans = _unresolved_sql(monkeypatch)
+
+    # The same unapplied population on both sides...
+    for statement in (signups, plans):
+        assert "processed_at IS NULL" in statement
+        assert "process_error IS NOT NULL" in statement
+        # ...divided on the reference, empty counting as absent on both, so no
+        # row can land in neither section.
+        ref = statement.partition("WHERE")[2]
+        assert "'externalRef'" in ref and "IS NULL OR" in ref and "= ''" in ref
+    # One side is the negation of the other, not a second positive guess.
+    assert "NOT (" not in signups
+    assert plans.count("NOT (") == 1
+
+
+def test_each_section_carries_only_what_its_own_fix_needs(monkeypatch):
+    """Attributing a signup acts on the Flash id, which is its only handle;
+    mapping a plan needs the service/plan pair. Neither wants the other's."""
+    signups, plans = _unresolved_sql(monkeypatch)
+    signup_columns = signups.partition("WHERE")[0]
+    plan_columns = plans.partition("WHERE")[0]
+
+    assert "flash_subscription_id" in signup_columns
+    assert "'serviceId'" not in signup_columns and "'planId'" not in signup_columns
+
+    for column in ("external_ref", "flash_service_id", "flash_plan_id"):
+        assert column in plan_columns
+    assert "'serviceId'" in plan_columns and "'planId'" in plan_columns
 
 
 def test_contact_details_are_read_only_for_a_signup_that_named_nobody(monkeypatch):
     """Where there is a reference the subscriber is already ours to look up, and
-    copying their email into an operational report is personal data for nothing."""
-    from app.repos import flash_webhook_event_repo
+    copying their email into an operational report is personal data for nothing.
+    The section boundary is the guard: the reference-less query is the only one
+    that names a personal payload key at all."""
+    signups, plans = _unresolved_sql(monkeypatch)
 
-    statement = _sql(
-        _built(
-            monkeypatch,
-            flash_webhook_event_repo,
-            flash_webhook_event_repo.select_unresolved_events_on_db,
-            limit=200,
-        )
-    )
-
-    # Both personal columns, each behind a CASE on the reference being absent.
-    assert statement.count("CASE WHEN") == 2
     for personal in ("'email'", "'name'"):
-        guard = statement.partition(personal)[0].rsplit("CASE WHEN", 1)[-1]
-        assert "'externalRef'" in guard and "THEN" in guard
+        assert personal in signups
+        assert personal not in plans
+    assert "subscriber_email" not in plans and "subscriber_name" not in plans
 
 
 def test_only_the_events_that_were_waiting_on_this_plan_are_freed(monkeypatch):

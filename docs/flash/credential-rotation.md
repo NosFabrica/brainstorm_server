@@ -78,8 +78,9 @@ the old secret immediately. Accept the loss and shorten it:
    failed read never changes anyone's tier — but grants are delayed, not free:
    every delivery arriving in that window is recorded and acknowledged, then
    fails entitlement and is left unprocessed with the reason attached. They
-   show as `unresolved_events` on the divergence report and settle on the next
-   reconcile. Keep the window to minutes and check that list once it closes.
+   show as `unmapped_plans` on the divergence report — they name a subscriber,
+   and the reason column says the read failed rather than the plan — and settle
+   on the next reconcile. Keep the window to minutes and check that list once it closes.
 3. Expect loss on the webhook side. Flash gives up on rejected deliveries, and
    those events are gone.
 4. **Recover deliberately** — this is what the reconcile path is for. Watch

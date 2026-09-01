@@ -4,7 +4,19 @@ to decide whether someone is paid; that comes from Flash's API."""
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Integer, String, Text, and_, case, cast, func, or_, select, update
+from sqlalchemy import (
+    Integer,
+    String,
+    Text,
+    and_,
+    case,
+    cast,
+    func,
+    not_,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -220,24 +232,34 @@ async def prune_webhook_payloads_on_db(
 
 
 
-async def select_unresolved_events_on_db(db: AsyncDBSession, *, limit: int) -> list:
-    """Every delivery that failed to apply, with enough of itself to act on.
+# Two failures wore one name here: a delivery that named nobody and a delivery
+# naming a plan we never mapped share only the fact that they did not apply.
+# They are selected separately so each count means one thing, and together they
+# cover exactly the rows one query used to return.
+_UNAPPLIED = (
+    FlashWebhookEvent.processed_at.is_(None),
+    FlashWebhookEvent.process_error.is_not(None),
+)
 
-    Broader than "named nobody": anything unprocessed carrying an error, which
-    is also where an unmapped plan lands. So the row has to say which of those
-    it is — the service and plan ids are the mapping an admin would create, and
-    the reference is what says whether there was a user to find at all.
 
-    Contact details are read out of the payload for the reference-less rows
-    ONLY. Where there is a reference the subscriber is already ours to look up,
-    and copying their email into an operational report would be personal data
-    nothing here needs.
+def _unattributed():
+    """No reference at all. An empty one is as absent as a missing one — that is
+    how the entitlement path reads it, and the two must agree on which rows
+    count as unattributed."""
+    ref = FlashWebhookEvent.payload["data"]["externalRef"].astext
+    return or_(ref.is_(None), ref == "")
+
+
+async def select_unresolved_signups_on_db(db: AsyncDBSession, *, limit: int) -> list:
+    """Payments that named nobody — to be attributed to a person, or dismissed.
+
+    Contact details are read out of the payload here and nowhere else in this
+    report: with no reference, what the payer typed at checkout is the only lead
+    to who they are. Where there *is* a reference the subscriber is already ours
+    to look up, so those rows (below) carry no email — the section boundary is
+    what keeps it that way.
     """
     payload = FlashWebhookEvent.payload["data"]
-    external_ref = payload["externalRef"].astext
-    # An empty ref is as absent as a missing one — that is how the entitlement
-    # path reads it, and the two must agree on which rows count as unattributed.
-    unattributed = or_(external_ref.is_(None), external_ref == "")
     statement = (
         select(
             FlashWebhookEvent.id,
@@ -245,22 +267,43 @@ async def select_unresolved_events_on_db(db: AsyncDBSession, *, limit: int) -> l
             FlashWebhookEvent.created_at,
             FlashWebhookEvent.process_error,
             # Named as the rest of the codebase names it: the admin view turns
-            # this key into a link into Flash.
+            # this key into a link into Flash. It is also the only handle these
+            # rows have — attribute and dismiss both act on it.
             FlashWebhookEvent.subscription_id.label("flash_subscription_id"),
-            external_ref.label("external_ref"),
+            payload["email"].astext.label("subscriber_email"),
+            payload["name"].astext.label("subscriber_name"),
+        )
+        .where(*_UNAPPLIED, _unattributed())
+        .order_by(FlashWebhookEvent.created_at.desc())
+        .limit(limit)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return list(result.all())
+
+
+async def select_unmapped_plan_events_on_db(db: AsyncDBSession, *, limit: int) -> list:
+    """Deliveries that named a subscriber and still failed — almost always a
+    plan we never mapped.
+
+    Nobody has to be identified here, so the row carries the service/plan pair
+    an admin would map and nothing personal. Creating that mapping is the whole
+    fix: `reset_events_awaiting_plan_on_db` hands these back to the replay pass.
+    `process_error` rides along for the rarer cause — a Flash read that failed
+    for its own reasons — which the same section would otherwise disguise.
+    """
+    payload = FlashWebhookEvent.payload["data"]
+    statement = (
+        select(
+            FlashWebhookEvent.id,
+            FlashWebhookEvent.event,
+            FlashWebhookEvent.created_at,
+            FlashWebhookEvent.process_error,
+            FlashWebhookEvent.subscription_id.label("flash_subscription_id"),
+            payload["externalRef"].astext.label("external_ref"),
             payload["serviceId"].astext.label("flash_service_id"),
             payload["planId"].astext.label("flash_plan_id"),
-            case(
-                (unattributed, payload["email"].astext), else_=None
-            ).label("subscriber_email"),
-            case(
-                (unattributed, payload["name"].astext), else_=None
-            ).label("subscriber_name"),
         )
-        .where(
-            FlashWebhookEvent.processed_at.is_(None),
-            FlashWebhookEvent.process_error.is_not(None),
-        )
+        .where(*_UNAPPLIED, not_(_unattributed()))
         .order_by(FlashWebhookEvent.created_at.desc())
         .limit(limit)
     )

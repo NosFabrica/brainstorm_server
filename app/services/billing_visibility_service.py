@@ -18,7 +18,8 @@ from app.core.config import settings
 from app.repos.flash_webhook_event_repo import (
     select_exhausted_events_on_db,
     select_payment_history_on_db,
-    select_unresolved_events_on_db,
+    select_unmapped_plan_events_on_db,
+    select_unresolved_signups_on_db,
 )
 from app.repos.user_subscription_repo import (
     AbandonRule,
@@ -51,16 +52,21 @@ ROW_LIMIT = 200
 
 @dataclass(frozen=True)
 class DivergenceReport:
-    """Six kinds of disagreement, plus admin overrides, abandoned checkouts and
-    subscribers on a retired plan — which are not faults, but must be visible
-    somewhere, and must not be *here*, or a genuine failed write hides among
-    them."""
+    """Seven kinds of disagreement, plus admin overrides, abandoned checkouts
+    and subscribers on a retired plan — which are not faults, but must be
+    visible somewhere, and must not be *here*, or a genuine failed write hides
+    among them.
+
+    A payment that named nobody and a payment naming a plan we never mapped are
+    two of the seven, not one: different fixes, so a count that mixes them says
+    nothing an admin can act on."""
 
     policy_mismatch: list
     admin_overrides: list
     stale_syncs: list
     failing_syncs: list
-    unresolved_events: list
+    unresolved_signups: list
+    unmapped_plans: list
     unrecognised_statuses: list
     exhausted_events: list
     abandoned_checkouts: list
@@ -87,7 +93,8 @@ async def build_divergence_response(db: AsyncDBSession) -> dict[str, dict]:
         "admin_overrides": _section(report.admin_overrides),
         "stale_syncs": _section(report.stale_syncs),
         "failing_syncs": _section(report.failing_syncs),
-        "unresolved_events": _section(report.unresolved_events),
+        "unresolved_signups": _section(report.unresolved_signups),
+        "unmapped_plans": _section(report.unmapped_plans),
         "unrecognised_statuses": _section(report.unrecognised_statuses),
         "exhausted_events": _section(report.exhausted_events),
         "abandoned_checkouts": _section(report.abandoned_checkouts),
@@ -115,7 +122,8 @@ async def build_divergence_report(db: AsyncDBSession) -> DivergenceReport:
         failing_syncs=await select_failing_syncs_on_db(
             db, limit=ROW_LIMIT, now=now, abandoned=abandoned
         ),
-        unresolved_events=await select_unresolved_events_on_db(db, limit=ROW_LIMIT),
+        unresolved_signups=await select_unresolved_signups_on_db(db, limit=ROW_LIMIT),
+        unmapped_plans=await select_unmapped_plan_events_on_db(db, limit=ROW_LIMIT),
         unrecognised_statuses=await select_unrecognised_statuses_on_db(
             db, known=KNOWN_STATUSES
         ),

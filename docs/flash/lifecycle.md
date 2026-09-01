@@ -174,12 +174,17 @@ becomes a `user_subscription` row — it exists only as a webhook event with
 `no_reference`, which is not a settled reason, so the sweep re-checks it
 forever. Someone paid and got nothing.
 
-These show as `unresolved_events` on `GET /admin/billing/divergence`, carrying
-the subscription, service and plan ids plus the subscriber's email and name —
-the last two read out of the payload for reference-less rows only, because
-matching "I paid with jane@example.com" against a list whose emails you cannot
-see is impossible. The workflow is driven by the subscriber contacting us, not
-by us emailing them.
+These show as `unresolved_signups` on `GET /admin/billing/divergence`, carrying
+the subscription id — the only handle they have — plus the subscriber's email
+and name, read out of the payload for this section alone, because matching
+"I paid with jane@example.com" against a list whose emails you cannot see is
+impossible. The workflow is driven by the subscriber contacting us, not by us
+emailing them.
+
+A delivery that *did* name someone and still failed is a different problem with
+a different fix, and reports separately as `unmapped_plans`: nobody needs
+identifying, and creating the plan mapping frees every event waiting on it. The
+two sections between them cover every unapplied delivery.
 
 | Outcome | Endpoint |
 |---|---|
@@ -264,4 +269,5 @@ result looks right.
 | "Confirming your payment" that never resolves | [`pending-checkouts.md`](pending-checkouts.md) |
 | Never renewed | `flash_webhook_event` for a `subscription.renewed`; if absent, nothing was billed |
 | An operator needs it fixed now | `POST /admin/billing/subscriptions/{pubkey}/resync` |
-| Paid through the plain link, so nothing names them | `unresolved_events` in the same report; then [attribute or dismiss](#a-signup-that-named-nobody) |
+| Paid through the plain link, so nothing names them | `unresolved_signups` in the same report; then [attribute or dismiss](#a-signup-that-named-nobody) |
+| Paid on a plan nobody mapped | `unmapped_plans` in the same report; create the mapping and the waiting events replay |

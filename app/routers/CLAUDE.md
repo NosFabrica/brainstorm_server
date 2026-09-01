@@ -143,7 +143,7 @@ actually gives them. Where those disagree is the bug.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/subscriptions` | `Page[BillingSubscriptionItem]`. `flash_status` and `scheduling_name` are separate fields on purpose — collapsing them would hide the disagreement |
-| GET | `/divergence` | Nine categories of unsettled state, each `{count, truncated, rows}`. Capped at 200 rows: a report nobody can open is no use on the day it matters |
+| GET | `/divergence` | Ten categories of unsettled state, each `{count, truncated, rows}`. Capped at 200 rows: a report nobody can open is no use on the day it matters |
 | POST | `/subscriptions/{pubkey}/resync` | Re-reads one subscriber from Flash now |
 | POST / DELETE | `/subscriptions/{pubkey}/block` | Bar a user from paid entitlement / lift the bar. Blocking also revokes a billing-granted policy; admin grants are left alone |
 | GET | `/unresolved/{subscription_id}/flash` | What Flash says about a signup that named nobody — its id is the only handle it has |
