@@ -39,7 +39,11 @@ def upsert_body(observer: str, score: int, followers: int) -> dict:
                 "add": {"cells": [{"address": {"user": observer}, "value": int(score)}]}
             },
             "follower_counts": {
-                "add": {"cells": [{"address": {"user": observer}, "value": float(followers)}]}
+                "add": {
+                    "cells": [
+                        {"address": {"user": observer}, "value": float(followers)}
+                    ]
+                }
             },
         }
     }
@@ -62,7 +66,11 @@ def upsert_feed_line(observer: str, pubkey: str, score: int, followers: int) -> 
     """One `vespa-feed-client` JSONL op (a partial `update`, create-on-missing)
     equivalent to upsert_body — same two-tensor lockstep write."""
     return json.dumps(
-        {"update": _feed_docid(pubkey), "create": True, **upsert_body(observer, score, followers)}
+        {
+            "update": _feed_docid(pubkey),
+            "create": True,
+            **upsert_body(observer, score, followers),
+        }
     )
 
 
@@ -129,7 +137,9 @@ async def _feed(
                     json=upsert_body(observer, sc, fc),
                 )
                 if r.status_code >= 400:
-                    raise RuntimeError(f"upsert {pk} -> {r.status_code}: {r.text[:200]}")
+                    raise RuntimeError(
+                        f"upsert {pk} -> {r.status_code}: {r.text[:200]}"
+                    )
                 ok += 1
             except Exception as e:
                 if len(errors) < 5:
@@ -143,7 +153,9 @@ async def _feed(
                 if r.status_code == 404 or r.status_code < 400:
                     ok += 1  # 404 = nothing to remove, still a success
                 else:
-                    raise RuntimeError(f"remove {pk} -> {r.status_code}: {r.text[:200]}")
+                    raise RuntimeError(
+                        f"remove {pk} -> {r.status_code}: {r.text[:200]}"
+                    )
             except Exception as e:
                 if len(errors) < 5:
                     errors.append(repr(e))

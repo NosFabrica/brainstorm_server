@@ -1,13 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+from fastapi import APIRouter, Depends
 from nostr_sdk import Keys
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.repos.brainstorm_nsec import (
-    select_brainstorm_nsec_by_pubkey_on_db,
-)
-
+from app.repos.brainstorm_nsec import select_brainstorm_nsec_by_pubkey_on_db
 
 router = APIRouter()
 

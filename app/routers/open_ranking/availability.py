@@ -40,12 +40,8 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.config import settings
 from app.repos.brainstorm_nsec import get_pov_availability_fields_on_db
 from app.repos.brainstorm_request_repo import any_request_in_pipeline_for_pubkey_on_db
-from app.routers.open_ranking.capabilities import (
-    CAPABILITY_DOC,
-    algorithm_requires_pov,
-)
+from app.routers.open_ranking.capabilities import CAPABILITY_DOC, algorithm_requires_pov
 from app.utils.observer import default_observer_pubkey
-
 
 # Advisory retry hint for the 202 branch. A manual GrapeRank run typically
 # completes well within a couple of minutes; 60s keeps polling clients close

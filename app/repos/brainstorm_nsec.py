@@ -1,17 +1,16 @@
 from datetime import datetime
+from typing import cast
 
 from nostr_sdk import Keys  # type: ignore
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from sqlalchemy.orm import defer
 
 from app.core.database import execute_db_statement, handle_no_data
 from app.core.loggr import loggr
 from app.db_models import BrainstormNsec, Scheduling
-from app.repos.scheduling_repo import (
-    get_default_scheduling_on_db,
-    get_scheduling_on_db,
-)
+from app.repos.scheduling_repo import get_default_scheduling_on_db, get_scheduling_on_db
 from app.utils.encryption import decrypt_nsec, encrypt_nsec
 from app.utils.nostr import generate_random_nsec
 
@@ -244,7 +243,8 @@ async def bulk_set_scheduling_for_pubkeys_on_db(
         .values(scheduling_id=scheduling_id)
     )
     result = await db.execute(statement)
-    return result.rowcount
+    # DML results are CursorResult at runtime; the base Result stub lacks rowcount.
+    return cast(CursorResult, result).rowcount
 
 
 async def set_scheduling_for_pubkey_on_db(

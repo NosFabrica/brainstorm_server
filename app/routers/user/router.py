@@ -1,10 +1,17 @@
 import asyncio
 from datetime import datetime, timedelta
 from typing import Optional
-from app.utils.rate_limiting.rate_limiting import validateIfRequestedTooOftenByIP
-from fastapi import HTTPException
-from fastapi import APIRouter, Depends, Query, Request, status
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+
+from app.core.config import settings
 from app.core.database import get_db
+from app.repos.brainstorm_nsec import (
+    get_is_observer_search_available_by_pubkey_on_db,
+    update_assistant_kind0_published_at_on_db,
+)
+from app.routers.user.dependencies import get_verified_cutoffs, resolve_observer
 from app.schemas.request_body_schemas import SubmitFollowListBody
 from app.schemas.request_response_schemas import (
     ErrorResponseSchema,
@@ -20,18 +27,11 @@ from app.schemas.request_response_schemas import (
     PublishAssistantProfileResponse,
     SubmitFollowListResponse,
 )
-from app.repos.brainstorm_nsec import (
-    get_is_observer_search_available_by_pubkey_on_db,
-    update_assistant_kind0_published_at_on_db,
-)
-from app.core.config import settings
-
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.schemas.schemas import FollowListIngestResult, OwnUserData
 from app.services.assistant_profile_service import publish_assistant_kind0_for_user
-from app.services.onboarding_service import ingest_follow_list
 from app.services.brainstorm_request_service import create_brainstorm_request
 from app.services.manual_quota import enforce_manual_quota
+from app.services.onboarding_service import ingest_follow_list
 from app.services.user_service import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -44,9 +44,9 @@ from app.services.user_service import (
     get_user_stats,
 )
 from app.services.verified_cutoffs import VerifiedCutoffs
-from app.routers.user.dependencies import get_verified_cutoffs, resolve_observer
-from app.utils.auth.auth_models import JWTData
 from app.utils.api_validators import verify_token_optional
+from app.utils.auth.auth_models import JWTData
+from app.utils.rate_limiting.rate_limiting import validateIfRequestedTooOftenByIP
 
 CHALLENGE_TTL = 120  # seconds (2 minutes)
 
@@ -152,9 +152,7 @@ async def submit_follow_list_endpoint(
     if request.client:
         await validateIfRequestedTooOftenByIP(request.client.host)
 
-    follow_count = await ingest_follow_list(
-        user_pubkey, body.signed_event.model_dump()
-    )
+    follow_count = await ingest_follow_list(user_pubkey, body.signed_event.model_dump())
 
     return SubmitFollowListResponse(
         data=FollowListIngestResult(followCount=follow_count)
@@ -295,7 +293,10 @@ async def get_user_connections_endpoint(
     tier: str
     | None = Query(
         default=None,
-        pattern="^(high|medium_high|medium|medium_low|low|low_and_reported_by_2_or_more_trusted_pubkeys)$",
+        pattern=(
+            "^(high|medium_high|medium|medium_low"
+            "|low|low_and_reported_by_2_or_more_trusted_pubkeys)$"
+        ),
     ),
     verified_only: bool = Query(
         default=False,
