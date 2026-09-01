@@ -104,6 +104,11 @@ WEIGHTED_SCENARIO = [
     ("contested-light-dispute", [(40, 1), (40, 1), (40, -1)], 19),
     ("contested-even-split", [(40, 1), (40, 1), (80, -1)], None),
     ("contested-heavy-dispute", [(3, 1), (3, 1), (90, -1)], None),
+    # A sybil horde below the rank floor. These never reach the scorer at all:
+    # the D4 gate drops sub-floor asserters before any arithmetic runs, so 20
+    # of them produce no member rather than a low-scoring one. Trust-weighting
+    # governs confidence WITHIN a list; the floor is the spam valve.
+    ("sybil-horde-below-floor", [(1, 1)] * 20, None),
 ]
 
 
