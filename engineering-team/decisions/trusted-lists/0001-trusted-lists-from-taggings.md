@@ -642,6 +642,22 @@ Two implementation notes that are ours alone:
   ladder is ever wanted the rungs are cheap to add, but defaulting to `count`
   the way tapestry does would ship a list our own consumer cannot rank.
 
+Two further points settled with tapestry on 2026-09-01:
+
+- **The rank floor drops asserters before any accumulation**, so a sub-floor
+  asserter contributes neither weight nor count and yields no member at all,
+  rather than a low-scoring one. The floor is inclusive (rank 3 passes a floor
+  of 3), and an asserter with no score is a gate failure, not a zero — absent
+  is not zero. Weighting governs confidence *within* a list; the floor is the
+  spam valve, and they do different jobs.
+
+- **G and N are the predicate's regression guards.** `90@+1, 3@-1` scores 44
+  and `40,40@+1 / 3,3@-1` scores 39 — both would be published by a two-clause
+  predicate and both must be excluded by the three-clause one. They are the
+  only cheap way to catch a silent regression from three clauses back to two,
+  and they live in `test_dispute_stress_vectors`. A mutation run confirms they
+  are the two that fail, and the only two.
+
 Parity is pinned by the six vectors tapestry validated live
 (`scripts/tl-ladder-validate.js`), ported to
 `tests/test_trusted_list_membership.py::test_tapestry_parity_vectors`. If those

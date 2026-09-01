@@ -152,3 +152,47 @@ def test_score_rounds_half_up_like_javascript():
     # average 0.01 x certainty 0.5 = 0.005 -> 0.5 on the wire quantum.
     assert compute_score(0.01, 1.0) == 1
     assert round(0.5) == 0  # the trap this guards against
+
+# --- dispute-stress supplement -------------------------------------------
+#
+# Computed by tapestry against its own fold, with operations identical to ours
+# (quantize rank/100 first, accumulate in doubles, then round). These stress
+# the dispute side, which the six headline vectors barely touch.
+#
+# G and N are the important ones: BOTH have a passing score (44 and 39) and
+# BOTH must still be excluded, because the predicate's middle clause
+# (`applications > disputes`) runs before the score filter. A two-clause
+# implementation publishes them. That is the only cheap way to catch a
+# regression from three clauses back to two, so do not "simplify" this test
+# by dropping the membership assertion and keeping the score one.
+
+
+@pytest.mark.parametrize(
+    "name,rank_votes,expected_score,expected_member",
+    [
+        ("G: one heavy apply vs one light dispute", [(90, 1), (3, -1)], 44, False),
+        ("N: two applies vs two disputes", [(40, 1), (40, 1), (3, -1), (3, -1)], 39, False),
+        ("H: high-trust dispute buries five light applies",
+         [(10, 1)] * 5 + [(90, -1)], 0, False),
+        ("I: low-trust dispute barely dents two heavy applies",
+         [(90, 1), (90, 1), (3, -1)], 70, True),
+        ("J: mid-trust dispute really discounts",
+         [(50, 1), (50, 1), (30, -1)], 32, True),
+        ("K: a single rank-3 apply still scores", [(3, 1)], 2, True),
+        ("M: two rank-3 applies", [(3, 1), (3, 1)], 4, True),
+        # Raw 0.6907... rounds UP to 1, which is the score>=1 membership
+        # boundary: banker's rounding would exclude this member.
+        ("L: a single rank-1 apply lands exactly on the floor", [(1, 1)], 1, True),
+    ],
+)
+def test_dispute_stress_vectors(name, rank_votes, expected_score, expected_member):
+    taggings = [(P1, float(polarity), rank / 100) for rank, polarity in rank_votes]
+
+    weighted_input = sum(w for _, _, w in taggings)
+    weighted_sum = sum(w if p > 0 else -w for _, p, w in taggings)
+    assert compute_score(weighted_sum, weighted_input) == expected_score, name
+
+    members = compute_members(taggings, cutoff=1)
+    assert bool(members) is expected_member, name
+    if expected_member:
+        assert members[0].score == expected_score, name
