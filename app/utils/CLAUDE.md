@@ -67,9 +67,16 @@ Tiny Nostr helpers: `generate_random_nsec`, and `resolve_pubkey_or_400` (hex or 
 
 ## rate_limiting/
 
-Simple windowed counter (Redis-backed when running with a Redis URL configured,
-in-memory fallback otherwise). Used for endpoints that need throttling beyond
-the per-user "frequent graperank request" check in `user_service.py`.
+Redis-backed fixed-window counters (`INCR` + `EXPIRE` on first hit). Used for
+endpoints that need throttling beyond the per-user "frequent graperank request"
+check in `user_service.py`.
+
+- `validateIfRequestedTooOftenByIP(ip)` — the original, hard-coded helper
+  (3 requests / 30 min, key `rate_limit:<ip>`). Used by `/user/graperank`.
+- `validate_rate_limit(ip, *, key_prefix, limit, window_seconds)` — generic
+  version; scopes the counter under `rate_limit:<key_prefix>:<ip>` so different
+  endpoints don't share a bucket. `/shorturl` POST uses it with
+  `key_prefix="shorturl_create", limit=1, window_seconds=1`.
 
 ## constants.py
 

@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     scheduler_fairness_enabled: bool = Field(default=False)
     periodic_graperank_pubkey: str = Field(default="")
     vespa_url: str = Field(...)
+    # Expiry (seconds) for shortened URLs. None = never expire (current default).
+    shorturl_ttl_seconds: int | None = Field(default=None)
     # Per-sink publish mode. False (default) = only changed scores; True =
     # re-assert every above-cutoff score each run. Re-assertion only, not deletes.
     vespa_full_sync: bool = Field(default=False)  # Vespa upserts

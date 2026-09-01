@@ -25,6 +25,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/authChallenge` | `auth_challenge/` | none (this IS auth) |
 | `/setup` | `setup/` | none |
 | `/search` | `search/` | none — see [search/CLAUDE.md → vespa](../core/CLAUDE.md) |
+| `/shorturl` | `shorturl/` | none — POST is rate-limited 1 req/s/IP |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
 | `/admin` | `admin/` | `verify_token` + `verify_admin_access` |
@@ -80,6 +81,14 @@ Each endpoint's specific response class (e.g. `GetUserDataResponse`) subclasses 
 ### `setup/router.py` — Nostr pubkey setup
 
 - **GET** `/{nostr_pubkey}` → 30382 relay hints (`list[list[str]]`).
+
+### `shorturl/router.py` — URL shortener
+
+Redis-only short codes for `{pubkey, relays}`. See
+[`shorturl/CLAUDE.md`](shorturl/CLAUDE.md) for the full design.
+
+- **POST** `/` (body: `CreateShortUrlBody{pubkey, relays}`) → `CreateShortUrlResponse` (`data.shortCode`, `data.content`). Rate-limited 1 req/s/IP. Idempotent per `(pubkey, relay-set)`; `[]` relays is valid; max 7 relays; relays format-checked as `ws://`/`wss://`.
+- **GET** `/{short_code}` → `GetShortUrlResponse` (`data.pubkey`, `data.relays`). 404 if unknown/expired.
 
 ### `user/router.py` — user endpoints
 
