@@ -524,10 +524,9 @@ disputes subtract by weight, and a dispute-dominant pair clamps to 0 rather
 than going negative on the wire — the weighted successor of v1's
 `applications > disputes`.
 
-**Rigor:** present in the formula, **not yet a knob**. `ρ = 0.5` (the spec
-default) as a module constant, published on the event (below) for
-reproducibility; promoting it to a setting is a later, cheap change. Per the
-operator: we are not tuning rigor yet, only using the formula that carries it.
+**Rigor:** *(superseded 2026-09-01 — see below.)* Originally specified as a
+module constant at `ρ = 0.5`, matching tapestry. It is now read per-Observer
+from their saved GrapeRank preset.
 
 ### What stays
 
@@ -662,3 +661,49 @@ Parity is pinned by the six vectors tapestry validated live
 (`scripts/tl-ladder-validate.js`), ported to
 `tests/test_trusted_list_membership.py::test_tapestry_parity_vectors`. If those
 move, the estates have forked.
+
+## Amendment 2026-09-01 — D13: rigor is the Observer's, off their preset
+
+**Status:** Accepted and implemented.
+
+D12 fixed rigor at 0.5 as a module constant because tapestry does, and because
+the operator's direction at the time was "not tuning rigor yet". That leaves a
+knob this repo already has sitting unused: `graperank_preset.rigor`, seeded
+DEFAULT 0.5 / PERMISSIVE 0.3 / RESTRICTIVE 0.65, already resolved per-Observer
+for every GrapeRank run. Two trust vocabularies for the same Observer — one
+tunable for scorecards, one hardcoded for Trusted Lists — is the drift D12 set
+out to avoid.
+
+**Decision.** `_resolve_rigor` reads the Observer's preset through
+`graperank_preset_service.resolve_preset_params`, the *same* resolver
+`brainstorm_request_service` uses, so a TL run and a scorecard run cannot
+disagree about which parameters an Observer is on. Unset resolves to DEFAULT;
+CUSTOM with no stored params falls back to DEFAULT with a warning, inherited
+from that resolver rather than reimplemented.
+
+**Interop is unaffected.** Rigor already rides the event, which is exactly why
+the tag exists — a consumer reproduces the score from the published value
+without knowing anyone's defaults. And DEFAULT is seeded at 0.5, so an
+unconfigured Observer scores identically to tapestry. What changes is that a
+PERMISSIVE Observer reaches confidence on less trust mass than a RESTRICTIVE
+one, which is what a per-Observer trust parameter is for.
+
+Measured live on the same evidence, one tag over six targets: at rigor 0.5 the
+list scores 71 / 50 / 19 / 19; at 0.65 the same evidence scores 54 / 35 / 13 /
+12. Ordering is preserved and mass still beats count.
+
+**Two guards, both deliberate.**
+
+- **Never fatal.** An unreadable preset logs and scores at 0.5 rather than
+  failing the run. Rigor is a refinement; losing a whole publish over it would
+  be the worse outcome, and the retraction pass makes a failed run costlier
+  than a slightly-off one.
+- **`rigor >= 1` is refused.** `certainty = 1 - ρ^input` is identically 0 at
+  ρ = 1, so every member scores 0 and every list silently empties. The preset
+  schema permits `le=1.0`, so this is reachable by operator edit. The resolver
+  logs an error and falls back rather than publishing empty lists that look
+  like a legitimate "nobody qualified" result.
+
+The wire value is formatted through `_format_rigor`, which trims float noise:
+an operator edit landing on `0.30000000000000004` would otherwise publish that
+verbatim and no consumer could reproduce the score from it.

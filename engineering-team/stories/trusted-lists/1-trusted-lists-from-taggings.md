@@ -107,6 +107,14 @@ Testable from the outside. Each criterion gets at least one test handle.
       rank-90 appliers outscore ten rank-3 appliers. A dispute-dominant or
       zero-mass pair clamps to 0 and drops off the list rather than going
       negative on the wire.
+- [ ] **AC8c — rigor is the Observer's.** *(D13.)* Rigor is read from the
+      Observer's saved GrapeRank preset via the same resolver the GrapeRank
+      request path uses, not from a constant: DEFAULT 0.5, PERMISSIVE 0.3,
+      RESTRICTIVE 0.65. Unset resolves to DEFAULT. An unresolvable preset
+      scores at 0.5 rather than failing the run, and a rigor outside [0, 1) is
+      refused — at 1.0 certainty is identically 0 and every list would empty.
+      The resolved value is published on the event, so a consumer reproduces
+      the score without knowing our defaults.
 - [ ] **AC9 — TL wire shape.** *(amended by D12.)* Each published event is kind
       30392 with: the `d` tag per ADR; `title` = the tag element's name;
       `description` = the tag element's description; `metric`; `observer`;

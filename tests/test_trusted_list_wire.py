@@ -55,6 +55,12 @@ def test_tl_event_wire_shape():
     assert _find(tags, "rigor")[0] == ["rigor", "0.5"]
 
 
+def test_rigor_tag_carries_the_observers_resolved_value():
+    # Not a constant: a RESTRICTIVE Observer publishes their own rigor, so a
+    # consumer can reproduce the score without knowing our defaults.
+    assert _find(_tags(rigor=0.65), "rigor")[0] == ["rigor", "0.65"]
+
+
 def test_tl_carries_tag_description():
     # Issue #73 §4: title AND description ride the TL to aid searchability.
     # Tapestry's TLs carry no description tag; this is an addition.

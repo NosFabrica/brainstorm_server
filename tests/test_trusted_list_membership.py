@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from app.services.tagging_parse import is_applied, is_disputed, is_neutral
-from app.services.trusted_list_build import compute_members, compute_score
+from app.services.trusted_list_build import (
+    DEFAULT_RIGOR,
+    _format_rigor,
+    compute_members,
+    compute_score,
+)
 
 P1 = "1" * 64
 P2 = "2" * 64
@@ -196,3 +201,50 @@ def test_dispute_stress_vectors(name, rank_votes, expected_score, expected_membe
     assert bool(members) is expected_member, name
     if expected_member:
         assert members[0].score == expected_score, name
+
+
+# --- rigor is the Observer's, not a constant ------------------------------
+
+
+def test_default_rigor_matches_the_seeded_default_preset():
+    """DEFAULT is seeded at 0.5, which is also tapestry's hardcoded value. An
+    Observer on the default must therefore score identically in both estates —
+    if this drifts, every unconfigured Observer silently forks."""
+    assert DEFAULT_RIGOR == 0.5
+
+
+def test_lower_rigor_reaches_confidence_on_less_trust_mass():
+    """PERMISSIVE (0.3) vs DEFAULT (0.5) vs RESTRICTIVE (0.65) on identical
+    evidence. Rigor is monotone: the stricter the rigor, the lower the score
+    for the same trust mass."""
+    evidence = [(P1, 1.0, 0.30)]
+    permissive = compute_score(0.30, 0.30, rigor=0.3)
+    default = compute_score(0.30, 0.30, rigor=0.5)
+    restrictive = compute_score(0.30, 0.30, rigor=0.65)
+    assert permissive > default > restrictive
+    # And it reaches the fold, not just the helper.
+    assert compute_members(evidence, cutoff=1, rigor=0.3)[0].score == permissive
+
+
+def test_rigor_of_one_empties_the_list():
+    """The degenerate end: certainty is identically 0, so every member scores 0
+    and drops. The service refuses this value rather than publishing nothing —
+    this test pins the arithmetic the service is protecting against."""
+    assert compute_score(1.0, 1.0, rigor=1.0) == 0
+    assert compute_members([(P1, 1.0, 0.9)] * 3, cutoff=1, rigor=1.0) == []
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (0.5, "0.5"),
+        (0.3, "0.3"),
+        (0.65, "0.65"),
+        (1.0, "1"),
+        # An operator edit can land here; publishing it verbatim would leave no
+        # consumer able to reproduce the score.
+        (0.30000000000000004, "0.3"),
+    ],
+)
+def test_rigor_is_published_without_float_noise(value, expected):
+    assert _format_rigor(value) == expected

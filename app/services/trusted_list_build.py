@@ -23,10 +23,20 @@ D_TAG_PREFIX = "tl-tag"
 
 RETRACTED_MARKER = ("status", "retracted")
 
-# GrapeRank's rigor, as a constant rather than a knob (ADR D12). It rides the
-# published event so a consumer can reproduce a score; promoting it to a
-# setting is a later, cheap change.
-RIGOR = 0.5
+# Fallback rigor, used when an Observer has no resolvable GrapeRank preset.
+# Matches the DEFAULT preset's seeded value, and tapestry's hardcoded constant,
+# so an unconfigured Observer scores identically in both estates.
+DEFAULT_RIGOR = 0.5
+
+
+def _format_rigor(rigor: float) -> str:
+    """Rigor on the wire, without float noise.
+
+    `str(0.65)` is fine, but a rigor arriving as e.g. 0.30000000000000004 from
+    an operator edit would publish that verbatim and no consumer could
+    reproduce the score from it. Trim to a sane precision and drop the tail.
+    """
+    return f"{rigor:.6f}".rstrip("0").rstrip(".")
 
 
 def _round_half_up(value: float) -> int:
@@ -71,21 +81,31 @@ class _Tally:
     weighted_sum: float = 0.0
 
 
-def compute_score(weighted_sum: float, weighted_input: float) -> int:
+def compute_score(
+    weighted_sum: float, weighted_input: float, rigor: float = DEFAULT_RIGOR
+) -> int:
     """`round(max(average * certainty, 0) * 100)` as a 0-100 integer.
 
     Split out from the fold so the parity vectors can exercise the arithmetic
     directly. Zero input scores 0 rather than dividing by it.
+
+    `rigor` is the Observer's GrapeRank rigor. Lower rigor reaches confidence
+    on less trust mass (PERMISSIVE, 0.3), higher rigor demands more
+    (RESTRICTIVE, 0.65). Note the degenerate end: `rigor = 1.0` makes
+    `certainty` identically 0, so every member scores 0 and every list empties.
+    The schema permits it; the resolver warns about it.
     """
     if weighted_input == 0:
         return 0
     average = weighted_sum / weighted_input
-    certainty = 1 - RIGOR**weighted_input
+    certainty = 1 - rigor**weighted_input
     return _round_half_up(max(average * certainty, 0.0) * 100)
 
 
 def compute_members(
-    taggings: list[tuple[str, float, float]], cutoff: int
+    taggings: list[tuple[str, float, float]],
+    cutoff: int,
+    rigor: float = DEFAULT_RIGOR,
 ) -> list[Member]:
     """Bucket assertions per target, score them, apply the membership predicate.
 
@@ -98,7 +118,7 @@ def compute_members(
 
         input     = Sigma w
         average   = Sigma (w * r) / input          (r = +1 applied, -1 disputed)
-        certainty = 1 - RIGOR ** input
+        certainty = 1 - rigor ** input
         score     = round(max(average * certainty, 0) * 100)   -> 0..100
 
     Membership is three clauses, not two: `applications >= cutoff` AND
@@ -130,7 +150,7 @@ def compute_members(
     for pubkey, t in tally.items():
         if not (t.applications >= cutoff and t.applications > t.disputes):
             continue
-        score = compute_score(t.weighted_sum, t.weighted_input)
+        score = compute_score(t.weighted_sum, t.weighted_input, rigor)
         if score < 1:
             # Net-negative, zero-mass and exact-split pairs all round to 0 and
             # drop off the list entirely — the weighted successor of v1's
@@ -159,6 +179,7 @@ def build_trusted_list_tags(
     members: list[Member],
     cutoff: int,
     min_rank: int,
+    rigor: float = DEFAULT_RIGOR,
     retracted: bool = False,
 ) -> list[list[str]]:
     """The kind-30392 tag list, per ADR D5.
@@ -181,7 +202,7 @@ def build_trusted_list_tags(
         # No score or rigor on a retraction: there is no membership to score.
         tags.append(list(RETRACTED_MARKER))
         return tags
-    tags.append(["rigor", str(RIGOR)])
+    tags.append(["rigor", _format_rigor(rigor)])
     # `["p", <pubkey>, "", "<score>"]` — the relay slot stays empty and the
     # score rides third, as a string. This is the layout tapestry's reader
     # already parses (trustedList/index.js:135-140).

@@ -46,9 +46,17 @@ from app.repos.tagging_repo import (
     get_dictionary_on_db,
     get_taggings_for_tag_on_db,
 )
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+
+from app.repos.brainstorm_nsec import get_graperank_preset_by_pubkey_on_db
 from app.repos.user_repo import get_qualifying_asserters_for_observer
+from app.services.graperank_preset_service import (
+    normalize_preset,
+    resolve_preset_params,
+)
 from app.services.trusted_list_build import (
     D_TAG_PREFIX,
+    DEFAULT_RIGOR,
     TRUSTED_LIST_KIND,
     build_trusted_list_content,
     build_trusted_list_tags,
@@ -169,6 +177,52 @@ def _parse_d_tag_slug(d_tag: str, observer: str) -> tuple[str, str] | None:
     return author8, slug
 
 
+async def _resolve_rigor(db: AsyncDBSession, observer_pubkey: str) -> float:
+    """This Observer's GrapeRank rigor, off their saved preset.
+
+    Reuses the same resolver the GrapeRank request path uses
+    (`brainstorm_request_service`), so a TL run and a scorecard run can never
+    disagree about which parameters this Observer is on: unset resolves to
+    DEFAULT, CUSTOM with no stored params falls back to DEFAULT with a warning.
+
+    Deliberate divergence from tapestry, which hardcodes 0.5 (ADR D12). Both
+    estates publish the value on the event, so a consumer reproduces the score
+    either way; what changes is that a PERMISSIVE Observer (0.3) reaches
+    confidence on less trust mass than a RESTRICTIVE one (0.65). DEFAULT is
+    seeded at 0.5, so an unconfigured Observer still matches tapestry exactly.
+
+    Never fatal: rigor is a refinement, and failing a whole publish run over an
+    unreadable preset would be a worse outcome than scoring at the default.
+    """
+    try:
+        stored = await get_graperank_preset_by_pubkey_on_db(db, observer_pubkey)
+        _effective, params = await resolve_preset_params(
+            db, normalize_preset(stored), pubkey=observer_pubkey
+        )
+        rigor = float(params.rigor)
+    except Exception:
+        logger.exception(
+            "Could not resolve GrapeRank preset for observer %s; "
+            "scoring Trusted Lists at the default rigor %s",
+            observer_pubkey,
+            DEFAULT_RIGOR,
+        )
+        return DEFAULT_RIGOR
+
+    if not 0.0 <= rigor < 1.0:
+        # rigor >= 1 makes certainty identically 0, which silently empties
+        # every list this Observer has. Refuse it rather than publish nothing.
+        logger.error(
+            "Observer %s has rigor=%s, which is outside [0, 1) and would empty "
+            "every Trusted List; scoring at the default %s instead",
+            observer_pubkey,
+            rigor,
+            DEFAULT_RIGOR,
+        )
+        return DEFAULT_RIGOR
+    return rigor
+
+
 async def generate_trusted_lists_for_observer(
     observer_pubkey: str,
 ) -> TrustedListRunResult:
@@ -186,6 +240,7 @@ async def generate_trusted_lists_for_observer(
         nsec = nsec_row.nsec
         result.taggings_in_store = await count_taggings_on_db(db)
         asserters = await get_asserter_pubkeys_on_db(db)
+        rigor = await _resolve_rigor(db, observer_pubkey)
 
     result.signing_pubkey = Keys.parse(secret_key=nsec).public_key().to_hex()
 
@@ -253,7 +308,7 @@ async def generate_trusted_lists_for_observer(
             (target, polarity, qualifying.get(asserter, 0.0))
             for target, polarity, asserter in taggings
         ]
-        members = compute_members(weighted, cutoff=cutoff)
+        members = compute_members(weighted, cutoff=cutoff, rigor=rigor)
         d_tag = compute_d_tag(observer_pubkey, entry.tag_author_pubkey, entry.slug)
         # Marked current BEFORE the publish is attempted: a transient relay
         # failure must not let the retraction pass empty a live list.
@@ -280,6 +335,7 @@ async def generate_trusted_lists_for_observer(
                     members=members,
                     cutoff=cutoff,
                     min_rank=settings.trusted_list_min_rank,
+                    rigor=rigor,
                 ),
                 build_trusted_list_content(members),
             )
