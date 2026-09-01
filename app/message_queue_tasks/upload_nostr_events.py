@@ -1,7 +1,7 @@
 import asyncio
 import time
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from nostr_sdk import Client, ClientMessage, Event, Keys, NostrSigner  # type: ignore
@@ -24,6 +24,7 @@ from app.repos.brainstorm_nsec import (
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
     reset_runs_since_full_on_db,
     set_is_observer_search_available_by_pubkey_on_db,
+    update_assistant_kind0_published_at_on_db,
     update_last_published_pubkeys_by_pubkey_on_db,
     update_last_time_published_graperank_on_db,
 )
@@ -32,6 +33,7 @@ from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_publish_duration_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
 )
+from app.services.assistant_profile_service import publish_assistant_kind0_for_user
 from app.services.publish_drift import resolve_full_sync
 
 logger = loggr.get_logger(__name__)
@@ -412,6 +414,31 @@ async def upsert_scores_to_vespa(
     return n_failed
 
 
+async def ensure_assistant_kind0_published(
+    observer: str,
+    assistant_kind0_published_at: datetime | None,
+    timings: dict[str, float],
+) -> None:
+    """An Assistant that has never published its kind-0 gets it now, BEFORE its
+    first TA batch — scores must never be authored by a profile-less key. Only
+    the in-app flow calls POST /user/assistantProfile; NIP-07 users reach this
+    consumer with no profile anywhere. Best-effort: on failure the flag stays
+    unset so the next run retries, and the TA publish itself is never blocked.
+    """
+    if assistant_kind0_published_at is not None:
+        return
+    with _timed(timings, "kind0_profile"):
+        try:
+            async with db_session() as db:
+                await publish_assistant_kind0_for_user(db, user_pubkey=observer)
+                await update_assistant_kind0_published_at_on_db(db, pubkey=observer)
+                await db.commit()
+        except Exception as e:
+            logger.warning(
+                f"assistant kind-0 publish failed for observer {observer}: {e}"
+            )
+
+
 async def process_nostr_upload_message(message: dict):
     # is_success = message["result"]["success"]
 
@@ -441,6 +468,9 @@ async def process_nostr_upload_message(message: dict):
                     db, pubkey=observer
                 )
             assert nsec_db_obj.pubkey == observer
+            # Captured while the session is live — read again below to decide
+            # whether this Assistant still needs its kind-0 profile published.
+            assistant_kind0_published_at = nsec_db_obj.assistant_kind0_published_at
             # Read this run's per-sink force-full overrides off the request row
             # (drift repair) — folded into the existing status-update session, so
             # no extra round-trip. settings default OR the per-run override.
@@ -464,6 +494,10 @@ async def process_nostr_upload_message(message: dict):
         with _timed(timings, "connect"):
             nostr_client: Client = await init_nostr_client(nsec_db_obj.nsec)
         signing_pubkey = Keys.parse(secret_key=nsec_db_obj.nsec).public_key().to_hex()
+
+        await ensure_assistant_kind0_published(
+            observer, assistant_kind0_published_at, timings
+        )
 
         with _timed(timings, "sign"):
             nostr_events = await get_events_from_graperank_result(

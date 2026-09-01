@@ -127,6 +127,11 @@ class BrainstormNsec(TimestampMixin, Base):
     last_time_calculated_graperank = mapped_column(DateTime, nullable=True)
     # Freshness clock: set only on a successful TA publish. Drives scheduling.
     last_time_published_graperank = mapped_column(DateTime, nullable=True)
+    # Set once the Assistant's kind-0 profile has been published (see
+    # assistant_profile_service). Null = never published: the TA upload task
+    # publishes it best-effort before the observer's first TA batch and sets
+    # this, so scores are never authored by a profile-less key.
+    assistant_kind0_published_at = mapped_column(DateTime, nullable=True)
     graperank_preset: Mapped[str] = mapped_column(String, nullable=True)
     graperank_custom_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     last_published_pubkeys: Mapped[bytes | None] = mapped_column(

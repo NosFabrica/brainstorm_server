@@ -122,3 +122,19 @@ def test_response_carries_the_event_id_and_assistant_pubkey(
     body = _publish(client)["data"]
     assert body["assistant_pubkey"] == assistant_keys.public_key().to_hex()
     assert body["event_id"] == sent_events[0].id().to_hex()
+
+
+def test_owner_name_lookup_failure_degrades_to_the_pubkey_prefix(
+    client, sent_events, monkeypatch, caller
+):
+    """A relay hiccup on the owner kind-0 read must not abort the whole
+    publish — the upload task leans on this to never skip a profile."""
+    monkeypatch.setattr(
+        "app.services.assistant_profile_service._fetch_owner_name",
+        AsyncMock(side_effect=Exception("relay timed out")),
+    )
+
+    _publish(client)
+
+    expected = f"{caller.pubkey[:6]}'s Brainstorm Assistant"
+    assert _content(sent_events)["name"] == expected
