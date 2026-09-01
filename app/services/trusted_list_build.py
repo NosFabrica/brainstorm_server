@@ -8,6 +8,7 @@ recorded in ADR `trusted-lists/0001` D5.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 
 from app.services.tagging_parse import is_applied, is_disputed
@@ -22,12 +23,30 @@ D_TAG_PREFIX = "tl-tag"
 
 RETRACTED_MARKER = ("status", "retracted")
 
+# GrapeRank's rigor, as a constant rather than a knob (ADR D12). It rides the
+# published event so a consumer can reproduce a score; promoting it to a
+# setting is a later, cheap change.
+RIGOR = 0.5
+
+
+def _round_half_up(value: float) -> int:
+    """Round half away from zero, matching JavaScript's `Math.round`.
+
+    Python's built-in `round` is banker's rounding — `round(0.5) == 0` — so
+    using it here would disagree with tapestry on every exact .5 boundary.
+    Scores are clamped non-negative before this is called, so `floor(x + 0.5)`
+    is the whole of `Math.round`'s behaviour for our domain.
+    """
+    return math.floor(value + 0.5)
+
 
 @dataclass(frozen=True)
 class Member:
     pubkey: str
     applications: int
     disputes: int
+    # Weighted confidence on the estate's Rank quantum: a 0-100 integer.
+    score: int
 
 
 def compute_d_tag(observer: str, tag_author_pubkey: str, slug: str) -> str:
@@ -42,28 +61,90 @@ def compute_d_tag(observer: str, tag_author_pubkey: str, slug: str) -> str:
     return f"{D_TAG_PREFIX}-{observer[:8]}-{tag_author_pubkey[:8]}-{slug}"
 
 
-def compute_members(taggings: list[tuple[str, float]], cutoff: int) -> list[Member]:
-    """Bucket assertions per target and apply the membership predicate.
+@dataclass
+class _Tally:
+    applications: int = 0
+    disputes: int = 0
+    # Sigma w over the pair's live taggings.
+    weighted_input: float = 0.0
+    # Sigma (w * r), r = +1 applied / -1 disputed.
+    weighted_sum: float = 0.0
 
-    A target is a member iff `applications >= cutoff AND applications > disputes`.
-    Neutral-polarity assertions (the reserved open interval) count as neither.
-    Order is applications desc, then pubkey asc — stable across runs so an
-    unchanged membership republishes byte-identically.
+
+def compute_score(weighted_sum: float, weighted_input: float) -> int:
+    """`round(max(average * certainty, 0) * 100)` as a 0-100 integer.
+
+    Split out from the fold so the parity vectors can exercise the arithmetic
+    directly. Zero input scores 0 rather than dividing by it.
     """
-    tally: dict[str, list[int]] = {}
-    for target_pubkey, polarity in taggings:
-        entry = tally.setdefault(target_pubkey, [0, 0])
-        if is_applied(polarity):
-            entry[0] += 1
-        elif is_disputed(polarity):
-            entry[1] += 1
+    if weighted_input == 0:
+        return 0
+    average = weighted_sum / weighted_input
+    certainty = 1 - RIGOR**weighted_input
+    return _round_half_up(max(average * certainty, 0.0) * 100)
 
-    members = [
-        Member(pubkey=pubkey, applications=counts[0], disputes=counts[1])
-        for pubkey, counts in tally.items()
-        if counts[0] >= cutoff and counts[0] > counts[1]
-    ]
-    members.sort(key=lambda m: (-m.applications, m.pubkey))
+
+def compute_members(
+    taggings: list[tuple[str, float, float]], cutoff: int
+) -> list[Member]:
+    """Bucket assertions per target, score them, apply the membership predicate.
+
+    `taggings` are `(target_pubkey, polarity, weight)` triples, where weight is
+    the asserter's trust weight in this Observer's web of trust — Influence on
+    the Rank quantum, so in [0, 1].
+
+    Scoring is GrapeRank's interpreter formula applied single-hop over one
+    (tag, target) pair (ADR D12):
+
+        input     = Sigma w
+        average   = Sigma (w * r) / input          (r = +1 applied, -1 disputed)
+        certainty = 1 - RIGOR ** input
+        score     = round(max(average * certainty, 0) * 100)   -> 0..100
+
+    Membership is three clauses, not two: `applications >= cutoff` AND
+    `applications > disputes` AND `score >= 1`. The middle clause is inherited
+    — tapestry's `certainty` method chains off `applyDisputesFunction`
+    (refreshPinnedTags.js:112), so the v1 count predicate still gates before
+    the score does. ADR D12 as drafted states only the outer two; the shipped
+    tapestry code has all three, and matching the code is what keeps the two
+    implementations agreeing on a target with more disputes than applications
+    but a high-weight applier.
+
+    Neutral-polarity assertions (the reserved open interval) count as neither
+    and contribute no weight. Order is score desc, then pubkey asc — stable
+    across runs so an unchanged membership republishes byte-identically.
+    """
+    tally: dict[str, _Tally] = {}
+    for target_pubkey, polarity, weight in taggings:
+        entry = tally.setdefault(target_pubkey, _Tally())
+        if is_applied(polarity):
+            entry.applications += 1
+            entry.weighted_input += weight
+            entry.weighted_sum += weight
+        elif is_disputed(polarity):
+            entry.disputes += 1
+            entry.weighted_input += weight
+            entry.weighted_sum -= weight
+
+    members = []
+    for pubkey, t in tally.items():
+        if not (t.applications >= cutoff and t.applications > t.disputes):
+            continue
+        score = compute_score(t.weighted_sum, t.weighted_input)
+        if score < 1:
+            # Net-negative, zero-mass and exact-split pairs all round to 0 and
+            # drop off the list entirely — the weighted successor of v1's
+            # `applications > disputes`.
+            continue
+        members.append(
+            Member(
+                pubkey=pubkey,
+                applications=t.applications,
+                disputes=t.disputes,
+                score=score,
+            )
+        )
+    members.sort(key=lambda m: (-m.score, m.pubkey))
     return members
 
 
@@ -97,17 +178,24 @@ def build_trusted_list_tags(
         ["min-rank", str(min_rank)],
     ]
     if retracted:
+        # No score or rigor on a retraction: there is no membership to score.
         tags.append(list(RETRACTED_MARKER))
         return tags
-    tags.extend([["p", m.pubkey] for m in members])
+    tags.append(["rigor", str(RIGOR)])
+    # `["p", <pubkey>, "", "<score>"]` — the relay slot stays empty and the
+    # score rides third, as a string. This is the layout tapestry's reader
+    # already parses (trustedList/index.js:135-140).
+    tags.extend([["p", m.pubkey, "", str(m.score)] for m in members])
     return tags
 
 
 def build_trusted_list_content(members: list[Member]) -> str:
-    """The `content` payload: per-member endorsement/dispute counts.
+    """The `content` payload: per-member endorsement/dispute counts plus score.
 
     Consumers that only read `p` tags ignore this; it exists so a reader can see
     *how contested* each membership is without re-deriving it from raw taggings.
+    Treat it as advisory — tapestry is emptying its own TL content as
+    duplicative, and the `p` tags are the canonical member list.
     """
     return json.dumps(
         {
@@ -116,6 +204,7 @@ def build_trusted_list_content(members: list[Member]) -> str:
                     "pubkey": m.pubkey,
                     "endorsements": m.applications,
                     "disputes": m.disputes,
+                    "score": m.score,
                 }
                 for m in members
             ]

@@ -77,6 +77,29 @@ async def _qualifying(observer, pubkeys):
         await neo.close()
 
 
+# --- D12: the asserter weight the fold prices assertions with ---------------
+
+
+def test_qualifying_asserters_carry_rank_quantized_weights():
+    """The repo returns `{pubkey: weight}`, and the weight is Influence on the
+    Rank quantum — `round(influence * 100) / 100`. Tapestry derives the same
+    number as `wot_rank / 100`, so any drift here silently forks the two
+    estates' scores while both still look plausible.
+    """
+    nodes = {HIGH: 0.9, EXACT: MIN_INFLUENCE, LOW: 0.01}
+
+    async def work(db):
+        return await _qualifying(OBSERVER_A, [HIGH, EXACT, LOW])
+
+    qual = run_with_db_and_graph(work, nodes, OBSERVER_A)
+    assert qual[HIGH] == 0.9
+    assert LOW not in qual
+    # Every weight is a whole number of Rank points, never a raw influence
+    # float. Compared with a tolerance because `n / 100 * 100` is not exact in
+    # binary floating point for every n.
+    assert all(abs(w * 100 - round(w * 100)) < 1e-9 for w in qual.values())
+
+
 # --- AC5 / AC6 -------------------------------------------------------------
 
 
@@ -89,7 +112,7 @@ def test_dictionary_contains_only_tags_used_by_qualifying_asserters():
             await upsert_user_tagging_on_db(db, _tagging(a))
         await db.flush()
         qual = await _qualifying(OBSERVER_A, [HIGH, EXACT, LOW, UNSCORED])
-        entries = await get_dictionary_on_db(db, qual, min_uses=1)
+        entries = await get_dictionary_on_db(db, list(qual), min_uses=1)
         return sorted(qual), entries
 
     qual, entries = run_with_db_and_graph(work, nodes, OBSERVER_A)
@@ -118,10 +141,10 @@ def test_dictionary_excludes_subthreshold_only_and_unreferenced_tags():
         await upsert_user_tagging_on_db(db, _tagging(LOW))
         await db.flush()
         qual = await _qualifying(OBSERVER_A, [LOW])
-        return qual, await get_dictionary_on_db(db, qual, min_uses=1)
+        return qual, await get_dictionary_on_db(db, list(qual), min_uses=1)
 
     qual, entries = run_with_db_and_graph(work, nodes, OBSERVER_A)
-    assert qual == []
+    assert qual == {}
     # No qualifying asserters -> empty dictionary, and the never-used tag is
     # absent regardless.
     assert entries == []
@@ -137,7 +160,7 @@ def test_two_observers_get_different_dictionaries_from_same_taggings():
         await upsert_user_tagging_on_db(db, _tagging(HIGH))
         await db.flush()
         qual = await _qualifying(OBSERVER_A, [HIGH])
-        return await get_dictionary_on_db(db, qual, min_uses=1)
+        return await get_dictionary_on_db(db, list(qual), min_uses=1)
 
     entries_a = run_with_db_and_graph(work_a, nodes, OBSERVER_A)
     assert len(entries_a) == 1
@@ -148,7 +171,7 @@ def test_two_observers_get_different_dictionaries_from_same_taggings():
         await db.flush()
         # Same pubkey, but scored under OBSERVER_B's key at 0.001.
         qual = await _qualifying(OBSERVER_B, [HIGH])
-        return await get_dictionary_on_db(db, qual, min_uses=1)
+        return await get_dictionary_on_db(db, list(qual), min_uses=1)
 
     entries_b = run_with_db_and_graph(work_b, {HIGH: 0.001}, OBSERVER_B)
     assert entries_b == []
@@ -162,8 +185,8 @@ def test_min_uses_threshold_is_honoured():
         await upsert_user_tagging_on_db(db, _tagging(HIGH))
         await db.flush()
         qual = await _qualifying(OBSERVER_A, [HIGH, EXACT])
-        one = await get_dictionary_on_db(db, qual, min_uses=1)
-        two = await get_dictionary_on_db(db, qual, min_uses=2)
+        one = await get_dictionary_on_db(db, list(qual), min_uses=1)
+        two = await get_dictionary_on_db(db, list(qual), min_uses=2)
         return len(one), len(two)
 
     # Issue #73 anticipates raising the threshold; it must actually bite.
@@ -181,7 +204,7 @@ def test_tagging_referencing_unknown_tag_element_is_dropped():
         await upsert_user_tagging_on_db(db, _tagging(HIGH))
         await db.flush()
         qual = await _qualifying(OBSERVER_A, [HIGH])
-        return await get_dictionary_on_db(db, qual, min_uses=1)
+        return await get_dictionary_on_db(db, list(qual), min_uses=1)
 
     # Must be dropped, not surfaced as a TL with an empty title.
     assert run_with_db_and_graph(work, nodes, OBSERVER_A) == []
@@ -198,7 +221,7 @@ def test_neutral_polarity_taggings_do_not_create_dictionary_entries():
         await upsert_user_tagging_on_db(db, _tagging(HIGH, polarity=0.0))
         await db.flush()
         qual = await _qualifying(OBSERVER_A, [HIGH])
-        return await get_dictionary_on_db(db, qual, min_uses=1)
+        return await get_dictionary_on_db(db, list(qual), min_uses=1)
 
     # The reserved open interval counts as neither use.
     assert run_with_db_and_graph(work, nodes, OBSERVER_A) == []
@@ -213,8 +236,9 @@ def test_taggings_for_tag_restricted_to_qualifying_asserters():
         await upsert_user_tagging_on_db(db, _tagging(LOW))
         await db.flush()
         qual = await _qualifying(OBSERVER_A, [HIGH, LOW])
-        return await get_taggings_for_tag_on_db(db, TAG_EV, qual)
+        return await get_taggings_for_tag_on_db(db, TAG_EV, list(qual))
 
     rows = run_with_db_and_graph(work, nodes, OBSERVER_A)
-    # LOW's assertion must not reach the membership computation at all.
-    assert rows == [(TARGET, 1.0)]
+    # LOW's assertion must not reach the membership computation at all. The
+    # asserter rides along so the weighted fold can price the assertion.
+    assert rows == [(TARGET, 1.0, HIGH)]

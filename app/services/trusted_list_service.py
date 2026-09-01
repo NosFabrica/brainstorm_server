@@ -208,15 +208,19 @@ async def generate_trusted_lists_for_observer(
         result.empty_reason = EMPTY_REASON_NO_QUALIFYING_ASSERTERS
         return result
 
+    # `qualifying` maps asserter -> trust weight; the repos only need the keys.
+    qualifying_pubkeys = list(qualifying)
     async with db_session() as db:
         dictionary = await get_dictionary_on_db(
             db,
-            qualifying_asserters=qualifying,
+            qualifying_asserters=qualifying_pubkeys,
             min_uses=settings.trusted_list_min_tag_uses,
         )
         per_tag_taggings = {
             entry.tag_event_id: await get_taggings_for_tag_on_db(
-                db, tag_event_id=entry.tag_event_id, qualifying_asserters=qualifying
+                db,
+                tag_event_id=entry.tag_event_id,
+                qualifying_asserters=qualifying_pubkeys,
             )
             for entry in dictionary
         }
@@ -242,7 +246,14 @@ async def generate_trusted_lists_for_observer(
 
     for entry in dictionary:
         taggings = per_tag_taggings.get(entry.tag_event_id, [])
-        members = compute_members(taggings, cutoff=cutoff)
+        # Attach each asserter's trust weight. The repo restricted the rows to
+        # qualifying asserters, so every lookup hits; 0.0 is a defensive floor
+        # that scores the tagging out rather than crashing the run.
+        weighted = [
+            (target, polarity, qualifying.get(asserter, 0.0))
+            for target, polarity, asserter in taggings
+        ]
+        members = compute_members(weighted, cutoff=cutoff)
         d_tag = compute_d_tag(observer_pubkey, entry.tag_author_pubkey, entry.slug)
         # Marked current BEFORE the publish is attempted: a transient relay
         # failure must not let the retraction pass empty a live list.

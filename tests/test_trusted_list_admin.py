@@ -164,10 +164,18 @@ def _patch_service_reads(monkeypatch, *, taggings, asserters, qualifying):
         yield MagicMock()
 
     monkeypatch.setattr(svc.neo4j_driver, "session", fake_neo)
+    # The repo returns `{asserter: trust weight}` since D12. Callers here pass
+    # a bare list of pubkeys; give each a uniform mid weight, which scores any
+    # single application well clear of the `score >= 1` floor.
+    weights = (
+        qualifying
+        if isinstance(qualifying, dict)
+        else {pubkey: 0.5 for pubkey in qualifying}
+    )
     monkeypatch.setattr(
         svc,
         "get_qualifying_asserters_for_observer",
-        AsyncMock(return_value=qualifying),
+        AsyncMock(return_value=weights),
     )
 
 
@@ -307,7 +315,7 @@ def test_publish_failure_is_isolated_per_tag(monkeypatch):
     monkeypatch.setattr(
         svc,
         "get_taggings_for_tag_on_db",
-        AsyncMock(return_value=[("9" * 64, 1.0)]),
+        AsyncMock(return_value=[("9" * 64, 1.0, "b" * 64)]),
     )
     monkeypatch.setattr(svc, "_connect", AsyncMock(return_value=MagicMock()))
     publish = AsyncMock(side_effect=[RuntimeError("relay rejected"), None])

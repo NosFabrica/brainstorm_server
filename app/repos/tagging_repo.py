@@ -167,18 +167,24 @@ async def get_dictionary_on_db(
 
 async def get_taggings_for_tag_on_db(
     db: AsyncDBSession, tag_event_id: str, qualifying_asserters: list[str]
-) -> list[tuple[str, float]]:
-    """(target_pubkey, polarity) for one tag, restricted to qualifying asserters.
+) -> list[tuple[str, float, str]]:
+    """(target_pubkey, polarity, asserter_pubkey) for one tag, restricted to
+    qualifying asserters.
 
     One row per live assertion — replaceability already collapsed them at write
-    time, so the caller can bucket without deduping.
+    time, so the caller can bucket without deduping. The asserter rides along so
+    the weighted fold can look up that asserter's trust weight (D12).
     """
     if not qualifying_asserters:
         return []
     stmt = (
-        select(NostrUserTagging.target_pubkey, NostrUserTagging.polarity)
+        select(
+            NostrUserTagging.target_pubkey,
+            NostrUserTagging.polarity,
+            NostrUserTagging.asserter_pubkey,
+        )
         .where(NostrUserTagging.tag_event_id == tag_event_id)
         .where(NostrUserTagging.asserter_pubkey.in_(qualifying_asserters))
     )
     result = await db.execute(stmt)
-    return [(row[0], float(row[1])) for row in result.all()]
+    return [(row[0], float(row[1]), row[2]) for row in result.all()]

@@ -229,9 +229,15 @@ async def get_qualifying_asserters_for_observer(
     pubkeys: list[str],
     observer_pubkey: str,
     min_influence: float,
-) -> list[str]:
+) -> dict[str, float]:
     """Of `pubkeys`, those whose Influence in `observer_pubkey`'s web of trust
-    clears `min_influence` (inclusive).
+    clears `min_influence` (inclusive), mapped to their trust weight.
+
+    The weight is the asserter's Influence quantized to the Rank quantum —
+    `round(influence * 100) / 100`. Tapestry derives the same weight as
+    `wot_rank_<pov> / 100` (`src/api/profile-tags/index.js:679`), and Rank is
+    `round(Influence * 100)` (CONTEXT.md), so quantizing here is what makes the
+    two implementations agree exactly rather than merely closely.
 
     One round trip for the whole set — the per-pubkey `get_influence_for_observer`
     would be N queries during a Trusted List run. The observer key is passed as a
@@ -244,14 +250,14 @@ async def get_qualifying_asserters_for_observer(
     failed" without checking whether the observer has been scored at all.
     """
     if not pubkeys:
-        return []
+        return {}
     property_name = f"influence_{observer_pubkey}"
     query = """
     UNWIND $pubkeys AS pk
     MATCH (user:NostrUser {pubkey: pk})
     WITH pk, user[$property_name] AS influence
     WHERE influence IS NOT NULL AND influence >= $min_influence
-    RETURN pk
+    RETURN pk, influence
     """
     result = await session.run(
         query,
@@ -259,7 +265,10 @@ async def get_qualifying_asserters_for_observer(
         property_name=property_name,
         min_influence=min_influence,
     )
-    return [record["pk"] async for record in result]
+    return {
+        record["pk"]: round(float(record["influence"]) * 100) / 100
+        async for record in result
+    }
 
 
 # ----------------- overview / stats / paginated connections -----------------

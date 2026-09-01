@@ -443,8 +443,11 @@ re-check this module.
 
 ## Amendment 2026-08-27 — D12: weighted member confidence (GrapeRank interpreter)
 
-**Status:** Proposed — pending confirmation from the team conversation in
-flight; wire details below may shift before implementation.
+**Status:** Accepted and implemented 2026-09-01. Confirmed against tapestry's
+shipped implementation (PR #574, merged to their staging 2026-08-28) — the
+formula below survived review unchanged; six wire/config details did not. They
+are corrected in "Confirmed against the shipped implementation" at the end of
+this amendment, which is normative where it contradicts the text above.
 
 ### Why
 
@@ -580,3 +583,66 @@ Plain `Σ influence(applied) − Σ influence(disputed)`: simpler, but unbounded
 diminishing-returns behavior (2× the sybils buys 2× the score forever,
 whereas `1 − ρ^input` saturates), and introduces a second trust formula into
 an estate that already standardized one.
+
+### Confirmed against the shipped implementation (2026-09-01)
+
+Read out of tapestry at `feat/tl-weighted-certainty` (== their `staging`). The
+math above is confirmed verbatim. Six things this amendment got wrong when it
+was drafted the day before their PR landed:
+
+1. **Weight is not a raw Influence float.** Tapestry uses
+   `wot_rank_<pov> / 100` (`src/api/profile-tags/index.js:679`) — Influence
+   quantized to the Rank quantum. We read the raw `influence_<observer>`
+   property off Neo4j, so `get_qualifying_asserters_for_observer` quantizes with
+   `round(influence * 100) / 100`. Without that the two estates agree closely
+   but not exactly, which is the worst of both worlds: plausible numbers that
+   silently disagree.
+
+2. **The membership predicate has three clauses, not two.** Tapestry's
+   `certainty` method chains off `applyDisputesFunction`
+   (`refreshPinnedTags.js:112`), so v1's `applications > disputes` still gates
+   before the score does. The predicate is
+   `applications >= cutoff AND applications > disputes AND score >= 1`. It
+   differs from the two-clause version only for a target with more disputes
+   than applications but a heavier applier — rare, and we match the code.
+
+3. **`includeScoreInTL` was retired, not switched on.** This amendment assumed
+   we would ride that flag's branch. Tapestry deleted the old enrichment
+   (member `wot_rank` in the score slot); old pins carrying the flag are
+   accepted and it is ignored. The slot's meaning is now singular: the active
+   method's score. There is no flag for us to mirror.
+
+4. **There is no `membership-method` tag.** One existed during development and
+   was stripped by operator decision as never-spec'd. A list's method is
+   inferred from its shape — rigor tag plus integer scores means certainty, no
+   scores means count. We therefore publish `rigor` on scored lists only, and
+   nothing on a retraction.
+
+5. **`metric` stays `tag-membership`.** Tapestry emits
+   `pinned-tag-membership` from its pinned-tag path. Ours are not pin-derived
+   and the D5 collision argument is unchanged, so we keep our own literal. The
+   underlying computation is the same in both estates; the string names the
+   derivation, not the metric.
+
+6. **`content` is advisory.** Tapestry is emptying its TL content as
+   duplicative (their `fix/tl-fixes`). The `p` tags are the canonical member
+   list. We still publish content, but no consumer should require it.
+
+Two implementation notes that are ours alone:
+
+- **Rounding must be half-up.** Python's `round` is banker's rounding, so
+  `round(0.5) == 0` where JavaScript's `Math.round` gives 1. `_round_half_up`
+  exists solely so the wire agrees with tapestry on every exact .5 boundary.
+
+- **No operator ladder.** Tapestry makes the method a pipeline-wide setting
+  (`count` | `input` | `certainty`, defaulting to `count`) because its consumer
+  is a UI membership list, where membership is the answer. Ours is Vespa
+  ranking, where the score is the answer: a score-less TL is not a degraded
+  result for us, it is an unusable one. We implement `certainty` only. If a
+  ladder is ever wanted the rungs are cheap to add, but defaulting to `count`
+  the way tapestry does would ship a list our own consumer cannot rank.
+
+Parity is pinned by the six vectors tapestry validated live
+(`scripts/tl-ladder-validate.js`), ported to
+`tests/test_trusted_list_membership.py::test_tapestry_parity_vectors`. If those
+move, the estates have forked.

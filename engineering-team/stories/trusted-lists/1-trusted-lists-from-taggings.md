@@ -94,14 +94,26 @@ Testable from the outside. Each criterion gets at least one test handle.
 - [ ] **AC7 — polarity bucketing.** Polarity ≥ 0.5 counts as applied, ≤ −0.5 as
       disputed, values strictly between are dropped from both counts. An absent
       polarity tag defaults to applied.
-- [ ] **AC8 — membership function.** A target is a member of a tag's TL iff
-      `applications >= cutoff AND applications > disputes`. Members are ordered
-      by applications descending, then pubkey ascending.
-- [ ] **AC9 — TL wire shape.** Each published event is kind 30392 with: the
-      `d` tag per ADR; `title` = the tag element's name; `description` = the
-      tag element's description; `metric`; `observer`; `source-tag`; `cutoff`;
-      `min-rank`; one `p` tag per member; and a `content` JSON carrying each
-      member's applications/disputes counts.
+- [ ] **AC8 — membership function.** *(amended by D12.)* A target is a member
+      of a tag's TL iff `applications >= cutoff AND applications > disputes AND
+      score >= 1`. Members are ordered by score descending, then pubkey
+      ascending.
+- [ ] **AC8b — weighted member confidence.** *(D12.)* Each member carries a
+      GrapeRank-derived score, an integer 0-100:
+      `round(max(average * certainty, 0) * 100)`, where `input = Sigma w`,
+      `average = Sigma (w * r) / input`, `certainty = 1 - rigor ** input`,
+      `r = +1` applied / `-1` disputed, and `w` is the asserter's Influence on
+      the Rank quantum. Rigor is the constant 0.5. Mass beats count: two
+      rank-90 appliers outscore ten rank-3 appliers. A dispute-dominant or
+      zero-mass pair clamps to 0 and drops off the list rather than going
+      negative on the wire.
+- [ ] **AC9 — TL wire shape.** *(amended by D12.)* Each published event is kind
+      30392 with: the `d` tag per ADR; `title` = the tag element's name;
+      `description` = the tag element's description; `metric`; `observer`;
+      `source-tag`; `cutoff`; `min-rank`; `rigor`; one
+      `["p", <pubkey>, "", "<score>"]` tag per member; and a `content` JSON
+      carrying each member's applications/disputes counts and score. A
+      retraction carries neither `rigor` nor any `p` tag.
 - [ ] **AC10 — signing identity.** Every TL for Observer X is signed by X's
       assistant nsec — the same key that authors X's kind-30382 TAs — and by no
       other key.
