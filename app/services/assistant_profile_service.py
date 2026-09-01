@@ -62,7 +62,14 @@ async def publish_assistant_kind0_for_user(
 ) -> tuple[str, str]:
     nsec_row = await select_brainstorm_nsec_by_pubkey_on_db(db, user_pubkey)
 
-    owner_name = await _fetch_owner_name(user_pubkey) or user_pubkey[:6]
+    # A relay hiccup on the owner-name lookup must not abort the whole kind-0 —
+    # the pubkey-prefix fallback is good enough, and a later manual publish
+    # (POST /user/assistantProfile) can improve the name.
+    try:
+        owner_name = await _fetch_owner_name(user_pubkey) or user_pubkey[:6]
+    except Exception as e:
+        logger.warning(f"owner kind-0 lookup failed for {user_pubkey}: {e}")
+        owner_name = user_pubkey[:6]
     assistant_name = f"{owner_name}'s Brainstorm Assistant"
 
     keys = Keys.parse(secret_key=nsec_row.nsec)

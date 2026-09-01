@@ -22,6 +22,7 @@ from app.schemas.request_response_schemas import (
 )
 from app.repos.brainstorm_nsec import (
     get_is_observer_search_available_by_pubkey_on_db,
+    update_assistant_kind0_published_at_on_db,
 )
 from app.core.config import settings
 
@@ -235,6 +236,8 @@ async def publish_assistant_profile_endpoint(
     user_pubkey = jwt_data.nostr_pubkey
 
     event_id, assistant_pubkey = await publish_assistant_kind0_for_user(db, user_pubkey)
+    # A manual publish also satisfies the upload task's first-run kind-0 check.
+    await update_assistant_kind0_published_at_on_db(db, pubkey=user_pubkey)
 
     return PublishAssistantProfileResponse(
         data=PublishAssistantProfileData(
