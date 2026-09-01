@@ -186,52 +186,6 @@ async def record_webhook_event_failure_on_db(
     await execute_db_statement(db, statement, __name__)
 
 
-# The only personal data Flash sends us. Everything else in the payload —
-# amounts, invoice ids, dates — is accounting, and outlives the retention window.
-PERSONAL_PAYLOAD_FIELDS = ("email", "name", "about", "picture_url")
-
-
-async def prune_webhook_payloads_on_db(
-    db: AsyncDBSession, *, older_than: datetime
-) -> int:
-    """Redact personal data from old events, keeping everything else.
-
-    Redacting rather than dropping the payload: retention is about personal
-    data, and nulling the whole thing would also delete the amounts the
-    accounting export reads — silently emptying history at the retention
-    boundary. The row, its dedupe key and its audit trail were never at risk.
-    """
-    # Delete the keys (`#-`) rather than setting them null. jsonb_set is STRICT,
-    # so a null new_value nulls the WHOLE payload — taking the amounts the
-    # accounting export reads with it, which is the failure this function exists
-    # to avoid. Deleting also makes the run idempotent: a key set to null still
-    # satisfies the `?|` predicate below, so those rows would be rewritten every
-    # cycle forever. The path is text[]; a bound string arrives as varchar and
-    # Postgres will not coerce that to an array type, hence the explicit cast.
-    redacted: Any = FlashWebhookEvent.payload
-    for field in PERSONAL_PAYLOAD_FIELDS:
-        redacted = redacted.op("#-")(cast(array(["data", field]), ARRAY(Text)))
-
-    statement = (
-        update(FlashWebhookEvent)
-        .where(
-            FlashWebhookEvent.created_at <= older_than,
-            FlashWebhookEvent.payload.is_not(None),
-            # Never touch an event still waiting to be applied: replay reads the
-            # payload to find the subscriber.
-            FlashWebhookEvent.processed_at.is_not(None),
-            # Only rows that still carry something personal.
-            FlashWebhookEvent.payload["data"].has_any(
-                array(PERSONAL_PAYLOAD_FIELDS)
-            ),
-        )
-        .values(payload=redacted)
-    )
-    result = await execute_db_statement(db, statement, __name__)
-    return result.rowcount
-
-
-
 # Two failures wore one name here: a delivery that named nobody and a delivery
 # naming a plan we never mapped share only the fact that they did not apply.
 # They are selected separately so each count means one thing, and together they
@@ -253,13 +207,11 @@ def _unattributed():
 async def select_unresolved_signups_on_db(db: AsyncDBSession, *, limit: int) -> list:
     """Payments that named nobody — to be attributed to a person, or dismissed.
 
-    Contact details are read out of the payload here and nowhere else in this
-    report: with no reference, what the payer typed at checkout is the only lead
-    to who they are. Where there *is* a reference the subscriber is already ours
-    to look up, so those rows (below) carry no email — the section boundary is
-    what keeps it that way.
+    Flash's webhook payload carries no contact details — verified against every
+    event we hold, and matching the documented schema — so there is nothing here
+    to identify the payer by. The Flash subscription id is the only handle, and
+    who is behind it is visible only in Flash's own dashboard.
     """
-    payload = FlashWebhookEvent.payload["data"]
     statement = (
         select(
             FlashWebhookEvent.id,
@@ -270,8 +222,6 @@ async def select_unresolved_signups_on_db(db: AsyncDBSession, *, limit: int) -> 
             # this key into a link into Flash. It is also the only handle these
             # rows have — attribute and dismiss both act on it.
             FlashWebhookEvent.subscription_id.label("flash_subscription_id"),
-            payload["email"].astext.label("subscriber_email"),
-            payload["name"].astext.label("subscriber_name"),
         )
         .where(*_UNAPPLIED, _unattributed())
         .order_by(FlashWebhookEvent.created_at.desc())

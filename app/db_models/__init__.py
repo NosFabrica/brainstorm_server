@@ -343,8 +343,8 @@ class FlashWebhookEvent(TimestampMixin, Base):
     subscription_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
     )
-    # Nullable so the personal data (email, name) can be dropped after a
-    # retention window while the row — dedupe key, audit trail — survives.
+    # Nullable only because a row can predate the payload column; Flash's
+    # deliveries carry no personal data, so nothing here expires.
     payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Claimed by a worker, so the recovery sweep can tell "in progress" from
     # "abandoned". Written from the entitlement slice onward.

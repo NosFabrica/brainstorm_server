@@ -18,7 +18,6 @@ from app.core.loggr import loggr
 from app.repos.flash_webhook_event_repo import (
     claim_webhook_event_on_db,
     mark_webhook_event_processed_on_db,
-    prune_webhook_payloads_on_db,
     record_webhook_event_failure_on_db,
     select_abandoned_webhook_events_on_db,
 )
@@ -231,12 +230,11 @@ async def replay_unprocessed_events(
             continue
 
         if event.payload is None:
-            # Pruned. Marking it done would silently discard the work; leaving
-            # it is what a human sees in the divergence report.
-            logger.error(
-                "Flash event %s was pruned before it was applied", event.id
-            )
-            await record_webhook_event_failure_on_db(db, event.id, "payload pruned")
+            # Nothing writes a null payload, so this means the row was edited by
+            # hand. Marking it done would silently discard the work; leaving it
+            # is what a human sees in the divergence report.
+            logger.error("Flash event %s has no payload to apply", event.id)
+            await record_webhook_event_failure_on_db(db, event.id, "payload missing")
             await db.commit()
             continue
 
@@ -284,19 +282,3 @@ async def replay_unprocessed_events(
             logger.exception("Replaying Flash event %s failed", event.id)
 
     return replayed
-
-
-async def prune_webhook_payloads(
-    db: AsyncDBSession, *, retain: timedelta, now: datetime | None = None
-) -> int:
-    """Drop personal data from old events, keeping the audit trail.
-
-    The payload carries subscriber email and name; the row carries the dedupe
-    key, so redelivery protection survives the pruning.
-    """
-    at = now or utc_now()
-    pruned = await prune_webhook_payloads_on_db(db, older_than=at - retain)
-    if pruned:
-        await db.commit()
-        logger.info("Pruned payloads from %s old Flash events", pruned)
-    return pruned

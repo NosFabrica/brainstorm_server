@@ -24,7 +24,6 @@ from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import redis_client
 from app.services.billing_sync_service import (
-    prune_webhook_payloads,
     reconcile_subscriptions,
     replay_unprocessed_events,
     revoke_lapsed_entitlements,
@@ -81,10 +80,6 @@ async def billing_sync_cronjob() -> None:
                     abandon_pending_after=timedelta(
                         seconds=settings.billing_abandon_pending_after_seconds
                     ),
-                )
-                await prune_webhook_payloads(
-                    db,
-                    retain=timedelta(days=settings.billing_payload_retention_days),
                 )
             if replayed or revoked or result.reconciled or result.failed:
                 logger.info(

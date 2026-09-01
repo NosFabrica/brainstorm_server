@@ -15,7 +15,6 @@ import pytest
 from app.services.billing_service import EntitlementReason
 from app.services.billing_sync_service import (
     replay_unprocessed_events,
-    prune_webhook_payloads,
 )
 
 NOW = datetime(2026, 8, 25, 12, 0, 0)
@@ -147,35 +146,14 @@ def test_an_outcome_that_settled_nothing_leaves_the_event_for_another_go(replay)
     replay.fail.assert_awaited_once()
 
 
-def test_a_pruned_event_is_surfaced_rather_than_marked_done(replay):
-    """Its payload is gone, so there is nothing left to apply — and marking it
-    processed would hide that."""
-    pruned = _event()
-    pruned.payload = None
-    replay.abandoned.return_value = [pruned]
+def test_an_event_with_no_payload_is_surfaced_rather_than_marked_done(replay):
+    """Nothing writes a null payload, so this is a hand-edited row — there is
+    nothing left to apply, and marking it processed would hide that."""
+    empty = _event()
+    empty.payload = None
+    replay.abandoned.return_value = [empty]
 
     assert _run(replay) == 0
     replay.apply.assert_not_awaited()
     replay.complete.assert_not_awaited()
     replay.fail.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# Retention
-# ---------------------------------------------------------------------------
-@pytest.fixture
-def prune(monkeypatch):
-    mock = AsyncMock(return_value=3)
-    monkeypatch.setattr(
-        "app.services.billing_sync_service.prune_webhook_payloads_on_db", mock
-    )
-    return mock
-
-
-def test_old_payloads_are_pruned(prune):
-    pruned = asyncio.run(
-        prune_webhook_payloads(AsyncMock(), retain=timedelta(days=90), now=NOW)
-    )
-
-    assert pruned == 3
-    assert prune.await_args.kwargs["older_than"] == NOW - timedelta(days=90)

@@ -257,17 +257,17 @@ def test_each_section_carries_only_what_its_own_fix_needs(monkeypatch):
     assert "'serviceId'" in plan_columns and "'planId'" in plan_columns
 
 
-def test_contact_details_are_read_only_for_a_signup_that_named_nobody(monkeypatch):
-    """Where there is a reference the subscriber is already ours to look up, and
-    copying their email into an operational report is personal data for nothing.
-    The section boundary is the guard: the reference-less query is the only one
-    that names a personal payload key at all."""
+def test_no_query_reads_contact_details_flash_never_sends(monkeypatch):
+    """Flash's payload carries no email or name — verified against every event
+    we hold, and matching its documented schema. A projection reading one would
+    return a column that is structurally always null, which is worse than
+    absent: it reads as "we have no email for this payer" rather than "there is
+    never an email to have"."""
     signups, plans = _unresolved_sql(monkeypatch)
 
-    for personal in ("'email'", "'name'"):
-        assert personal in signups
+    for personal in ("'email'", "'name'", "'about'", "'picture_url'"):
+        assert personal not in signups
         assert personal not in plans
-    assert "subscriber_email" not in plans and "subscriber_name" not in plans
 
 
 def test_only_the_events_that_were_waiting_on_this_plan_are_freed(monkeypatch):
