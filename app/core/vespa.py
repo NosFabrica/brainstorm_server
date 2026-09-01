@@ -45,8 +45,14 @@ PROFILE_FIELDS = (
 )
 
 # Maps the doc.sd match_quality() name tier (1..4) to a human label surfaced in
-# the search response as `_match_tier`. Tier 0 resolves to "affiliation" (bio or
-# website domain match) or "gram" (trigram/recall noise). See §10 / §11.
+# the search response as `_match_tier`. That ladder is inert (§11.1), so in
+# practice the tier comes from the matchCount-based signals below, in doc.sd's
+# ranking order:
+#   name        exact whole-token hit on name/display_name
+#   near        prefix or typo hit, via the name_parts/name_tokens attributes
+#   identity    nip05/lud16 (IDF-scored — the "primal" dilution)
+#   affiliation about/website
+#   gram        trigram recall (name-side is off; about_gram only)
 _MATCH_TIERS = {4: "exact", 3: "prefix", 2: "1-typo", 1: "2-typo"}
 
 # Rank-profile names defined in the Vespa schema (doc.sd). The DEFAULT is
@@ -642,6 +648,7 @@ async def search(
         mq = mf.get("match_quality")
         fields["_match_quality"] = mq
         fields["_identity_text"] = mf.get("identity_text")
+        fields["_near_name_match"] = mf.get("near_name_match")
         fields["_text_score"] = mf.get("text_score")
         fields["_wot_mult"] = mf.get("wot_mult")
         if mf:
@@ -649,12 +656,22 @@ async def search(
                 fields["_match_tier"] = _MATCH_TIERS.get(int(mq), str(mq))
             elif mf.get("name_match"):
                 fields["_match_tier"] = "name"
+            elif mf.get("near_name_match"):
+                # Prefix or typo hit on name/display_name, via doc.sd's
+                # name_parts/name_tokens attributes. Without this branch every
+                # such hit reports as "gram" — the tier it used to arrive
+                # through — which reads as noise in the inspector and in
+                # tools/rank_ab.py when it is in fact a real name match.
+                fields["_match_tier"] = "near"
             elif mf.get("identity_match"):
                 fields["_match_tier"] = "identity"
             elif mf.get("has_token_match"):
                 # older profiles fold nip05/lud16 into has_token_match
                 fields["_match_tier"] = "name"
-            elif mf.get("affiliation_match"):
+            elif mf.get("affiliation_match_text") or mf.get("affiliation_match"):
+                # affiliation_match_text is the default profile's gate (keyed on
+                # name_match); affiliation_match is the older has_token_match one,
+                # still used by relevance()/rank_*. Accept either.
                 fields["_match_tier"] = "affiliation"
             else:
                 fields["_match_tier"] = "gram"
