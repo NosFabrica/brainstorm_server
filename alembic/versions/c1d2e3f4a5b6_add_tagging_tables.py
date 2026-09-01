@@ -1,7 +1,7 @@
 """add nostr_tag_element + nostr_user_tagging tables
 
 Revision ID: c1d2e3f4a5b6
-Revises: b2c3d4e5f6a7
+Revises: d4e5f6a7b8c9
 Create Date: 2026-08-25 00:00:00.000000
 
 The input set for Trusted Lists: kind-39999 tag elements and the taggings that
@@ -17,7 +17,12 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'c1d2e3f4a5b6'
-down_revision = 'b2c3d4e5f6a7'
+# Re-parented onto d4e5f6a7b8c9 (assistant kind-0), which landed on main while
+# this branch was open. Both were cut from b2c3d4e5f6a7, so leaving it there
+# gives alembic two heads and `alembic upgrade head` — which start.sh runs at
+# boot — fails outright. These two touch disjoint tables, so the order is
+# arbitrary; ours goes second because theirs is already released.
+down_revision = 'd4e5f6a7b8c9'
 branch_labels = None
 depends_on = None
 
