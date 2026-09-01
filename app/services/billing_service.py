@@ -392,6 +392,11 @@ async def create_billing_plan(db: AsyncDBSession, values: dict) -> BillingPlan:
         error=EntitlementReason.UNKNOWN_PLAN.value,
     )
     await db.commit()
+    # `updated_at` is server-generated (onupdate), so the write leaves it
+    # expired even though the session does not expire on commit. Serialising
+    # the response would then lazy-load it from inside FastAPI's async path,
+    # which raises MissingGreenlet and turns a successful write into a 500.
+    await db.refresh(plan)
     if waiting:
         logger.info(
             "Mapping %s/%s freed %s event(s) to be replayed",
@@ -453,6 +458,9 @@ async def update_billing_plan(
             error=EntitlementReason.UNKNOWN_PLAN.value,
         )
     await db.commit()
+    # See create_billing_plan: the response carries `updated_at`, and after an
+    # UPDATE that value only exists in the database.
+    await db.refresh(plan)
     if waiting:
         logger.info(
             "Mapping %s/%s freed %s event(s) to be replayed", service_id, plan_ref, waiting
