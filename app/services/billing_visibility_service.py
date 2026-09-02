@@ -7,19 +7,14 @@ gathering them is that it should be findable by sorting a column rather than by
 waiting for a complaint.
 """
 
-import csv
-import io
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
-from app.core.flash import FlashPlan
-from app.core.flash_plan_cache import read_plans_for_services
 from app.repos.flash_webhook_event_repo import (
     select_exhausted_events_on_db,
-    select_payment_history_on_db,
     select_unmapped_plan_events_on_db,
     select_unresolved_signups_on_db,
 )
@@ -139,56 +134,3 @@ async def build_divergence_report(db: AsyncDBSession) -> DivergenceReport:
             db, limit=ROW_LIMIT
         ),
     )
-
-
-PAYMENT_COLUMNS = (
-    "paid_at",
-    "event",
-    "pubkey",
-    "subscription_id",
-    "invoice_id",
-    "amount_minor",
-    "currency",
-)
-
-
-async def build_payment_history_csv(
-    db: AsyncDBSession, *, since: datetime, until: datetime, limit: int
-) -> str:
-    """Payments for accounting, read out of the stored renewal events.
-
-    Not a second ledger: Flash took the money and is authoritative about it, so
-    this reports what Flash told us rather than keeping a parallel record that
-    could disagree with it. First charges appear as `subscription.activated`
-    rows, which carry no amount of their own, so they are priced from Flash's
-    plan — the same read the pricing page uses. A plan Flash no longer returns
-    leaves the row unpriced rather than priced wrongly.
-    """
-    rows = await select_payment_history_on_db(
-        db, since=since, until=until, limit=limit
-    )
-    unpriced = [row for row in rows if row.amount_minor is None]
-    prices = await _plan_prices({row.flash_service_id for row in unpriced if row.flash_service_id})
-
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=list(PAYMENT_COLUMNS))
-    writer.writeheader()
-    for row in rows:
-        record = {column: getattr(row, column, None) for column in PAYMENT_COLUMNS}
-        if record["amount_minor"] is None:
-            priced = prices.get((row.flash_service_id, row.flash_plan_id))
-            if priced is not None:
-                record["amount_minor"] = priced.amount_minor
-                record["currency"] = priced.currency
-        writer.writerow(record)
-    return buffer.getvalue()
-
-
-async def _plan_prices(service_ids: set[str]) -> dict[tuple[str, str], FlashPlan]:
-    """What Flash charges for the plans on these services, best-effort.
-
-    An export that cannot reach Flash still exports. The rows it could not
-    price come out blank, which an accountant can see, rather than carrying a
-    number nothing stands behind.
-    """
-    return await read_plans_for_services(service_ids)

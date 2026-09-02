@@ -150,7 +150,6 @@ actually gives them. Where those disagree is the bug.
 | POST | `/unresolved/{subscription_id}/attribute` | Body `{pubkey}`. Attaches a plain-link signup to whoever made it, by running `apply_entitlement` unaltered — never a hand-built grant. Refuses a pubkey that already holds a different subscription, and one already attributed elsewhere; re-attributing to the same person is a no-op |
 | POST | `/unresolved/{subscription_id}/dismiss` | Writes it off as not a customer, granting nothing. Both outcomes settle every open event for that id with `resolution` + `resolved_by`, which stops the sweep and lets the payload's email age out |
 | GET / POST / PATCH | `/plans` | The `billing_plan` mappings — how dev and prod vaults get their rows. Two decisions only: which scheduling policy a Flash plan grants, and whether we sell it. Price, period, ordering and copy are read from Flash and are **refused** here rather than ignored, so a stale client cannot believe it set a price. The Flash ids are editable only while no `user_subscription` row references the plan — otherwise `409`, naming create-new-and-deactivate as the path, since rewriting them would retroactively change what subscribers bought |
-| GET | `/export.csv` | Payment history for accounting, defaulting to the last 90 days. Read out of stored `activated` + `renewed` events (`activated` priced from Flash's plan, since that event carries no amount) — deliberately not a second ledger |
 
 ### `graperank/router.py` — GrapeRank presets
 

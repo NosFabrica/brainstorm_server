@@ -5,12 +5,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
-    Integer,
     String,
     Text,
-    case,
-    cast,
-    func,
     not_,
     or_,
     select,
@@ -302,56 +298,5 @@ async def select_exhausted_events_on_db(
         FlashWebhookEvent.processed_at.is_(None),
         FlashWebhookEvent.attempts >= max_attempts,
     ).limit(limit)
-    result = await execute_db_statement(db, statement, __name__)
-    return list(result.all())
-
-
-async def select_payment_history_on_db(
-    db: AsyncDBSession, *, since: datetime, until: datetime, limit: int
-) -> list:
-    """Payments, read out of the stored renewal events.
-
-    Deliberately not a second ledger: Flash took the money and is authoritative
-    about it, so this reads what Flash told us rather than keeping a parallel
-    record that could disagree. Pruned events drop out — the payload is where
-    the amount lives.
-
-    `activated` covers the first charge (there is no renewal event for period
-    1), but its payload carries no amount — so those rows come back unpriced,
-    carrying the service and plan ids that let the caller price them from
-    Flash. Nothing here can price them: what a plan costs stopped being a
-    column of ours. The `event` column says which of the two each row is.
-    """
-    payload = FlashWebhookEvent.payload["data"]
-    renewed = FlashWebhookEvent.event == "subscription.renewed"
-    statement = (
-        select(
-            func.coalesce(
-                payload["paidAt"].astext, payload["activatedAt"].astext
-            ).label("paid_at"),
-            FlashWebhookEvent.event.label("event"),
-            payload["externalRef"].astext.label("pubkey"),
-            FlashWebhookEvent.subscription_id,
-            payload["invoiceId"].astext.label("invoice_id"),
-            payload["serviceId"].astext.label("flash_service_id"),
-            payload["planId"].astext.label("flash_plan_id"),
-            case(
-                (renewed, payload["amount"].astext.cast(Integer)),
-            ).label("amount_minor"),
-            case(
-                (renewed, payload["currency"].astext),
-            ).label("currency"),
-        )
-        .where(
-            FlashWebhookEvent.event.in_(
-                ("subscription.renewed", "subscription.activated")
-            ),
-            FlashWebhookEvent.payload.is_not(None),
-            FlashWebhookEvent.created_at >= since,
-            FlashWebhookEvent.created_at <= until,
-        )
-        .order_by(FlashWebhookEvent.created_at.desc())
-        .limit(limit)
-    )
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())

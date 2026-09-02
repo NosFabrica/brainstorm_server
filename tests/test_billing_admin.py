@@ -399,38 +399,6 @@ def test_an_operator_can_force_one_subscriber_to_resynchronise(
     assert applied.await_args.kwargs["external_ref"] == PUBKEY
 
 
-def test_payment_history_can_be_exported(billing_client, monkeypatch):
-    monkeypatch.setattr(
-        "app.services.billing_visibility_service.select_payment_history_on_db",
-        AsyncMock(
-            return_value=[
-                SimpleNamespace(
-                    paid_at="2026-08-20T14:03:11.000Z",
-                    pubkey=PUBKEY,
-                    subscription_id="7d3b",
-                    invoice_id="inv_1",
-                    amount_minor=200,
-                    currency="USD",
-                )
-            ]
-        ),
-    )
-
-    response = billing_client.get("/admin/billing/export.csv")
-
-    assert response.status_code == 200
-    assert "text/csv" in response.headers["content-type"]
-    assert "inv_1" in response.text
-    assert "amount_minor" in response.text
-
-
-def test_the_export_is_not_reachable_without_billing_access(client, monkeypatch):
-    monkeypatch.setattr(settings, "billing_admin_whitelisted_pubkeys", OTHER)
-    wl.init_billing_admin_whitelist()
-
-    assert client.get("/admin/billing/export.csv").status_code == 403
-
-
 def test_billing_visibility_survives_general_administration_being_off(
     billing_client, monkeypatch
 ):

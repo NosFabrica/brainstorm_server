@@ -5,10 +5,8 @@ confer general administration — see `app/core/billing_admin_whitelist.py`.
 """
 
 from contextlib import contextmanager
-from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import paginate
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -40,12 +38,8 @@ from app.services.billing_service import (
     list_billing_plans_admin,
     set_billing_block,
     update_billing_plan,
-    utc_now,
 )
-from app.services.billing_visibility_service import (
-    build_divergence_response,
-    build_payment_history_csv,
-)
+from app.services.billing_visibility_service import build_divergence_response
 from app.utils.auth.auth_models import JWTData
 from app.utils.rate_limiting.rate_limiting import validate_flash_record_read_allowed
 
@@ -300,29 +294,3 @@ async def update_billing_plan_endpoint(
     # exclude_unset, not exclude_none: an explicit null is a real edit, and
     # exclude_none would drop it silently.
     return await update_billing_plan(db, plan_id, body.model_dump(exclude_unset=True))
-
-
-@router.get(
-    path="/export.csv",
-    summary="Billing: payment history for accounting",
-)
-async def export_payment_history_endpoint(
-    since: datetime | None = Query(default=None, description="ISO 8601; defaults to 90 days ago"),
-    until: datetime | None = Query(default=None, description="ISO 8601; defaults to now"),
-    limit: int = Query(default=10_000, ge=1, le=50_000),
-    db: AsyncDBSession = Depends(dependency=get_db),
-):
-    # Bounded by default: accounting wants a period, and an unbounded export
-    # grows without limit and is read by pasting a URL into a browser.
-    now = utc_now()
-    csv_text = await build_payment_history_csv(
-        db,
-        since=since or now - timedelta(days=90),
-        until=until or now,
-        limit=limit,
-    )
-    return StreamingResponse(
-        iter([csv_text]),
-        media_type="text/csv",
-        headers={"Content-Disposition": 'attachment; filename="flash-payments.csv"'},
-    )
