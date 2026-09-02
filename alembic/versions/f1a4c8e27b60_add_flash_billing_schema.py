@@ -10,7 +10,12 @@ None of that is created here in the first place.
 which policy, and whether we sell it. Price, period, ordering and copy are
 Flash's answer, read from `GET /services/{id}`, never transcribed here.
 
-Revision ID: e5f7a2c9d0b3
+`user_subscription` carries Flash's own answers from the start too: the portal
+link it hands a subscriber, and the pricing snapshot recorded when they
+subscribed — which is what they are charged, however the plan is repriced
+afterwards.
+
+Revision ID: f1a4c8e27b60
 Revises: d4e5f6a7b8c9
 """
 
@@ -20,7 +25,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision: str = 'e5f7a2c9d0b3'
+revision: str = 'f1a4c8e27b60'
 down_revision: Union[str, None] = 'd4e5f6a7b8c9'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -83,6 +88,9 @@ def upgrade() -> None:
         sa.Column('cancel_effective_date', sa.DateTime(), nullable=True),
         sa.Column('rail', sa.String(), nullable=True),
         sa.Column('portal_url', sa.String(), nullable=True),
+        sa.Column('pricing_amount_minor', sa.Integer(), nullable=True),
+        sa.Column('pricing_currency', sa.String(), nullable=True),
+        sa.Column('pricing_billing_interval', sa.String(), nullable=True),
         sa.Column('last_event_at', sa.DateTime(), nullable=True),
         sa.Column('last_synced_at', sa.DateTime(), nullable=True),
         sa.Column('last_sync_error', sa.String(), nullable=True),
