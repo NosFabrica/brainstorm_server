@@ -244,13 +244,282 @@ def test_subscribers_on_a_retired_plan_are_visible_and_reachable_in_flash(
     assert section["rows"][0]["flash_subscription_id"] == "7d3b"
 
 
-def test_nothing_here_offers_to_cancel_a_subscription():
-    """There is no Flash cancel API. A cancel of ours would revoke the tier
-    while Flash kept charging — worse than doing nothing — so the affordance is
-    a link into Flash, never a route."""
-    from app.routers.admin.billing.router import router
+# ---------------------------------------------------------------------------
+# Acting on a subscription — cancelling, pausing, resuming
+#
+# Flash publishes both writes, so an admin handling a support case no longer has
+# to open the vault to act on the row they are already looking at. Subscribers
+# are untouched by this: they still cancel in Flash's portal.
+# ---------------------------------------------------------------------------
+def _acts(monkeypatch, *, cancel=None, set_status=None, applied=True, reason="granted"):
+    """Stub the two Flash writes and the re-read that follows them."""
+    entitlement = AsyncMock(
+        return_value=SimpleNamespace(
+            applied=applied, reason=SimpleNamespace(value=reason)
+        )
+    )
+    monkeypatch.setattr(
+        "app.services.billing_service.apply_entitlement", entitlement
+    )
+    monkeypatch.setattr(
+        "app.services.billing_service.get_user_subscription_on_db",
+        AsyncMock(return_value=SimpleNamespace(flash_subscription_id="7d3b")),
+    )
+    cancel_mock = AsyncMock(return_value=cancel)
+    status_mock = AsyncMock(return_value=set_status)
+    monkeypatch.setattr("app.services.billing_service.cancel_subscription", cancel_mock)
+    monkeypatch.setattr(
+        "app.services.billing_service.set_subscription_status", status_mock
+    )
+    return SimpleNamespace(
+        cancel=cancel_mock, set_status=status_mock, entitlement=entitlement
+    )
 
-    assert not [r for r in router.routes if "cancel" in r.path]
+
+def _flash_subscription(status="active", cancel_effective_date=None):
+    return SimpleNamespace(
+        id="7d3b", status=status, cancel_effective_date=cancel_effective_date
+    )
+
+
+def test_an_operator_can_cancel_without_opening_flash(billing_client, monkeypatch):
+    ends = datetime(2026, 9, 20, 23, 59, 59, 999999)
+    acts = _acts(
+        monkeypatch,
+        cancel=_flash_subscription(status="active", cancel_effective_date=ends),
+    )
+
+    response = billing_client.post(f"/admin/billing/subscriptions/{PUBKEY}/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    # Still active, and that is not a failure — it is what end-of-period means.
+    assert body["flash_status"] == "active"
+    assert body["cancel_effective_date"] == "2026-09-20"
+    assert body["cancellation_scheduled"] is True
+    assert acts.cancel.await_args.args[0] == "7d3b"
+
+
+def test_a_cancellation_flash_did_not_schedule_says_so(billing_client, monkeypatch):
+    """No effective date and a status that has not ended is the one shape that
+    means nothing was scheduled — the operator must not be told otherwise."""
+    _acts(monkeypatch, cancel=_flash_subscription(status="active"))
+
+    body = billing_client.post(
+        f"/admin/billing/subscriptions/{PUBKEY}/cancel"
+    ).json()
+
+    assert body["cancellation_scheduled"] is False
+
+
+def test_a_cancellation_flash_applied_at_once_is_still_a_cancellation(
+    billing_client, monkeypatch
+):
+    """An account cancelling immediately returns the ended status and no date."""
+    _acts(monkeypatch, cancel=_flash_subscription(status="canceled"))
+
+    body = billing_client.post(
+        f"/admin/billing/subscriptions/{PUBKEY}/cancel"
+    ).json()
+
+    assert body["cancellation_scheduled"] is True
+    assert body["cancel_effective_date"] is None
+
+
+def test_the_reason_an_operator_gives_is_passed_to_flash(billing_client, monkeypatch):
+    acts = _acts(monkeypatch, cancel=_flash_subscription(status="canceled"))
+
+    billing_client.post(
+        f"/admin/billing/subscriptions/{PUBKEY}/cancel",
+        json={"reason": "Duplicate signup, refunded"},
+    )
+
+    assert acts.cancel.await_args.kwargs["reason"] == "Duplicate signup, refunded"
+
+
+def test_an_operator_can_pause_and_resume(billing_client, monkeypatch):
+    acts = _acts(monkeypatch, set_status=_flash_subscription(status="paused"))
+
+    paused = billing_client.patch(
+        f"/admin/billing/subscriptions/{PUBKEY}/status", json={"status": "paused"}
+    )
+
+    assert paused.status_code == 200
+    assert paused.json()["flash_status"] == "paused"
+    assert acts.set_status.await_args.kwargs["status"] == "paused"
+
+    acts = _acts(monkeypatch, set_status=_flash_subscription(status="active"))
+    resumed = billing_client.patch(
+        f"/admin/billing/subscriptions/{PUBKEY}/status", json={"status": "active"}
+    )
+
+    assert resumed.json()["flash_status"] == "active"
+    assert acts.set_status.await_args.kwargs["status"] == "active"
+
+
+def test_a_status_that_is_not_a_pause_or_a_resume_is_refused(
+    billing_client, monkeypatch
+):
+    """`canceled` through this door would be a cancellation without the
+    confirmation, the reason, or the effective date the operator needs."""
+    acts = _acts(monkeypatch, set_status=_flash_subscription())
+
+    response = billing_client.patch(
+        f"/admin/billing/subscriptions/{PUBKEY}/status", json={"status": "canceled"}
+    )
+
+    assert response.status_code == 422
+    assert not acts.set_status.await_count
+
+
+@pytest.mark.parametrize("action", ["cancel", "status"])
+def test_the_subscriber_is_re_read_from_flash_after_either_action(
+    billing_client, monkeypatch, action
+):
+    """Flash's answer to the write is not the whole state, and our stored row is
+    older still — so what we keep comes from asking Flash again."""
+    acts = _acts(
+        monkeypatch,
+        cancel=_flash_subscription(status="canceled"),
+        set_status=_flash_subscription(status="paused"),
+    )
+
+    if action == "cancel":
+        billing_client.post(f"/admin/billing/subscriptions/{PUBKEY}/cancel")
+    else:
+        billing_client.patch(
+            f"/admin/billing/subscriptions/{PUBKEY}/status", json={"status": "paused"}
+        )
+
+    assert acts.entitlement.await_args.kwargs["external_ref"] == PUBKEY
+
+
+@pytest.mark.parametrize("action", ["cancel", "status"])
+def test_a_user_we_hold_no_subscription_for_cannot_be_acted_on(
+    billing_client, monkeypatch, action
+):
+    acts = _acts(monkeypatch, cancel=_flash_subscription())
+    monkeypatch.setattr(
+        "app.services.billing_service.get_user_subscription_on_db",
+        AsyncMock(return_value=None),
+    )
+
+    if action == "cancel":
+        response = billing_client.post(
+            f"/admin/billing/subscriptions/{PUBKEY}/cancel"
+        )
+    else:
+        response = billing_client.patch(
+            f"/admin/billing/subscriptions/{PUBKEY}/status", json={"status": "paused"}
+        )
+
+    assert response.status_code == 404
+    assert not acts.cancel.await_count and not acts.set_status.await_count
+
+
+def test_an_id_flash_no_longer_knows_is_told_apart_from_an_outage(
+    billing_client, monkeypatch
+):
+    _acts(monkeypatch, cancel=None)
+
+    response = billing_client.post(f"/admin/billing/subscriptions/{PUBKEY}/cancel")
+
+    assert response.status_code == 404
+
+
+def test_a_key_that_cannot_manage_subscriptions_does_not_read_as_flash_being_down(
+    billing_client, monkeypatch
+):
+    """Writes need a scope reads do not. An operator told "Flash is down" would
+    wait for it to come back; the key is what needs attention."""
+    from app.core.flash import FlashCredentialError
+
+    _acts(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.billing_service.cancel_subscription",
+        AsyncMock(side_effect=FlashCredentialError("refused (403)")),
+    )
+
+    response = billing_client.post(f"/admin/billing/subscriptions/{PUBKEY}/cancel")
+
+    assert response.status_code == 502
+    assert "scope" in response.json()["detail"]
+    assert settings.flash_api_key not in response.text
+
+
+def test_a_change_flash_declines_reads_as_a_refusal_not_an_outage(
+    billing_client, monkeypatch
+):
+    from app.core.flash import FlashRefused
+
+    _acts(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.billing_service.set_subscription_status",
+        AsyncMock(side_effect=FlashRefused(409)),
+    )
+
+    response = billing_client.patch(
+        f"/admin/billing/subscriptions/{PUBKEY}/status", json={"status": "paused"}
+    )
+
+    assert response.status_code == 409
+    assert "declined" in response.json()["detail"]
+
+
+def test_a_flash_we_could_not_reach_changes_nothing(billing_client, monkeypatch):
+    from app.core.flash import FlashUnavailable
+
+    acts = _acts(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.billing_service.set_subscription_status",
+        AsyncMock(side_effect=FlashUnavailable("timed out")),
+    )
+
+    response = billing_client.patch(
+        f"/admin/billing/subscriptions/{PUBKEY}/status", json={"status": "paused"}
+    )
+
+    assert response.status_code == 503
+    assert not acts.entitlement.await_count
+
+
+def test_a_write_that_landed_is_never_reported_as_having_changed_nothing(
+    billing_client, monkeypatch
+):
+    """The re-read failing after the cancellation succeeded is the one case
+    where "could not reach Flash, nothing was changed" would be a lie about the
+    thing the operator most needs the truth about."""
+    from app.core.flash import FlashUnavailable
+
+    acts = _acts(monkeypatch, cancel=_flash_subscription(status="canceled"))
+    monkeypatch.setattr(
+        "app.services.billing_service.apply_entitlement",
+        AsyncMock(side_effect=FlashUnavailable("timed out")),
+    )
+
+    response = billing_client.post(f"/admin/billing/subscriptions/{PUBKEY}/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cancellation_scheduled"] is True
+    assert body["applied"] is False
+    assert body["reason"] == "reread_failed"
+    assert acts.cancel.await_count == 1
+
+
+@pytest.mark.parametrize("path,method", [("cancel", "post"), ("status", "patch")])
+def test_acting_on_a_subscription_needs_billing_access(
+    client, monkeypatch, path, method
+):
+    monkeypatch.setattr(settings, "billing_admin_whitelisted_pubkeys", OTHER)
+    wl.init_billing_admin_whitelist()
+
+    call = getattr(client, method)
+    response = call(
+        f"/admin/billing/subscriptions/{PUBKEY}/{path}", json={"status": "paused"}
+    )
+
+    assert response.status_code == 403
 
 
 # ---------------------------------------------------------------------------

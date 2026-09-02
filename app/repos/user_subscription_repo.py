@@ -391,6 +391,7 @@ def build_billing_subscriptions_stmt() -> Select:
             UserSubscription.current_period_start,
             UserSubscription.current_period_end,
             UserSubscription.next_billing_date,
+            UserSubscription.cancel_effective_date,
             UserSubscription.last_synced_at,
             UserSubscription.last_sync_error,
             UserSubscription.flash_subscription_id,

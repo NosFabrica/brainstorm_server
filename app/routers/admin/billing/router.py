@@ -15,6 +15,7 @@ from app.core.billing_admin_whitelist import get_billing_pubkeys
 from app.core.database import get_db
 from app.core.flash import (
     FlashCredentialError,
+    FlashRefused,
     FlashUnavailable,
     fetch_subscription_raw,
 )
@@ -24,19 +25,24 @@ from app.schemas.schemas import (
     AttributeUnresolvedBody,
     BillingBlockOutcome,
     BillingPlanItem,
+    BillingSubscriptionActionOutcome,
     BillingSubscriptionItem,
+    CancelSubscriptionBody,
     CreateBillingPlanBody,
     DivergenceSection,
+    SetSubscriptionStatusBody,
     UnresolvedResolutionOutcome,
     UpdateBillingPlanBody,
 )
 from app.services.billing_service import (
     apply_entitlement,
     attribute_unresolved_subscription,
+    cancel_subscriber_subscription,
     create_billing_plan,
     dismiss_unresolved_subscription,
     list_billing_plans_admin,
     set_billing_block,
+    set_subscriber_subscription_status,
     update_billing_plan,
 )
 from app.services.billing_visibility_service import build_divergence_response
@@ -133,23 +139,46 @@ async def unblock_subscription_endpoint(
     return BillingBlockOutcome(pubkey=pubkey, blocked=False, revoked=False)
 
 
+# Writes need the `subscriptions:manage` scope reads do not, so on a write a
+# refused credential most likely means a key that can look but not act. Same
+# status either way — only the sentence differs, because "Flash is down" would
+# have an operator wait for something that is never coming back.
+_CREDENTIAL_REFUSED = (
+    "Flash refused our credentials. The API key needs attention; "
+    "retrying will not help."
+)
+_CREDENTIAL_REFUSED_ON_WRITE = (
+    "Flash refused our credentials, so nothing was changed. The API key may not "
+    "carry the scope needed to manage subscriptions; retrying will not help."
+)
+
+
 @contextmanager
-def _flash_failure_as_http():
+def _flash_failure_as_http(credential_detail: str = _CREDENTIAL_REFUSED):
     """The two ways asking Flash can fail, told apart.
 
     503 is us not having been able to ask; 502 is our credential being refused —
     reported rather than retried, since it will fail identically forever. Shared
     by every operator path that talks to Flash so an outage and a dead API key
-    cannot come back as the same thing on one endpoint and not another.
+    cannot come back as the same thing on one endpoint and not another. Only the
+    502's wording varies, and only to name the scope a write needs.
     """
     try:
         yield
+    except FlashRefused as declined:
+        # Flash was reached and said no. 409, not 503: there is nothing to wait
+        # for, and the operator can look at what Flash actually holds.
+        logger.warning("Flash declined an operator action: %s", declined)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Flash declined this change ({declined.status_code}). Nothing "
+            "was changed — check Flash's raw record; the subscription may "
+            "already be in the state you asked for.",
+        ) from declined
     except FlashCredentialError as refused:
         logger.error("Flash refused our credentials on an operator action: %s", refused)
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Flash refused our credentials. The API key needs attention; "
-            "retrying will not help.",
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=credential_detail
         ) from refused
     except FlashUnavailable as unreachable:
         logger.warning("Could not read Flash for an operator action: %s", unreachable)
@@ -158,6 +187,53 @@ def _flash_failure_as_http():
             detail="Could not reach Flash, so we do not know what it says. "
             "Nothing was changed.",
         ) from unreachable
+
+
+@router.post(
+    path="/subscriptions/{pubkey}/cancel",
+    response_model=BillingSubscriptionActionOutcome,
+    summary="Billing: cancel one subscriber's subscription in Flash",
+)
+async def cancel_subscription_endpoint(
+    request: Request,
+    pubkey: str,
+    body: CancelSubscriptionBody | None = None,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    """Read `cancellation_scheduled`, not `flash_status`: under the account's
+    end-of-period policy Flash cancels successfully and still reports the
+    subscriber `active` until the effective date lands."""
+    jwt_data: JWTData = request.state.jwt_data
+    with _flash_failure_as_http(_CREDENTIAL_REFUSED_ON_WRITE):
+        outcome = await cancel_subscriber_subscription(
+            db,
+            pubkey=pubkey,
+            reason=body.reason if body else None,
+            acting_pubkey=jwt_data.nostr_pubkey,
+        )
+    return BillingSubscriptionActionOutcome.model_validate(outcome)
+
+
+@router.patch(
+    path="/subscriptions/{pubkey}/status",
+    response_model=BillingSubscriptionActionOutcome,
+    summary="Billing: pause one subscriber's subscription, or put it back",
+)
+async def set_subscription_status_endpoint(
+    request: Request,
+    pubkey: str,
+    body: SetSubscriptionStatusBody,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    jwt_data: JWTData = request.state.jwt_data
+    with _flash_failure_as_http(_CREDENTIAL_REFUSED_ON_WRITE):
+        outcome = await set_subscriber_subscription_status(
+            db,
+            pubkey=pubkey,
+            flash_status=body.status,
+            acting_pubkey=jwt_data.nostr_pubkey,
+        )
+    return BillingSubscriptionActionOutcome.model_validate(outcome)
 
 
 async def _read_flash_record(

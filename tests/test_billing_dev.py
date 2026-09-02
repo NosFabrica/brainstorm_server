@@ -128,6 +128,58 @@ def test_a_mock_subscription_priced_nowhere_carries_no_pricing(dev_client):
     assert found is not None and found.pricing is None
 
 
+def test_the_local_cancel_ends_the_period_rather_than_the_subscription(
+    dev_client, monkeypatch
+):
+    """The local rehearsal has to reproduce the trap, or it rehearses nothing:
+    the account cancels at period end, so the fake must answer with the status
+    untouched and the effective date set."""
+    monkeypatch.setattr(settings, "flash_mock_enabled", True)
+    dev_client.put("/admin/billing/dev/subscription", json=_subscription())
+
+    import asyncio
+
+    from app.core.flash import cancel_subscription
+
+    cancelled = asyncio.run(cancel_subscription("7d3b"))
+
+    assert cancelled is not None
+    assert cancelled.status == "active"
+    assert cancelled.cancel_effective_date == datetime(2026, 9, 25, 12, 0, 0)
+
+
+def test_the_local_pause_and_resume_are_visible_to_the_next_read(
+    dev_client, monkeypatch
+):
+    monkeypatch.setattr(settings, "flash_mock_enabled", True)
+    dev_client.put("/admin/billing/dev/subscription", json=_subscription())
+
+    import asyncio
+
+    from app.core.flash import set_subscription_status
+
+    asyncio.run(set_subscription_status("7d3b", status="paused"))
+    paused = asyncio.run(fetch_subscription(subscription_id="7d3b"))
+    asyncio.run(set_subscription_status("7d3b", status="active"))
+    resumed = asyncio.run(fetch_subscription(subscription_id="7d3b"))
+
+    assert paused is not None and paused.status == "paused"
+    assert resumed is not None and resumed.status == "active"
+
+
+def test_writing_to_something_the_local_store_does_not_hold_is_absence(
+    dev_client, monkeypatch
+):
+    monkeypatch.setattr(settings, "flash_mock_enabled", True)
+
+    import asyncio
+
+    from app.core.flash import cancel_subscription, set_subscription_status
+
+    assert asyncio.run(cancel_subscription("nosuch")) is None
+    assert asyncio.run(set_subscription_status("nosuch", status="paused")) is None
+
+
 def test_a_removed_subscription_is_a_fact_not_an_error(dev_client):
     dev_client.put("/admin/billing/dev/subscription", json=_subscription())
     assert dev_client.delete("/admin/billing/dev/subscription/7d3b").json() == {

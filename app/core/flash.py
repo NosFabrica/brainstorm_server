@@ -1,8 +1,11 @@
-"""Reading subscription state from Flash.
+"""Reading subscription state from Flash, and the two writes an operator makes.
 
 Flash's own view is the authority on who is paid — not the webhook body, which
 omits the period boundaries and can arrive out of order. Everything that grants
 or revokes entitlement reads through here.
+
+Nothing automatic writes. Cancelling and pausing exist for an admin handling a
+support case; subscribers still manage their own subscription in Flash's portal.
 
 The distinction this module exists to protect: "Flash says they are not a
 subscriber" is a fact, returned as None and acted on. "We could not ask Flash"
@@ -12,12 +15,14 @@ socket timeout.
 Three reads, and which side of that line a 404 falls on differs between them:
 `GET /subscriptions/{id}` and `/{id}/verify` are path lookups, where a 404 is
 Flash answering — no such subscription. `GET /subscriptions?ref=` is a filtered
-list, where a 404 is our URL being wrong and no answer about anybody.
+list, where a 404 is our URL being wrong and no answer about anybody. Both
+writes address one subscription by its own path, so a 404 is absence there too.
 """
 
 import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
+from typing import Literal
 from urllib.parse import quote
 
 import httpx
@@ -75,6 +80,21 @@ class FlashServiceMissing(Exception):
     def __init__(self, service_id: str):
         self.service_id = service_id
         super().__init__(f"Flash holds no service {service_id!r}")
+
+
+class FlashRefused(Exception):
+    """Flash answered a write with "no".
+
+    Not `FlashUnavailable`: Flash was reached and understood us, and it declined
+    — pausing something already cancelled, say. Reported as an outage it would
+    have an operator wait for a service that is up; the status is carried so the
+    sentence they get can name what happened. Reads never raise it: a refused
+    read is a bug in our URL, not an answer about a subscription.
+    """
+
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        super().__init__(f"Flash refused the change ({status_code})")
 
 
 class FlashCredentialError(Exception):
@@ -277,30 +297,73 @@ def _services_url(*segments: str) -> str:
     return "/".join([base, *(quote(segment, safe="") for segment in segments)])
 
 
-async def _get_with_retries(url: str, params: dict) -> httpx.Response:
-    """GET, retrying transient failures and 5xx with a short backoff."""
+async def _with_retries(
+    method: str,
+    url: str,
+    *,
+    params: dict | None = None,
+    payload: dict | None = None,
+    retryable: tuple[type[Exception], ...],
+    retry_5xx: bool,
+) -> httpx.Response:
+    """One request, retried with a short backoff, on whatever is safe to repeat.
+
+    The two callers differ only in what that is, and the difference is the point:
+    a read may repeat anything transient, a write may repeat only what proves it
+    never left us. Sharing the loop keeps the backoff, the bound and the failure
+    message identical between them.
+    """
     client = _get_client()
     for attempt in range(CONNECT_RETRIES + 1):
         try:
-            response = await client.get(
+            response = await client.request(
+                method,
                 url,
                 params=params,
+                json=payload,
                 headers={"Authorization": f"Bearer {settings.flash_api_key}"},
             )
-        except _RETRYABLE as failed:
+        except retryable as failed:
             if attempt == CONNECT_RETRIES:
                 raise FlashUnavailable(f"Could not reach Flash: {failed}") from failed
         else:
-            if response.status_code < 500 or attempt == CONNECT_RETRIES:
+            if not retry_5xx or response.status_code < 500 or attempt == CONNECT_RETRIES:
                 return response
         await asyncio.sleep(0.1 * (attempt + 1))
     raise AssertionError("unreachable")
+
+
+async def _get_with_retries(url: str, params: dict) -> httpx.Response:
+    """GET, retrying transient failures and 5xx."""
+    return await _with_retries(
+        "GET", url, params=params, retryable=_RETRYABLE, retry_5xx=True
+    )
 
 
 def _require_a_handle(subscription_id: str | None, ref: str | None) -> None:
     """Flash supports exactly two lookups, and never both at once."""
     if not subscription_id and not ref:
         raise FlashUnavailable("A subscription lookup needs a subscriptionId or a ref")
+
+
+# Connecting is the only failure that proves the request never left us, so it is
+# the only one a write may repeat. A read that times out mid-flight can be asked
+# again for free; a cancellation that times out mid-flight may already have been
+# applied, and asking again would be a second write rather than the same one.
+_WRITE_RETRYABLE = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
+
+
+async def _send_with_retries(
+    method: str, url: str, payload: dict
+) -> httpx.Response:
+    """POST or PATCH, retried only where nothing can have been sent.
+
+    A 5xx is not retried either, because Flash answering at all means Flash
+    received it.
+    """
+    return await _with_retries(
+        method, url, payload=payload, retryable=_WRITE_RETRYABLE, retry_5xx=False
+    )
 
 
 async def _read_body(
@@ -326,6 +389,20 @@ async def _read_body(
         # of being recorded against one subscriber.
         raise FlashUnavailable(f"Could not reach Flash: {failed!r}") from failed
 
+    return _body_of(response, absent_on_404=absent_on_404)
+
+
+def _body_of(
+    response: httpx.Response, *, absent_on_404: bool, refusal_on_4xx: bool = False
+) -> dict | None:
+    """What Flash's answer means, in the one place reads and writes share.
+
+    Shared so a refused credential, an absence and an outage cannot be told
+    apart differently depending on whether we were reading or writing. One
+    difference stands: on a write a 4xx is Flash declining a change an operator
+    asked for, which they can act on, while on a read it is our own URL being
+    wrong and nothing an operator can do anything about.
+    """
     if response.status_code in (401, 403):
         # Never echo the body or the key — this is the error most likely to be
         # pasted into a ticket.
@@ -334,6 +411,8 @@ async def _read_body(
         )
     if response.status_code == 404 and absent_on_404:
         return None
+    if refusal_on_4xx and 400 <= response.status_code < 500:
+        raise FlashRefused(response.status_code)
     if response.status_code >= 400:
         raise FlashUnavailable(f"Flash answered {response.status_code}")
 
@@ -350,6 +429,25 @@ async def _read_body(
         logger.error("Flash answered in test mode; the API key may be wrong")
 
     return body
+
+
+async def _write_body(method: str, url: str, payload: dict) -> dict | None:
+    """The one request every write makes, and the one place its failures are named.
+
+    A 404 is always absence here: every write addresses one subscription by its
+    own path, so Flash not holding it is an answer, exactly as on a path read.
+    """
+    try:
+        response = await _send_with_retries(method, url, payload)
+    except FlashUnavailable:
+        raise
+    except Exception as failed:
+        # Catch-all for the same reason `_read_body` has one: a bare httpx error
+        # escaping here would surface to an operator as an unhandled 500 rather
+        # than as "we could not reach Flash, and nothing was changed".
+        raise FlashUnavailable(f"Could not reach Flash: {failed!r}") from failed
+
+    return _body_of(response, absent_on_404=True, refusal_on_4xx=True)
 
 
 async def fetch_subscription(
@@ -406,6 +504,73 @@ async def verify_subscription(subscription_id: str) -> FlashSubscription | None:
         _subscriptions_url(subscription_id, "verify"), {}, absent_on_404=True
     )
     if not body or body.get("valid") is not True:
+        return None
+    return _subscription_from(body.get("subscription"))
+
+
+# The two `status` values Flash's PATCH takes. Anything else is a different
+# operation with different consequences — a cancellation, above all — and must
+# not reach Flash dressed as a pause.
+SettableStatus = Literal["paused", "active"]
+SETTABLE_STATUSES: tuple[SettableStatus, ...] = ("paused", "active")
+
+
+async def cancel_subscription(
+    subscription_id: str, *, reason: str | None = None
+) -> FlashSubscription | None:
+    """Cancel one subscription, and hand back Flash's own account of what it did.
+
+    **Read the date, not the status.** Under the account's `end_of_period`
+    cancellation policy Flash answers `200` with the subscriber still `active`
+    or `past_due` and `cancelEffectiveDate` set: the cancellation is scheduled,
+    and they keep what they paid for until it lands. Treating the unchanged
+    status as a failure would report a cancellation that worked as one that did
+    not, and invite an operator to do it twice.
+
+    None means Flash holds no such subscription. Raising means we could not find
+    out, and then nothing was necessarily changed either way.
+    """
+    if not subscription_id:
+        raise FlashUnavailable("A cancellation needs a subscriptionId")
+
+    if settings.flash_mock_enabled:
+        from app.core import flash_mock
+
+        return flash_mock.cancel(subscription_id)
+
+    reason = (reason or "").strip()
+    body = await _write_body(
+        "POST",
+        _subscriptions_url(subscription_id, "cancel"),
+        {"reason": reason} if reason else {},
+    )
+    if body is None:
+        return None
+    return _subscription_from(body.get("subscription"))
+
+
+async def set_subscription_status(
+    subscription_id: str, *, status: SettableStatus
+) -> FlashSubscription | None:
+    """Pause a live subscription, or put a paused one back.
+
+    Same contract as `cancel_subscription`: Flash's own answer, None when it
+    holds no such subscription, and a raise when we could not find out.
+    """
+    if not subscription_id:
+        raise FlashUnavailable("A status change needs a subscriptionId")
+    if status not in SETTABLE_STATUSES:
+        raise FlashUnavailable(f"Flash does not take a status of {status!r} here")
+
+    if settings.flash_mock_enabled:
+        from app.core import flash_mock
+
+        return flash_mock.set_status(subscription_id, status)
+
+    body = await _write_body(
+        "PATCH", _subscriptions_url(subscription_id), {"status": status}
+    )
+    if body is None:
         return None
     return _subscription_from(body.get("subscription"))
 

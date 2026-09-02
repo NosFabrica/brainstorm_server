@@ -6,6 +6,7 @@ the two would revoke a paying user because a socket timed out.
 """
 
 import asyncio
+import json
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -15,6 +16,7 @@ import pytest
 from app.core import flash
 from app.core.flash import (
     FlashCredentialError,
+    FlashRefused,
     FlashUnavailable,
     fetch_subscription,
     fetch_subscription_raw,
@@ -783,3 +785,247 @@ def test_the_raw_read_carries_no_credential_and_no_response_headers():
 
     assert settings.flash_api_key not in str(raw)
     assert "leak-me" not in str(raw)
+
+
+# ---------------------------------------------------------------------------
+# Writing — cancelling, pausing, resuming
+# ---------------------------------------------------------------------------
+CANCELLED_AT_PERIOD_END = {
+    **SUBSCRIPTION,
+    # The trap this section exists for: Flash accepted the cancellation and
+    # still reports the subscriber as active, because the account cancels at
+    # period end. The date is the answer; the status is not.
+    "status": "active",
+    "canceledAt": "2026-08-31T15:06:09.067Z",
+    "cancelEffectiveDate": "2026-09-20",
+}
+
+
+def _cancel(subscription_id="7d3b", **kwargs):
+    return asyncio.run(flash.cancel_subscription(subscription_id, **kwargs))
+
+
+def _set_status(subscription_id="7d3b", status="paused"):
+    return asyncio.run(
+        flash.set_subscription_status(subscription_id, status=status)
+    )
+
+
+def test_a_scheduled_cancellation_is_reported_by_its_date_not_its_status():
+    """Flash answers 200 with the subscriber still active. Reading the status
+    alone would report a failure on a cancellation that worked."""
+    _transport(
+        _responds(json={"livemode": True, "subscription": CANCELLED_AT_PERIOD_END})
+    )
+
+    cancelled = _cancel()
+
+    assert cancelled is not None
+    assert cancelled.status == "active"
+    assert cancelled.cancel_effective_date == datetime(2026, 9, 20, 23, 59, 59, 999999)
+
+
+def test_a_cancellation_is_posted_to_the_subscriptions_own_cancel_path():
+    calls = []
+    _transport(
+        _responds(
+            json={"livemode": True, "subscription": CANCELLED_AT_PERIOD_END},
+            calls=calls,
+        )
+    )
+
+    _cancel()
+
+    assert calls[0].method == "POST"
+    assert calls[0].url.path.endswith("/subscriptions/7d3b/cancel")
+
+
+def test_a_cancellation_carries_the_reason_the_operator_gave():
+    calls = []
+    _transport(
+        _responds(
+            json={"livemode": True, "subscription": CANCELLED_AT_PERIOD_END},
+            calls=calls,
+        )
+    )
+
+    _cancel(reason="Refunded after a duplicate signup")
+
+    assert json.loads(calls[0].content) == {
+        "reason": "Refunded after a duplicate signup"
+    }
+
+
+def test_a_cancellation_with_no_reason_sends_none():
+    """The field is optional, and an empty string is not a reason."""
+    calls = []
+    _transport(
+        _responds(
+            json={"livemode": True, "subscription": CANCELLED_AT_PERIOD_END},
+            calls=calls,
+        )
+    )
+
+    _cancel(reason="   ")
+
+    assert json.loads(calls[0].content) == {}
+
+
+def test_cancelling_something_flash_does_not_know_is_absence_not_a_failure():
+    _transport(_responds(status=404))
+
+    assert _cancel(subscription_id="nosuch") is None
+
+
+def test_pausing_patches_the_status_flash_documents():
+    calls = []
+    _transport(
+        _responds(
+            json={
+                "livemode": True,
+                "subscription": {**SUBSCRIPTION, "status": "paused"},
+            },
+            calls=calls,
+        )
+    )
+
+    paused = _set_status(status="paused")
+
+    assert calls[0].method == "PATCH"
+    assert calls[0].url.path.endswith("/subscriptions/7d3b")
+    assert json.loads(calls[0].content) == {"status": "paused"}
+    assert paused is not None and paused.status == "paused"
+
+
+def test_resuming_puts_the_same_subscription_back_to_active():
+    calls = []
+    _transport(
+        _responds(
+            json={"livemode": True, "subscription": SUBSCRIPTION}, calls=calls
+        )
+    )
+
+    resumed = _set_status(status="active")
+
+    assert json.loads(calls[0].content) == {"status": "active"}
+    assert resumed is not None and resumed.status == "active"
+
+
+def test_a_status_flash_does_not_take_is_refused_before_anything_is_sent():
+    calls = []
+    _transport(_responds(json={}, calls=calls))
+
+    with pytest.raises(FlashUnavailable):
+        _set_status(status="canceled")
+    assert not calls
+
+
+def test_a_write_with_nothing_to_write_to_is_refused():
+    with pytest.raises(FlashUnavailable):
+        _cancel(subscription_id="")
+
+
+def test_a_write_that_never_left_us_is_retried():
+    """Connecting is the one failure that proves nothing was sent."""
+    attempts = []
+
+    def handler(request):
+        attempts.append(request)
+        if len(attempts) < 3:
+            raise httpx.ConnectError("refused")
+        return httpx.Response(
+            200, json={"livemode": True, "subscription": CANCELLED_AT_PERIOD_END}
+        )
+
+    _transport(handler)
+
+    assert _cancel() is not None
+    assert len(attempts) == 3
+
+
+def test_a_write_that_may_already_have_landed_is_never_repeated():
+    """A read times out harmlessly; a cancellation may have gone through, and
+    asking again would be a second write, not the same one."""
+    attempts = []
+
+    def handler(request):
+        attempts.append(request)
+        raise httpx.ReadTimeout("no answer")
+
+    _transport(handler)
+
+    with pytest.raises(FlashUnavailable):
+        _cancel()
+    assert len(attempts) == 1
+
+
+def test_a_server_error_on_a_write_is_not_repeated_either():
+    """Flash answered, so it received the request."""
+    attempts = []
+    _transport(_responds(status=500, calls=attempts))
+
+    with pytest.raises(FlashUnavailable):
+        _cancel()
+    assert len(attempts) == 1
+
+
+@pytest.mark.parametrize("status", [400, 409, 422])
+def test_a_change_flash_declines_is_an_answer_not_an_outage(status):
+    """Pausing something already cancelled is Flash saying no, not Flash being
+    unreachable. Reported as an outage it would have an operator wait for a
+    service that is up."""
+    attempts = []
+    _transport(_responds(status=status, calls=attempts))
+
+    with pytest.raises(FlashRefused) as declined:
+        _set_status(status="paused")
+    assert declined.value.status_code == status
+    assert len(attempts) == 1
+
+
+def test_a_refusal_is_told_apart_from_an_outage_in_the_type_system():
+    assert issubclass(FlashRefused, FlashUnavailable) is False
+
+
+def test_a_read_flash_declines_is_still_our_url_being_wrong():
+    """The asymmetry is deliberate: on the filtered list a 4xx says nothing
+    about a subscriber and there is nothing an operator can act on."""
+    _transport(_responds(status=400))
+
+    with pytest.raises(FlashUnavailable):
+        _fetch(ref="a" * 64)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_key_that_cannot_manage_subscriptions_is_named_as_such(status):
+    """Writes need a scope reads do not, so this is the one failure a
+    view-only key produces — and it is not Flash being down."""
+    _transport(_responds(status=status))
+
+    with pytest.raises(FlashCredentialError):
+        _cancel()
+
+
+def test_a_write_never_carries_the_api_key_into_its_error():
+    from app.core.config import settings
+
+    _transport(_responds(status=401))
+
+    with pytest.raises(FlashCredentialError) as raised:
+        _cancel()
+    assert settings.flash_api_key not in str(raised.value)
+
+
+def test_a_write_sends_the_key_as_a_bearer_token():
+    from app.core.config import settings
+
+    calls = []
+    _transport(
+        _responds(
+            json={"livemode": True, "subscription": SUBSCRIPTION}, calls=calls
+        )
+    )
+
+    _set_status(status="paused")
+
+    assert calls[0].headers["Authorization"] == f"Bearer {settings.flash_api_key}"

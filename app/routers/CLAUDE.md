@@ -138,13 +138,20 @@ each carry their own `verified` / `tier`. All of them sit on the same line.
 
 Gated by `verify_billing_access` (see Authentication). Answers one question in
 two halves: what Flash says we are charging someone, and what the scheduler
-actually gives them. Where those disagree is the bug.
+actually gives them. Where those disagree is the bug. It also carries the
+operator's writes to Flash — cancel, pause and resume — each of which
+re-reads the subscriber through `apply_entitlement` afterwards rather than
+trusting the write's own answer.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/subscriptions` | `Page[BillingSubscriptionItem]`. `flash_status` and `scheduling_name` are separate fields on purpose — collapsing them would hide the disagreement |
+| GET | `/subscriptions` | `Page[BillingSubscriptionItem]`. `flash_status` and `scheduling_name` are separate fields on purpose — collapsing them would hide the disagreement. `cancel_effective_date` is what separates "renews then" from "ends then", since a cancelled subscriber stays `active` until it lands |
 | GET | `/divergence` | Ten categories of unsettled state, each `{count, truncated, rows}`. Capped at 200 rows: a report nobody can open is no use on the day it matters |
 | POST | `/subscriptions/{pubkey}/resync` | Re-reads one subscriber from Flash now |
+| POST | `/subscriptions/{pubkey}/cancel` | Body `{reason?}`. Cancels in Flash on an operator's behalf — the support path, not the subscriber's, who still uses `portalUrl`. **Read `cancellation_scheduled`, never `flash_status`**: under the account's `end_of_period` policy Flash answers 200 with the subscriber still `active` and `cancelEffectiveDate` set, so deciding on the status reports a failure on a cancellation that worked |
+| PATCH | `/subscriptions/{pubkey}/status` | Body `{status: "paused" \| "active"}`. Anything else is 422 — a cancellation has a reason and an effective date, and must not arrive through this door |
+
+Both writes answer **409** when Flash declines the change (`FlashRefused`), which is not the 503 an unreachable Flash gets: there is nothing to wait for. A write that lands in Flash and then fails its own re-read still answers **200**, with `reason: "reread_failed"` — reporting it as a failure would be a lie about the one thing the operator most needs the truth about.
 | POST / DELETE | `/subscriptions/{pubkey}/block` | Bar a user from paid entitlement / lift the bar. Blocking also revokes a billing-granted policy; admin grants are left alone |
 | GET | `/unresolved/{subscription_id}/flash` | What Flash says about a signup that named nobody — its id is the only handle it has |
 | POST | `/unresolved/{subscription_id}/attribute` | Body `{pubkey}`. Attaches a plain-link signup to whoever made it, by running `apply_entitlement` unaltered — never a hand-built grant. Refuses a pubkey that already holds a different subscription, and one already attributed elsewhere; re-attributing to the same person is a no-op |

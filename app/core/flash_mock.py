@@ -11,6 +11,7 @@ one running longest. A verification reads as a lookup by id — the fake holds
 nothing Flash would call invalid.
 """
 
+from dataclasses import replace
 from datetime import datetime
 
 from app.core.flash import FlashPricing, FlashSubscription
@@ -44,6 +45,31 @@ def plans_for(service_id: str) -> list[dict]:
 def clear() -> None:
     _subscriptions.clear()
     _plans.clear()
+
+
+def cancel(subscription_id: str) -> FlashSubscription | None:
+    """Cancel the way the account really does: at period end, status untouched.
+
+    An immediately `canceled` row would let the local rehearsal skip the one
+    thing the real path exists to get right.
+    """
+    found = _subscriptions.get(subscription_id)
+    if found is None:
+        return None
+    cancelled = replace(
+        found, cancel_effective_date=found.cancel_effective_date or found.current_period_end
+    )
+    _subscriptions[subscription_id] = cancelled
+    return cancelled
+
+
+def set_status(subscription_id: str, status: str) -> FlashSubscription | None:
+    found = _subscriptions.get(subscription_id)
+    if found is None:
+        return None
+    changed = replace(found, status=status)
+    _subscriptions[subscription_id] = changed
+    return changed
 
 
 def lookup(

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -273,6 +274,11 @@ class BillingSubscriptionItem(BaseModel):
     current_period_start: datetime | None = None
     current_period_end: datetime | None = None
     next_billing_date: datetime | None = None
+    # Set means this subscription ends then, however `flash_status` reads —
+    # under the account's end-of-period policy a cancelled subscriber stays
+    # `active` until the date lands, so the column is the only thing that
+    # separates "renews then" from "ends then".
+    cancel_effective_date: datetime | None = None
     last_synced_at: datetime | None = None
     last_sync_error: str | None = None
     granted_scheduling_id: int | None = None
@@ -285,7 +291,10 @@ class BillingSubscriptionItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     @field_serializer(
-        "current_period_start", "current_period_end", "next_billing_date"
+        "current_period_start",
+        "current_period_end",
+        "next_billing_date",
+        "cancel_effective_date",
     )
     def _serialize_billing_date(self, value: datetime | None) -> str | None:
         return _billing_date_wire_format(value)
@@ -481,6 +490,47 @@ class BillingBlockOutcome(BaseModel):
     pubkey: str
     blocked: bool
     revoked: bool
+
+
+class CancelSubscriptionBody(BaseModel):
+    """Why an operator cancelled, in their words. Optional, and passed to Flash
+    verbatim so their record says the same thing ours does."""
+
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class SetSubscriptionStatusBody(BaseModel):
+    """Pause, or put back. Cancellation is its own endpoint, because it carries a
+    reason, an effective date, and consequences a pause does not."""
+
+    status: Literal["paused", "active"]
+
+
+class BillingSubscriptionActionOutcome(BaseModel):
+    """What Flash did, beside what we then did about it.
+
+    `flash_status` is Flash's own answer after the write; `applied`/`reason` are
+    the entitlement re-read that followed. Kept apart for the same reason the
+    roster keeps its two columns apart.
+    """
+
+    pubkey: str
+    subscription_id: str
+    flash_status: str
+    cancel_effective_date: datetime | None = None
+    # The field to read after a cancellation, never `flash_status` — see
+    # `flash.cancel_subscription` for why the status stays `active`.
+    cancellation_scheduled: bool
+    applied: bool
+    # An `EntitlementReason`, or `reread_failed` when the write landed in Flash
+    # and the re-read that follows it did not.
+    reason: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("cancel_effective_date")
+    def _serialize_billing_date(self, value: datetime | None) -> str | None:
+        return _billing_date_wire_format(value)
 
 
 class AttributeUnresolvedBody(BaseModel):

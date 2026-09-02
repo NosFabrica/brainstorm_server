@@ -13,7 +13,14 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
-from app.core.flash import FlashSubscription, fetch_subscription
+from app.core.flash import (
+    FlashCredentialError,
+    FlashSubscription,
+    FlashUnavailable,
+    cancel_subscription,
+    fetch_subscription,
+    set_subscription_status,
+)
 from app.core.loggr import loggr
 from app.db_models import BillingPlan, SchedulingSource
 from fastapi import HTTPException, status
@@ -527,6 +534,148 @@ async def set_billing_block(
         "%s billing_blocked set to %s (revoked=%s)", pubkey, blocked, revoked
     )
     return BlockOutcome(found=True, blocked=blocked, revoked=revoked)
+
+
+# Not an `EntitlementReason`: those are decisions about a subscriber's tier, and
+# this is the absence of one. The write happened; what we know about it did not
+# get refreshed.
+REREAD_FAILED = "reread_failed"
+
+
+@dataclass(frozen=True)
+class SubscriptionActionOutcome:
+    """What Flash did, beside what we then did about it.
+
+    The same split the roster is built on. `flash_status` and
+    `cancel_effective_date` are Flash's own account of the subscription after
+    the write; `applied` and `reason` are the entitlement re-read that followed.
+    Collapsing them would hide the case that matters most — Flash cancelled, and
+    our own reconcile could not be carried out.
+    """
+
+    pubkey: str
+    subscription_id: str
+    flash_status: str
+    cancel_effective_date: datetime | None
+    # The question `flash_status` cannot answer — see `flash.cancel_subscription`.
+    # A statement about the subscription, not about the action: a pause leaves it
+    # exactly as it found it.
+    cancellation_scheduled: bool
+    applied: bool
+    # An `EntitlementReason` value, or `reread_failed` when the write landed and
+    # the re-read that follows it did not. A plain string rather than the enum
+    # because that last case is not an entitlement decision — nothing decided.
+    reason: str
+
+
+async def cancel_subscriber_subscription(
+    db: AsyncDBSession, *, pubkey: str, reason: str | None, acting_pubkey: str
+) -> SubscriptionActionOutcome:
+    """Cancel one subscriber's subscription in Flash, on an operator's behalf.
+
+    Subscribers still cancel in Flash's portal — this is the support path, for
+    an admin already looking at the row. It is deliberately the only place we
+    cancel: nothing automatic ever does.
+    """
+    return await _act_on_subscription(
+        db,
+        pubkey=pubkey,
+        acting_pubkey=acting_pubkey,
+        action="cancel",
+        write=lambda subscription_id: cancel_subscription(
+            subscription_id, reason=reason
+        ),
+    )
+
+
+async def set_subscriber_subscription_status(
+    db: AsyncDBSession, *, pubkey: str, flash_status: str, acting_pubkey: str
+) -> SubscriptionActionOutcome:
+    """Pause a subscriber's subscription, or put it back."""
+    return await _act_on_subscription(
+        db,
+        pubkey=pubkey,
+        acting_pubkey=acting_pubkey,
+        action=flash_status,
+        write=lambda subscription_id: set_subscription_status(
+            subscription_id, status=flash_status
+        ),
+    )
+
+
+async def _act_on_subscription(
+    db: AsyncDBSession,
+    *,
+    pubkey: str,
+    acting_pubkey: str,
+    action: str,
+    write,
+) -> SubscriptionActionOutcome:
+    """Write to Flash, then re-read the subscriber through the ordinary path.
+
+    The re-read is `apply_entitlement`, unaltered, for the same reason
+    attribution uses it: an admin's action must leave the subscriber in the
+    state the next webhook would produce, not one hand-assembled here. A pause
+    revokes and a resume grants as a consequence of what Flash then reports,
+    never as something this function decides.
+
+    Flash's exceptions propagate. The caller turns them into an outage and a
+    refused credential, which read differently to whoever is looking.
+    """
+    held = await get_user_subscription_on_db(db, pubkey)
+    if held is None or not held.flash_subscription_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="We hold no Flash subscription for this user, so there is "
+            "nothing to act on.",
+        )
+
+    changed = await write(held.flash_subscription_id)
+    if changed is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Flash no longer holds the subscription we have on file for "
+            "this user.",
+        )
+
+    logger.info(
+        "%s applied %s to subscription %s for %s; Flash now reports %s",
+        acting_pubkey,
+        action,
+        held.flash_subscription_id,
+        pubkey,
+        changed.status,
+    )
+
+    # Deliberately not propagated. Flash has already been written to, so
+    # answering "could not reach Flash, nothing was changed" would be a lie
+    # about the one thing the operator most needs to be told the truth about.
+    # The subscriber is left for the next webhook or resync to reconcile.
+    try:
+        outcome = await apply_entitlement(
+            db, external_ref=pubkey, subscription_id=None
+        )
+        reason = outcome.reason.value
+        applied = outcome.applied
+    except (FlashUnavailable, FlashCredentialError) as unread:
+        logger.error(
+            "%s landed on subscription %s but the re-read did not: %s",
+            action,
+            held.flash_subscription_id,
+            unread,
+        )
+        reason, applied = REREAD_FAILED, False
+
+    return SubscriptionActionOutcome(
+        pubkey=pubkey,
+        subscription_id=changed.id or held.flash_subscription_id,
+        flash_status=changed.status,
+        cancel_effective_date=changed.cancel_effective_date,
+        cancellation_scheduled=changed.cancel_effective_date is not None
+        or changed.status == CANCELLED_STATUS,
+        applied=applied,
+        reason=reason,
+    )
 
 
 @dataclass(frozen=True)
