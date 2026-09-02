@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import flash_mock
 from app.core.config import settings
@@ -47,6 +47,38 @@ async def set_mock_subscription_endpoint(body: MockSubscriptionBody):
 )
 async def remove_mock_subscription_endpoint(subscription_id: str):
     return {"removed": flash_mock.remove_subscription(subscription_id)}
+
+
+class MockPlanBody(BaseModel):
+    """One plan, taken and stored in Flash's own field names so the fake and the
+    real read parse identically. Only what the pricing page uses."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    service_id: str = Field(alias="serviceId")
+    name: str
+    amount: str
+    currency: str = "USD"
+    billing_interval: str | None = Field(default=None, alias="billingInterval")
+    description: str | None = None
+    features: list[str] | None = None
+    not_included: list[str] | None = Field(default=None, alias="notIncluded")
+    sort_order: int = Field(default=0, alias="sortOrder")
+    status: str = "active"
+
+
+@router.put(path="/plan", summary="Dev: set one mock Flash plan")
+async def set_mock_plan_endpoint(body: MockPlanBody):
+    flash_mock.set_plan(body.model_dump(by_alias=True))
+    return {"ok": True, "mock_enabled": settings.flash_mock_enabled}
+
+
+@router.delete(
+    path="/plan/{service_id}/{plan_id}", summary="Dev: remove one mock Flash plan"
+)
+async def remove_mock_plan_endpoint(service_id: str, plan_id: str):
+    return {"removed": flash_mock.remove_plan(service_id, plan_id)}
 
 
 class EmitWebhookBody(BaseModel):

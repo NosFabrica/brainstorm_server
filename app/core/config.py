@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     flash_mock_enabled: bool = Field(default=False)
     # Per-attempt HTTP timeout for Flash reads.
     flash_http_timeout_seconds: float = Field(default=5.0)
+    # How long a plan read stays fresh. The pricing page is public, so this is
+    # what keeps anonymous traffic off Flash's quota; a price change takes this
+    # long to appear. The last-known-good copy behind it never expires.
+    flash_plans_cache_ttl_seconds: int = Field(default=300)
     # Replay window for webhook signatures, per Flash's own reference handler.
     flash_webhook_tolerance_seconds: int = Field(default=300)
     # Periodic billing reconciliation. Unset = follows flash_enabled; set it

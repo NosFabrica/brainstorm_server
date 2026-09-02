@@ -37,7 +37,7 @@ async def select_public_scheduling_on_db(db: AsyncDBSession) -> list[Scheduling]
     """The policies that may reach the public pricing page, default first.
 
     Default first because it is the one option nobody can buy, so it has a
-    placement rule rather than a sort field; plans carry their own `sort_order`.
+    placement rule rather than a sort field; paid rows follow Flash's `sortOrder`.
     """
     statement = (
         select(Scheduling)

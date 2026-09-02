@@ -32,21 +32,38 @@ PAID_POLICY = SimpleNamespace(
 
 
 def _plan(**overrides):
+    """A mapping row: which Flash plan grants what, and whether we sell it.
+
+    Nothing priced — price, name, period, ordering and copy are Flash's.
+    """
     return SimpleNamespace(
         **{
             "id": 1,
             "flash_service_id": "9c1e",
             "flash_plan_id": "4f2a",
             "scheduling_id": PAID_POLICY.id,
+            "is_active": True,
+            **overrides,
+        }
+    )
+
+
+def _flash_plan(**overrides):
+    from app.core.flash import FlashPlan
+
+    return FlashPlan(
+        **{
+            "id": "4f2a",
+            "service_id": "9c1e",
+            "name": "Monthly",
+            "description": None,
             "amount_minor": 200,
             "currency": "USD",
-            "billing_period_unit": "month",
-            "billing_period_count": 1,
+            "billing_interval": "monthly",
             "sort_order": 0,
-            "blurb": None,
-            "includes": None,
-            "excludes": None,
-            "is_active": True,
+            "features": None,
+            "not_included": None,
+            "status": "active",
             **overrides,
         }
     )
@@ -111,7 +128,24 @@ def subscription_client(client, monkeypatch):
     yield client
 
 
-def _stub_view(monkeypatch, *, policy=FREE_POLICY, row=None, plan=None):
+def _stub_flash(monkeypatch, flash, flash_error):
+    """Stand in for the one Flash read both surfaces make, in its own shape:
+    every plan across the services asked for, keyed as a mapping names one."""
+    rows = [_flash_plan()] if flash is None else flash
+    monkeypatch.setattr(
+        view_svc,
+        "read_plans_for_services",
+        AsyncMock(
+            return_value={(row.service_id, row.id): row for row in rows},
+            side_effect=flash_error,
+        ),
+    )
+
+
+def _stub_view(
+    monkeypatch, *, policy=FREE_POLICY, row=None, plan=None, flash=None, flash_error=None
+):
+    _stub_flash(monkeypatch, flash, flash_error)
     monkeypatch.setattr(
         view_svc,
         "get_assigned_scheduling_id_on_db",
@@ -236,18 +270,19 @@ def test_a_boundary_flash_named_as_a_date_goes_out_as_that_date(
     assert data["cancel_effective_date"] == "2026-09-20"
 
 
-def test_the_plan_is_what_they_bought_period_included(
+def test_the_plan_is_the_one_they_bought_priced_by_flash(
     subscription_client, monkeypatch
 ):
-    """Read through `billing_plan_id`, not looked up by policy: someone on the
-    daily rehearsal plan is charged $0.10 a day whatever the policy sells for
-    now, and the period is a unit and a count so the client can format it."""
+    """Which plan is read through `billing_plan_id`, not looked up by policy —
+    someone on the daily rehearsal plan is not shown the monthly price. What it
+    costs is Flash's answer about that plan, not a value we transcribed."""
     monkeypatch.setattr(settings, "flash_enabled", True)
     _stub_view(
         monkeypatch,
         policy=PAID_POLICY,
         row=_row(),
-        plan=_plan(amount_minor=10, billing_period_unit="day", billing_period_count=1),
+        plan=_plan(),
+        flash=[_flash_plan(amount_minor=10, billing_interval="daily")],
     )
 
     plan = subscription_client.get("/user/subscription").json()["data"]["plan"]
@@ -256,8 +291,29 @@ def test_the_plan_is_what_they_bought_period_included(
         "amount_minor": 10,
         "currency": "USD",
         "is_active": True,
-        "billing_period_unit": "day",
-        "billing_period_count": 1,
+        "billing_interval": "daily",
+    }
+
+
+def test_a_subscriber_still_sees_their_plan_when_flash_cannot_be_read(
+    subscription_client, monkeypatch
+):
+    """Their entitlement does not depend on this call and neither should the
+    page. What we still know — that they hold a paid policy, and that we still
+    sell the plan — is reported; the price is simply absent."""
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    _stub_view(
+        monkeypatch, policy=PAID_POLICY, row=_row(), plan=_plan(), flash=[]
+    )
+
+    data = subscription_client.get("/user/subscription").json()["data"]
+
+    assert data["status"] == "active"
+    assert data["plan"] == {
+        "amount_minor": None,
+        "currency": None,
+        "is_active": True,
+        "billing_interval": None,
     }
 
 
@@ -399,7 +455,7 @@ def test_refresh_answers_with_what_we_hold_when_flash_is_unreachable(
 # ---------------------------------------------------------------------------
 # The plans page
 # ---------------------------------------------------------------------------
-def _stub_plans(monkeypatch, *, policies, plans):
+def _stub_plans(monkeypatch, *, policies, plans, flash=None, flash_error=None):
     monkeypatch.setattr(settings, "flash_enabled", True)
     monkeypatch.setattr(settings, "flash_checkout_redirect_url", "")
     monkeypatch.setattr(settings, "frontend_url", "https://app.example.com")
@@ -408,6 +464,7 @@ def _stub_plans(monkeypatch, *, policies, plans):
     )
     listed = AsyncMock(return_value=plans)
     monkeypatch.setattr(view_svc, "select_billing_plans_on_db", listed)
+    _stub_flash(monkeypatch, flash, flash_error)
     return listed
 
 
@@ -418,6 +475,41 @@ def test_no_billing_configured_lists_nothing(subscription_client, monkeypatch):
     body = subscription_client.get("/billing/plans").json()
 
     assert body["data"] == {"plans": []}
+
+
+def test_a_priced_row_is_flashs_answer_beside_our_own_mapping(monkeypatch):
+    """Everything on the card comes from Flash except the two things Flash
+    cannot know: which policy buying it grants, and that we sell it at all."""
+    _stub_plans(
+        monkeypatch,
+        policies=[PAID_POLICY],
+        plans=[_plan()],
+        flash=[
+            _flash_plan(
+                name="Monthly",
+                description="Best value",
+                amount_minor=100,
+                currency="SAT",
+                billing_interval="monthly",
+                features=["weekly recalculation"],
+                not_included=["priority support"],
+            )
+        ],
+    )
+
+    row = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans[0]
+
+    assert row.plan_name == "Monthly"
+    assert row.description == "Best value"
+    assert row.amount_minor == 100
+    assert row.currency == "SAT"
+    assert row.billing_interval == "monthly"
+    assert row.features == ["weekly recalculation"]
+    assert row.not_included == ["priority support"]
+    # Ours, both of them.
+    assert row.policy_id == PAID_POLICY.id
+    assert row.policy_name == "Paid Staging Flash Test"
+    assert row.schedule_interval_seconds == 604800
 
 
 def test_plans_carry_live_cadence_and_a_checkout_url_without_ref(monkeypatch):
@@ -445,6 +537,19 @@ def test_plans_carry_live_cadence_and_a_checkout_url_without_ref(monkeypatch):
     )
 
 
+def test_the_free_row_has_no_flash_plan_and_keeps_its_local_name(monkeypatch):
+    """Nothing sells it, so there is no Flash plan to name it. The policy's own
+    name is the only name it has ever had."""
+    _stub_plans(monkeypatch, policies=[FREE_POLICY], plans=[])
+
+    free = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans[0]
+
+    assert free.plan_name is None
+    assert free.policy_name == "Free"
+    assert free.billing_interval is None
+    assert free.features is None
+
+
 def test_two_plans_on_one_policy_are_two_rows_granting_the_same_thing(monkeypatch):
     """Staging sells one paid policy through two live mappings — a $0.10/day
     rehearsal plan beside the real $2.00 one. Both are buyable, both grant the
@@ -453,8 +558,12 @@ def test_two_plans_on_one_policy_are_two_rows_granting_the_same_thing(monkeypatc
         monkeypatch,
         policies=[FREE_POLICY, PAID_POLICY],
         plans=[
-            _plan(id=1, amount_minor=10, billing_period_unit="day", sort_order=0),
-            _plan(id=2, flash_plan_id="019e", amount_minor=200, sort_order=1),
+            _plan(id=1),
+            _plan(id=2, flash_plan_id="019e"),
+        ],
+        flash=[
+            _flash_plan(amount_minor=10, billing_interval="daily", sort_order=0),
+            _flash_plan(id="019e", amount_minor=200, sort_order=1),
         ],
     )
 
@@ -466,24 +575,112 @@ def test_two_plans_on_one_policy_are_two_rows_granting_the_same_thing(monkeypatc
     assert {row.policy_name for row in paid} == {"Paid Staging Flash Test"}
 
 
-def test_the_order_is_the_answer_default_first_then_sort_order(monkeypatch):
-    """The client renders the array as given and never sorts, so the free row
-    has a placement rule rather than a sort field."""
+def test_the_order_is_the_answer_default_first_then_flashs_own(monkeypatch):
+    """The client renders the array as given and never sorts. Ordering stopped
+    being ours with the rest of it: it is Flash's `sortOrder` now, and the free
+    row has a placement rule rather than a sort field."""
     _stub_plans(
         monkeypatch,
         policies=[PAID_POLICY, FREE_POLICY],
-        plans=[
-            _plan(id=2, flash_plan_id="019e", amount_minor=200),
-            _plan(id=1, amount_minor=10),
+        plans=[_plan(id=1), _plan(id=2, flash_plan_id="019e")],
+        flash=[
+            _flash_plan(amount_minor=10, sort_order=9),
+            _flash_plan(id="019e", amount_minor=200, sort_order=1),
         ],
     )
 
     plans = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans
 
     assert plans[0].is_default is True
-    # The repo already ordered by sort_order then id; the service must not
-    # reshuffle what it was handed.
     assert [row.amount_minor for row in plans[1:]] == [200, 10]
+
+
+def test_a_mapping_flash_no_longer_returns_leaves_the_page_standing(monkeypatch):
+    """A plan deleted in Flash cannot be priced, so it cannot be sold — but it
+    must not take the rest of the page with it."""
+    _stub_plans(
+        monkeypatch,
+        policies=[FREE_POLICY, PAID_POLICY],
+        plans=[_plan(id=1), _plan(id=2, flash_plan_id="gone")],
+        flash=[_flash_plan()],
+    )
+
+    plans = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans
+
+    assert [row.plan_name for row in plans] == [None, "Monthly"]
+
+
+def test_a_service_flash_does_not_hold_is_refused_not_served_as_no_billing(
+    subscription_client, monkeypatch
+):
+    """An empty `plans` array is a defined signal — "this instance sells
+    nothing" — and the UI hides every billing entry point on it. A mapping
+    naming a service Flash does not have would be indistinguishable from that:
+    a wrong service id would read as a deliberate self-host. So it refuses, and
+    says which service, because only an operator can fix it."""
+    from app.core.flash import FlashServiceMissing
+
+    _stub_plans(
+        monkeypatch,
+        policies=[FREE_POLICY, PAID_POLICY],
+        plans=[_plan()],
+        flash_error=FlashServiceMissing("9c1e"),
+    )
+
+    response = subscription_client.get("/billing/plans")
+
+    assert response.status_code == 503
+    assert "9c1e" in response.text
+
+
+def test_a_plan_we_cannot_price_is_not_offered_for_sale(monkeypatch):
+    """Flash sends amounts as strings in minor units. One we cannot read is
+    unknown, not zero — and zero renders as "Free" on a public page, which is
+    the one wrong answer a pricing page must never give. Unsellable, like a
+    plan Flash no longer returns."""
+    _stub_plans(
+        monkeypatch,
+        policies=[FREE_POLICY, PAID_POLICY],
+        plans=[_plan()],
+        flash=[_flash_plan(amount_minor=None)],
+    )
+
+    plans = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans
+
+    assert [row.plan_name for row in plans] == [None, None]
+    assert all(row.checkout_url is None for row in plans)
+
+
+def test_an_unreachable_flash_leaves_the_page_standing_too(monkeypatch):
+    """With no cached copy at all there is nothing to price a paid row with —
+    the reader answers with what it could get, which is nothing. The page still
+    renders what it can rather than failing outright."""
+    _stub_plans(
+        monkeypatch,
+        policies=[FREE_POLICY, PAID_POLICY],
+        plans=[_plan()],
+        flash=[],
+    )
+
+    plans = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans
+
+    assert [row.policy_id for row in plans] == [FREE_POLICY.id, PAID_POLICY.id]
+    assert all(row.checkout_url is None for row in plans)
+
+
+def test_flash_is_asked_once_per_service_not_once_per_plan(monkeypatch):
+    """Two mappings on one service are one read. The cache would absorb the
+    second, but a read per row would still be a read per row on a cold page."""
+    _stub_plans(
+        monkeypatch,
+        policies=[PAID_POLICY],
+        plans=[_plan(id=1), _plan(id=2, flash_plan_id="019e")],
+        flash=[_flash_plan(), _flash_plan(id="019e")],
+    )
+
+    asyncio.run(view_svc.list_billing_plans(AsyncMock()))
+
+    assert view_svc.read_plans_for_services.await_count == 1
 
 
 def test_a_policy_that_is_not_public_never_reaches_the_pricing_page(monkeypatch):
@@ -493,6 +690,7 @@ def test_a_policy_that_is_not_public_never_reaches_the_pricing_page(monkeypatch)
         monkeypatch,
         policies=[FREE_POLICY],
         plans=[_plan(), _plan(id=2, flash_plan_id="019e", scheduling_id=99)],
+        flash=[_flash_plan(), _flash_plan(id="019e")],
     )
 
     plans = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans
@@ -512,25 +710,18 @@ def test_a_public_policy_with_nothing_selling_it_still_renders_free(monkeypatch)
 
 
 def test_plan_copy_travels_as_plain_text(monkeypatch):
-    """Admin-editable, so it must cross the wire as data the client escapes —
-    never markup the pricing page would parse."""
+    """Copy is Flash's now, which makes it no safer: it still crosses the wire
+    as data the client escapes, never markup the pricing page would parse."""
     _stub_plans(
         monkeypatch,
         policies=[PAID_POLICY],
-        plans=[
-            _plan(
-                blurb="<b>best value</b>",
-                includes=["weekly recalculation"],
-                excludes=["priority support"],
-            )
-        ],
+        plans=[_plan()],
+        flash=[_flash_plan(description="<b>best value</b>")],
     )
 
     row = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans[0]
 
-    assert row.blurb == "<b>best value</b>"
-    assert row.includes == ["weekly recalculation"]
-    assert row.excludes == ["priority support"]
+    assert row.description == "<b>best value</b>"
 
 
 def test_the_public_policy_query_builds_against_the_real_model(monkeypatch):

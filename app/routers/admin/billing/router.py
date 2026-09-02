@@ -297,8 +297,8 @@ async def update_billing_plan_endpoint(
     body: UpdateBillingPlanBody,
     db: AsyncDBSession = Depends(dependency=get_db),
 ):
-    # exclude_unset, not exclude_none: clearing a billing period or a blurb back
-    # to null is a real edit, and exclude_none would drop it silently.
+    # exclude_unset, not exclude_none: an explicit null is a real edit, and
+    # exclude_none would drop it silently.
     return await update_billing_plan(db, plan_id, body.model_dump(exclude_unset=True))
 
 

@@ -16,6 +16,9 @@ from datetime import datetime
 from app.core.flash import FlashSubscription
 
 _subscriptions: dict[str, FlashSubscription] = {}
+# Plans, in Flash's own field names — the shape `GET /services/{id}` returns,
+# so the pricing page the paid rehearsal starts on has something to render.
+_plans: dict[tuple[str, str], dict] = {}
 
 
 def set_subscription(subscription: FlashSubscription) -> None:
@@ -26,8 +29,21 @@ def remove_subscription(subscription_id: str) -> bool:
     return _subscriptions.pop(subscription_id, None) is not None
 
 
+def set_plan(plan: dict) -> None:
+    _plans[(str(plan.get("serviceId") or ""), str(plan.get("id") or ""))] = plan
+
+
+def remove_plan(service_id: str, plan_id: str) -> bool:
+    return _plans.pop((service_id, plan_id), None) is not None
+
+
+def plans_for(service_id: str) -> list[dict]:
+    return [plan for (service, _), plan in _plans.items() if service == service_id]
+
+
 def clear() -> None:
     _subscriptions.clear()
+    _plans.clear()
 
 
 def lookup(

@@ -27,8 +27,8 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/search` | `search/` | none — see [search/CLAUDE.md → vespa](../core/CLAUDE.md) |
 | `/admin/billing` | `admin/billing/` | `verify_token` + **`verify_billing_access`** — its own list, NOT `verify_admin_access`. Mounted outside `admin_router` on purpose: being on the billing list must not confer general administration, and turning admin routes off must not blind whoever handles payments. Also only mounted when `flash_enabled` |
 | `/webhooks` | `webhooks/` | none — HMAC-signed by the sender. **Only mounted when `flash_enabled`** (see `include_billing_routers` in `router.py`), so it does not exist on deployments without payments |
-| `/billing` | `billing/` | none — public plans list. **Always mounted**: an empty `plans` array is the "no billing here" signal the UI hides on |
-| `/admin/billing/dev` | `admin/billing/dev.py` | billing access; mounted only when `flash_enabled` AND `deploy_environment == LOCAL` — mock Flash state + signed synthetic webhook emitter |
+| `/billing` | `billing/` | none — public plans list. **Always mounted**: an empty `plans` array is the "no billing here" signal the UI hides on. Because that array is a signal, a mapping naming a service Flash does not hold answers **503** rather than emptily — a mistyped id must not read as a deliberate self-host |
+| `/admin/billing/dev` | `admin/billing/dev.py` | billing access; mounted only when `flash_enabled` AND `deploy_environment == LOCAL` — mock Flash state (subscriptions AND plans, so the pricing page the paid rehearsal starts on has something to render) + signed synthetic webhook emitter |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
 | `/admin` | `admin/` | `verify_token` + `verify_admin_access` |
@@ -106,7 +106,7 @@ the `/{pubkey}` catch-all.
 | GET | `/graperankResult` | `GetOwnLatestGraperankResponse` | Latest result for caller |
 | POST | `/graperank` | `GetOwnLatestGraperankResponse` | Triggers a run; throttled by `settings.block_frequent_graperank_requests_minutes` |
 | GET | `/self` | `GetOwnUserDataResponse` | Caller's graph + history |
-| GET | `/subscription` | `GetSubscriptionResponse` | The caller's subscription as the UI shows it. Always answers, billing configured or not. `policy` is what they receive (their scheduling assignment — there is no tier string), `plan` is what they actually bought read through `billing_plan_id`, the three dates come straight off the row, and `status` is the translated Flash vocabulary derived from `policy.is_default`. No `rail` — Flash exposes no payment method |
+| GET | `/subscription` | `GetSubscriptionResponse` | The caller's subscription as the UI shows it. Always answers, billing configured or not. `policy` is what they receive (their scheduling assignment — there is no tier string), `plan` is which one they bought (read through `billing_plan_id`) priced by Flash — null price fields when Flash could not be read, never a stale or zero one — the three dates come straight off the row, and `status` is the translated Flash vocabulary derived from `policy.is_default`. No `rail` — Flash exposes no payment method |
 | POST | `/subscription/refresh` | `GetSubscriptionResponse` | Re-reads Flash for the caller and applies it — the redirect-landing call and the `pending` poll. Empty body by design; per-pubkey rate limit |
 | GET | `/isSearchObserver` | `IsSearchObserverResponse` | Whether caller is searchable as an observer |
 | POST | `/assistantProfile` | `PublishAssistantProfileResponse` | Publishes kind-0 for the user's brainstorm assistant key |
@@ -149,8 +149,8 @@ actually gives them. Where those disagree is the bug.
 | GET | `/unresolved/{subscription_id}/flash` | What Flash says about a signup that named nobody — its id is the only handle it has |
 | POST | `/unresolved/{subscription_id}/attribute` | Body `{pubkey}`. Attaches a plain-link signup to whoever made it, by running `apply_entitlement` unaltered — never a hand-built grant. Refuses a pubkey that already holds a different subscription, and one already attributed elsewhere; re-attributing to the same person is a no-op |
 | POST | `/unresolved/{subscription_id}/dismiss` | Writes it off as not a customer, granting nothing. Both outcomes settle every open event for that id with `resolution` + `resolved_by`, which stops the sweep and lets the payload's email age out |
-| GET / POST / PATCH | `/plans` | The `billing_plan` mappings — how dev and prod vaults get their rows. Everything is editable, because Flash has no plans endpoint and hand-correction is the only repair there is. `PATCH` dumps with `exclude_unset`, so clearing a period or a blurb to null is a real edit rather than a dropped field. The Flash ids are editable only while no `user_subscription` row references the plan — otherwise `409`, naming create-new-and-deactivate as the path, since rewriting them would retroactively change what subscribers bought |
-| GET | `/export.csv` | Payment history for accounting, defaulting to the last 90 days. Read out of stored `activated` + `renewed` events (`activated` priced from the plan) — deliberately not a second ledger |
+| GET / POST / PATCH | `/plans` | The `billing_plan` mappings — how dev and prod vaults get their rows. Two decisions only: which scheduling policy a Flash plan grants, and whether we sell it. Price, period, ordering and copy are read from Flash and are **refused** here rather than ignored, so a stale client cannot believe it set a price. The Flash ids are editable only while no `user_subscription` row references the plan — otherwise `409`, naming create-new-and-deactivate as the path, since rewriting them would retroactively change what subscribers bought |
+| GET | `/export.csv` | Payment history for accounting, defaulting to the last 90 days. Read out of stored `activated` + `renewed` events (`activated` priced from Flash's plan, since that event carries no amount) — deliberately not a second ledger |
 
 ### `graperank/router.py` — GrapeRank presets
 

@@ -8,7 +8,6 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    and_,
     case,
     cast,
     func,
@@ -22,7 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import execute_db_statement
-from app.db_models import BillingPlan, FlashWebhookEvent
+from app.db_models import FlashWebhookEvent
 
 
 async def insert_flash_webhook_event_on_db(
@@ -318,9 +317,10 @@ async def select_payment_history_on_db(
     the amount lives.
 
     `activated` covers the first charge (there is no renewal event for period
-    1), but its payload carries no amount — so the plan's configured price
-    stands in, from a join on the payload's service/plan ids. The `event`
-    column says which of the two each row is.
+    1), but its payload carries no amount — so those rows come back unpriced,
+    carrying the service and plan ids that let the caller price them from
+    Flash. Nothing here can price them: what a plan costs stopped being a
+    column of ours. The `event` column says which of the two each row is.
     """
     payload = FlashWebhookEvent.payload["data"]
     renewed = FlashWebhookEvent.event == "subscription.renewed"
@@ -333,21 +333,14 @@ async def select_payment_history_on_db(
             payload["externalRef"].astext.label("pubkey"),
             FlashWebhookEvent.subscription_id,
             payload["invoiceId"].astext.label("invoice_id"),
+            payload["serviceId"].astext.label("flash_service_id"),
+            payload["planId"].astext.label("flash_plan_id"),
             case(
                 (renewed, payload["amount"].astext.cast(Integer)),
-                else_=BillingPlan.amount_minor,
             ).label("amount_minor"),
             case(
                 (renewed, payload["currency"].astext),
-                else_=BillingPlan.currency,
             ).label("currency"),
-        )
-        .outerjoin(
-            BillingPlan,
-            and_(
-                BillingPlan.flash_service_id == payload["serviceId"].astext,
-                BillingPlan.flash_plan_id == payload["planId"].astext,
-            ),
         )
         .where(
             FlashWebhookEvent.event.in_(

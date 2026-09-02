@@ -242,8 +242,16 @@ class Scheduling(TimestampMixin, Base):
     )
 
 
-# What a Flash plan grants. Data rather than config: dev and production are
-# separate vaults with different UUIDs, so the mapping travels with the database.
+# What a Flash plan grants, and whether we sell it. Data rather than config:
+# dev and production are separate vaults with different UUIDs, so the mapping
+# travels with the database.
+#
+# A mapping and nothing more. Price, currency, billing period, name, ordering
+# and copy were transcribed here by hand while Flash had no way to read a plan
+# back — which is how staging recorded ten cents in dollars for a plan Flash
+# prices at a hundred sats, for weeks, with nothing able to notice. Flash
+# returns plan objects now, so every one of those columns is gone and
+# `GET /services/{id}` is the answer. Do not add one back.
 class BillingPlan(TimestampMixin, Base):
     __tablename__ = "billing_plan"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -255,27 +263,10 @@ class BillingPlan(TimestampMixin, Base):
     scheduling_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("scheduling.id"), nullable=False
     )
-    # Minor units, as Flash sends them: 200 = $2.00. Integers throughout.
-    amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
-    currency: Mapped[str] = mapped_column(String, nullable=False)
-    # How often Flash charges, as a unit and a count rather than a matched
-    # string: the client formats "every 2 weeks" from the pair and an
-    # unrecognised unit still renders. Both null on a plan whose period we have
-    # not transcribed; "once" with a null count is reserved for Flash's coming
-    # one-off type, which sells but grants nothing automatically.
-    billing_period_unit: Mapped[str | None] = mapped_column(String, nullable=True)
-    billing_period_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Display order in the picker. Not `scheduling.priority` — that is the
-    # scheduler's queue lane, and it cannot order two plans inside one policy.
-    sort_order: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="0", default=0
-    )
-    # Admin-editable plan copy, shaped like the includes/excludes Flash is
-    # adding. Plain text only — stored markup on a public page is stored XSS.
-    blurb: Mapped[str | None] = mapped_column(String, nullable=True)
-    includes: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    excludes: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    # Sellable, and nothing else. Never filtered in the entitlement lookup.
+    # Whether WE sell it — deliberately not Flash's `status`, which says
+    # whether THEY offer it. We may map only a subset of what they offer, and
+    # withdrawing a plan from sale is our decision alone. Sellable and nothing
+    # else: never filtered in the entitlement lookup.
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true", default=True
     )

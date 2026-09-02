@@ -102,19 +102,16 @@ is **no tier column** — the policy a subscriber holds *is* their tier, and sev
 plans may sell one policy (monthly beside yearly, a replacement beside the row it
 retires) with all of them granting identically.
 
-Everything except the ids is a **hand transcription of the Flash dashboard**: Flash
-has no plans endpoint, so nothing can verify these and correcting them by hand is
-the only repair mechanism there is.
+A **mapping and nothing more**. Price, currency, billing period, name, ordering and
+copy used to be transcribed here by hand, because Flash had no way to read a plan
+back; `GET /services/{id}` returns them now, so those columns are gone. What is left
+is what Flash cannot know. Don't add one back.
 
 | Column | Type | Notes |
 |---|---|---|
 | `flash_service_id` + `flash_plan_id` | str, **UNIQUE together** | Flash's own identifiers; how an inbound subscription is matched to a plan |
 | `scheduling_id` | int FK → `scheduling.id` | the policy this plan grants — the *rule*, and the tier |
-| `amount_minor` | int | minor units, as Flash sends them: `200` = $2.00. Never floats |
-| `billing_period_unit` / `billing_period_count` | str / int, both nullable | how often Flash charges, as a unit and a count rather than a matched string — the client formats "every 2 weeks" from the pair and an unrecognised unit still renders. `"once"` with a null count is reserved for Flash's coming one-off type; it sells but grants nothing automatically |
-| `sort_order` | int | display order in the picker, ties broken by `id`. **Not `scheduling.priority`** — that is the scheduler's queue lane, and it cannot order two plans inside one policy |
-| `blurb` / `includes` / `excludes` | str / JSONB / JSONB, nullable | admin-editable plan copy, **plain text only**; markup stored here would be rendered on a public pricing page |
-| `is_active` | bool | **sellable, and nothing else**. Never filtered in the entitlement lookup — doing so made retiring a plan freeze and un-revoke everyone on it |
+| `is_active` | bool | whether **we** sell it — not Flash's `status`, which says whether *they* offer it; we may map only a subset. Sellable and nothing else: never filtered in the entitlement lookup — doing so made retiring a plan freeze and un-revoke everyone on it |
 
 ### `UserSubscription` — `user_subscription`
 

@@ -263,14 +263,6 @@ def _plan_row(**overrides):
             "flash_service_id": "9c1e",
             "flash_plan_id": "4f2a",
             "scheduling_id": 7,
-            "amount_minor": 200,
-            "currency": "USD",
-            "billing_period_unit": "month",
-            "billing_period_count": 1,
-            "sort_order": 0,
-            "blurb": None,
-            "includes": None,
-            "excludes": None,
             "is_active": True,
             "created_at": NOW,
             "updated_at": NOW,
@@ -279,52 +271,76 @@ def _plan_row(**overrides):
     )
 
 
-def test_a_plan_mapping_carries_every_transcribed_value(billing_client, monkeypatch):
-    """Flash has no plans endpoint, so nothing can verify price, currency or
-    period — which is exactly why all of them have to be visible and editable."""
+def test_a_plan_mapping_is_the_two_decisions_flash_cannot_make(
+    billing_client, monkeypatch
+):
+    """Which policy buying it grants, and whether we sell it. Price, currency,
+    period, ordering and copy are read from Flash and are not editable here,
+    because they are no longer ours to get wrong."""
     monkeypatch.setattr(
         "app.routers.admin.billing.router.list_billing_plans_admin",
-        AsyncMock(return_value=[_plan_row(sort_order=2, blurb="Best value")]),
+        AsyncMock(return_value=[_plan_row()]),
     )
 
     row = billing_client.get("/admin/billing/plans").json()[0]
 
-    assert row["billing_period_unit"] == "month"
-    assert row["billing_period_count"] == 1
-    assert row["sort_order"] == 2
-    assert row["blurb"] == "Best value"
-    assert "subscription_tier" not in row
+    assert row["scheduling_id"] == 7
+    assert row["is_active"] is True
+    assert set(row) == {
+        "id",
+        "flash_service_id",
+        "flash_plan_id",
+        "scheduling_id",
+        "is_active",
+        "created_at",
+        "updated_at",
+    }
 
 
 def test_a_patch_writes_only_the_fields_it_was_sent(billing_client, monkeypatch):
     """A PATCH writes every field it includes, and an untouched form is how a
     staging policy ended up named "string" with a zero cadence."""
-    update = AsyncMock(return_value=_plan_row(sort_order=5))
+    update = AsyncMock(return_value=_plan_row(is_active=False))
     monkeypatch.setattr(
         "app.routers.admin.billing.router.update_billing_plan", update
     )
 
-    billing_client.patch("/admin/billing/plans/1", json={"sort_order": 5})
+    billing_client.patch("/admin/billing/plans/1", json={"is_active": False})
 
-    assert update.await_args.args[2] == {"sort_order": 5}
+    assert update.await_args.args[2] == {"is_active": False}
 
 
-def test_a_period_can_be_cleared_back_to_null(billing_client, monkeypatch):
-    """`exclude_none` would drop this silently, leaving a wrong period on a row
-    an admin believes they just corrected."""
-    update = AsyncMock(return_value=_plan_row(billing_period_unit=None))
-    monkeypatch.setattr(
-        "app.routers.admin.billing.router.update_billing_plan", update
+def test_editing_a_price_here_is_refused_rather_than_ignored(billing_client):
+    """It is Flash's now. Accepting the field and dropping it would let someone
+    correct a price on this form and watch the pricing page ignore them."""
+    response = billing_client.patch(
+        "/admin/billing/plans/1", json={"amount_minor": 200}
     )
 
-    billing_client.patch(
-        "/admin/billing/plans/1",
-        json={"billing_period_unit": None, "billing_period_count": None},
+    assert response.status_code == 422
+
+
+def test_a_mapping_is_created_from_the_two_decisions_alone(
+    billing_client, monkeypatch
+):
+    create = AsyncMock(return_value=_plan_row())
+    monkeypatch.setattr("app.routers.admin.billing.router.create_billing_plan", create)
+
+    response = billing_client.post(
+        "/admin/billing/plans",
+        json={
+            "flash_service_id": "9c1e",
+            "flash_plan_id": "4f2a",
+            "scheduling_id": 7,
+        },
     )
 
-    assert update.await_args.args[2] == {
-        "billing_period_unit": None,
-        "billing_period_count": None,
+    assert response.status_code == 201
+    assert create.await_args.args[1] == {
+        "flash_service_id": "9c1e",
+        "flash_plan_id": "4f2a",
+        "scheduling_id": 7,
+        "is_active": True,
     }
 
 
@@ -352,9 +368,9 @@ def test_a_flash_id_cannot_be_nulled(billing_client):
     assert response.status_code == 422
 
 
-def test_a_billing_period_count_without_a_unit_is_refused(billing_client):
-    """Unit and count are formatted as a pair; a count alone renders as nothing
-    and would read as "every 2"."""
+def test_a_mapping_cannot_be_created_with_values_flash_owns(billing_client):
+    """The same refusal as on the edit, so a stale client cannot create a
+    mapping believing it has set a price."""
     response = billing_client.post(
         "/admin/billing/plans",
         json={
@@ -363,7 +379,6 @@ def test_a_billing_period_count_without_a_unit_is_refused(billing_client):
             "scheduling_id": 7,
             "amount_minor": 200,
             "currency": "USD",
-            "billing_period_count": 2,
         },
     )
 

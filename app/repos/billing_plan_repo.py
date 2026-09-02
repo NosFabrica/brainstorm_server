@@ -30,14 +30,12 @@ async def get_billing_plan_on_db(
 async def select_billing_plans_on_db(
     db: AsyncDBSession, *, only_active: bool = False
 ) -> list[BillingPlan]:
-    """All plan mappings in display order. `only_active` narrows to sellable ones.
+    """All plan mappings. `only_active` narrows to the ones we sell.
 
-    `sort_order` then `id`: the picker renders the order it is given, and the id
-    tiebreak means a fresh install needs no seeding.
+    Ordered by id, which is only a stable order rather than a meaningful one:
+    display order is Flash's `sortOrder`, applied where the two are joined.
     """
-    statement = select(BillingPlan).order_by(
-        BillingPlan.sort_order.asc(), BillingPlan.id.asc()
-    )
+    statement = select(BillingPlan).order_by(BillingPlan.id.asc())
     if only_active:
         statement = statement.where(BillingPlan.is_active.is_(True))
     result = await execute_db_statement(db, statement, __name__)
@@ -58,29 +56,13 @@ async def insert_billing_plan_on_db(
     flash_service_id: str,
     flash_plan_id: str,
     scheduling_id: int,
-    amount_minor: int,
-    currency: str,
-    is_active: bool,
-    billing_period_unit: str | None = None,
-    billing_period_count: int | None = None,
-    sort_order: int = 0,
-    blurb: str | None = None,
-    includes: list[str] | None = None,
-    excludes: list[str] | None = None,
+    is_active: bool = True,
 ) -> BillingPlan:
     plan = BillingPlan(
         flash_service_id=flash_service_id,
         flash_plan_id=flash_plan_id,
         scheduling_id=scheduling_id,
-        amount_minor=amount_minor,
-        currency=currency,
         is_active=is_active,
-        billing_period_unit=billing_period_unit,
-        billing_period_count=billing_period_count,
-        sort_order=sort_order,
-        blurb=blurb,
-        includes=includes,
-        excludes=excludes,
     )
     db.add(plan)
     await db.flush()

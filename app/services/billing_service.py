@@ -410,10 +410,9 @@ async def create_billing_plan(db: AsyncDBSession, values: dict) -> BillingPlan:
 async def update_billing_plan(
     db: AsyncDBSession, plan_id: int, values: dict
 ) -> BillingPlan:
-    """Correct a mapping in place. Every transcribed value is editable, because
-    Flash exposes no way to read one back and this is the only repair there is.
+    """Correct a mapping in place — which policy it grants, and whether we sell it.
 
-    The Flash ids are the exception, and only while someone is on the plan.
+    The Flash ids are editable too, but only while nobody is on the plan.
     """
     if "scheduling_id" in values:
         await _require_scheduling(db, values["scheduling_id"])

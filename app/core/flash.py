@@ -63,6 +63,20 @@ class FlashUnavailable(Exception):
     """Flash could not be read. Never a reason to move anyone's tier."""
 
 
+class FlashServiceMissing(Exception):
+    """Flash holds no service under the id one of our plan mappings names.
+
+    Not FlashUnavailable: Flash answered, and the answer is that our
+    configuration points at nothing. Serving an empty pricing page for that
+    would hide a fault only an operator can fix — so the id is carried on the
+    exception, because it is the one thing whoever fixes it needs.
+    """
+
+    def __init__(self, service_id: str):
+        self.service_id = service_id
+        super().__init__(f"Flash holds no service {service_id!r}")
+
+
 class FlashCredentialError(Exception):
     """Flash refused our credentials.
 
@@ -213,10 +227,16 @@ def parse_subscription(raw: dict) -> FlashSubscription:
 
 
 _SUBSCRIPTIONS_PATH = "/api/v1/external/subscriptions"
+_SERVICES_PATH = "/api/v1/external/services"
 
 
 def _subscriptions_url(*segments: str) -> str:
     base = settings.flash_base_url.rstrip("/") + _SUBSCRIPTIONS_PATH
+    return "/".join([base, *(quote(segment, safe="") for segment in segments)])
+
+
+def _services_url(*segments: str) -> str:
+    base = settings.flash_base_url.rstrip("/") + _SERVICES_PATH
     return "/".join([base, *(quote(segment, safe="") for segment in segments)])
 
 
@@ -432,6 +452,93 @@ def _choose_subscription(subscriptions: list) -> dict | None:
 
     live = [row for row in rows if row.get("status") in ("active", "trial")] or rows
     return max(live, key=_runs_until)
+
+
+@dataclass(frozen=True)
+class FlashPlan:
+    """One plan on one service, as Flash offers it.
+
+    Everything a pricing card says except which scheduling policy it grants and
+    whether we sell it — those two are ours, and are the reason `billing_plan`
+    still exists.
+
+    `status` is Flash's own: it says whether *Flash* offers the plan, never
+    whether we do.
+    """
+
+    id: str
+    service_id: str
+    name: str
+    description: str | None
+    # None when Flash sent an amount we could not read. Deliberately not zero:
+    # zero renders as "Free" on a public page for a plan somebody is charged
+    # for, and a plan we cannot price is a plan we cannot sell.
+    amount_minor: int | None
+    currency: str
+    billing_interval: str | None
+    sort_order: int
+    features: list[str] | None
+    not_included: list[str] | None
+    status: str
+
+
+def parse_plan(raw: dict) -> FlashPlan:
+    """Map one entry of a service's `plans` array onto our shape. Pure."""
+    return FlashPlan(
+        id=str(raw.get("id") or ""),
+        service_id=str(raw.get("serviceId") or ""),
+        name=str(raw.get("name") or ""),
+        description=_text(raw.get("description")),
+        amount_minor=_minor_units(raw.get("amount")),
+        currency=str(raw.get("currency") or ""),
+        billing_interval=_text(raw.get("billingInterval")),
+        sort_order=raw.get("sortOrder") if isinstance(raw.get("sortOrder"), int) else 0,
+        features=_lines(raw.get("features")),
+        not_included=_lines(raw.get("notIncluded")),
+        status=str(raw.get("status") or ""),
+    )
+
+
+def _text(value: object) -> str | None:
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _minor_units(value: object) -> int | None:
+    """Flash sends amounts as strings in minor units (`"100"` = $1.00).
+
+    Unreadable is None, never zero and never an exception. Zero would price the
+    plan "Free" on a public page; raising would take the page down for one bad
+    row. None says we do not know, and a plan nobody can price is withdrawn
+    from sale by the caller.
+    """
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        logger.warning("Flash sent a plan amount we could not read: %r", value)
+        return None
+
+
+def _lines(value: object) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    lines = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return lines or None
+
+
+async def fetch_service_plans_raw(service_id: str) -> dict:
+    """`GET /services/{id}` — the plans Flash offers on one service.
+
+    A path lookup, so a 404 is Flash answering: there is no such service. That
+    is not an empty catalogue but a plan mapping pointing at nothing, so it
+    raises rather than returning absence.
+    """
+    if not service_id:
+        raise FlashUnavailable("A service read needs a serviceId")
+
+    body = await _read_body(_services_url(service_id), {}, absent_on_404=True)
+    if body is None:
+        raise FlashServiceMissing(service_id)
+    return body
 
 
 def _runs_until(row: dict) -> datetime:

@@ -15,9 +15,13 @@ is a unit and a count the client formats from rather than matches against.
 from datetime import timedelta
 from urllib.parse import quote
 
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
+from app.core.flash import FlashPlan, FlashServiceMissing
+from app.core.flash_plan_cache import read_plans_for_services
+from app.core.loggr import loggr
 from app.db_models import BillingPlan, Scheduling
 from app.repos.billing_plan_repo import (
     get_billing_plan_by_id_on_db,
@@ -38,6 +42,8 @@ from app.schemas.schemas import (
     SubscriptionView,
 )
 from app.services.billing_service import EntitlementReason, utc_now
+
+logger = loggr.get_logger(__name__)
 
 # What the free row costs when a public policy has nothing selling it. Currency
 # is only a label on a zero, but the field is not nullable and every other row
@@ -122,7 +128,7 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
             SubscriptionPolicyView.model_validate(policy) if policy is not None else None
         ),
         plan=(
-            SubscriptionPlanView.model_validate(plan) if plan is not None else None
+            await _subscriber_plan_view(plan) if plan is not None else None
         ),
         status=_translate(
             row.flash_status if row else None,
@@ -133,6 +139,42 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
         next_billing_date=row.next_billing_date if row else None,
         cancel_effective_date=row.cancel_effective_date if row else None,
         manage_url=manage_url,
+    )
+
+
+async def _sellable_flash_plans(
+    service_ids: set[str],
+) -> dict[tuple[str, str], FlashPlan]:
+    """Flash's plans for the services we map, minus any we could not price.
+
+    A plan with no readable amount is withdrawn exactly like one Flash no
+    longer returns: both are plans we cannot honestly put a price on, and a
+    price is the one thing a pricing card cannot omit.
+    """
+    found = await read_plans_for_services(service_ids)
+    return {key: plan for key, plan in found.items() if plan.amount_minor is not None}
+
+
+async def _subscriber_plan_view(plan: BillingPlan) -> SubscriptionPlanView:
+    """What they bought, priced by Flash — or unpriced, if Flash cannot be read.
+
+    Best-effort on purpose: this call decides nothing. Their entitlement is the
+    scheduling assignment, so a Flash outage costs them a price on a card, not
+    a tier.
+    """
+    try:
+        found = await read_plans_for_services({plan.flash_service_id})
+    except FlashServiceMissing:
+        # Loud on the pricing page, silent here: this call decides nothing, and
+        # a subscriber must still see the tier they hold.
+        logger.error("Flash holds no service %s", plan.flash_service_id)
+        found = {}
+    flash = found.get((plan.flash_service_id, plan.flash_plan_id))
+    return SubscriptionPlanView(
+        amount_minor=flash.amount_minor if flash else None,
+        currency=flash.currency if flash else None,
+        billing_interval=flash.billing_interval if flash else None,
+        is_active=plan.is_active,
     )
 
 
@@ -153,37 +195,43 @@ def _checkout_url(plan: BillingPlan) -> str:
 
 def _free_row(policy: Scheduling) -> BillingPlanView:
     """A public policy nothing sells. Not synthesized copy — the row is the
-    policy, priced at zero, with no checkout because there is nothing to buy."""
+    policy, priced at zero, with no checkout because there is nothing to buy.
+
+    No Flash plan sits behind it, so it has no plan name, no cadence and no
+    feature list; the policy's own name is the only name it has ever had.
+    """
     return BillingPlanView(
         policy_id=policy.id,
         policy_name=policy.name,
         schedule_interval_seconds=policy.schedule_interval_seconds,
         is_default=policy.is_default,
-        billing_period_unit=None,
-        billing_period_count=None,
+        plan_name=None,
+        description=None,
         amount_minor=0,
         currency=FREE_CURRENCY,
+        billing_interval=None,
         checkout_url=None,
-        blurb=None,
-        includes=None,
-        excludes=None,
+        features=None,
+        not_included=None,
     )
 
 
-def _plan_row(plan: BillingPlan, policy: Scheduling) -> BillingPlanView:
+def _plan_row(
+    plan: BillingPlan, policy: Scheduling, flash: FlashPlan
+) -> BillingPlanView:
     return BillingPlanView(
         policy_id=policy.id,
         policy_name=policy.name,
         schedule_interval_seconds=policy.schedule_interval_seconds,
         is_default=policy.is_default,
-        billing_period_unit=plan.billing_period_unit,
-        billing_period_count=plan.billing_period_count,
-        amount_minor=plan.amount_minor,
-        currency=plan.currency,
+        plan_name=flash.name,
+        description=flash.description,
+        amount_minor=flash.amount_minor,
+        currency=flash.currency,
+        billing_interval=flash.billing_interval,
         checkout_url=_checkout_url(plan),
-        blurb=plan.blurb,
-        includes=plan.includes,
-        excludes=plan.excludes,
+        features=flash.features,
+        not_included=flash.not_included,
     )
 
 
@@ -191,13 +239,17 @@ async def list_billing_plans(db: AsyncDBSession) -> BillingPlansData:
     """The pricing picker. An empty list IS the "no billing here" signal.
 
     One row per public policy nothing sells, plus one per active plan on a
-    public policy — so two plans on one policy are two rows, which is the point.
-    Cadence comes off the live `scheduling` rows, so the page cannot drift from
-    what the scheduler actually does. `checkout_url` is complete except `ref`,
-    which the client appends per-user.
+    public policy that Flash still offers — so two plans on one policy are two
+    rows, which is the point. Cadence comes off the live `scheduling` rows, so
+    the page cannot drift from what the scheduler actually does; everything
+    else comes off Flash's plan, so it cannot drift from what they charge.
+    `checkout_url` is complete except `ref`, which the client appends per-user.
+
+    A mapping Flash no longer returns cannot be priced, so it cannot be sold —
+    it drops out rather than rendering blank or taking the page down.
 
     Order is the answer: the default policy first, because it is the one option
-    nobody can buy, then plans by `sort_order` and id. The client renders the
+    nobody can buy, then plans by Flash's `sortOrder`. The client renders the
     array as given and never sorts.
     """
     if not settings.flash_enabled:
@@ -210,16 +262,42 @@ async def list_billing_plans(db: AsyncDBSession) -> BillingPlansData:
         for plan in await select_billing_plans_on_db(db, only_active=True)
         if plan.scheduling_id in policies
     ]
-    sold_policy_ids = {plan.scheduling_id for plan in active_plans}
+    try:
+        flash_plans = await _sellable_flash_plans(
+            {plan.flash_service_id for plan in active_plans}
+        )
+    except FlashServiceMissing as missing:
+        # Not served as an empty list. That array is a defined signal — this
+        # instance sells nothing — and the UI hides every billing entry point
+        # on it, so a mistyped service id would read as a deliberate
+        # self-host. Refusing is what makes the fault findable; the client
+        # treats an error as "unknown" and leaves the entry points alone.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"Flash holds no service {missing.service_id}. The plans mapped "
+                "to it cannot be sold until that id is corrected."
+            ),
+        ) from missing
+
+    sellable = [
+        (plan, flash_plans[(plan.flash_service_id, plan.flash_plan_id)])
+        for plan in active_plans
+        if (plan.flash_service_id, plan.flash_plan_id) in flash_plans
+    ]
+    sellable.sort(key=lambda pair: (pair[1].sort_order, pair[1].id))
+    sold_policy_ids = {plan.scheduling_id for plan, _ in sellable}
 
     plans = [
         _free_row(policy)
         for policy in policies.values()
         if policy.id not in sold_policy_ids
     ]
-    plans.extend(_plan_row(plan, policies[plan.scheduling_id]) for plan in active_plans)
+    plans.extend(
+        _plan_row(plan, policies[plan.scheduling_id], flash) for plan, flash in sellable
+    )
 
     # Stable, so it only lifts the default policy and leaves everything else in
-    # the order the repos already put it in.
+    # the order Flash's own ordering already put it in.
     plans.sort(key=lambda row: not row.is_default)
     return BillingPlansData(plans=plans)

@@ -1,11 +1,9 @@
 from datetime import datetime
-from typing import Annotated
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    StringConstraints,
     field_serializer,
     model_validator,
 )
@@ -323,21 +321,26 @@ class SubscriptionPolicyView(BaseModel):
 
 
 class SubscriptionPlanView(BaseModel):
-    """What this person actually bought, read through their billing row.
+    """Which plan this person bought, priced by Flash.
 
-    Deliberately not "their policy's current price": a subscriber on a retired
-    or repriced plan still pays what they signed up for, and matching by policy
-    would quote them a price they are not charged. `is_active` false is how the
-    UI knows to tell them their plan is no longer offered.
+    Which one is read through their billing row rather than looked up by
+    policy: two plans can sell one policy, and quoting the wrong one quotes a
+    price they are not charged. Everything but `is_active` is Flash's answer
+    about that plan, so all of it is null when Flash cannot be read — a page
+    that cannot say the price must not therefore say the wrong one.
+
+    `is_active` stays ours: false is how the UI tells them their plan is no
+    longer offered, which is a decision Flash knows nothing about.
+
+    No plan name: what a subscriber is shown is the POLICY they hold, which is
+    what they actually receive. Carrying Flash's name here with nothing
+    rendering it would be a field waiting for someone to invent a use for.
     """
 
-    amount_minor: int
-    currency: str
+    amount_minor: int | None
+    currency: str | None
+    billing_interval: str | None
     is_active: bool
-    billing_period_unit: str | None
-    billing_period_count: int | None
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class SubscriptionView(BaseModel):
@@ -378,24 +381,34 @@ class SubscriptionView(BaseModel):
 class BillingPlanView(BaseModel):
     """One row of the pricing picker, rendered in the order it is returned.
 
-    Grouping key is `policy_id`, the card title is `policy_name`, and
-    paid-vs-free is `is_default` — no vocabulary the client has to recognise.
-    `checkout_url` is complete except `ref`, which the client appends; null on
-    a row nobody can buy.
+    Two sources, and the split is the whole design. `policy_*` and `is_default`
+    are ours — what buying this actually gets you, off the live `scheduling`
+    row, so the page cannot advertise a cadence the scheduler is not running.
+    Everything else is Flash's answer about the plan, so nothing here is a
+    transcription anybody has to keep correct.
+
+    Grouping key is `policy_id` and paid-vs-free is `is_default` — no
+    vocabulary the client has to recognise. `checkout_url` is complete except
+    `ref`, which the client appends; null on a row nobody can buy.
     """
 
     policy_id: int
     policy_name: str
     schedule_interval_seconds: int
     is_default: bool
-    billing_period_unit: str | None
-    billing_period_count: int | None
+    # Null on the free row: nothing sells it, so there is no Flash plan to name
+    # it, price it or say how often it charges.
+    plan_name: str | None
+    description: str | None
     amount_minor: int
     currency: str
+    # Flash's own word — `daily`/`weekly`/`monthly`/`yearly`/`one_off` today.
+    # Formatted by the client, never matched: their set can grow, and a period
+    # we did not recognise must not take a purchasable plan off the page.
+    billing_interval: str | None
     checkout_url: str | None
-    blurb: str | None
-    includes: list[str] | None
-    excludes: list[str] | None
+    features: list[str] | None
+    not_included: list[str] | None
 
 
 class BillingPlansData(BaseModel):
@@ -405,67 +418,37 @@ class BillingPlansData(BaseModel):
 class BillingPlanItem(CreatedAndUpdatedAtModel):
     """One plan mapping, as an operator sees it. Ids only — no secrets live here.
 
-    Every transcribed value is here because every one of them is editable:
-    Flash exposes no way to read a plan back, so correcting the row by hand is
-    the only repair mechanism there is.
+    Two decisions and nothing else, because two decisions is all a mapping is:
+    which Flash plan grants which scheduling policy, and whether we sell it.
+    Price, name, period, ordering and copy are read from Flash and were never
+    ours to correct.
     """
 
     id: int
     flash_service_id: str
     flash_plan_id: str
     scheduling_id: int
-    amount_minor: int
-    currency: str
-    billing_period_unit: str | None
-    billing_period_count: int | None
-    sort_order: int
-    blurb: str | None
-    includes: list[str] | None
-    excludes: list[str] | None
     is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
 
 
-# Plan copy is plain text, bounded. Markup stored here would be rendered on a
-# public page, which is stored XSS; the client escapes it, and these caps stop
-# one admin edit from becoming an unreadable pricing card.
-_BLURB_MAX = 280
-_COPY_LINE_MAX = 120
-_COPY_LINES_MAX = 20
-
-CopyLines = list[Annotated[str, StringConstraints(min_length=1, max_length=_COPY_LINE_MAX)]]
-
-
 class CreateBillingPlanBody(BaseModel):
+    # Extras refused, not ignored: a client still sending a price would
+    # otherwise be told the mapping was created exactly as it asked.
+    model_config = ConfigDict(extra="forbid")
+
     flash_service_id: str
     flash_plan_id: str
     scheduling_id: int
-    amount_minor: int = Field(ge=0)
-    currency: str
-    # Unit and count, never a matched string: "every 2 weeks", "/mo" and the
-    # $0.10/day rehearsal plan all format from the pair. `once` is reserved for
-    # Flash's coming one-off type and carries no count.
-    billing_period_unit: str | None = Field(default=None, min_length=1, max_length=32)
-    billing_period_count: int | None = Field(default=None, ge=1)
-    sort_order: int = 0
-    blurb: str | None = Field(default=None, max_length=_BLURB_MAX)
-    includes: CopyLines | None = Field(default=None, max_length=_COPY_LINES_MAX)
-    excludes: CopyLines | None = Field(default=None, max_length=_COPY_LINES_MAX)
     is_active: bool = True
-
-    @model_validator(mode="after")
-    def _count_needs_a_unit(self) -> "CreateBillingPlanBody":
-        if self.billing_period_count is not None and self.billing_period_unit is None:
-            raise ValueError("billing_period_count needs a billing_period_unit")
-        return self
 
 
 class UpdateBillingPlanBody(BaseModel):
     """Partial update; only the fields actually sent change.
 
-    Dumped with `exclude_unset`, not `exclude_none` — clearing a period or a
-    blurb back to null is a real edit, and `exclude_none` would silently drop it.
+    Dumped with `exclude_unset`, not `exclude_none`, so an explicit null is
+    told apart from a field the form never touched.
 
     The Flash ids are accepted here but refused by the service once anyone has
     bought the mapping: a typo in a row nobody ever sold is a one-field fix,
@@ -473,17 +456,12 @@ class UpdateBillingPlanBody(BaseModel):
     they bought.
     """
 
+    # See CreateBillingPlanBody: a price sent here is refused, not dropped.
+    model_config = ConfigDict(extra="forbid")
+
     flash_service_id: str | None = Field(default=None, min_length=1)
     flash_plan_id: str | None = Field(default=None, min_length=1)
     scheduling_id: int | None = None
-    amount_minor: int | None = Field(default=None, ge=0)
-    currency: str | None = None
-    billing_period_unit: str | None = Field(default=None, min_length=1, max_length=32)
-    billing_period_count: int | None = Field(default=None, ge=1)
-    sort_order: int | None = None
-    blurb: str | None = Field(default=None, max_length=_BLURB_MAX)
-    includes: CopyLines | None = Field(default=None, max_length=_COPY_LINES_MAX)
-    excludes: CopyLines | None = Field(default=None, max_length=_COPY_LINES_MAX)
     is_active: bool | None = None
 
     @model_validator(mode="after")
