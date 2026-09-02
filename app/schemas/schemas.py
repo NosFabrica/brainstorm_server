@@ -281,18 +281,6 @@ class BillingSubscriptionItem(BaseModel):
     scheduling_name: str | None = None
     scheduling_source: str
     billing_blocked: bool
-    # How they pay, filled in after the page is built — Flash's own word, null
-    # wherever their plan accepts more than one method and so does not say
-    # which of them this person used. The column renders empty for null; there
-    # is no default, because a plausible payment method is the one answer an
-    # operator cannot tell apart from a real one.
-    payment_method: str | None = None
-    # Which Flash plan they are on. Read here to resolve `payment_method`, and
-    # served like `flash_subscription_id` beside it rather than hidden: an
-    # operator comparing our roster against Flash's dashboard needs the same
-    # ids Flash names things by.
-    flash_service_id: str | None = None
-    flash_plan_id: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -358,8 +346,10 @@ class SubscriptionPlanView(BaseModel):
 class SubscriptionView(BaseModel):
     """What the UI shows a signed-in user. Every field always present.
 
-    No tier string. All three dates come straight off the row — nothing here is
-    derived by date arithmetic.
+    No tier string and no `rail`: Flash's subscription object carries no
+    payment-method field, and a permanently-null one reads as "unknown yet"
+    rather than "unknowable". All three dates come straight off the row —
+    nothing here is derived by date arithmetic.
     """
 
     # Null only on an instance with no scheduling policies at all, which is a
@@ -377,12 +367,6 @@ class SubscriptionView(BaseModel):
     # than a status.
     cancel_effective_date: datetime | None
     manage_url: str | None
-    # How they pay — Flash's own `lightning`/`card`, formatted by the client
-    # rather than matched, so a method they add later still renders. Null
-    # whenever it cannot be resolved, which is most of the time: a free user
-    # bought nothing, and a plan accepting both methods does not say which one
-    # this subscriber used. Every surface renders null as no row at all.
-    payment_method: str | None
 
     @field_serializer(
         "current_period_start",

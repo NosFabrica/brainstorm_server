@@ -375,10 +375,6 @@ def build_billing_subscriptions_stmt() -> Select:
     Those are two different questions and the whole surface exists to keep them
     apart, so the policy is joined twice: once through the grant we recorded,
     once through the assignment the scheduler will actually honour.
-
-    The plan mapping joins in for its Flash ids alone, which is what the
-    payment method is resolved against once the page exists. Outer, like the
-    policies: a roster that drops a subscriber is worse than one missing a cell.
     """
     granted = aliased(Scheduling)
     actual = aliased(Scheduling)
@@ -398,13 +394,10 @@ def build_billing_subscriptions_stmt() -> Select:
             actual.name.label("scheduling_name"),
             BrainstormNsec.scheduling_source,
             BrainstormNsec.billing_blocked,
-            BillingPlan.flash_service_id,
-            BillingPlan.flash_plan_id,
         )
         .join(BrainstormNsec, BrainstormNsec.pubkey == UserSubscription.pubkey)
         .outerjoin(granted, granted.id == UserSubscription.granted_scheduling_id)
         .outerjoin(actual, actual.id == BrainstormNsec.scheduling_id)
-        .outerjoin(BillingPlan, BillingPlan.id == UserSubscription.billing_plan_id)
         .order_by(UserSubscription.created_at.desc())
     )
 

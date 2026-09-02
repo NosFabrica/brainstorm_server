@@ -28,7 +28,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/admin/billing` | `admin/billing/` | `verify_token` + **`verify_billing_access`** — its own list, NOT `verify_admin_access`. Mounted outside `admin_router` on purpose: being on the billing list must not confer general administration, and turning admin routes off must not blind whoever handles payments. Also only mounted when `flash_enabled` |
 | `/webhooks` | `webhooks/` | none — HMAC-signed by the sender. **Only mounted when `flash_enabled`** (see `include_billing_routers` in `router.py`), so it does not exist on deployments without payments |
 | `/billing` | `billing/` | none — public plans list. **Always mounted**: an empty `plans` array is the "no billing here" signal the UI hides on. Because that array is a signal, a mapping naming a service Flash does not hold answers **503** rather than emptily — a mistyped id must not read as a deliberate self-host |
-| `/admin/billing/dev` | `admin/billing/dev.py` | billing access; mounted only when `flash_enabled` AND `deploy_environment == LOCAL` — mock Flash state (subscriptions, plans, and the account's acceptance methods, without which a local rehearsal can show no payment method at all) + signed synthetic webhook emitter |
+| `/admin/billing/dev` | `admin/billing/dev.py` | billing access; mounted only when `flash_enabled` AND `deploy_environment == LOCAL` — mock Flash state (subscriptions AND plans, so the pricing page the paid rehearsal starts on has something to render) + signed synthetic webhook emitter |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
 | `/admin` | `admin/` | `verify_token` + `verify_admin_access` |
@@ -106,7 +106,7 @@ the `/{pubkey}` catch-all.
 | GET | `/graperankResult` | `GetOwnLatestGraperankResponse` | Latest result for caller |
 | POST | `/graperank` | `GetOwnLatestGraperankResponse` | Triggers a run; throttled by `settings.block_frequent_graperank_requests_minutes` |
 | GET | `/self` | `GetOwnUserDataResponse` | Caller's graph + history |
-| GET | `/subscription` | `GetSubscriptionResponse` | The caller's subscription as the UI shows it. Always answers, billing configured or not. `policy` is what they receive (their scheduling assignment — there is no tier string), `plan` is which one they bought (read through `billing_plan_id`) priced by Flash — null price fields when Flash could not be read, never a stale or zero one — the three dates come straight off the row, and `status` is the translated Flash vocabulary derived from `policy.is_default`. `payment_method` is Flash's own word (`lightning`/`card`), resolved on read from the acceptance methods their PLAN accepts — null whenever the plan accepts more than one, since Flash publishes none per subscription; the stored `rail` column is still unwritten |
+| GET | `/subscription` | `GetSubscriptionResponse` | The caller's subscription as the UI shows it. Always answers, billing configured or not. `policy` is what they receive (their scheduling assignment — there is no tier string), `plan` is which one they bought (read through `billing_plan_id`) priced by Flash — null price fields when Flash could not be read, never a stale or zero one — the three dates come straight off the row, and `status` is the translated Flash vocabulary derived from `policy.is_default`. No `rail` — Flash exposes no payment method |
 | POST | `/subscription/refresh` | `GetSubscriptionResponse` | Re-reads Flash for the caller and applies it — the redirect-landing call and the `pending` poll. Empty body by design; per-pubkey rate limit |
 | GET | `/isSearchObserver` | `IsSearchObserverResponse` | Whether caller is searchable as an observer |
 | POST | `/assistantProfile` | `PublishAssistantProfileResponse` | Publishes kind-0 for the user's brainstorm assistant key |
@@ -142,7 +142,7 @@ actually gives them. Where those disagree is the bug.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/subscriptions` | `Page[BillingSubscriptionItem]`. `flash_status` and `scheduling_name` are separate fields on purpose — collapsing them would hide the disagreement. `payment_method` is filled in after the page is built (Flash's answer about the row's plan, which no SQL join reaches) and is null wherever that plan accepts more than one method |
+| GET | `/subscriptions` | `Page[BillingSubscriptionItem]`. `flash_status` and `scheduling_name` are separate fields on purpose — collapsing them would hide the disagreement |
 | GET | `/divergence` | Ten categories of unsettled state, each `{count, truncated, rows}`. Capped at 200 rows: a report nobody can open is no use on the day it matters |
 | POST | `/subscriptions/{pubkey}/resync` | Re-reads one subscriber from Flash now |
 | POST / DELETE | `/subscriptions/{pubkey}/block` | Bar a user from paid entitlement / lift the bar. Blocking also revokes a billing-granted policy; admin grants are left alone |

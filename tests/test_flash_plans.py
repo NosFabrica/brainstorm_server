@@ -131,29 +131,6 @@ def test_a_plan_carries_everything_the_pricing_page_stopped_storing(
     assert plan.not_included == ["priority support"]
 
 
-def test_a_plan_carries_the_methods_it_accepts_payment_by(redis, monkeypatch):
-    """The only thing Flash publishes about how a subscription is paid for.
-
-    Opaque tokens, resolved against `GET /settings`; carried in full, because a
-    plan naming two methods is precisely the case where we must say nothing.
-    """
-    _flash(monkeypatch, plans=({**FLASH_PLAN, "acceptanceMethods": ["amt_ln", "amt_card"]},))
-
-    plan = asyncio.run(cache.read_service_plans(SERVICE))[0]
-
-    assert plan.acceptance_methods == ("amt_ln", "amt_card")
-
-
-def test_a_plan_naming_no_methods_carries_none_rather_than_a_guess(
-    redis, monkeypatch
-):
-    _flash(monkeypatch)
-
-    plan = asyncio.run(cache.read_service_plans(SERVICE))[0]
-
-    assert plan.acceptance_methods == ()
-
-
 def test_the_local_fake_answers_without_reaching_flash_or_the_cache(
     redis, monkeypatch
 ):
