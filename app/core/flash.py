@@ -12,7 +12,7 @@ socket timeout.
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 
 import httpx
 
@@ -87,12 +87,41 @@ class FlashSubscription:
     cancel_effective_date: datetime | None
 
 
-def parse_flash_timestamp(raw: object) -> datetime | None:
+START_OF_DAY = time(0, 0)
+END_OF_DAY = time(23, 59, 59, 999999)
+
+
+def _is_date_only(raw: str) -> bool:
+    try:
+        date.fromisoformat(raw)
+    except ValueError:
+        return False
+    return True
+
+
+def is_whole_day_boundary(value: datetime) -> bool:
+    """Whether this is a boundary Flash named as a bare date — its first moment
+    or its last. The stored value is the only record we keep of the shape it
+    arrived in, so it is also the discriminator; see `_billing_date_wire_format`.
+    """
+    return value.time() in (START_OF_DAY, END_OF_DAY)
+
+
+def parse_flash_timestamp(raw: object, *, deadline: bool = False) -> datetime | None:
     """One ISO string → naive UTC, the epoch every billing column stores.
 
     Converted to UTC before the tzinfo strip: Flash sends `Z` today, but a
     non-zero offset stripped naively would be silently wrong by that offset.
     A timestamp with no offset at all is taken as already UTC.
+
+    Flash sends the period boundaries as bare dates, which ISO parsing promotes
+    to midnight — reading a `deadline` as ending the instant its last day begins
+    and revoking a subscriber up to a day early. So a deadline with no time runs
+    to the end of its day. Only deadlines: a start really does mean 00:00.
+
+    The discriminator is the absence of a time, not the value being midnight, so
+    a genuine `T00:00:00Z` cannot gain a day — and the branch stops firing on its
+    own once Flash sends instants.
     """
     if not isinstance(raw, str):
         return None
@@ -103,7 +132,10 @@ def parse_flash_timestamp(raw: object) -> datetime | None:
         return None
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(timezone.utc)
-    return parsed.replace(tzinfo=None)
+    parsed = parsed.replace(tzinfo=None)
+    if deadline and _is_date_only(raw):
+        return datetime.combine(parsed.date(), END_OF_DAY)
+    return parsed
 
 
 def parse_subscription(raw: dict) -> FlashSubscription:
@@ -116,10 +148,14 @@ def parse_subscription(raw: dict) -> FlashSubscription:
         service_id=str(raw.get("serviceId") or ""),
         plan_id=str(raw.get("planId") or ""),
         current_period_start=parse_flash_timestamp(raw.get("currentPeriodStart")),
-        current_period_end=parse_flash_timestamp(raw.get("currentPeriodEnd")),
+        current_period_end=parse_flash_timestamp(
+            raw.get("currentPeriodEnd"), deadline=True
+        ),
         next_billing_date=parse_flash_timestamp(raw.get("nextBillingDate")),
-        trial_end_date=parse_flash_timestamp(raw.get("trialEndDate")),
-        cancel_effective_date=parse_flash_timestamp(raw.get("cancelEffectiveDate")),
+        trial_end_date=parse_flash_timestamp(raw.get("trialEndDate"), deadline=True),
+        cancel_effective_date=parse_flash_timestamp(
+            raw.get("cancelEffectiveDate"), deadline=True
+        ),
     )
 
 

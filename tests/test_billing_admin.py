@@ -164,6 +164,24 @@ def test_a_row_says_who_put_them_on_their_policy():
     assert paid.scheduling_source == "billing"
 
 
+def test_the_roster_hands_an_operator_the_day_flash_named():
+    """Same shape rule as the subscriber's card: a boundary read from a bare
+    date goes out as that date, so no operator's timezone can shift it. Our own
+    sync time is a real instant and stays one."""
+    from app.schemas.schemas import BillingSubscriptionItem
+
+    item = BillingSubscriptionItem.model_validate(
+        _row(synced=datetime(2026, 9, 19, 2, 0)), from_attributes=True
+    ).model_copy(
+        update={"current_period_end": datetime(2026, 9, 20, 23, 59, 59, 999999)}
+    )
+
+    wire = item.model_dump(mode="json")
+
+    assert wire["current_period_end"] == "2026-09-20"
+    assert wire["last_synced_at"] == "2026-09-19T02:00:00Z"
+
+
 def test_a_divergence_report_names_each_disagreement(billing_client, monkeypatch):
     report = AsyncMock(
         return_value=SimpleNamespace(

@@ -209,6 +209,33 @@ def test_the_contract_shape_for_a_paying_subscriber(
     assert data["manage_url"].endswith("/subscriptions/portal/9c1e")
 
 
+def test_a_boundary_flash_named_as_a_date_goes_out_as_that_date(
+    subscription_client, monkeypatch
+):
+    """The shape survives the round trip, so no viewer's timezone can move the
+    day. Only a value carrying a real time is handed over as an instant."""
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    ends = datetime(2026, 9, 20, 23, 59, 59, 999999)
+    _stub_view(
+        monkeypatch,
+        policy=PAID_POLICY,
+        row=_row(
+            current_period_start=datetime(2026, 8, 20, 0, 0),
+            current_period_end=ends,
+            next_billing_date=datetime(2026, 9, 20, 0, 0),
+            cancel_effective_date=ends,
+        ),
+        plan=_plan(),
+    )
+
+    data = subscription_client.get("/user/subscription").json()["data"]
+
+    assert data["current_period_start"] == "2026-08-20"
+    assert data["current_period_end"] == "2026-09-20"
+    assert data["next_billing_date"] == "2026-09-20"
+    assert data["cancel_effective_date"] == "2026-09-20"
+
+
 def test_the_plan_is_what_they_bought_period_included(
     subscription_client, monkeypatch
 ):

@@ -10,7 +10,29 @@ from pydantic import (
     model_validator,
 )
 
+from app.core.flash import is_whole_day_boundary
 from app.schemas.error_codes import ErrorCode
+
+
+def _instant_wire_format(value: datetime | None) -> str | None:
+    # Stored naive UTC; without an explicit Z, `new Date()` in the browser reads
+    # it as local time and shifts it by the viewer's offset.
+    return None if value is None else value.isoformat() + "Z"
+
+
+def _billing_date_wire_format(value: datetime | None) -> str | None:
+    """A stored billing date, in the shape Flash named it.
+
+    A boundary Flash gave as a bare date goes back out as that date — there is
+    no time to localise, and localising the whole-day value we stood in for it
+    can only move the day. Anything carrying a real time is an instant. The
+    stored value is the only record of the shape, so a genuine instant landing
+    exactly on a day boundary reads as a date: it costs a rendering, never a
+    grant, and it stops happening as Flash moves to instants.
+    """
+    if value is not None and is_whole_day_boundary(value):
+        return value.date().isoformat()
+    return _instant_wire_format(value)
 
 
 #################
@@ -264,6 +286,17 @@ class BillingSubscriptionItem(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @field_serializer(
+        "current_period_start", "current_period_end", "next_billing_date"
+    )
+    def _serialize_billing_date(self, value: datetime | None) -> str | None:
+        return _billing_date_wire_format(value)
+
+    @field_serializer("last_synced_at")
+    def _serialize_instant(self, value: datetime | None) -> str | None:
+        # Ours, not Flash's, and always a real instant.
+        return _instant_wire_format(value)
+
 
 class DivergenceSection(BaseModel):
     """One kind of disagreement. `truncated` is explicit because a capped list
@@ -338,12 +371,8 @@ class SubscriptionView(BaseModel):
         "next_billing_date",
         "cancel_effective_date",
     )
-    def _utc_wire_format(self, value: datetime | None) -> str | None:
-        # Stored naive UTC; serialized with an explicit Z or `new Date()` in
-        # the browser reads it as local time, shifting it by the viewer's offset.
-        if value is None:
-            return None
-        return value.isoformat() + "Z"
+    def _serialize_billing_date(self, value: datetime | None) -> str | None:
+        return _billing_date_wire_format(value)
 
 
 class BillingPlanView(BaseModel):

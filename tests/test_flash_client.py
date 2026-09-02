@@ -17,6 +17,7 @@ from app.core.flash import (
     FlashUnavailable,
     fetch_subscription,
     fetch_subscription_raw,
+    parse_flash_timestamp,
     parse_subscription,
 )
 
@@ -102,6 +103,70 @@ def test_a_status_we_do_not_recognise_survives_the_parse():
     found = parse_subscription({**SUBSCRIPTION, "status": "hibernating"})
 
     assert found.status == "hibernating"
+
+
+# ---------------------------------------------------------------------------
+# A date with no time on it
+#
+# Read on the shape of the value, so both readings are already right the day
+# Flash stops sending bare dates.
+# ---------------------------------------------------------------------------
+END_OF_THE_20TH = datetime(2026, 9, 20, 23, 59, 59, 999999)
+
+
+def test_a_period_ending_on_a_date_runs_to_the_end_of_that_day():
+    found = parse_subscription({**SUBSCRIPTION, "currentPeriodEnd": "2026-09-20"})
+
+    assert found.current_period_end == END_OF_THE_20TH
+
+
+def test_a_cancellation_and_a_trial_dated_to_a_day_last_that_whole_day_too():
+    found = parse_subscription(
+        {
+            **SUBSCRIPTION,
+            "cancelEffectiveDate": "2026-09-20",
+            "trialEndDate": "2026-09-20",
+        }
+    )
+
+    assert found.cancel_effective_date == END_OF_THE_20TH
+    assert found.trial_end_date == END_OF_THE_20TH
+
+
+def test_a_period_starting_on_a_date_starts_when_that_day_does():
+    """Only deadlines move — nothing measures `now <` against a start."""
+    found = parse_subscription(
+        {
+            **SUBSCRIPTION,
+            "currentPeriodStart": "2026-08-20",
+            "nextBillingDate": "2026-09-20",
+        }
+    )
+
+    assert found.current_period_start == datetime(2026, 8, 20, 0, 0)
+    assert found.next_billing_date == datetime(2026, 9, 20, 0, 0)
+
+
+def test_a_deadline_carrying_a_time_is_used_exactly_as_sent():
+    found = parse_subscription(
+        {**SUBSCRIPTION, "currentPeriodEnd": "2026-09-20T14:03:11Z"}
+    )
+
+    assert found.current_period_end == datetime(2026, 9, 20, 14, 3, 11)
+
+
+def test_a_deadline_at_a_real_midnight_is_not_pushed_to_the_end_of_its_day():
+    """The discriminator is the absence of a time, not the value being midnight."""
+    found = parse_subscription(
+        {**SUBSCRIPTION, "currentPeriodEnd": "2026-09-20T00:00:00Z"}
+    )
+
+    assert found.current_period_end == datetime(2026, 9, 20, 0, 0)
+
+
+def test_a_timestamp_that_is_not_a_deadline_is_never_moved():
+    """Webhook event times come through the same parser and are instants."""
+    assert parse_flash_timestamp("2026-09-20") == datetime(2026, 9, 20, 0, 0)
 
 
 # ---------------------------------------------------------------------------

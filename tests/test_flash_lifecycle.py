@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.flash import parse_flash_timestamp
 from app.db_models import SchedulingSource
 from app.services.billing_service import EntitlementDecision, decide_entitlement
 from app.services.billing_sync_service import revoke_lapsed_entitlements
@@ -86,6 +87,27 @@ def test_a_cancellation_revokes_once_that_date_has_passed():
 def test_a_cancellation_falls_back_to_the_period_end_when_flash_gives_no_date():
     assert _decide("canceled", period_end=LATER) is EntitlementDecision.HOLD
     assert _decide("canceled", period_end=EARLIER) is EntitlementDecision.REVOKE
+
+
+def test_a_period_ending_on_a_date_entitles_for_the_whole_of_that_day():
+    """Read through the parser on purpose: the fix lives there, so every
+    comparison site inherits it."""
+    ends_on_the_20th = parse_flash_timestamp("2026-09-20", deadline=True)
+
+    assert (
+        _decide(
+            "canceled",
+            period_end=ends_on_the_20th,
+            now=datetime(2026, 9, 20, 23, 59, 59),
+        )
+        is EntitlementDecision.HOLD
+    )
+    assert (
+        _decide(
+            "canceled", period_end=ends_on_the_20th, now=datetime(2026, 9, 21, 0, 0)
+        )
+        is EntitlementDecision.REVOKE
+    )
 
 
 def test_a_cancellation_with_no_dates_at_all_revokes():
