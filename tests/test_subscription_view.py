@@ -332,11 +332,42 @@ def test_the_plan_is_the_one_they_bought_priced_as_they_bought_it(
     plan = subscription_client.get("/user/subscription").json()["data"]["plan"]
 
     assert plan == {
+        "plan_id": "4f2a",
         "amount_minor": 10,
         "currency": "USD",
         "is_active": True,
         "billing_interval": "daily",
     }
+
+
+def test_both_surfaces_name_the_plan_by_flashs_own_id(
+    subscription_client, monkeypatch
+):
+    """The key that tells two plans on one policy apart.
+
+    A policy is not enough: staging sells the same policy through a daily plan
+    and a monthly one, so a page marking by policy marks both as theirs and
+    suppresses both calls to action. Flash's plan id is the same value in every
+    environment, and it appears on BOTH surfaces or it is not a key.
+    """
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    _stub_view(
+        monkeypatch, policy=PAID_POLICY, row=_row(), plan=_plan(flash_plan_id="019e")
+    )
+
+    plan = subscription_client.get("/user/subscription").json()["data"]["plan"]
+    assert plan["plan_id"] == "019e"
+
+    _stub_plans(
+        monkeypatch,
+        policies=[FREE_POLICY, PAID_POLICY],
+        plans=[_plan(id=1), _plan(id=2, flash_plan_id="019e")],
+        flash=[_flash_plan(sort_order=0), _flash_plan(id="019e", sort_order=1)],
+    )
+    rows = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans
+
+    # The free row is nobody's plan, so it has no plan id to be named by.
+    assert [row.plan_id for row in rows] == [None, "4f2a", "019e"]
 
 
 def test_a_repriced_plan_does_not_change_what_a_subscriber_is_told_they_pay(
@@ -383,6 +414,7 @@ def test_a_subscription_flash_priced_nowhere_is_shown_no_price_at_all(
 
     assert data["status"] == "active"
     assert data["plan"] == {
+        "plan_id": "4f2a",
         "amount_minor": None,
         "currency": None,
         "is_active": True,

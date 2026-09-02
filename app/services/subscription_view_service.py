@@ -172,6 +172,7 @@ def _subscriber_plan_view(
     and asks Flash nothing, so an outage costs the card no price it had.
     """
     return SubscriptionPlanView(
+        plan_id=plan.flash_plan_id,
         amount_minor=row.pricing_amount_minor,
         currency=row.pricing_currency,
         billing_interval=row.pricing_billing_interval,
@@ -216,6 +217,7 @@ def _free_row(policy: Scheduling) -> BillingPlanView:
         policy_name=policy.name,
         schedule_interval_seconds=policy.schedule_interval_seconds,
         is_default=policy.is_default,
+        plan_id=None,
         plan_name=None,
         description=None,
         amount_minor=0,
@@ -235,6 +237,7 @@ def _plan_row(policy: Scheduling, flash: FlashPlan) -> BillingPlanView:
         policy_name=policy.name,
         schedule_interval_seconds=policy.schedule_interval_seconds,
         is_default=policy.is_default,
+        plan_id=flash.id,
         plan_name=flash.name,
         description=flash.description,
         amount_minor=flash.amount_minor,

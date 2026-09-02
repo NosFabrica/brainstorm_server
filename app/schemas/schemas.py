@@ -346,8 +346,14 @@ class SubscriptionPlanView(BaseModel):
     No plan name: what a subscriber is shown is the POLICY they hold, which is
     what they actually receive. Carrying Flash's name here with nothing
     rendering it would be a field waiting for someone to invent a use for.
+
+    `plan_id` is the exception, and it is an identifier rather than copy: it is
+    the only way the pricing page can mark the row they actually bought when
+    two plans grant one policy. Matched against `BillingPlanView.plan_id`,
+    never interpreted.
     """
 
+    plan_id: str
     amount_minor: int | None
     currency: str | None
     billing_interval: str | None
@@ -407,6 +413,10 @@ class BillingPlanView(BaseModel):
     policy_name: str
     schedule_interval_seconds: int
     is_default: bool
+    # Flash's plan id — how a subscriber's own row is told from the other plan
+    # on the same policy. Same value in every environment, and matched against
+    # `SubscriptionPlanView.plan_id` rather than recognised.
+    plan_id: str | None
     # Null on the free row: nothing sells it, so there is no Flash plan to name
     # it, price it or say how often it charges.
     plan_name: str | None
