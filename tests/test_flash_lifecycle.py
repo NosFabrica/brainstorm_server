@@ -15,7 +15,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core.flash import parse_flash_timestamp
+from app.core.flash import (
+    UNKNOWN_LIFECYCLE_POLICY,
+    FlashLifecyclePolicy,
+    parse_flash_timestamp,
+)
 from app.db_models import SchedulingSource
 from app.services.billing_service import EntitlementDecision, decide_entitlement
 from app.services.billing_sync_service import revoke_lapsed_entitlements
@@ -25,13 +29,31 @@ LATER = NOW + timedelta(days=5)
 EARLIER = NOW - timedelta(days=5)
 PUBKEY = "a" * 64
 
+# What the live account actually reports, probed against Flash. Every rule here
+# was written against it, so it is the fixture that proves the deploy moves
+# nobody: whatever this file says under TODAYS_POLICY is what already happens.
+TODAYS_POLICY = FlashLifecyclePolicy(
+    cancellation_mode="end_of_period",
+    dunning_max_attempts=3,
+    dunning_attempts=0,
+    dunning_cancels_after_final_failure=True,
+)
 
-def _decide(status: str, *, cancel_effective=None, period_end=None, now=NOW):
+
+def _decide(
+    status: str,
+    *,
+    cancel_effective=None,
+    period_end=None,
+    now=NOW,
+    policy=UNKNOWN_LIFECYCLE_POLICY,
+):
     return decide_entitlement(
         status,
         cancel_effective_date=cancel_effective,
         current_period_end=period_end,
         now=now,
+        policy=policy,
     )
 
 
@@ -60,6 +82,61 @@ def test_a_failed_renewal_holds_while_flash_is_still_retrying():
 def test_a_failed_renewal_holds_even_past_the_period_end():
     """Dunning runs past the paid period by design — that IS the grace."""
     assert _decide("past_due", period_end=EARLIER) is EntitlementDecision.HOLD
+
+
+def _dunning(*, attempts, max_attempts=3, cancels=True):
+    return FlashLifecyclePolicy(
+        cancellation_mode="end_of_period",
+        dunning_max_attempts=max_attempts,
+        dunning_attempts=attempts,
+        dunning_cancels_after_final_failure=cancels,
+    )
+
+
+def test_a_failed_renewal_holds_while_the_policy_still_has_retries_left():
+    policy = _dunning(attempts=1, cancels=False)
+
+    assert _decide("past_due", policy=policy) is EntitlementDecision.HOLD
+
+
+def test_a_failed_renewal_stops_being_entitled_once_nothing_will_end_it():
+    """`past_due` entitles because Flash is retrying and the retrying ends. A
+    policy that exhausts its retries and then cancels nothing ends never, so
+    holding would give away the tier for good on a payment that failed."""
+    policy = _dunning(attempts=3, cancels=False)
+
+    assert _decide("past_due", policy=policy) is EntitlementDecision.REVOKE
+
+
+def test_a_policy_that_never_retries_at_all_has_nothing_to_wait_for():
+    policy = _dunning(attempts=0, max_attempts=0, cancels=False)
+
+    assert _decide("past_due", policy=policy) is EntitlementDecision.REVOKE
+
+
+def test_a_failed_renewal_holds_when_flash_ends_the_dunning_itself():
+    """The live account's policy: retries exhausted, then Flash cancels. The
+    cancellation is what revokes them, exactly as it does today — so a deploy
+    moves nobody."""
+    assert _decide("past_due", policy=TODAYS_POLICY) is EntitlementDecision.HOLD
+    assert (
+        _decide("past_due", policy=_dunning(attempts=3, cancels=True))
+        is EntitlementDecision.HOLD
+    )
+
+
+def test_a_dunning_policy_we_cannot_read_holds():
+    """Unknown must never revoke. This is also what the lapse sweep passes, so
+    a subscriber mid-dunning is never revoked without asking Flash first."""
+    assert _decide("past_due") is EntitlementDecision.HOLD
+    assert (
+        _decide("past_due", policy=_dunning(attempts=None, cancels=False))
+        is EntitlementDecision.HOLD
+    )
+    assert (
+        _decide("past_due", policy=_dunning(attempts=3, max_attempts=None, cancels=False))
+        is EntitlementDecision.HOLD
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +192,16 @@ def test_a_cancellation_with_no_dates_at_all_revokes():
     you". A date is what defers it; with none, it has already happened. Holding
     would mean holding forever."""
     assert _decide("canceled") is EntitlementDecision.REVOKE
+
+
+def test_a_cancellation_ends_when_the_subscriptions_own_policy_says_it_does():
+    """Flash reports the cancellation policy per subscription. Under a mode that
+    ends access at once, the period they paid for buys them nothing."""
+    at_once = FlashLifecyclePolicy(cancellation_mode="immediate")
+
+    assert _decide("canceled", period_end=LATER, policy=at_once) is (
+        EntitlementDecision.REVOKE
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -288,3 +375,42 @@ def test_the_abandon_window_is_shorter_than_the_sweep_that_applies_it():
         settings.billing_abandon_pending_after_seconds
         < settings.billing_sync_interval_seconds
     ), "the abandon window must be shorter than the cycle that applies it"
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        ("active", EntitlementDecision.GRANT),
+        ("trial", EntitlementDecision.GRANT),
+        ("expired", EntitlementDecision.REVOKE),
+        ("paused", EntitlementDecision.REVOKE),
+        ("past_due", EntitlementDecision.HOLD),
+        ("something_new", EntitlementDecision.HOLD),
+    ],
+)
+def test_the_live_accounts_policy_decides_exactly_as_the_old_constants_did(
+    status, expected
+):
+    """The headline promise: reading the policy changes nobody's tier on the
+    account we actually run. Every value here is the one the live account
+    reports — end_of_period, three attempts, cancel after the final failure —
+    and every answer is the one the hardcoded table gave before it was read.
+
+    If this file ever disagrees with the old behaviour under TODAYS_POLICY, the
+    change is no longer safe to deploy and this test is where that shows.
+    """
+    assert _decide(status, policy=TODAYS_POLICY) is expected
+
+
+def test_a_cancellation_under_the_live_policy_still_waits_for_the_date():
+    """The other half of the same promise, which needs dates rather than a
+    status: `end_of_period` is what we always assumed, so it behaves as before."""
+    assert (
+        _decide("canceled", cancel_effective=LATER, policy=TODAYS_POLICY)
+        is EntitlementDecision.HOLD
+    )
+    assert (
+        _decide("canceled", cancel_effective=EARLIER, policy=TODAYS_POLICY)
+        is EntitlementDecision.REVOKE
+    )
+

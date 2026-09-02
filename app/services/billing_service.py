@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.flash import (
+    CANCELLATION_IMMEDIATE,
     FlashCredentialError,
+    FlashLifecyclePolicy,
     FlashSubscription,
     FlashUnavailable,
     cancel_subscription,
@@ -62,6 +64,7 @@ logger = loggr.get_logger(__name__)
 ENTITLING_STATUSES = frozenset({"active", "trial"})
 ENDED_STATUSES = frozenset({"expired", "paused"})
 CANCELLED_STATUS = "canceled"
+PAST_DUE_STATUS = "past_due"
 
 
 class EntitlementDecision(enum.Enum):
@@ -203,26 +206,76 @@ def decide_entitlement(
     cancel_effective_date: datetime | None,
     current_period_end: datetime | None,
     now: datetime,
+    policy: FlashLifecyclePolicy,
 ) -> EntitlementDecision:
     """What this status means for the user's policy. Pure.
 
     HOLD is the default for everything uncertain — a failed renewal Flash is
     still retrying, a cancellation whose paid period hasn't run out, a status we
     have never seen. We only REVOKE where the ending is not in doubt.
+
+    `policy` is how Flash says this subscription ends, passed in as data rather
+    than fetched, so the whole table stays pure and testable. It is required and
+    never defaulted: a caller that does not know the policy has to say so, which
+    is a different statement from one that forgot to ask.
     """
     if flash_status in ENTITLING_STATUSES:
         return EntitlementDecision.GRANT
     if flash_status in ENDED_STATUSES:
         return EntitlementDecision.REVOKE
+    if flash_status == PAST_DUE_STATUS:
+        return _decide_past_due(policy)
     if flash_status == CANCELLED_STATUS:
-        # Flash words this in the past tense — "ended by the subscriber or by
-        # you" — so a cancellation with no future end date has already happened.
-        # A date is what defers it, and until then they keep what they paid for.
-        ends_at = cancel_effective_date or current_period_end
-        if ends_at is not None and now < ends_at:
-            return EntitlementDecision.HOLD
-        return EntitlementDecision.REVOKE
+        return _decide_cancelled(
+            policy,
+            cancel_effective_date=cancel_effective_date,
+            current_period_end=current_period_end,
+            now=now,
+        )
     return EntitlementDecision.HOLD
+
+
+def _decide_past_due(policy: FlashLifecyclePolicy) -> EntitlementDecision:
+    """`past_due` entitles because Flash is retrying — so it depends on the
+    retrying ending.
+
+    Two policies break that. One that has spent its attempts and cancels
+    nothing leaves the subscription past_due for good, so holding hands over
+    the tier permanently on a payment that failed. One that never retries has
+    nothing to wait for in the first place.
+
+    Every other shape holds, and so does every unknown: a policy we cannot read
+    must never be the reason someone loses a tier.
+    """
+    if policy.dunning_cancels_after_final_failure is not False:
+        # Flash will end it itself, or has not told us — either way the status
+        # change is what revokes them, exactly as it does today.
+        return EntitlementDecision.HOLD
+    made, allowed = policy.dunning_attempts, policy.dunning_max_attempts
+    if made is None or allowed is None:
+        return EntitlementDecision.HOLD
+    return EntitlementDecision.REVOKE if made >= allowed else EntitlementDecision.HOLD
+
+
+def _decide_cancelled(
+    policy: FlashLifecyclePolicy,
+    *,
+    cancel_effective_date: datetime | None,
+    current_period_end: datetime | None,
+    now: datetime,
+) -> EntitlementDecision:
+    """When a cancelled subscriber stops being entitled, per their own policy."""
+    if policy.cancellation_mode == CANCELLATION_IMMEDIATE:
+        # Nothing defers this one, so there is no date to wait for.
+        return EntitlementDecision.REVOKE
+    # `end_of_period`, and anything we do not recognise. Flash words `canceled`
+    # in the past tense — "ended by the subscriber or by you" — so a
+    # cancellation with no future end date has already happened. A date is what
+    # defers it, and until then they keep what they paid for.
+    ends_at = cancel_effective_date or current_period_end
+    if ends_at is not None and now < ends_at:
+        return EntitlementDecision.HOLD
+    return EntitlementDecision.REVOKE
 
 
 def utc_now() -> datetime:
@@ -359,6 +412,7 @@ async def _grant_and_record(
             cancel_effective_date=subscription.cancel_effective_date,
             current_period_end=subscription.current_period_end,
             now=now,
+            policy=subscription.policy,
         ),
         blocked=await is_billing_blocked_on_db(db, pubkey),
         admin_held=is_admin_held(await get_scheduling_source_on_db(db, pubkey)),

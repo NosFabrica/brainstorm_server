@@ -15,6 +15,7 @@ import pytest
 
 from app.core import flash
 from app.core.flash import (
+    UNKNOWN_LIFECYCLE_POLICY,
     FlashCredentialError,
     FlashRefused,
     FlashUnavailable,
@@ -124,6 +125,41 @@ def test_every_field_flash_sends_is_carried_across():
     assert found.current_period_end == datetime(2026, 9, 20, 14, 3, 11)
     assert found.cancel_effective_date is None
     assert found.portal_url == "https://flash.example/subscriptions/portal/9c1e"
+
+
+def test_the_policies_that_decide_the_ending_are_carried_across():
+    """The two lifecycle rules read these instead of a constant, so they have to
+    reach the decision — reporting them and dropping them was the old shape."""
+    found = parse_subscription({**SUBSCRIPTION, "dunningAttempts": 2})
+
+    assert found.policy.cancellation_mode == "end_of_period"
+    assert found.policy.dunning_max_attempts == 3
+    assert found.policy.dunning_attempts == 2
+    assert found.policy.dunning_cancels_after_final_failure is True
+
+
+def test_a_subscription_carrying_no_policies_reads_as_unknown():
+    """Absent is not a policy. Every field stays None, and None can only hold."""
+    bare = {
+        key: value
+        for key, value in SUBSCRIPTION.items()
+        if key not in ("dunningPolicy", "cancellationPolicy")
+    }
+
+    assert parse_subscription(bare).policy == UNKNOWN_LIFECYCLE_POLICY
+
+
+def test_a_policy_flash_sends_as_the_wrong_type_reads_as_unknown():
+    """A string where a number belongs is not a number we may act on."""
+    found = parse_subscription(
+        _with_policy(
+            dunningPolicy={**DUNNING_POLICY, "maxAttempts": "three"},
+            cancellationPolicy=[],
+        )
+    )
+
+    assert found.policy.dunning_max_attempts is None
+    assert found.policy.cancellation_mode is None
 
 
 def test_a_subscription_with_no_portal_of_its_own_offers_none():
@@ -276,15 +312,17 @@ def test_the_policies_our_behaviour_already_matches_are_not_reported(monkeypatch
     warned.assert_not_called()
 
 
-def test_a_cancellation_that_would_not_hold_to_the_period_end_is_reported(monkeypatch):
-    """We keep a cancelled subscriber entitled until `cancelEffectiveDate` or the
-    period end. Under any other mode that is a day of access nobody paid for."""
+def test_a_cancellation_mode_we_cannot_act_on_is_reported(monkeypatch):
+    """`immediate` and `end_of_period` are both decided now. A third mode is
+    not, and falls back to the date rule — which may not be what it means."""
     warned = _warnings(monkeypatch)
     _transport(
         _responds(
             json={
                 "livemode": True,
-                "subscription": _with_policy(cancellationPolicy={"mode": "immediate"}),
+                "subscription": _with_policy(
+                    cancellationPolicy={"mode": "after_notice_period"}
+                ),
             }
         )
     )
@@ -292,12 +330,14 @@ def test_a_cancellation_that_would_not_hold_to_the_period_end_is_reported(monkey
     _fetch(subscription_id="7d3b")
 
     assert warned.call_count == 1
-    assert "immediate" in str(warned.call_args)
+    assert "after_notice_period" in str(warned.call_args)
 
 
-def test_a_dunning_policy_that_never_retries_is_reported(monkeypatch):
-    """`past_due` reads as still-entitled because Flash is retrying. With no
-    retry left to wait for, that is a failed payment we are honouring."""
+def test_a_dunning_policy_that_never_retries_is_acted_on_rather_than_reported(
+    monkeypatch,
+):
+    """This used to be a warning ending "Behaviour unchanged". The decision
+    reads it now, so there is nothing left to report."""
     warned = _warnings(monkeypatch)
     _transport(
         _responds(
@@ -312,7 +352,7 @@ def test_a_dunning_policy_that_never_retries_is_reported(monkeypatch):
 
     _fetch(subscription_id="7d3b")
 
-    assert warned.call_count == 1
+    assert warned.call_count == 0
 
 
 def test_a_dunning_policy_that_never_gives_up_is_reported(monkeypatch):
@@ -345,7 +385,9 @@ def test_one_difference_is_reported_once_however_many_subscribers_carry_it(
         _responds(
             json={
                 "livemode": True,
-                "subscription": _with_policy(cancellationPolicy={"mode": "immediate"}),
+                "subscription": _with_policy(
+                    cancellationPolicy={"mode": "after_notice_period"}
+                ),
             }
         )
     )

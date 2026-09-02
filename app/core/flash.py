@@ -127,6 +127,45 @@ class FlashPricing:
     billing_interval: str | None
 
 
+# How a subscription ends, in Flash's own words. `end_of_period` is what the
+# live account reports; `immediate` is the only other reading of a cancellation
+# there is, and recognising it costs nothing if Flash never sends it — while not
+# recognising it would keep a cut-off subscriber entitled. Flash's guide names
+# only the default, so treat this set as open: anything else is unrecognised,
+# and unrecognised keeps what the subscriber paid for.
+CANCELLATION_END_OF_PERIOD = "end_of_period"
+CANCELLATION_IMMEDIATE = "immediate"
+RECOGNISED_CANCELLATION_MODES = frozenset(
+    {CANCELLATION_END_OF_PERIOD, CANCELLATION_IMMEDIATE}
+)
+
+
+@dataclass(frozen=True)
+class FlashLifecyclePolicy:
+    """How Flash says THIS subscription ends — the input the tier decision needs.
+
+    Every field is optional and every one defaults to None, because None is a
+    load-bearing value: it means Flash did not tell us, and a policy we cannot
+    read must leave behaviour exactly where it was. Nothing here may revoke on
+    an absent field.
+
+    `dunning_attempts` is progress rather than policy, but it rides along
+    because the policy says nothing on its own: "three retries" only becomes
+    "the retrying is over" when read against how many have been made.
+    """
+
+    cancellation_mode: str | None = None
+    dunning_max_attempts: int | None = None
+    dunning_attempts: int | None = None
+    dunning_cancels_after_final_failure: bool | None = None
+
+
+# Flash told us nothing we can act on. The lapse sweep passes this deliberately:
+# it reads the stored row, which records Flash's answer and not the policy
+# behind it, and unknown never revokes.
+UNKNOWN_LIFECYCLE_POLICY = FlashLifecyclePolicy()
+
+
 @dataclass(frozen=True)
 class FlashSubscription:
     """One subscriber on one plan, as Flash reports it.
@@ -153,6 +192,11 @@ class FlashSubscription:
     # None when Flash sent no snapshot at all, which is how a subscription with
     # no recorded price stays unpriced instead of borrowing the plan's.
     pricing: FlashPricing | None
+    # How Flash says this one ends. Never None: an absent policy is one whose
+    # every field is unknown, which is a policy the decision can still read.
+    # Defaulted for the same reason — a body that carried no policy produces
+    # the unknown one, and unknown never revokes.
+    policy: FlashLifecyclePolicy = UNKNOWN_LIFECYCLE_POLICY
 
 
 START_OF_DAY = time(0, 0)
@@ -210,37 +254,43 @@ def parse_flash_timestamp(raw: object, *, deadline: bool = False) -> datetime | 
 # Flash now reports both on every subscription, so the assumptions can be
 # checked instead of believed — reported, never acted on: a policy read wrongly
 # must not be able to move anyone's tier.
-_ASSUMED_CANCELLATION_MODE = "end_of_period"
 _reported_policies: set[str] = set()
 
 
 def _report_policy_differences(raw: dict) -> None:
-    mode = (raw.get("cancellationPolicy") or {}).get("mode")
-    if mode is not None and mode != _ASSUMED_CANCELLATION_MODE:
+    """Report only a policy the decision cannot act on.
+
+    It used to report every policy that differed from a constant we held, and
+    every message ended "Behaviour unchanged" — which was true then and is not
+    now: `decide_entitlement` reads the policy. What is left worth saying is
+    the part we still cannot honour, because that IS a silent difference
+    between what Flash does and what we do.
+    """
+    cancellation = raw.get("cancellationPolicy")
+    mode = cancellation.get("mode") if isinstance(cancellation, dict) else None
+    if mode is not None and mode not in RECOGNISED_CANCELLATION_MODES:
         _report_once(
             f"cancellation:{mode}",
-            "Flash cancels %s, but we keep a cancelled subscriber entitled "
-            "until cancelEffectiveDate or the period end. Behaviour unchanged.",
+            "Flash cancels %s, a mode we do not recognise; a cancelled "
+            "subscriber keeps their tier until cancelEffectiveDate or the "
+            "period end, which may not be what %s means.",
+            mode,
             mode,
         )
 
-    # past_due entitles because Flash is retrying and the retrying ends. A
-    # policy that never retries, or never gives up, breaks one half of that.
-    dunning = raw.get("dunningPolicy") or {}
-    attempts = dunning.get("maxAttempts")
-    if isinstance(attempts, int) and attempts < 1:
+    # The dunning half is only decidable when all three of its inputs read.
+    # Missing any of them holds, which is safe but silent — so say so once.
+    dunning = raw.get("dunningPolicy")
+    dunning = dunning if isinstance(dunning, dict) else {}
+    if dunning.get("cancelAfterFinalFailure") is False and (
+        _whole_number(dunning.get("maxAttempts")) is None
+        or _whole_number(raw.get("dunningAttempts")) is None
+    ):
         _report_once(
-            f"dunning-attempts:{attempts}",
-            "Flash retries a failed renewal %s time(s), but we read past_due as "
-            "still entitled because it is being retried. Behaviour unchanged.",
-            attempts,
-        )
-    if dunning.get("cancelAfterFinalFailure") is False:
-        _report_once(
-            "dunning-never-ends",
-            "Flash leaves a subscription past_due after the final failed "
-            "retry, but we read past_due as still entitled. Behaviour "
-            "unchanged.",
+            "dunning-unreadable",
+            "Flash never cancels after a final failed retry, so past_due ends "
+            "only when the retries run out — but the attempt counts did not "
+            "read, so these subscribers keep their tier indefinitely.",
         )
 
 
@@ -273,7 +323,46 @@ def parse_subscription(raw: dict) -> FlashSubscription:
         ),
         portal_url=_text(raw.get("portalUrl")),
         pricing=parse_pricing(raw.get("pricingSnapshot")),
+        policy=parse_lifecycle_policy(raw),
     )
+
+
+def parse_lifecycle_policy(raw: dict) -> FlashLifecyclePolicy:
+    """The two policies Flash reports on a subscription, plus the dunning count
+    they are read against. Pure.
+
+    Every field is type-checked rather than coerced. A value we cannot read is
+    left None, and None holds — the alternative is a `"three"` that becomes a
+    number nobody meant and revokes on it.
+    """
+    cancellation = raw.get("cancellationPolicy")
+    dunning = raw.get("dunningPolicy")
+    return FlashLifecyclePolicy(
+        cancellation_mode=_text(
+            cancellation.get("mode") if isinstance(cancellation, dict) else None
+        ),
+        dunning_max_attempts=_whole_number(
+            dunning.get("maxAttempts") if isinstance(dunning, dict) else None
+        ),
+        dunning_attempts=_whole_number(raw.get("dunningAttempts")),
+        dunning_cancels_after_final_failure=_flag(
+            dunning.get("cancelAfterFinalFailure")
+            if isinstance(dunning, dict)
+            else None
+        ),
+    )
+
+
+def _whole_number(value: object) -> int | None:
+    """An int Flash sent as an int. `bool` is excluded: it is an int in Python
+    and nowhere else, so `True` must not read as one attempt."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _flag(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def parse_pricing(raw: object) -> FlashPricing | None:

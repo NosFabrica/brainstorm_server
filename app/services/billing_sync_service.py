@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
-from app.core.flash import FlashCredentialError, FlashUnavailable
+from app.core.flash import UNKNOWN_LIFECYCLE_POLICY, FlashCredentialError, FlashUnavailable
 from app.core.loggr import loggr
 from app.repos.flash_webhook_event_repo import (
     claim_webhook_event_on_db,
@@ -79,6 +79,11 @@ async def revoke_lapsed_entitlements(
             cancel_effective_date=row.cancel_effective_date,
             current_period_end=row.current_period_end,
             now=at,
+            # The sweep reads the stored row, which records what Flash said
+            # about the subscription and nothing about the policy behind it.
+            # Unknown is the honest input, and unknown never revokes — so a
+            # subscriber mid-dunning is only ever revoked after asking Flash.
+            policy=UNKNOWN_LIFECYCLE_POLICY,
         )
         if decision is not EntitlementDecision.REVOKE:
             continue
