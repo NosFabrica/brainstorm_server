@@ -1,12 +1,16 @@
 """add flash billing schema
 
-Squashed from four revisions that only ever shipped together on this branch:
-the original schema, `sync_error_since`, the policy-owns-the-tier reshape, and
-the webhook resolution columns. Nothing outside this branch ever ran them, so
-the intermediate states have no value — and one of them created
-`subscription_tier` for a later one to drop, which this simply never creates.
+Every billing migration this branch ever had, as one revision. Nothing outside
+the branch has run any of them, so the intermediate states have no value — and
+several of them existed only to undo each other: columns created for a later
+revision to drop, and a `subscription_tier` that was created and then removed.
+None of that is created here in the first place.
 
-Revision ID: b7d41e9a3c58
+`billing_plan` is a mapping table from the start — which Flash plan grants
+which policy, and whether we sell it. Price, period, ordering and copy are
+Flash's answer, read from `GET /services/{id}`, never transcribed here.
+
+Revision ID: e5f7a2c9d0b3
 Revises: d4e5f6a7b8c9
 """
 
@@ -16,7 +20,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision: str = 'b7d41e9a3c58'
+revision: str = 'e5f7a2c9d0b3'
 down_revision: Union[str, None] = 'd4e5f6a7b8c9'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -56,16 +60,6 @@ def upgrade() -> None:
         sa.Column('flash_service_id', sa.String(), nullable=False),
         sa.Column('flash_plan_id', sa.String(), nullable=False),
         sa.Column('scheduling_id', sa.Integer(), nullable=False),
-        sa.Column('amount_minor', sa.Integer(), nullable=False),
-        sa.Column('currency', sa.String(), nullable=False),
-        # Flash exposes no way to read a plan back, so the period, the order and
-        # the copy are all transcribed by an admin and editable by one.
-        sa.Column('billing_period_unit', sa.String(), nullable=True),
-        sa.Column('billing_period_count', sa.Integer(), nullable=True),
-        sa.Column('sort_order', sa.Integer(), server_default='0', nullable=False),
-        sa.Column('blurb', sa.String(), nullable=True),
-        sa.Column('includes', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column('excludes', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column('is_active', sa.Boolean(), server_default='true', nullable=False),
         sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
         sa.Column('updated_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
@@ -88,6 +82,7 @@ def upgrade() -> None:
         sa.Column('trial_end_date', sa.DateTime(), nullable=True),
         sa.Column('cancel_effective_date', sa.DateTime(), nullable=True),
         sa.Column('rail', sa.String(), nullable=True),
+        sa.Column('portal_url', sa.String(), nullable=True),
         sa.Column('last_event_at', sa.DateTime(), nullable=True),
         sa.Column('last_synced_at', sa.DateTime(), nullable=True),
         sa.Column('last_sync_error', sa.String(), nullable=True),
