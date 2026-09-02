@@ -184,16 +184,19 @@ The tempting refinement is to back off rather than stop — re-read an abandoned
 — on the grounds that the sweep is the only thing that recovers an `activated` Flash never delivered, so a
 subscriber who came back and paid would otherwise be stranded.
 
-That was built and then removed, because the argument does not survive contact with the API. **Flash has
-no endpoint that lists subscriptions** — only `?ref=` and `?subscriptionId=` (see
-only `?ref=` or `?subscriptionId=`). So a first-time subscriber who pays, whose webhook is lost,
-and who never returns to the redirect page has no row, is asked about by nothing, and is invisible
-permanently. That is the common case, and it is unfixable with the API as it stands.
+That was built and then removed, because the argument did not survive contact with the API as it then
+stood: **nothing we ran could enumerate subscriptions** — every read named one handle, a `ref` or an id.
+So a first-time subscriber who pays, whose webhook is lost, and who never returns to the redirect page
+has no row and is asked about by nothing. That is the common case, and retrying rows that happen to have
+a handle does not reach it.
+
+Flash's `GET /subscriptions` now takes no filters at all and returns the whole account, so the premise
+about the API has expired even though the conclusion below has not.
 
 Retrying abandoned rows weekly would insure a handful of subscribers against a failure we cannot insure
 anyone else against — for a case that additionally requires the webhook to fail all three of Flash's
 retries *and* the user to never land on the return page, which per Flash's own documentation always
 follows a successful checkout. Consistency and simplicity both say stop.
 
-If "someone paid and we never noticed" turns out to matter, the fix is a list endpoint from Flash and a
+If "someone paid and we never noticed" turns out to matter, the fix is the unfiltered list and a
 reconcile that runs in the other direction — not a special case for rows that happen to have a handle.

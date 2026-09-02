@@ -84,7 +84,7 @@ sequenceDiagram
 
     F->>S: POST /webhooks/flash (subscription.activated)
     S->>S: verify HMAC, record, 200
-    S->>F: GET /subscriptions?subscriptionId=…
+    S->>F: GET /subscriptions/{id}
     F-->>S: active
     S->>S: grant (idempotent — refresh may have done it already)
 ```
@@ -162,9 +162,12 @@ cut off someone who is paying. They go to the reconcile step, which asks Flash.
 There is one hole this cannot close, and it is worth knowing rather than
 discovering: the sweep reads `user_subscription`, so **a subscriber with no row
 is asked about by nothing**. Someone who paid, whose webhook was lost, and who
-never returned to the redirect page is invisible permanently — and Flash offers
-no endpoint that lists subscriptions — it answers only `?ref=` or
-`?subscriptionId=` — so nothing can enumerate them either.
+never returned to the redirect page is invisible to every path we run today.
+
+That hole is closable now, though nothing here closes it yet: Flash's
+`GET /subscriptions` takes no filters as well as `?ref=`, and unfiltered it
+returns the whole account — an enumeration the API did not offer when this was
+written.
 
 ## A signup that named nobody
 

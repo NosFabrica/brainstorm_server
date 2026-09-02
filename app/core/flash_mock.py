@@ -5,8 +5,10 @@ the paid paths are exercised locally: `flash_mock_enabled` routes
 `fetch_subscription` here, and the LOCAL-gated dev endpoints set the state and
 emit signed synthetic webhooks at our own receiver.
 
-Selection mirrors `flash._choose_subscription`: by id only that id will do; by
-ref, prefer one that still entitles, then the one running longest.
+By id only that id will do, as Flash's path lookup gives. By ref, selection
+mirrors `flash._choose_subscription`: prefer one that still entitles, then the
+one running longest. A verification reads as a lookup by id — the fake holds
+nothing Flash would call invalid.
 """
 
 from datetime import datetime
