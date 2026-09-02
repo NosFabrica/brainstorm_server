@@ -866,7 +866,9 @@ def test_flashs_record_is_not_readable_without_billing_access(client, monkeypatc
 # ---------------------------------------------------------------------------
 # Acting on a signup that named nobody
 # ---------------------------------------------------------------------------
-def _resolution(subscription_id="7d3b", resolution="attributed", pubkey=None):
+def _resolution(
+    subscription_id="7d3b", resolution="attributed", pubkey=None, entitlement=None
+):
     from app.services.billing_service import EntitlementReason, ResolutionOutcome
 
     return ResolutionOutcome(
@@ -875,7 +877,24 @@ def _resolution(subscription_id="7d3b", resolution="attributed", pubkey=None):
         pubkey=pubkey,
         applied=pubkey is not None,
         events_settled=1,
+        entitlement_reason=EntitlementReason(entitlement) if entitlement else None,
     )
+
+
+def test_an_attribution_that_granted_nothing_says_why(billing_client, monkeypatch):
+    """"Nothing changed" is a normal answer here; the caller can only report it
+    as one if the reason travels with it."""
+    monkeypatch.setattr(
+        "app.routers.admin.billing.router.attribute_unresolved_subscription",
+        AsyncMock(return_value=_resolution(entitlement="held")),
+    )
+
+    response = billing_client.post(
+        "/admin/billing/unresolved/7d3b/attribute", json={"pubkey": PUBKEY}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["entitlement_reason"] == "held"
 
 
 def test_attributing_names_the_admin_who_did_it(billing_client, caller, monkeypatch):
@@ -912,6 +931,8 @@ def test_dismissing_names_the_admin_who_did_it(billing_client, caller, monkeypat
         "resolution": "dismissed",
         "pubkey": None,
         "applied": False,
+        # A dismissal runs no grant, so there is no entitlement decision to name.
+        "entitlement_reason": None,
         "events_settled": 1,
     }
 

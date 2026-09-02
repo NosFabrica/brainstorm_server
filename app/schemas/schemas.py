@@ -547,4 +547,6 @@ class UnresolvedResolutionOutcome(BaseModel):
     # Whether a scheduling policy was actually written. False for a dismissal,
     # and for an attribution to a blocked user or onto a lapsed subscription.
     applied: bool
+    # The EntitlementReason behind `applied` — see app/routers/CLAUDE.md.
+    entitlement_reason: str | None = None
     events_settled: int

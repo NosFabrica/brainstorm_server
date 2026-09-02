@@ -290,6 +290,9 @@ def _resolution_response(outcome) -> UnresolvedResolutionOutcome:
         resolution=outcome.resolution.value,
         pubkey=outcome.pubkey,
         applied=outcome.applied,
+        entitlement_reason=(
+            outcome.entitlement_reason.value if outcome.entitlement_reason else None
+        ),
         events_settled=outcome.events_settled,
     )
 

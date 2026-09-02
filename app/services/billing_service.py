@@ -685,6 +685,8 @@ class ResolutionOutcome:
     pubkey: str | None
     applied: bool
     events_settled: int
+    # What the grant decided. None only for a dismissal, which runs no grant.
+    entitlement_reason: EntitlementReason | None = None
 
 
 # Why an attribution could not be carried out, in the caller's terms. Every one
@@ -745,6 +747,9 @@ async def attribute_unresolved_subscription(
         )
 
     applied = False
+    # Already theirs when we skip the grant entirely — a real answer, and not
+    # the same as a grant that ran and left the tier alone.
+    entitlement_reason = EntitlementReason.ATTRIBUTED
     if holder is None:
         # One subscription per user: overwriting the row would strand whatever
         # they are already paying for, with nothing saying it happened.
@@ -763,6 +768,7 @@ async def attribute_unresolved_subscription(
             code, detail = _ATTRIBUTION_REFUSALS[outcome.reason]
             raise HTTPException(status_code=code, detail=detail)
         applied = outcome.applied
+        entitlement_reason = outcome.reason
 
     settled = await settle_unresolved_events_on_db(
         db,
@@ -785,6 +791,7 @@ async def attribute_unresolved_subscription(
         pubkey=pubkey,
         applied=applied,
         events_settled=settled,
+        entitlement_reason=entitlement_reason,
     )
 
 

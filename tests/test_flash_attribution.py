@@ -235,6 +235,10 @@ def test_reattributing_to_the_same_person_changes_nothing(seams):
 
     seams.apply.assert_not_awaited()
     assert outcome.applied is False
+    # "Already theirs" is a different answer from a grant that ran and decided
+    # against acting — without this the caller can only say nothing happened,
+    # which reads as a failure and is not even true: they hold the tier.
+    assert outcome.entitlement_reason is EntitlementReason.ATTRIBUTED
     # Still settled, so a first attempt that granted and then failed to settle
     # is healed by asking again.
     seams.settle.assert_awaited_once()
@@ -286,6 +290,9 @@ def test_a_blocked_user_is_recorded_without_being_granted(seams):
     outcome = _attribute(seams)
 
     assert outcome.applied is False
+    # An attribution that grants nothing is a normal answer, so the outcome has
+    # to carry *why* — without it the caller can only report the absence.
+    assert outcome.entitlement_reason is EntitlementReason.BLOCKED
     seams.settle.assert_awaited_once()
 
 
