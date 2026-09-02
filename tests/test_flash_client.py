@@ -22,7 +22,6 @@ from app.core.flash import (
     fetch_subscription_raw,
     parse_flash_timestamp,
     parse_subscription,
-    verify_subscription,
 )
 
 DUNNING_POLICY = {
@@ -86,10 +85,6 @@ def _fetch(**kwargs):
 
 def _fetch_raw(**kwargs):
     return asyncio.run(fetch_subscription_raw(**kwargs))
-
-
-def _verify(subscription_id):
-    return asyncio.run(verify_subscription(subscription_id))
 
 
 # ---------------------------------------------------------------------------
@@ -390,53 +385,6 @@ def test_a_differing_policy_changes_nothing_about_what_is_returned(monkeypatch):
     found = _fetch(subscription_id="7d3b")
 
     assert found is not None and found.status == "active"
-
-
-# ---------------------------------------------------------------------------
-# Verifying a redirect
-#
-# Anyone can type a URL, so what comes back from checkout is a claim. Flash's
-# verification endpoint is the answer to it.
-# ---------------------------------------------------------------------------
-def test_a_redirect_is_checked_against_flashs_verification_endpoint():
-    calls = []
-    _transport(
-        _responds(
-            json={"livemode": True, "valid": True, "subscription": SUBSCRIPTION},
-            calls=calls,
-        )
-    )
-
-    found = _verify("7d3b")
-
-    assert found is not None and found.ref == "a" * 64
-    assert calls[0].url.path.endswith("/subscriptions/7d3b/verify")
-
-
-def test_a_subscription_flash_calls_invalid_is_not_handed_back():
-    _transport(_responds(json={"livemode": True, "valid": False, "subscription": None}))
-
-    assert _verify("7d3b") is None
-
-
-def test_verification_of_an_id_flash_does_not_know_is_absence_not_a_failure():
-    """Flash answers 200 with `valid: false` here, but a 404 says the same thing
-    and must not read as an outage either."""
-    _transport(_responds(status=404))
-
-    assert _verify("nosuch") is None
-
-
-def test_a_verification_we_could_not_reach_is_never_read_as_invalid():
-    _transport(_responds(status=503))
-
-    with pytest.raises(FlashUnavailable):
-        _verify("7d3b")
-
-
-def test_a_verification_with_nothing_to_verify_is_refused():
-    with pytest.raises(FlashUnavailable):
-        _verify("")
 
 
 # ---------------------------------------------------------------------------

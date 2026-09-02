@@ -12,11 +12,15 @@ subscriber" is a fact, returned as None and acted on. "We could not ask Flash"
 is not, and raises — because confusing the two revokes a paying user over a
 socket timeout.
 
-Three reads, and which side of that line a 404 falls on differs between them:
-`GET /subscriptions/{id}` and `/{id}/verify` are path lookups, where a 404 is
-Flash answering — no such subscription. `GET /subscriptions?ref=` is a filtered
-list, where a 404 is our URL being wrong and no answer about anybody. Both
-writes address one subscription by its own path, so a 404 is absence there too.
+Two reads, and which side of that line a 404 falls on differs between them:
+`GET /subscriptions/{id}` is a path lookup, where a 404 is Flash answering — no
+such subscription. `GET /subscriptions?ref=` is a filtered list, where a 404 is
+our URL being wrong and no answer about anybody. Both writes address one
+subscription by its own path, so a 404 is absence there too.
+
+The path read is also the checkout-return verification. Flash documents
+`/{id}/verify` as an equivalent way to make that call and we make it one way,
+not two — see `fetch_subscription`.
 """
 
 import asyncio
@@ -460,6 +464,15 @@ async def fetch_subscription(
 
     Results are scoped by Flash to the account owning the API key, so a
     subscription belonging to someone else is not reachable with our credentials.
+
+    This is also the checkout-return verification. The guide offers
+    `GET /subscriptions/{id}/verify` as an equivalent for that ("is real,
+    belongs to your account, and carries the expected `ref`"), and we make the
+    call ONE way rather than two: the only thing that endpoint does differently
+    is answer 200 with `valid: false` where the path read 404s, and both collapse
+    to the same None here. `fetch_subscription_raw` reads the same path for the
+    operator surface, so keeping verify instead would have left both endpoints
+    in use rather than one.
     """
     _require_a_handle(subscription_id, ref)
 
@@ -479,33 +492,6 @@ async def fetch_subscription(
         return None
 
     return _subscription_from(_choose_subscription(subscriptions))
-
-
-async def verify_subscription(subscription_id: str) -> FlashSubscription | None:
-    """Check a checkout outcome the user's browser handed us.
-
-    Anyone can type a URL, so the redirect's `subscriptionId` is a claim, not a
-    grant. Flash's verification endpoint is the answer to it: the subscription
-    when Flash calls it valid, None when it does not know it or does not — and
-    still nothing at all when we could not ask.
-
-    It answers whose subscription this is, not whether it is the caller's: the
-    `ref` it carries is what the caller must be checked against.
-    """
-    if not subscription_id:
-        raise FlashUnavailable("A verification needs a subscriptionId")
-
-    if settings.flash_mock_enabled:
-        from app.core import flash_mock
-
-        return flash_mock.lookup(subscription_id, None)
-
-    body = await _read_body(
-        _subscriptions_url(subscription_id, "verify"), {}, absent_on_404=True
-    )
-    if not body or body.get("valid") is not True:
-        return None
-    return _subscription_from(body.get("subscription"))
 
 
 # The two `status` values Flash's PATCH takes. Anything else is a different

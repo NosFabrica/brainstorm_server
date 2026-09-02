@@ -236,6 +236,7 @@ async def apply_entitlement(
     external_ref: str | None,
     subscription_id: str | None,
     yield_if_busy: bool = False,
+    allow_unreferenced: bool = False,
 ) -> EntitlementOutcome:
     """Reconcile one subscriber against Flash, in a single transaction.
 
@@ -243,6 +244,13 @@ async def apply_entitlement(
     all: a tier without a record, or a record without the tier, is the exact
     divergence the admin view exists to catch, so it should be impossible to
     create rather than merely detectable.
+
+    `subscription_id` is a handle, never an authority: whatever it names is
+    granted only if Flash says it carries `external_ref`. That is what lets the
+    checkout return hand one straight off a redirect.
+
+    `allow_unreferenced` is the single exception, for the admin attributing a
+    signup that named nobody — see the guard below.
     """
     if not external_ref:
         # A plain-link signup with no reference of ours. Recorded upstream;
@@ -287,6 +295,21 @@ async def apply_entitlement(
             subscription_id or "not given",
         )
         return EntitlementOutcome(applied=False, reason=EntitlementReason.UNKNOWN_SUBSCRIPTION)
+
+    if not subscription.ref and not allow_unreferenced:
+        # A subscription naming nobody entitles nobody, however its id arrived.
+        # It used to fall past this check and be granted, which was safe only
+        # while every id came from Flash's own webhooks — once one can come off
+        # a redirect, any caller could claim an unattributed signup by quoting
+        # it. A webhook is held to the same line: a payload naming someone the
+        # subscription itself does not is two Flash statements disagreeing, and
+        # the subscription is the authoritative one.
+        logger.warning(
+            "Flash subscription %s names nobody; %s is granted nothing from it",
+            subscription.id,
+            external_ref,
+        )
+        return EntitlementOutcome(applied=False, reason=EntitlementReason.NO_REFERENCE)
 
     if subscription.ref and subscription.ref != external_ref:
         # The event named one user and Flash's record names another. Both come
@@ -762,7 +785,14 @@ async def attribute_unresolved_subscription(
             )
 
         outcome = await apply_entitlement(
-            db, external_ref=pubkey, subscription_id=subscription_id
+            db,
+            external_ref=pubkey,
+            subscription_id=subscription_id,
+            # The only place an unreferenced subscription may grant. That is
+            # what an unresolved signup IS — Flash holds no reference of ours
+            # for it — and here a human has decided whose payment it is, which
+            # is exactly the judgement no automatic caller can make.
+            allow_unreferenced=True,
         )
         if outcome.reason not in SETTLED_REASONS:
             code, detail = _ATTRIBUTION_REFUSALS[outcome.reason]

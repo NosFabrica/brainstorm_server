@@ -221,6 +221,41 @@ def test_a_subscription_belonging_to_someone_else_moves_nobody(billing):
     billing.set_scheduling.assert_not_awaited()
 
 
+def test_a_subscription_that_names_nobody_moves_nobody(billing):
+    """The guide grants only on a subscription that "carries the expected ref",
+    and one carrying none does not. It used to slip past the mismatch branch and
+    be granted, which was safe only while every id came from Flash's own
+    webhooks — the moment a browser can supply one, any signed-in caller could
+    claim an unattributed signup by quoting its id."""
+    billing.fetch.return_value = _subscription(ref=None)
+
+    outcome = _apply(billing)
+
+    assert outcome.applied is False
+    assert outcome.reason is EntitlementReason.NO_REFERENCE
+    billing.set_scheduling.assert_not_awaited()
+    billing.upsert.assert_not_awaited()
+
+
+def test_an_operator_attributing_by_hand_is_the_one_way_that_grants(billing):
+    """An unresolved signup names nobody by definition, so attribution has to be
+    able to grant one — and it is the only caller that can, because it is the
+    only one where a human has decided whose payment it is."""
+    billing.fetch.return_value = _subscription(ref=None)
+
+    outcome = asyncio.run(
+        apply_entitlement(
+            billing.db,
+            external_ref=PUBKEY,
+            subscription_id=SUBSCRIPTION_ID,
+            allow_unreferenced=True,
+        )
+    )
+
+    assert outcome.applied is True
+    assert outcome.reason is EntitlementReason.GRANTED
+
+
 def test_a_subscription_that_does_not_entitle_moves_nobody(billing):
     billing.fetch.return_value = _subscription(status="pending")
 

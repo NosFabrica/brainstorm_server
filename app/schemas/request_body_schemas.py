@@ -22,6 +22,18 @@ class SetGrapeRankPresetBody(BaseModel):
     preset: GrapeRankPresetTemplate
 
 
+class RefreshSubscriptionBody(BaseModel):
+    """The checkout redirect's `subscriptionId`, and nothing else it echoes.
+
+    The redirect also carries a `ref`, deliberately not taken: the reference is
+    the signed-in caller's pubkey, which the token already says. Absent entirely
+    on a `pending` return, which Flash issues no id for.
+    """
+
+    # Flash ids are UUIDs; the bound only keeps something absurd out of a URL.
+    subscription_id: str | None = Field(default=None, max_length=200)
+
+
 class SetUserSchedulingBody(BaseModel):
     scheduling_id: int
 

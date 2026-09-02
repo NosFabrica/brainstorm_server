@@ -7,8 +7,7 @@ emit signed synthetic webhooks at our own receiver.
 
 By id only that id will do, as Flash's path lookup gives. By ref, selection
 mirrors `flash._choose_subscription`: prefer one that still entitles, then the
-one running longest. A verification reads as a lookup by id — the fake holds
-nothing Flash would call invalid.
+one running longest.
 """
 
 from dataclasses import replace

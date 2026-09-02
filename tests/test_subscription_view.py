@@ -526,26 +526,46 @@ def test_the_policy_is_one_hop_with_no_plan_lookup(monkeypatch):
     assert not hasattr(view_svc, "get_plan_by_scheduling_id_on_db")
 
 
-def test_refresh_takes_nothing_from_the_caller_but_their_identity(
-    subscription_client, monkeypatch, caller
-):
-    """A subscription id or ref in the body would be a claim to someone else's
-    payment. Only the authenticated pubkey reaches the lookup."""
+def _stub_refresh(monkeypatch, applied):
     monkeypatch.setattr(settings, "flash_enabled", True)
     monkeypatch.setattr(
         "app.routers.user.router.validate_subscription_refresh_allowed", AsyncMock()
     )
-    applied = AsyncMock(return_value=SimpleNamespace(applied=True))
     monkeypatch.setattr("app.routers.user.router.apply_entitlement", applied)
     _stub_view(monkeypatch)
 
+
+def test_refresh_verifies_the_subscription_the_redirect_named(
+    subscription_client, monkeypatch, caller
+):
+    """The guide's return path: verify THAT subscription, against the reference
+    we already know. The id is a handle, never an authority — what makes it safe
+    to accept is that the lookup is still checked against the signed-in caller."""
+    applied = AsyncMock(return_value=SimpleNamespace(applied=True))
+    _stub_refresh(monkeypatch, applied)
+
     subscription_client.post(
         "/user/subscription/refresh",
-        json={"subscription_id": "somebody_elses", "ref": "b" * 64},
+        json={"subscription_id": "7d3b", "ref": "b" * 64},
     )
 
+    assert applied.await_args.kwargs["subscription_id"] == "7d3b"
     assert applied.await_args.kwargs["external_ref"] == caller.pubkey
+
+
+def test_a_return_carrying_no_id_still_polls_by_reference(
+    subscription_client, monkeypatch, caller
+):
+    """Flash issues no `subscriptionId` for a `pending` checkout, so the
+    reference poll is the guide's own instruction for that case, not a
+    fallback of ours. An empty body must keep working exactly as before."""
+    applied = AsyncMock(return_value=SimpleNamespace(applied=True))
+    _stub_refresh(monkeypatch, applied)
+
+    subscription_client.post("/user/subscription/refresh")
+
     assert applied.await_args.kwargs["subscription_id"] is None
+    assert applied.await_args.kwargs["external_ref"] == caller.pubkey
 
 
 def test_refresh_answers_with_what_we_hold_when_flash_is_unreachable(

@@ -117,9 +117,13 @@ def _dismiss(seams):
 def test_attributing_grants_the_user_what_the_plan_gives(seams):
     outcome = _attribute(seams)
 
+    # `allow_unreferenced` is what makes this the ONLY caller that can grant an
+    # unattributed signup: everywhere else a subscription naming nobody fails
+    # the guide's "carries the expected ref" test and is refused.
     assert seams.apply.await_args.kwargs == {
         "external_ref": PUBKEY,
         "subscription_id": SUBSCRIPTION_ID,
+        "allow_unreferenced": True,
     }
     assert outcome.applied is True
     assert outcome.pubkey == PUBKEY
