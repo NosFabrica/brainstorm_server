@@ -15,11 +15,10 @@ is a unit and a count the client formats from rather than matches against.
 from datetime import timedelta
 from urllib.parse import quote
 
-from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
-from app.core.flash import FlashPlan, FlashServiceMissing
+from app.core.flash import FlashPlan
 from app.core.flash_plan_cache import read_plans_for_services
 from app.core.loggr import loggr
 from app.db_models import BillingPlan, Scheduling
@@ -162,13 +161,7 @@ async def _subscriber_plan_view(plan: BillingPlan) -> SubscriptionPlanView:
     scheduling assignment, so a Flash outage costs them a price on a card, not
     a tier.
     """
-    try:
-        found = await read_plans_for_services({plan.flash_service_id})
-    except FlashServiceMissing:
-        # Loud on the pricing page, silent here: this call decides nothing, and
-        # a subscriber must still see the tier they hold.
-        logger.error("Flash holds no service %s", plan.flash_service_id)
-        found = {}
+    found = await read_plans_for_services({plan.flash_service_id})
     flash = found.get((plan.flash_service_id, plan.flash_plan_id))
     return SubscriptionPlanView(
         amount_minor=flash.amount_minor if flash else None,
@@ -245,8 +238,10 @@ async def list_billing_plans(db: AsyncDBSession) -> BillingPlansData:
     else comes off Flash's plan, so it cannot drift from what they charge.
     `checkout_url` is complete except `ref`, which the client appends per-user.
 
-    A mapping Flash no longer returns cannot be priced, so it cannot be sold —
-    it drops out rather than rendering blank or taking the page down.
+    A mapping Flash cannot price cannot be sold, so its policy drops out of the
+    page entirely — it does not fall back to a free row, which would advertise
+    a paid tier at zero. Nothing else on the page depends on it: one bad
+    service id costs its own mappings and no others.
 
     Order is the answer: the default policy first, because it is the one option
     nobody can buy, then plans by Flash's `sortOrder`. The client renders the
@@ -262,23 +257,9 @@ async def list_billing_plans(db: AsyncDBSession) -> BillingPlansData:
         for plan in await select_billing_plans_on_db(db, only_active=True)
         if plan.scheduling_id in policies
     ]
-    try:
-        flash_plans = await _sellable_flash_plans(
-            {plan.flash_service_id for plan in active_plans}
-        )
-    except FlashServiceMissing as missing:
-        # Not served as an empty list. That array is a defined signal — this
-        # instance sells nothing — and the UI hides every billing entry point
-        # on it, so a mistyped service id would read as a deliberate
-        # self-host. Refusing is what makes the fault findable; the client
-        # treats an error as "unknown" and leaves the entry points alone.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                f"Flash holds no service {missing.service_id}. The plans mapped "
-                "to it cannot be sold until that id is corrected."
-            ),
-        ) from missing
+    flash_plans = await _sellable_flash_plans(
+        {plan.flash_service_id for plan in active_plans}
+    )
 
     sellable = [
         (plan, flash_plans[(plan.flash_service_id, plan.flash_plan_id)])
@@ -286,12 +267,17 @@ async def list_billing_plans(db: AsyncDBSession) -> BillingPlansData:
         if (plan.flash_service_id, plan.flash_plan_id) in flash_plans
     ]
     sellable.sort(key=lambda pair: (pair[1].sort_order, pair[1].id))
-    sold_policy_ids = {plan.scheduling_id for plan, _ in sellable}
+
+    # Intent, not what resolved: a policy we mean to SELL must never fall
+    # through to a free row because Flash could not price it. Omitting it
+    # costs a sale until someone fixes the mapping; advertising it at zero on
+    # a public page is the one outcome we cannot take back.
+    mapped_policy_ids = {plan.scheduling_id for plan in active_plans}
 
     plans = [
         _free_row(policy)
         for policy in policies.values()
-        if policy.id not in sold_policy_ids
+        if policy.id not in mapped_policy_ids
     ]
     plans.extend(
         _plan_row(plan, policies[plan.scheduling_id], flash) for plan, flash in sellable

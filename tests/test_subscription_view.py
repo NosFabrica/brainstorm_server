@@ -610,27 +610,23 @@ def test_a_mapping_flash_no_longer_returns_leaves_the_page_standing(monkeypatch)
     assert [row.plan_name for row in plans] == [None, "Monthly"]
 
 
-def test_a_service_flash_does_not_hold_is_refused_not_served_as_no_billing(
+def test_a_service_flash_does_not_hold_does_not_take_the_pricing_page_down(
     subscription_client, monkeypatch
 ):
-    """An empty `plans` array is a defined signal — "this instance sells
-    nothing" — and the UI hides every billing entry point on it. A mapping
-    naming a service Flash does not have would be indistinguishable from that:
-    a wrong service id would read as a deliberate self-host. So it refuses, and
-    says which service, because only an operator can fix it."""
-    from app.core.flash import FlashServiceMissing
-
+    """A service id an operator mistyped is theirs to fix, and the log names
+    it. It is not a reason to refuse everyone a pricing page: the mapping goes
+    unsold, and every row that does not depend on it still renders."""
     _stub_plans(
         monkeypatch,
         policies=[FREE_POLICY, PAID_POLICY],
         plans=[_plan()],
-        flash_error=FlashServiceMissing("9c1e"),
+        flash=[],
     )
 
     response = subscription_client.get("/billing/plans")
 
-    assert response.status_code == 503
-    assert "9c1e" in response.text
+    assert response.status_code == 200
+    assert len(response.json()["data"]["plans"]) == 1
 
 
 def test_a_plan_we_cannot_price_is_not_offered_for_sale(monkeypatch):
@@ -647,14 +643,15 @@ def test_a_plan_we_cannot_price_is_not_offered_for_sale(monkeypatch):
 
     plans = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans
 
-    assert [row.plan_name for row in plans] == [None, None]
-    assert all(row.checkout_url is None for row in plans)
+    assert [row.policy_id for row in plans] == [FREE_POLICY.id]
 
 
 def test_an_unreachable_flash_leaves_the_page_standing_too(monkeypatch):
-    """With no cached copy at all there is nothing to price a paid row with —
-    the reader answers with what it could get, which is nothing. The page still
-    renders what it can rather than failing outright."""
+    """With no cached copy at all there is nothing to price a paid row with.
+    The page renders what it can — which is the policies nobody sells. A
+    policy we DO sell is left out rather than falling through to a free row:
+    omitting it costs a sale, and "Free" on a paid tier is a price we would
+    have to honour."""
     _stub_plans(
         monkeypatch,
         policies=[FREE_POLICY, PAID_POLICY],
@@ -664,7 +661,7 @@ def test_an_unreachable_flash_leaves_the_page_standing_too(monkeypatch):
 
     plans = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans
 
-    assert [row.policy_id for row in plans] == [FREE_POLICY.id, PAID_POLICY.id]
+    assert [row.policy_id for row in plans] == [FREE_POLICY.id]
     assert all(row.checkout_url is None for row in plans)
 
 

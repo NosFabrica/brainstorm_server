@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
-from app.core.flash import FlashPlan, FlashServiceMissing
+from app.core.flash import FlashPlan
 from app.core.flash_plan_cache import read_plans_for_services
 from app.repos.flash_webhook_event_repo import (
     select_exhausted_events_on_db,
@@ -189,10 +189,6 @@ async def _plan_prices(service_ids: set[str]) -> dict[tuple[str, str], FlashPlan
 
     An export that cannot reach Flash still exports. The rows it could not
     price come out blank, which an accountant can see, rather than carrying a
-    number nothing stands behind — including the misconfiguration the pricing
-    page refuses over, which must not also stop accounting reading the books.
+    number nothing stands behind.
     """
-    try:
-        return await read_plans_for_services(service_ids)
-    except FlashServiceMissing:
-        return {}
+    return await read_plans_for_services(service_ids)

@@ -11,8 +11,10 @@ So two entries per service, and the second is the point:
   A TTL on that one would make an outage longer than the TTL do exactly what it
   exists to prevent.
 
-Only "we could not ask" falls back. Flash answering that a service does not
-exist is an answer, and one only an operator can act on.
+Only "we could not ask" falls back on the stored copy. Flash answering that a
+service does not exist is an answer, and one only an operator can act on — so
+it is logged as a fault rather than cached, but it still costs that service its
+plans alone, never the page.
 """
 
 import asyncio
@@ -21,6 +23,7 @@ import json
 from app.core.config import settings
 from app.core.flash import (
     FlashPlan,
+    FlashServiceMissing,
     FlashUnavailable,
     fetch_service_plans_raw,
     parse_plan,
@@ -80,11 +83,13 @@ async def read_plans_for_services(
     One read per service rather than one per mapping: the cache would absorb
     the rest, but a cold page would still make a call per row.
 
-    The two failures are not alike, so only one of them is settled here. An
-    unreadable Flash has already tried its last known copy and has nothing, so
-    that service's plans are simply absent — the caller renders what it has.
-    A service Flash does not hold is a fault in our own configuration, and
-    which surface should say so is the caller's decision, so it propagates.
+    Neither failure is allowed to cost the other services their plans. An
+    unreadable Flash has already tried its last known copy and has nothing; a
+    service Flash does not hold is a fault in our own configuration. Both end
+    the same way here — that service contributes nothing and the rest still
+    render — because one mistyped id must not blank a public page.
+
+    The two are still logged apart: only one of them is anyone's to fix.
     """
     plans: dict[tuple[str, str], FlashPlan] = {}
     for service_id in sorted(service_ids):
@@ -94,6 +99,13 @@ async def read_plans_for_services(
             logger.warning(
                 "Flash is unreadable and nothing is cached for service %s; its "
                 "plans are omitted",
+                service_id,
+            )
+            continue
+        except FlashServiceMissing:
+            logger.error(
+                "Flash holds no service %s; the plans mapped to it cannot be "
+                "sold until that id is corrected",
                 service_id,
             )
             continue

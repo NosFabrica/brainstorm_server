@@ -181,9 +181,27 @@ def test_a_missing_service_carries_the_id_that_has_to_be_corrected(
     _flash(monkeypatch, side_effect=FlashServiceMissing(SERVICE))
 
     with pytest.raises(FlashServiceMissing) as raised:
-        asyncio.run(cache.read_plans_for_services({SERVICE}))
+        asyncio.run(cache.read_service_plans(SERVICE))
 
     assert raised.value.service_id == SERVICE
+
+
+def test_one_mistyped_service_does_not_cost_the_others_their_plans(
+    redis, monkeypatch
+):
+    """A public page reads this. One id an operator got wrong must cost that
+    service its plans and nothing else."""
+
+    async def per_service(service_id):
+        if service_id == "typo":
+            raise FlashServiceMissing(service_id)
+        return [cache.parse_plan(FLASH_PLAN)]
+
+    monkeypatch.setattr(cache, "read_service_plans", per_service)
+
+    found = asyncio.run(cache.read_plans_for_services({"typo", SERVICE}))
+
+    assert [key[0] for key in found] == [SERVICE]
 
 
 def test_an_amount_we_cannot_read_is_unknown_rather_than_zero(redis, monkeypatch):
