@@ -176,6 +176,10 @@ def _row(**overrides):
             "cancel_effective_date": None,
             "billing_plan_id": 1,
             "portal_url": "https://flash.example/subscriptions/portal/9c1e",
+            # What Flash snapshotted for THIS subscriber when they bought.
+            "pricing_amount_minor": 200,
+            "pricing_currency": "USD",
+            "pricing_billing_interval": "monthly",
             **overrides,
         }
     )
@@ -306,19 +310,23 @@ def test_a_boundary_flash_named_as_a_date_goes_out_as_that_date(
     assert data["cancel_effective_date"] == "2026-09-20"
 
 
-def test_the_plan_is_the_one_they_bought_priced_by_flash(
+def test_the_plan_is_the_one_they_bought_priced_as_they_bought_it(
     subscription_client, monkeypatch
 ):
     """Which plan is read through `billing_plan_id`, not looked up by policy —
     someone on the daily rehearsal plan is not shown the monthly price. What it
-    costs is Flash's answer about that plan, not a value we transcribed."""
+    costs is the pricing Flash snapshotted for them, not a value we
+    transcribed."""
     monkeypatch.setattr(settings, "flash_enabled", True)
     _stub_view(
         monkeypatch,
         policy=PAID_POLICY,
-        row=_row(),
+        row=_row(
+            pricing_amount_minor=10,
+            pricing_currency="USD",
+            pricing_billing_interval="daily",
+        ),
         plan=_plan(),
-        flash=[_flash_plan(amount_minor=10, billing_interval="daily")],
     )
 
     plan = subscription_client.get("/user/subscription").json()["data"]["plan"]
@@ -331,15 +339,44 @@ def test_the_plan_is_the_one_they_bought_priced_by_flash(
     }
 
 
-def test_a_subscriber_still_sees_their_plan_when_flash_cannot_be_read(
+def test_a_repriced_plan_does_not_change_what_a_subscriber_is_told_they_pay(
     subscription_client, monkeypatch
 ):
-    """Their entitlement does not depend on this call and neither should the
-    page. What we still know — that they hold a paid policy, and that we still
-    sell the plan — is reported; the price is simply absent."""
+    """The defect this exists to hold shut. Repricing a plan in Flash's
+    dashboard leaves everyone already on it being charged the old amount, so
+    quoting the catalogue tells them a number nobody is taking from them."""
     monkeypatch.setattr(settings, "flash_enabled", True)
     _stub_view(
-        monkeypatch, policy=PAID_POLICY, row=_row(), plan=_plan(), flash=[]
+        monkeypatch,
+        policy=PAID_POLICY,
+        row=_row(pricing_amount_minor=200, pricing_billing_interval="monthly"),
+        plan=_plan(),
+        # Repriced since they subscribed, and re-cadenced with it.
+        flash=[_flash_plan(amount_minor=300, billing_interval="yearly")],
+    )
+
+    plan = subscription_client.get("/user/subscription").json()["data"]["plan"]
+
+    assert plan["amount_minor"] == 200
+    assert plan["billing_interval"] == "monthly"
+
+
+def test_a_subscription_flash_priced_nowhere_is_shown_no_price_at_all(
+    subscription_client, monkeypatch
+):
+    """Never the plan's current price. Substituting a different number is the
+    bug being fixed, and zero would read as "Free" to someone being charged."""
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    _stub_view(
+        monkeypatch,
+        policy=PAID_POLICY,
+        row=_row(
+            pricing_amount_minor=None,
+            pricing_currency=None,
+            pricing_billing_interval=None,
+        ),
+        plan=_plan(),
+        flash=[_flash_plan(amount_minor=300)],
     )
 
     data = subscription_client.get("/user/subscription").json()["data"]
@@ -351,6 +388,18 @@ def test_a_subscriber_still_sees_their_plan_when_flash_cannot_be_read(
         "is_active": True,
         "billing_interval": None,
     }
+
+
+def test_the_subscribers_card_asks_flash_nothing(subscription_client, monkeypatch):
+    """The price is on the row now, so the page renders whether or not Flash
+    can be reached — and one signed-in view no longer costs a plan read."""
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    _stub_view(monkeypatch, policy=PAID_POLICY, row=_row(), plan=_plan())
+
+    data = subscription_client.get("/user/subscription").json()["data"]
+
+    assert data["plan"]["amount_minor"] == 200
+    assert view_svc.read_plans_for_services.await_count == 0
 
 
 def test_a_retired_plan_says_so_without_changing_what_is_received(

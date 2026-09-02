@@ -15,10 +15,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import flash_mock
 from app.core.config import settings
-from app.core.flash import FlashSubscription
+from app.core.flash import FlashPricing, FlashSubscription
 from app.services.flash_webhook_service import compute_signature
 
 router = APIRouter()
+
+
+class MockPricingBody(BaseModel):
+    """The price Flash snapshotted at signup — what the subscriber's card is
+    priced from. Omit it to drill a subscription Flash priced nowhere."""
+
+    amount_minor: int | None = None
+    currency: str | None = None
+    billing_interval: str | None = None
 
 
 class MockSubscriptionBody(BaseModel):
@@ -34,11 +43,16 @@ class MockSubscriptionBody(BaseModel):
     trial_end_date: datetime | None = None
     cancel_effective_date: datetime | None = None
     portal_url: str | None = None
+    pricing: MockPricingBody | None = None
 
 
 @router.put(path="/subscription", summary="Dev: set one mock Flash subscription")
 async def set_mock_subscription_endpoint(body: MockSubscriptionBody):
-    flash_mock.set_subscription(FlashSubscription(**body.model_dump()))
+    fields = body.model_dump()
+    fields["pricing"] = (
+        FlashPricing(**fields["pricing"]) if fields["pricing"] is not None else None
+    )
+    flash_mock.set_subscription(FlashSubscription(**fields))
     return {"ok": True, "mock_enabled": settings.flash_mock_enabled}
 
 

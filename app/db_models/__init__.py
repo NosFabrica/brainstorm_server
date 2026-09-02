@@ -305,6 +305,13 @@ class UserSubscription(TimestampMixin, Base):
     # because re-asking Flash would put every signed-in page view behind their
     # API; nullable because a row predates the column until its next sync.
     portal_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Flash's `pricingSnapshot` — what THIS subscriber is charged, as at the
+    # moment they bought, rather than what the plan lists today. Null is
+    # unpriced, never zero: zero renders as "Free" to someone being charged.
+    # A row predating the column is unpriced until its next sync.
+    pricing_amount_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pricing_currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    pricing_billing_interval: Mapped[str | None] = mapped_column(String, nullable=True)
     # Kept, but off the wire: Flash's subscription object has no payment-method
     # field, so this is structurally always null. Re-exposing it is one line the
     # day they publish one; inferring it is how we'd invent a payment method.

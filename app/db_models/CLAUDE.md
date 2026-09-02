@@ -125,6 +125,7 @@ API is the authority.
 | `flash_status` | str | Flash's status **verbatim and unvalidated** — their set is documented as open, so an unrecognised value must land here intact rather than be coerced |
 | `current_period_end` / `cancel_effective_date` | DateTime | when entitlement lapses |
 | `portal_url` | str, nullable | where Flash says to manage this subscription, **stored as read rather than derived** — deriving it would put our spelling of their routing on the page, and re-asking them would put every signed-in view behind their API. Null until a row's next sync |
+| `pricing_amount_minor` / `pricing_currency` / `pricing_billing_interval` | nullable | Flash's `pricingSnapshot`: what **this** subscriber is charged, as at the moment they bought. Stored because the only other source is the plan catalogue, which answers what is on sale *today* — so repricing a plan would rewrite what everyone already on it is told they pay while Flash went on charging the old amount. Null is **unpriced, never free**, and the card says nothing rather than a different number. Null until a row's next sync |
 
 ### `FlashWebhookEvent` — `flash_webhook_event`
 

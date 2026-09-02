@@ -79,6 +79,55 @@ def test_by_ref_prefers_the_subscription_that_still_entitles(dev_client):
     assert chosen is not None and chosen.id == "new"
 
 
+def test_a_mock_subscription_can_carry_the_price_flash_snapshotted(dev_client):
+    """The subscriber's card is priced from this and nothing else, so a local
+    drill that cannot set it cannot exercise the surface it is drilling."""
+    dev_client.put(
+        "/admin/billing/dev/subscription",
+        json=_subscription(
+            pricing={"amount_minor": 200, "currency": "USD", "billing_interval": "monthly"}
+        ),
+    )
+
+    found = flash_mock.lookup("7d3b", None)
+
+    assert found is not None and found.pricing is not None
+    assert found.pricing.amount_minor == 200
+    assert found.pricing.currency == "USD"
+    assert found.pricing.billing_interval == "monthly"
+
+
+def test_the_raw_mock_row_carries_the_snapshot_in_flashs_own_field_names(dev_client):
+    """The raw row is what an operator reads on the divergence view, and it has
+    to parse back to what went in — or the fake rehearses a shape Flash never
+    sends. Flash's `amount` is a string in minor units."""
+    from app.core.flash import parse_subscription
+
+    dev_client.put(
+        "/admin/billing/dev/subscription",
+        json=_subscription(
+            pricing={"amount_minor": 200, "currency": "USD", "billing_interval": "monthly"}
+        ),
+    )
+
+    raw = flash_mock.lookup_raw("7d3b", None)[0]
+
+    assert raw["pricingSnapshot"] == {
+        "amount": "200",
+        "currency": "USD",
+        "billingInterval": "monthly",
+    }
+    assert parse_subscription(raw).pricing == flash_mock.lookup("7d3b", None).pricing
+
+
+def test_a_mock_subscription_priced_nowhere_carries_no_pricing(dev_client):
+    dev_client.put("/admin/billing/dev/subscription", json=_subscription())
+
+    found = flash_mock.lookup("7d3b", None)
+
+    assert found is not None and found.pricing is None
+
+
 def test_a_removed_subscription_is_a_fact_not_an_error(dev_client):
     dev_client.put("/admin/billing/dev/subscription", json=_subscription())
     assert dev_client.delete("/admin/billing/dev/subscription/7d3b").json() == {

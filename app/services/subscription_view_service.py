@@ -21,7 +21,7 @@ from app.core.config import settings
 from app.core.flash import FlashPlan
 from app.core.flash_plan_cache import read_plans_for_services
 from app.core.loggr import loggr
-from app.db_models import BillingPlan, Scheduling
+from app.db_models import BillingPlan, Scheduling, UserSubscription
 from app.repos.billing_plan_repo import (
     get_billing_plan_by_id_on_db,
     select_billing_plans_on_db,
@@ -121,9 +121,7 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
         policy=(
             SubscriptionPolicyView.model_validate(policy) if policy is not None else None
         ),
-        plan=(
-            await _subscriber_plan_view(plan) if plan is not None else None
-        ),
+        plan=(_subscriber_plan_view(row, plan) if plan is not None else None),
         status=_translate(
             row.flash_status if row else None,
             is_default=policy.is_default if policy is not None else True,
@@ -159,19 +157,24 @@ async def _sellable_flash_plans(
     }
 
 
-async def _subscriber_plan_view(plan: BillingPlan) -> SubscriptionPlanView:
-    """What they bought, priced by Flash — or unpriced, if Flash cannot be read.
+def _subscriber_plan_view(
+    row: UserSubscription, plan: BillingPlan
+) -> SubscriptionPlanView:
+    """What they bought, priced as they bought it.
 
-    Best-effort on purpose: this call decides nothing. Their entitlement is the
-    scheduling assignment, so a Flash outage costs them a price on a card, not
-    a tier.
+    The price is the `pricingSnapshot` Flash recorded when this person
+    subscribed, kept on their row. Not the plan catalogue: that answers what is
+    on sale today, so repricing a plan would rewrite what everyone already on
+    it is told they pay while Flash went on charging them the old amount.
+
+    Nothing falls back to the current plan. A row Flash priced nowhere renders
+    unpriced, because quoting a different number is worse than quoting none —
+    and asks Flash nothing, so an outage costs the card no price it had.
     """
-    found = await read_plans_for_services({plan.flash_service_id})
-    flash = found.get((plan.flash_service_id, plan.flash_plan_id))
     return SubscriptionPlanView(
-        amount_minor=flash.amount_minor if flash else None,
-        currency=flash.currency if flash else None,
-        billing_interval=flash.billing_interval if flash else None,
+        amount_minor=row.pricing_amount_minor,
+        currency=row.pricing_currency,
+        billing_interval=row.pricing_billing_interval,
         is_active=plan.is_active,
     )
 

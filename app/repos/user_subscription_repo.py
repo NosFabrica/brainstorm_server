@@ -131,6 +131,7 @@ async def upsert_user_subscription_on_db(
     granted_scheduling_id: int | None,
 ) -> None:
     """Record what Flash says about one subscriber. One row per pubkey."""
+    pricing = subscription.pricing
     values = {
         "pubkey": pubkey,
         "flash_subscription_id": subscription.id,
@@ -144,6 +145,11 @@ async def upsert_user_subscription_on_db(
         "trial_end_date": subscription.trial_end_date,
         "cancel_effective_date": subscription.cancel_effective_date,
         "portal_url": subscription.portal_url,
+        # Overwritten on every sync, blanks included: a snapshot Flash stops
+        # sending must not leave a price behind that nobody is charging.
+        "pricing_amount_minor": pricing.amount_minor if pricing else None,
+        "pricing_currency": pricing.currency if pricing else None,
+        "pricing_billing_interval": pricing.billing_interval if pricing else None,
         "last_synced_at": datetime.now(timezone.utc).replace(tzinfo=None),
         "last_sync_error": None,
         "sync_error_since": None,

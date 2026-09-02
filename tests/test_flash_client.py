@@ -145,6 +145,52 @@ def test_a_status_we_do_not_recognise_survives_the_parse():
 
 
 # ---------------------------------------------------------------------------
+# The pricing Flash snapshotted when they subscribed
+# ---------------------------------------------------------------------------
+def test_the_price_flash_recorded_at_signup_is_carried_across():
+    """What this subscriber is charged, as at the moment they bought. The plan
+    catalogue answers a different question — what is on sale today."""
+    found = parse_subscription(
+        {
+            **SUBSCRIPTION,
+            "pricingSnapshot": {
+                "planName": "Monthly",
+                "amount": "200",
+                "currency": "USD",
+                "billingInterval": "monthly",
+            },
+        }
+    )
+
+    assert found.pricing is not None
+    assert found.pricing.amount_minor == 200
+    assert found.pricing.currency == "USD"
+    assert found.pricing.billing_interval == "monthly"
+
+
+def test_a_subscription_flash_priced_nowhere_carries_no_pricing():
+    """None, so the read side can say nothing rather than quote the plan's
+    current list price at somebody who is not charged it."""
+    found = parse_subscription(
+        {k: v for k, v in SUBSCRIPTION.items() if k != "pricingSnapshot"}
+    )
+
+    assert found.pricing is None
+
+
+def test_a_snapshot_amount_we_cannot_read_is_unknown_not_free():
+    """Same rule as the plan catalogue: zero renders as "Free" for someone who
+    is being charged, and that is the one reading we cannot take back."""
+    found = parse_subscription(
+        {**SUBSCRIPTION, "pricingSnapshot": {"amount": "twelve", "currency": "USD"}}
+    )
+
+    assert found.pricing is not None
+    assert found.pricing.amount_minor is None
+    assert found.pricing.currency == "USD"
+
+
+# ---------------------------------------------------------------------------
 # A date with no time on it
 #
 # Read on the shape of the value, so both readings are already right the day

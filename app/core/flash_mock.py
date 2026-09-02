@@ -13,7 +13,7 @@ nothing Flash would call invalid.
 
 from datetime import datetime
 
-from app.core.flash import FlashSubscription
+from app.core.flash import FlashPricing, FlashSubscription
 
 _subscriptions: dict[str, FlashSubscription] = {}
 # Plans, in Flash's own field names — the shape `GET /services/{id}` returns,
@@ -89,4 +89,17 @@ def _as_flash_row(row: FlashSubscription) -> dict:
         "trialEndDate": _iso(row.trial_end_date),
         "cancelEffectiveDate": _iso(row.cancel_effective_date),
         "portalUrl": row.portal_url,
+        "pricingSnapshot": _as_pricing_snapshot(row.pricing),
+    }
+
+
+def _as_pricing_snapshot(pricing: FlashPricing | None) -> dict | None:
+    """Back in Flash's field names, amount included: they send it as a string
+    in minor units, and a raw row an operator reads must look like theirs."""
+    if pricing is None:
+        return None
+    return {
+        "amount": None if pricing.amount_minor is None else str(pricing.amount_minor),
+        "currency": pricing.currency,
+        "billingInterval": pricing.billing_interval,
     }

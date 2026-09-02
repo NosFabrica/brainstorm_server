@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from app.core.flash import FlashSubscription, FlashUnavailable
+from app.core.flash import FlashPricing, FlashSubscription, FlashUnavailable
 from app.services.billing_service import (
     SETTLED_REASONS,
     EntitlementOutcome,
@@ -52,6 +52,9 @@ def _subscription(status: str = "active", ref: str | None = None) -> FlashSubscr
         trial_end_date=None,
         cancel_effective_date=None,
         portal_url="https://flash.example/subscriptions/portal/9c1e",
+        pricing=FlashPricing(
+            amount_minor=200, currency="USD", billing_interval="monthly"
+        ),
     )
 
 

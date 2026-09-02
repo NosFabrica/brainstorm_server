@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from app.core.flash import FlashSubscription
+from app.core.flash import FlashPricing, FlashSubscription
 from app.repos.user_subscription_repo import AbandonRule
 
 NOW = datetime(2026, 8, 25, 12, 0, 0)
@@ -36,6 +36,9 @@ def _subscription(**overrides) -> FlashSubscription:
             "trial_end_date": None,
             "cancel_effective_date": None,
             "portal_url": "https://flash.example/subscriptions/portal/9c1e",
+            "pricing": FlashPricing(
+                amount_minor=200, currency="USD", billing_interval="monthly"
+            ),
             **overrides,
         }
     )
@@ -206,6 +209,54 @@ def test_the_subscription_record_keeps_flashs_own_portal_link(monkeypatch):
     )
 
     assert "https://billing.flash.example/manage/9c1e" in _sql(statement)
+
+
+def test_the_subscription_record_keeps_the_price_flash_snapshotted(monkeypatch):
+    """What this subscriber is charged, as Flash recorded it at signup. It has
+    to survive the write: the read side builds the card off the stored row, and
+    the only other source is the plan catalogue — which is what today's price
+    is, not theirs."""
+    from app.repos import user_subscription_repo as repo
+
+    statement = _built(
+        monkeypatch,
+        repo,
+        repo.upsert_user_subscription_on_db,
+        pubkey=PUBKEY,
+        subscription=_subscription(
+            pricing=FlashPricing(
+                amount_minor=1234, currency="SAT", billing_interval="yearly"
+            )
+        ),
+        billing_plan_id=1,
+        granted_scheduling_id=7,
+    )
+
+    values = statement.compile().params
+    assert values["pricing_amount_minor"] == 1234
+    assert values["pricing_currency"] == "SAT"
+    assert values["pricing_billing_interval"] == "yearly"
+
+
+def test_a_subscription_flash_priced_nowhere_is_recorded_unpriced(monkeypatch):
+    """Never the plan's current amount. Substituting a different number is the
+    whole defect, and it is worse than saying nothing."""
+    from app.repos import user_subscription_repo as repo
+
+    statement = _built(
+        monkeypatch,
+        repo,
+        repo.upsert_user_subscription_on_db,
+        pubkey=PUBKEY,
+        subscription=_subscription(pricing=None),
+        billing_plan_id=1,
+        granted_scheduling_id=7,
+    )
+
+    values = statement.compile().params
+    assert values["pricing_amount_minor"] is None
+    assert values["pricing_currency"] is None
+    assert values["pricing_billing_interval"] is None
 
 
 def test_retiring_a_plan_does_not_unmap_the_people_on_it(monkeypatch):

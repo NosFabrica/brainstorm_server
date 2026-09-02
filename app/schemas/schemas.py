@@ -321,13 +321,15 @@ class SubscriptionPolicyView(BaseModel):
 
 
 class SubscriptionPlanView(BaseModel):
-    """Which plan this person bought, priced by Flash.
+    """Which plan this person bought, priced as they bought it.
 
     Which one is read through their billing row rather than looked up by
     policy: two plans can sell one policy, and quoting the wrong one quotes a
-    price they are not charged. Everything but `is_active` is Flash's answer
-    about that plan, so all of it is null when Flash cannot be read — a page
-    that cannot say the price must not therefore say the wrong one.
+    price they are not charged. The price itself is the snapshot Flash recorded
+    at signup, not the plan's current listing — repricing a plan must not
+    rewrite what everyone already on it is told they pay. All three price
+    fields are null when Flash recorded no snapshot; a page that cannot say the
+    price must not therefore say the wrong one.
 
     `is_active` stays ours: false is how the UI tells them their plan is no
     longer offered, which is a decision Flash knows nothing about.

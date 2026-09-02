@@ -87,6 +87,23 @@ class FlashCredentialError(Exception):
 
 
 @dataclass(frozen=True)
+class FlashPricing:
+    """What Flash recorded this subscriber being charged, as at signup.
+
+    Flash's `pricingSnapshot`, and the only honest answer to "what am I
+    paying" — `FlashPlan` answers "what is on sale today", which is a different
+    question the moment anyone reprices a plan.
+
+    `amount_minor` is None when Flash sent an amount we could not read, for the
+    same reason as `FlashPlan`: zero reads as "Free" to somebody being charged.
+    """
+
+    amount_minor: int | None
+    currency: str | None
+    billing_interval: str | None
+
+
+@dataclass(frozen=True)
 class FlashSubscription:
     """One subscriber on one plan, as Flash reports it.
 
@@ -109,6 +126,9 @@ class FlashSubscription:
     # their service portal, which is the URL we used to spell ourselves — but
     # spelling it was us guessing at their routing, and this is them answering.
     portal_url: str | None
+    # None when Flash sent no snapshot at all, which is how a subscription with
+    # no recorded price stays unpriced instead of borrowing the plan's.
+    pricing: FlashPricing | None
 
 
 START_OF_DAY = time(0, 0)
@@ -228,6 +248,18 @@ def parse_subscription(raw: dict) -> FlashSubscription:
             raw.get("cancelEffectiveDate"), deadline=True
         ),
         portal_url=_text(raw.get("portalUrl")),
+        pricing=parse_pricing(raw.get("pricingSnapshot")),
+    )
+
+
+def parse_pricing(raw: object) -> FlashPricing | None:
+    """Flash's `pricingSnapshot`, or None when they sent none. Pure."""
+    if not isinstance(raw, dict):
+        return None
+    return FlashPricing(
+        amount_minor=_minor_units(raw.get("amount")),
+        currency=_text(raw.get("currency")),
+        billing_interval=_text(raw.get("billingInterval")),
     )
 
 
