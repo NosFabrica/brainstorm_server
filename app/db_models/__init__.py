@@ -305,9 +305,12 @@ class UserSubscription(TimestampMixin, Base):
     # because re-asking Flash would put every signed-in page view behind their
     # API; nullable because a row predates the column until its next sync.
     portal_url: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Kept, but off the wire: Flash's subscription object has no payment-method
-    # field, so this is structurally always null. Re-exposing it is one line the
-    # day they publish one; inferring it is how we'd invent a payment method.
+    # Still unwritten, and still off the wire. Flash publishes no payment method
+    # per subscription — `paymentInstrumentId` is documented as withheld and no
+    # delivery carries an acceptance method — so there is nothing to store here.
+    # How someone pays is resolved on READ instead, from the acceptance methods
+    # their plan accepts (`payment_method_service`); storing that answer would
+    # only let it outlive the plan edit that made it untrue.
     rail: Mapped[str | None] = mapped_column(String, nullable=True)
     # Newest event timestamp seen for this subscriber; never moves backwards.
     last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -144,9 +144,25 @@ def _stub_flash(monkeypatch, flash, flash_error):
 
 
 def _stub_view(
-    monkeypatch, *, policy=FREE_POLICY, row=None, plan=None, flash=None, flash_error=None
+    monkeypatch,
+    *,
+    policy=FREE_POLICY,
+    row=None,
+    plan=None,
+    flash=None,
+    flash_error=None,
+    acceptance_methods=None,
 ):
     _stub_flash(monkeypatch, flash, flash_error)
+    # Stubbed at Flash's own edge, so the resolution rule itself stays under
+    # test here rather than being replaced by an answer.
+    from app.services import payment_method_service
+
+    monkeypatch.setattr(
+        payment_method_service,
+        "read_acceptance_methods",
+        AsyncMock(return_value=dict(acceptance_methods or {})),
+    )
     monkeypatch.setattr(
         view_svc,
         "get_assigned_scheduling_id_on_db",
@@ -198,6 +214,7 @@ def test_the_contract_shape_for_a_user_with_no_subscription(
         "next_billing_date",
         "cancel_effective_date",
         "manage_url",
+        "payment_method",
     }
     assert body["data"]["policy"] == {
         "id": 1,
@@ -212,11 +229,25 @@ def test_the_contract_shape_for_a_user_with_no_subscription(
     assert body["data"]["manage_url"] is None
 
 
+def test_a_user_who_bought_nothing_is_shown_no_payment_method(
+    subscription_client, monkeypatch
+):
+    """They pay nothing, so there is nothing to say — and the field is absent
+    for the same reason it is absent from an ambiguous plan, not a special
+    case anybody has to remember."""
+    _stub_view(monkeypatch)
+
+    assert subscription_client.get("/user/subscription").json()["data"][
+        "payment_method"
+    ] is None
+
+
 def test_nothing_on_the_wire_carries_a_tier_or_a_rail(
     subscription_client, monkeypatch
 ):
-    """`rail` was structurally always null — Flash exposes no payment method —
-    and a permanently-null field invites someone to populate it by inference."""
+    """No tier string, and not the stored `rail` column either: nothing Flash
+    reports per subscription can fill it, so what goes out is resolved from the
+    plan's acceptance methods on read instead."""
     monkeypatch.setattr(settings, "flash_enabled", True)
     _stub_view(monkeypatch, policy=PAID_POLICY, row=_row(), plan=_plan())
 
@@ -224,6 +255,59 @@ def test_nothing_on_the_wire_carries_a_tier_or_a_rail(
 
     assert '"tier"' not in body
     assert '"rail"' not in body
+
+
+def test_a_subscriber_on_a_plan_taking_one_method_is_told_which(
+    subscription_client, monkeypatch
+):
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    _stub_view(
+        monkeypatch,
+        policy=PAID_POLICY,
+        row=_row(),
+        plan=_plan(),
+        flash=[_flash_plan(acceptance_methods=("amt_ln",))],
+        acceptance_methods={"amt_ln": "lightning"},
+    )
+
+    data = subscription_client.get("/user/subscription").json()["data"]
+
+    assert data["payment_method"] == "lightning"
+
+
+def test_a_subscriber_on_a_plan_taking_both_is_told_nothing(
+    subscription_client, monkeypatch
+):
+    """They paid one way or the other and Flash does not say which. The card
+    shows no payment-method row at all rather than picking one."""
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    _stub_view(
+        monkeypatch,
+        policy=PAID_POLICY,
+        row=_row(),
+        plan=_plan(),
+        flash=[_flash_plan(acceptance_methods=("amt_ln", "amt_card"))],
+        acceptance_methods={"amt_ln": "lightning", "amt_card": "card"},
+    )
+
+    data = subscription_client.get("/user/subscription").json()["data"]
+
+    assert data["payment_method"] is None
+
+
+def test_a_flash_outage_costs_the_payment_method_rather_than_inventing_one(
+    subscription_client, monkeypatch
+):
+    """Same rule as the price: a card that cannot say how they pay must not
+    therefore say the wrong thing."""
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    _stub_view(
+        monkeypatch, policy=PAID_POLICY, row=_row(), plan=_plan(), flash=[]
+    )
+
+    data = subscription_client.get("/user/subscription").json()["data"]
+
+    assert data["payment_method"] is None
 
 
 def test_the_contract_shape_for_a_paying_subscriber(

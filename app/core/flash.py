@@ -233,6 +233,7 @@ def parse_subscription(raw: dict) -> FlashSubscription:
 
 _SUBSCRIPTIONS_PATH = "/api/v1/external/subscriptions"
 _SERVICES_PATH = "/api/v1/external/services"
+_SETTINGS_PATH = "/api/v1/external/settings"
 
 
 def _subscriptions_url(*segments: str) -> str:
@@ -489,6 +490,11 @@ class FlashPlan:
     # then the plan is as unsellable as one we could not price — we no longer
     # keep a way to spell the URL ourselves.
     signup_url: str | None
+    # Opaque `amt_…` tokens for the methods this plan accepts payment by,
+    # resolved against `GET /settings`. Carried in full rather than collapsed:
+    # a plan naming two is one we cannot say which of them a given subscriber
+    # used, and that distinction is the whole point of keeping the list.
+    acceptance_methods: tuple[str, ...] = ()
 
 
 def parse_plan(raw: dict) -> FlashPlan:
@@ -506,7 +512,14 @@ def parse_plan(raw: dict) -> FlashPlan:
         not_included=_lines(raw.get("notIncluded")),
         status=str(raw.get("status") or ""),
         signup_url=_text(raw.get("signupUrl")),
+        acceptance_methods=_tokens(raw.get("acceptanceMethods")),
     )
+
+
+def _tokens(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
 
 
 def _text(value: object) -> str | None:
@@ -549,6 +562,46 @@ async def fetch_service_plans_raw(service_id: str) -> dict:
     if body is None:
         raise FlashServiceMissing(service_id)
     return body
+
+
+async def fetch_settings_raw() -> dict:
+    """`GET /settings` — the account's policies and its acceptance methods.
+
+    Not a path lookup, so a 404 is our URL being wrong rather than an answer
+    about anything; `_read_body` raises it as unavailable, which is right.
+    """
+    return await _read_body(settings.flash_base_url.rstrip("/") + _SETTINGS_PATH, {}) or {}
+
+
+def parse_acceptance_methods(raw: dict) -> dict[str, str]:
+    """A settings body → each acceptance-method token and how it pays.
+
+    "How it pays" is Flash's own `provider` — `lightning`, `card` — which is
+    exactly the granularity a billing page asks about. `kind` is
+    `{provider}.{instrument}`, so its first segment answers the same question
+    and stands in when Flash sends no provider.
+
+    A token we can put no word to is dropped rather than kept under a
+    placeholder: the caller renders what it is given, so anything that survives
+    here is something a subscriber will be told they are paying with.
+    """
+    methods = raw.get("acceptanceMethods")
+    if not isinstance(methods, list):
+        return {}
+    resolved: dict[str, str] = {}
+    for method in methods:
+        if not isinstance(method, dict):
+            continue
+        token = _text(method.get("token"))
+        paid_by = _text(method.get("provider")) or _kind_provider(method.get("kind"))
+        if token and paid_by:
+            resolved[token] = paid_by
+    return resolved
+
+
+def _kind_provider(kind: object) -> str | None:
+    text = _text(kind)
+    return text.split(".", 1)[0] or None if text else None
 
 
 def _runs_until(row: dict) -> datetime:

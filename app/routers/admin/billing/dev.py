@@ -70,6 +70,12 @@ class MockPlanBody(BaseModel):
     # Nothing synthesizes a checkout URL any more, so a mock plan without one
     # rehearses a plan we cannot sell — and drops off the local pricing page.
     signup_url: str | None = Field(default=None, alias="signupUrl")
+    # Which methods this plan takes payment by. Exactly one is what makes a
+    # subscriber's payment method knowable; two rehearses the case where it is
+    # not, which is the half worth checking.
+    acceptance_methods: list[str] | None = Field(
+        default=None, alias="acceptanceMethods"
+    )
 
 
 @router.put(path="/plan", summary="Dev: set one mock Flash plan")
@@ -83,6 +89,22 @@ async def set_mock_plan_endpoint(body: MockPlanBody):
 )
 async def remove_mock_plan_endpoint(service_id: str, plan_id: str):
     return {"removed": flash_mock.remove_plan(service_id, plan_id)}
+
+
+class MockAcceptanceMethodsBody(BaseModel):
+    """The account's acceptance methods, already resolved: each `amt_…` token a
+    mock plan can name, against how it pays. Nothing else resolves them
+    locally, so without this a rehearsal shows no payment method anywhere."""
+
+    methods: dict[str, str]
+
+
+@router.put(
+    path="/acceptance-methods", summary="Dev: set the mock acceptance methods"
+)
+async def set_mock_acceptance_methods_endpoint(body: MockAcceptanceMethodsBody):
+    flash_mock.set_acceptance_methods(body.methods)
+    return {"ok": True, "mock_enabled": settings.flash_mock_enabled}
 
 
 class EmitWebhookBody(BaseModel):

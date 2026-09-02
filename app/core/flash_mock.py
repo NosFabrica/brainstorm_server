@@ -19,6 +19,10 @@ _subscriptions: dict[str, FlashSubscription] = {}
 # Plans, in Flash's own field names — the shape `GET /services/{id}` returns,
 # so the pricing page the paid rehearsal starts on has something to render.
 _plans: dict[tuple[str, str], dict] = {}
+# Account-level, as `GET /settings` reports it: each `amt_…` token a plan can
+# name, and how it pays. Already resolved, because the fake stands in for the
+# cache's answer rather than for the settings body.
+_acceptance_methods: dict[str, str] = {}
 
 
 def set_subscription(subscription: FlashSubscription) -> None:
@@ -41,9 +45,19 @@ def plans_for(service_id: str) -> list[dict]:
     return [plan for (service, _), plan in _plans.items() if service == service_id]
 
 
+def set_acceptance_methods(methods: dict[str, str]) -> None:
+    _acceptance_methods.clear()
+    _acceptance_methods.update(methods)
+
+
+def acceptance_methods() -> dict[str, str]:
+    return dict(_acceptance_methods)
+
+
 def clear() -> None:
     _subscriptions.clear()
     _plans.clear()
+    _acceptance_methods.clear()
 
 
 def lookup(

@@ -46,6 +46,7 @@ from app.services.billing_visibility_service import (
     build_divergence_response,
     build_payment_history_csv,
 )
+from app.services.payment_method_service import attach_payment_methods
 from app.utils.auth.auth_models import JWTData
 from app.utils.rate_limiting.rate_limiting import validate_flash_record_read_allowed
 
@@ -82,7 +83,11 @@ router = APIRouter()
 async def list_billing_subscriptions_endpoint(
     db: AsyncDBSession = Depends(dependency=get_db),
 ):
-    return await paginate(db, build_billing_subscriptions_stmt())
+    page = await paginate(db, build_billing_subscriptions_stmt())
+    # After the page, not inside the query: how someone pays is Flash's answer
+    # about their plan, and only this page's worth of rows need asking about.
+    await attach_payment_methods(page.items)
+    return page
 
 
 @router.get(

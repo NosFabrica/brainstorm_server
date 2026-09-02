@@ -130,3 +130,16 @@ def test_the_emitter_refuses_to_sign_with_nothing(dev_client, monkeypatch):
         json={"event": "subscription.activated", "data": {}},
     )
     assert response.status_code == 409
+
+
+def test_the_acceptance_methods_the_local_plans_name_can_be_set(dev_client):
+    """A mock plan names `amt_…` tokens like a real one, and nothing resolves
+    them without this — the local rehearsal would show no payment method at
+    all, which is the one outcome it cannot tell from a real failure."""
+    response = dev_client.put(
+        "/admin/billing/dev/acceptance-methods",
+        json={"methods": {"amt_ln": "lightning"}},
+    )
+
+    assert response.status_code == 200
+    assert flash_mock.acceptance_methods() == {"amt_ln": "lightning"}

@@ -41,6 +41,7 @@ from app.schemas.schemas import (
     SubscriptionView,
 )
 from app.services.billing_service import EntitlementReason, utc_now
+from app.services.payment_method_service import read_payment_methods
 
 logger = loggr.get_logger(__name__)
 
@@ -114,15 +115,27 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
         row = None
 
     plan: BillingPlan | None = None
+    flash: FlashPlan | None = None
     if row is not None:
         plan = await get_billing_plan_by_id_on_db(db, row.billing_plan_id)
+    if plan is not None:
+        found = await read_plans_for_services({plan.flash_service_id})
+        flash = found.get((plan.flash_service_id, plan.flash_plan_id))
+
+    # Resolved here rather than read off `user_subscription.rail`, because there
+    # is nothing per-subscription to store: Flash withholds
+    # `paymentInstrumentId` and no delivery carries an acceptance method. On
+    # read also means a plan that stops being unambiguous stops answering,
+    # which a stored copy could not.
+    methods = await read_payment_methods([flash] if flash else [])
+    paid_by = methods.get((flash.service_id, flash.id)) if flash else None
 
     return SubscriptionView(
         policy=(
             SubscriptionPolicyView.model_validate(policy) if policy is not None else None
         ),
         plan=(
-            await _subscriber_plan_view(plan) if plan is not None else None
+            _subscriber_plan_view(plan, flash) if plan is not None else None
         ),
         status=_translate(
             row.flash_status if row else None,
@@ -136,6 +149,7 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
         # is no link, and so is a subscription Flash named no portal for —
         # nothing here spells one out of a base URL any more.
         manage_url=row.portal_url if row else None,
+        payment_method=paid_by,
     )
 
 
@@ -159,15 +173,15 @@ async def _sellable_flash_plans(
     }
 
 
-async def _subscriber_plan_view(plan: BillingPlan) -> SubscriptionPlanView:
+def _subscriber_plan_view(
+    plan: BillingPlan, flash: FlashPlan | None
+) -> SubscriptionPlanView:
     """What they bought, priced by Flash — or unpriced, if Flash cannot be read.
 
     Best-effort on purpose: this call decides nothing. Their entitlement is the
     scheduling assignment, so a Flash outage costs them a price on a card, not
     a tier.
     """
-    found = await read_plans_for_services({plan.flash_service_id})
-    flash = found.get((plan.flash_service_id, plan.flash_plan_id))
     return SubscriptionPlanView(
         amount_minor=flash.amount_minor if flash else None,
         currency=flash.currency if flash else None,

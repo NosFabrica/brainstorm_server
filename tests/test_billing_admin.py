@@ -728,3 +728,112 @@ def test_a_signup_cannot_be_resolved_without_billing_access(client, monkeypatch)
         == 403
     )
     assert client.post("/admin/billing/unresolved/7d3b/dismiss").status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# How each subscriber pays
+# ---------------------------------------------------------------------------
+def _roster_row(**overrides):
+    from app.schemas.schemas import BillingSubscriptionItem
+
+    return BillingSubscriptionItem(
+        **{
+            "pubkey": PUBKEY,
+            "flash_status": "active",
+            "flash_subscription_id": "7d3b",
+            "flash_service_id": "9c1e",
+            "flash_plan_id": "4f2a",
+            "scheduling_source": "billing",
+            "billing_blocked": False,
+            **overrides,
+        }
+    )
+
+
+def _roster(monkeypatch, rows, *, accepts=("amt_ln",), methods=None):
+    """The roster endpoint with its page supplied and Flash's two reads stubbed
+    at their own edges, so the resolution rule itself stays under test."""
+    from fastapi_pagination import Page
+
+    from app.core.flash import FlashPlan
+    from app.schemas.schemas import BillingSubscriptionItem
+    from app.services import payment_method_service
+
+    monkeypatch.setattr(
+        "app.routers.admin.billing.router.paginate",
+        AsyncMock(
+            return_value=Page[BillingSubscriptionItem](
+                items=list(rows), total=len(rows), page=1, size=50, pages=1
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        payment_method_service,
+        "read_plans_for_services",
+        AsyncMock(
+            return_value={
+                ("9c1e", "4f2a"): FlashPlan(
+                    id="4f2a",
+                    service_id="9c1e",
+                    name="Monthly",
+                    description=None,
+                    amount_minor=200,
+                    currency="USD",
+                    billing_interval="monthly",
+                    sort_order=0,
+                    features=None,
+                    not_included=None,
+                    status="active",
+                    signup_url="https://flash.example/s/9c1e/4f2a",
+                    acceptance_methods=tuple(accepts),
+                )
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        payment_method_service,
+        "read_acceptance_methods",
+        AsyncMock(
+            return_value=dict(
+                methods if methods is not None else {"amt_ln": "lightning"}
+            )
+        ),
+    )
+
+
+def test_the_roster_says_how_each_subscriber_pays(billing_client, monkeypatch):
+    _roster(monkeypatch, [_roster_row()])
+
+    items = billing_client.get("/admin/billing/subscriptions").json()["items"]
+
+    assert items[0]["payment_method"] == "lightning"
+
+
+def test_the_roster_says_nothing_where_the_plan_takes_both(
+    billing_client, monkeypatch
+):
+    """The one answer an admin must never be shown is a plausible one. A plan
+    accepting Lightning and card does not say which of them this person used."""
+    _roster(
+        monkeypatch,
+        [_roster_row()],
+        accepts=("amt_ln", "amt_card"),
+        methods={"amt_ln": "lightning", "amt_card": "card"},
+    )
+
+    items = billing_client.get("/admin/billing/subscriptions").json()["items"]
+
+    assert items[0]["payment_method"] is None
+
+
+def test_the_roster_names_the_flash_plan_it_resolved_that_from(
+    billing_client, monkeypatch
+):
+    """Served beside the subscription id, so an operator checking our answer
+    against Flash's dashboard has the ids Flash names things by."""
+    _roster(monkeypatch, [_roster_row()])
+
+    items = billing_client.get("/admin/billing/subscriptions").json()["items"]
+
+    assert items[0]["flash_service_id"] == "9c1e"
+    assert items[0]["flash_plan_id"] == "4f2a"
