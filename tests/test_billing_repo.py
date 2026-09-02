@@ -21,6 +21,26 @@ NOW = datetime(2026, 8, 25, 12, 0, 0)
 PUBKEY = "a" * 64
 
 
+def _subscription(**overrides) -> FlashSubscription:
+    return FlashSubscription(
+        **{
+            "id": "7d3b",
+            "status": "active",
+            "ref": PUBKEY,
+            "subscriber_id": "a91c",
+            "service_id": "9c1e",
+            "plan_id": "4f2a",
+            "current_period_start": NOW,
+            "current_period_end": NOW,
+            "next_billing_date": None,
+            "trial_end_date": None,
+            "cancel_effective_date": None,
+            "portal_url": "https://flash.example/subscriptions/portal/9c1e",
+            **overrides,
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # The queries actually reference columns that exist
 # ---------------------------------------------------------------------------
@@ -93,19 +113,7 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
         "since": NOW,
         "until": NOW,
         "only_active": True,
-        "subscription": FlashSubscription(
-            id="7d3b",
-            status="active",
-            ref=PUBKEY,
-            subscriber_id="a91c",
-            service_id="9c1e",
-            plan_id="4f2a",
-            current_period_start=NOW,
-            current_period_end=NOW,
-            next_billing_date=NOW,
-            trial_end_date=None,
-            cancel_effective_date=None,
-        ),
+        "subscription": _subscription(next_billing_date=NOW),
         "plan_id": 1,
         "scheduling_id": 7,
         "status": "canceled",
@@ -177,6 +185,27 @@ def _sql(statement) -> str:
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
         )
     )
+
+
+def test_the_subscription_record_keeps_flashs_own_portal_link(monkeypatch):
+    """The manage link a subscriber follows is Flash's own answer, so it has to
+    survive the write: the read side no longer spells one, and re-asking Flash
+    on every page view would put a signed-in render behind their API."""
+    from app.repos import user_subscription_repo as repo
+
+    statement = _built(
+        monkeypatch,
+        repo,
+        repo.upsert_user_subscription_on_db,
+        pubkey=PUBKEY,
+        subscription=_subscription(
+            portal_url="https://billing.flash.example/manage/9c1e"
+        ),
+        billing_plan_id=1,
+        granted_scheduling_id=7,
+    )
+
+    assert "https://billing.flash.example/manage/9c1e" in _sql(statement)
 
 
 def test_retiring_a_plan_does_not_unmap_the_people_on_it(monkeypatch):

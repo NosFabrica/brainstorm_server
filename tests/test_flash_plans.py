@@ -28,6 +28,7 @@ FLASH_PLAN = {
     "billingInterval": "monthly",
     "status": "active",
     "sortOrder": 3,
+    "signupUrl": "https://flash.example/subscriptions/signup/9c1e/4f2a",
 }
 
 
@@ -111,11 +112,13 @@ def test_a_service_flash_does_not_have_is_reported_as_a_misconfiguration(
 def test_a_plan_carries_everything_the_pricing_page_stopped_storing(
     redis, monkeypatch
 ):
-    """Name, price, currency, cadence, ordering and copy — all Flash's now."""
+    """Name, price, currency, cadence, ordering, copy and where to buy it —
+    all Flash's now."""
     _flash(monkeypatch)
 
     plan = asyncio.run(cache.read_service_plans(SERVICE))[0]
 
+    assert plan.signup_url == "https://flash.example/subscriptions/signup/9c1e/4f2a"
     assert plan.id == "4f2a"
     assert plan.name == "Monthly"
     assert plan.description == "The usual one"

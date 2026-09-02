@@ -301,6 +301,10 @@ class UserSubscription(TimestampMixin, Base):
     next_billing_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     trial_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     cancel_effective_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Where Flash says to manage this subscription, recorded as read. Stored
+    # because re-asking Flash would put every signed-in page view behind their
+    # API; nullable because a row predates the column until its next sync.
+    portal_url: Mapped[str | None] = mapped_column(String, nullable=True)
     # Kept, but off the wire: Flash's subscription object has no payment-method
     # field, so this is structurally always null. Re-exposing it is one line the
     # day they publish one; inferring it is how we'd invent a payment method.

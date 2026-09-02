@@ -13,7 +13,7 @@ is a unit and a count the client formats from rather than matches against.
 """
 
 from datetime import timedelta
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
@@ -117,11 +117,6 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
     if row is not None:
         plan = await get_billing_plan_by_id_on_db(db, row.billing_plan_id)
 
-    manage_url = None
-    if plan is not None and settings.flash_enabled:
-        base = settings.flash_base_url.rstrip("/")
-        manage_url = f"{base}/subscriptions/portal/{plan.flash_service_id}"
-
     return SubscriptionView(
         policy=(
             SubscriptionPolicyView.model_validate(policy) if policy is not None else None
@@ -137,21 +132,31 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
         current_period_end=row.current_period_end if row else None,
         next_billing_date=row.next_billing_date if row else None,
         cancel_effective_date=row.cancel_effective_date if row else None,
-        manage_url=manage_url,
+        # Flash's own answer, recorded when we last read them. No subscription
+        # is no link, and so is a subscription Flash named no portal for —
+        # nothing here spells one out of a base URL any more.
+        manage_url=row.portal_url if row else None,
     )
 
 
 async def _sellable_flash_plans(
     service_ids: set[str],
 ) -> dict[tuple[str, str], FlashPlan]:
-    """Flash's plans for the services we map, minus any we could not price.
+    """Flash's plans for the services we map, minus any we cannot actually sell.
 
     A plan with no readable amount is withdrawn exactly like one Flash no
     longer returns: both are plans we cannot honestly put a price on, and a
     price is the one thing a pricing card cannot omit.
+
+    So is a plan Flash gives no signup URL for. We no longer keep a way to
+    spell one ourselves, so that is a priced card with nowhere to send anybody.
     """
     found = await read_plans_for_services(service_ids)
-    return {key: plan for key, plan in found.items() if plan.amount_minor is not None}
+    return {
+        key: plan
+        for key, plan in found.items()
+        if plan.amount_minor is not None and plan.signup_url
+    }
 
 
 async def _subscriber_plan_view(plan: BillingPlan) -> SubscriptionPlanView:
@@ -177,13 +182,23 @@ def checkout_redirect_url() -> str:
     return settings.frontend_url.rstrip("/") + "/billing/return"
 
 
-def _checkout_url(plan: BillingPlan) -> str:
-    base = settings.flash_base_url.rstrip("/")
-    redirect = quote(checkout_redirect_url(), safe="")
-    return (
-        f"{base}/subscriptions/signup/{plan.flash_service_id}/"
-        f"{plan.flash_plan_id}?redirect_uri={redirect}"
-    )
+def _checkout_url(signup_url: str) -> str:
+    """Flash's own signup URL, plus the one parameter that is ours.
+
+    `redirect_uri` has to match a registered URL to the character, which is why
+    the server appends it rather than the client. `ref` is still the client's,
+    at click time: baking a pubkey into a URL served to everyone would hand
+    every visitor the same subscriber's identity.
+
+    Added through the URL's own query rather than by string-joining, because we
+    no longer write this URL and so no longer know its shape: one carrying a
+    fragment would take `redirect_uri` inside the fragment, where Flash never
+    reads it and the checkout fails its exact match.
+    """
+    parts = urlsplit(signup_url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    query.append(("redirect_uri", checkout_redirect_url()))
+    return urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
 
 
 def _free_row(policy: Scheduling) -> BillingPlanView:
@@ -209,9 +224,9 @@ def _free_row(policy: Scheduling) -> BillingPlanView:
     )
 
 
-def _plan_row(
-    plan: BillingPlan, policy: Scheduling, flash: FlashPlan
-) -> BillingPlanView:
+def _plan_row(policy: Scheduling, flash: FlashPlan) -> BillingPlanView:
+    """Which policy it grants is ours; everything else, the checkout link
+    included, is Flash's own answer about the plan."""
     return BillingPlanView(
         policy_id=policy.id,
         policy_name=policy.name,
@@ -222,7 +237,9 @@ def _plan_row(
         amount_minor=flash.amount_minor,
         currency=flash.currency,
         billing_interval=flash.billing_interval,
-        checkout_url=_checkout_url(plan),
+        checkout_url=(
+            _checkout_url(flash.signup_url) if flash.signup_url else None
+        ),
         features=flash.features,
         not_included=flash.not_included,
     )
@@ -280,7 +297,7 @@ async def list_billing_plans(db: AsyncDBSession) -> BillingPlansData:
         if policy.id not in mapped_policy_ids
     ]
     plans.extend(
-        _plan_row(plan, policies[plan.scheduling_id], flash) for plan, flash in sellable
+        _plan_row(policies[plan.scheduling_id], flash) for plan, flash in sellable
     )
 
     # Stable, so it only lifts the default policy and leaves everything else in

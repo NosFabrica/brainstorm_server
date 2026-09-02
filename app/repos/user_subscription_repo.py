@@ -143,6 +143,7 @@ async def upsert_user_subscription_on_db(
         "next_billing_date": subscription.next_billing_date,
         "trial_end_date": subscription.trial_end_date,
         "cancel_effective_date": subscription.cancel_effective_date,
+        "portal_url": subscription.portal_url,
         "last_synced_at": datetime.now(timezone.utc).replace(tzinfo=None),
         "last_sync_error": None,
         "sync_error_since": None,

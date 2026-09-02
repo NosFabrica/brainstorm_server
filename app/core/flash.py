@@ -105,6 +105,10 @@ class FlashSubscription:
     next_billing_date: datetime | None
     trial_end_date: datetime | None
     cancel_effective_date: datetime | None
+    # Where Flash tells this subscriber to go and manage it. Today that is
+    # their service portal, which is the URL we used to spell ourselves — but
+    # spelling it was us guessing at their routing, and this is them answering.
+    portal_url: str | None
 
 
 START_OF_DAY = time(0, 0)
@@ -223,6 +227,7 @@ def parse_subscription(raw: dict) -> FlashSubscription:
         cancel_effective_date=parse_flash_timestamp(
             raw.get("cancelEffectiveDate"), deadline=True
         ),
+        portal_url=_text(raw.get("portalUrl")),
     )
 
 
@@ -480,6 +485,10 @@ class FlashPlan:
     features: list[str] | None
     not_included: list[str] | None
     status: str
+    # Flash's own hosted checkout for this plan. None when they send none, and
+    # then the plan is as unsellable as one we could not price — we no longer
+    # keep a way to spell the URL ourselves.
+    signup_url: str | None
 
 
 def parse_plan(raw: dict) -> FlashPlan:
@@ -496,6 +505,7 @@ def parse_plan(raw: dict) -> FlashPlan:
         features=_lines(raw.get("features")),
         not_included=_lines(raw.get("notIncluded")),
         status=str(raw.get("status") or ""),
+        signup_url=_text(raw.get("signupUrl")),
     )
 
 

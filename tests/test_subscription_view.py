@@ -64,6 +64,7 @@ def _flash_plan(**overrides):
             "features": None,
             "not_included": None,
             "status": "active",
+            "signup_url": "https://flash.example/subscriptions/signup/9c1e/4f2a",
             **overrides,
         }
     )
@@ -174,6 +175,7 @@ def _row(**overrides):
             "next_billing_date": NOW,
             "cancel_effective_date": None,
             "billing_plan_id": 1,
+            "portal_url": "https://flash.example/subscriptions/portal/9c1e",
             **overrides,
         }
     )
@@ -240,7 +242,41 @@ def test_the_contract_shape_for_a_paying_subscriber(
     assert data["current_period_start"] == "2026-08-25T12:00:00Z"
     assert data["current_period_end"] == "2026-08-25T12:00:00Z"
     assert data["next_billing_date"] == "2026-08-25T12:00:00Z"
-    assert data["manage_url"].endswith("/subscriptions/portal/9c1e")
+    assert data["manage_url"] == "https://flash.example/subscriptions/portal/9c1e"
+
+
+def test_the_manage_link_is_the_one_flash_gave_not_one_we_spelled(
+    subscription_client, monkeypatch
+):
+    """Served verbatim from Flash's answer, so a portal they move is a portal
+    we follow. The two agree today, which is exactly why only a link Flash
+    could not have been guessed into proves which one is being served."""
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    _stub_view(
+        monkeypatch,
+        policy=PAID_POLICY,
+        row=_row(portal_url="https://billing.flash.example/manage/9c1e"),
+        plan=_plan(),
+    )
+
+    data = subscription_client.get("/user/subscription").json()["data"]
+
+    assert data["manage_url"] == "https://billing.flash.example/manage/9c1e"
+
+
+def test_a_subscription_flash_gave_no_portal_for_offers_no_manage_link(
+    subscription_client, monkeypatch
+):
+    """A link is Flash's to supply. With none, the honest answer is none — a
+    guess would send someone mid-cancellation to a page that cannot help."""
+    monkeypatch.setattr(settings, "flash_enabled", True)
+    _stub_view(
+        monkeypatch, policy=PAID_POLICY, row=_row(portal_url=None), plan=_plan()
+    )
+
+    data = subscription_client.get("/user/subscription").json()["data"]
+
+    assert data["manage_url"] is None
 
 
 def test_a_boundary_flash_named_as_a_date_goes_out_as_that_date(
@@ -529,11 +565,39 @@ def test_plans_carry_live_cadence_and_a_checkout_url_without_ref(monkeypatch):
     assert paid.policy_name == "Paid Staging Flash Test"
     assert paid.schedule_interval_seconds == 604800
     assert "ref=" not in paid.checkout_url
+    # Flash's own signup URL, not one spelled out of our base URL and two ids.
     assert paid.checkout_url.startswith(
-        settings.flash_base_url.rstrip("/") + "/subscriptions/signup/9c1e/4f2a"
+        "https://flash.example/subscriptions/signup/9c1e/4f2a"
     )
     assert "redirect_uri=https%3A%2F%2Fapp.example.com%2Fbilling%2Freturn" in (
         paid.checkout_url
+    )
+
+
+def test_the_redirect_survives_whatever_shape_flashs_signup_url_arrives_in(
+    monkeypatch,
+):
+    """We no longer write this URL, so we no longer know its shape. Joined by
+    hand, a fragment would swallow `redirect_uri` — and a swallowed one fails
+    Flash's exact match, which stops the checkout rather than degrading it."""
+    _stub_plans(
+        monkeypatch,
+        policies=[PAID_POLICY],
+        plans=[_plan()],
+        flash=[
+            _flash_plan(
+                signup_url="https://flash.example/subscriptions/signup/9c1e/4f2a"
+                "?utm=card#plans"
+            )
+        ],
+    )
+
+    url = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans[0].checkout_url
+
+    assert url == (
+        "https://flash.example/subscriptions/signup/9c1e/4f2a"
+        "?utm=card&redirect_uri=https%3A%2F%2Fapp.example.com%2Fbilling%2Freturn"
+        "#plans"
     )
 
 
@@ -639,6 +703,22 @@ def test_a_plan_we_cannot_price_is_not_offered_for_sale(monkeypatch):
         policies=[FREE_POLICY, PAID_POLICY],
         plans=[_plan()],
         flash=[_flash_plan(amount_minor=None)],
+    )
+
+    plans = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans
+
+    assert [row.policy_id for row in plans] == [FREE_POLICY.id]
+
+
+def test_a_plan_with_no_signup_url_of_flashs_own_is_not_offered_for_sale(monkeypatch):
+    """We no longer keep a way to spell a checkout URL ourselves, so a plan
+    Flash gives no signup link for is a plan with no Subscribe button. Withdrawn
+    rather than priced with nowhere to go, exactly like one we cannot price."""
+    _stub_plans(
+        monkeypatch,
+        policies=[FREE_POLICY, PAID_POLICY],
+        plans=[_plan()],
+        flash=[_flash_plan(signup_url=None)],
     )
 
     plans = asyncio.run(view_svc.list_billing_plans(AsyncMock())).plans

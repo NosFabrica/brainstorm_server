@@ -124,6 +124,7 @@ API is the authority.
 | `granted_scheduling_id` | int FK → `scheduling.id`, nullable | what we *actually granted*, distinct from `billing_plan.scheduling_id` (the rule). They diverge the moment a plan is retuned; revocation removes this, and the divergence report compares it against the live assignment |
 | `flash_status` | str | Flash's status **verbatim and unvalidated** — their set is documented as open, so an unrecognised value must land here intact rather than be coerced |
 | `current_period_end` / `cancel_effective_date` | DateTime | when entitlement lapses |
+| `portal_url` | str, nullable | where Flash says to manage this subscription, **stored as read rather than derived** — deriving it would put our spelling of their routing on the page, and re-asking them would put every signed-in view behind their API. Null until a row's next sync |
 
 ### `FlashWebhookEvent` — `flash_webhook_event`
 

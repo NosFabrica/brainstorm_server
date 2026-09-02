@@ -126,6 +126,16 @@ def test_every_field_flash_sends_is_carried_across():
     assert found.plan_id == "4f2a"
     assert found.current_period_end == datetime(2026, 9, 20, 14, 3, 11)
     assert found.cancel_effective_date is None
+    assert found.portal_url == "https://flash.example/subscriptions/portal/9c1e"
+
+
+def test_a_subscription_with_no_portal_of_its_own_offers_none():
+    """Absent rather than invented. The alternative is building one from our
+    base URL and a service id, which is exactly what a subscriber cannot use
+    to reach the right subscription."""
+    found = parse_subscription({k: v for k, v in SUBSCRIPTION.items() if k != "portalUrl"})
+
+    assert found.portal_url is None
 
 
 def test_a_status_we_do_not_recognise_survives_the_parse():

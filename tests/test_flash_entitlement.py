@@ -43,6 +43,7 @@ def _subscription(
         next_billing_date=datetime(2026, 9, 20, 14, 3, 11),
         trial_end_date=None,
         cancel_effective_date=None,
+        portal_url="https://flash.example/subscriptions/portal/9c1e",
         **overrides,
     )
 

@@ -33,6 +33,7 @@ class MockSubscriptionBody(BaseModel):
     next_billing_date: datetime | None = None
     trial_end_date: datetime | None = None
     cancel_effective_date: datetime | None = None
+    portal_url: str | None = None
 
 
 @router.put(path="/subscription", summary="Dev: set one mock Flash subscription")
@@ -66,6 +67,9 @@ class MockPlanBody(BaseModel):
     not_included: list[str] | None = Field(default=None, alias="notIncluded")
     sort_order: int = Field(default=0, alias="sortOrder")
     status: str = "active"
+    # Nothing synthesizes a checkout URL any more, so a mock plan without one
+    # rehearses a plan we cannot sell — and drops off the local pricing page.
+    signup_url: str | None = Field(default=None, alias="signupUrl")
 
 
 @router.put(path="/plan", summary="Dev: set one mock Flash plan")

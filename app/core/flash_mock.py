@@ -88,4 +88,5 @@ def _as_flash_row(row: FlashSubscription) -> dict:
         "nextBillingDate": _iso(row.next_billing_date),
         "trialEndDate": _iso(row.trial_end_date),
         "cancelEffectiveDate": _iso(row.cancel_effective_date),
+        "portalUrl": row.portal_url,
     }
