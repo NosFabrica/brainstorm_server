@@ -4,6 +4,7 @@ from fastapi_pagination.ext.sqlalchemy import paginate
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
+from app.db_models import SchedulingSource
 from app.repos.brainstorm_nsec import bulk_set_scheduling_for_pubkeys_on_db
 from app.repos.scheduling_repo import (
     build_scheduling_users_stmt,
@@ -106,7 +107,7 @@ async def bulk_assign_scheduling_users_endpoint(
     if not await scheduling_exists_on_db(db, scheduling_id):
         raise HTTPException(status_code=404, detail="Scheduling policy not found")
     assigned = await bulk_set_scheduling_for_pubkeys_on_db(
-        db, body.pubkeys, scheduling_id
+        db, body.pubkeys, scheduling_id, source=SchedulingSource.ADMIN.value
     )
     return {"assigned": assigned}
 
@@ -126,6 +127,20 @@ async def update_scheduling_endpoint(
     fields = body.model_dump(exclude_unset=True)
     if fields.get("is_default"):
         await unset_default_scheduling_on_db(db)
+    elif fields.get("is_default") is False:
+        # Clearing the flag promotes nobody, so doing it to the default itself
+        # leaves the estate with none: unassigned users have no policy and the
+        # free plan drops out of /billing/plans, silently. Moving the default
+        # means setting it on the new row, which clears the old one.
+        current = await get_scheduling_on_db(db, scheduling_id)
+        if current is not None and current.is_default:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot clear is_default on the only default policy. "
+                    "Set is_default on the policy that should replace it."
+                ),
+            )
     return await update_scheduling_on_db(db, scheduling_id, **fields)
 
 

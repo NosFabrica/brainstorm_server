@@ -24,10 +24,15 @@ from fastapi_pagination import add_pagination
 from app.core.config import settings
 from app.core.loggr import loggr
 from app.core.sql_admin_panel import add_sql_admin_panel
+from app.core.flash import aclose as flash_aclose
 from app.core.vespa import aclose as vespa_aclose
 from app.routers.open_ranking.errors import install_ore_error_handlers
 from app.routers.router import router as main_router
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
+from app.services.flash_webhook_service import (
+    describe_rotation_state,
+    validate_flash_config,
+)
 from app.services.nsec_encryption_service import bootstrap_keys
 from app.nostr_event_transferer.nostr_event_transferer import (
     nostr_event_recent_transferer_cronjob,
@@ -36,12 +41,14 @@ from app.nostr_event_transferer.nostr_event_transferer import (
 from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
     fail_stale_ongoing_brainstorm_requests_cronjob,
 )
+from app.cronjobs.billing_sync import billing_sync_cronjob
 from app.cronjobs.periodic_graperank_trigger import (
     periodic_graperank_trigger_cronjob,
 )
 from app.cronjobs.scheduler import scheduler_cronjob
 
 from app.core.admin_whitelist import init_admin_whitelist
+from app.core.billing_admin_whitelist import init_billing_admin_whitelist
 
 logger = loggr.get_logger(__name__)
 
@@ -59,10 +66,26 @@ if True:  # settings.deploy_environment == DEPLOY_ENVIRONMENT_LOCAL:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Refuse to start half-configured: booting with payments enabled but no
+    # credentials looks healthy, then fails as a webhook silently rejecting every
+    # delivery while payments pile up unprocessed.
+    validate_flash_config(
+        enabled=settings.flash_enabled,
+        api_key=settings.flash_api_key,
+        webhook_secret=settings.flash_webhook_secret,
+        base_url=settings.flash_base_url,
+        mock_enabled=settings.flash_mock_enabled,
+        deploy_environment=settings.deploy_environment,
+    )
+    rotation = describe_rotation_state(settings.flash_webhook_secret_previous)
+    if rotation:
+        logger.warning(rotation)
+
     await bootstrap_keys()
 
     # initialize admin whitelist cache and log config
     init_admin_whitelist()
+    init_billing_admin_whitelist()
 
     # test connectivity with Neo4j
     await test_neo4j_driver()
@@ -102,10 +125,9 @@ async def lifespan(app: FastAPI):
     fail_stale_ongoing_task = asyncio.create_task(
         fail_stale_ongoing_brainstorm_requests_cronjob()
     )
-    periodic_graperank_task = asyncio.create_task(
-        periodic_graperank_trigger_cronjob()
-    )
+    periodic_graperank_task = asyncio.create_task(periodic_graperank_trigger_cronjob())
     scheduler_task = asyncio.create_task(scheduler_cronjob())
+    billing_sync_task = asyncio.create_task(billing_sync_cronjob())
 
     try:
         yield
@@ -119,8 +141,14 @@ async def lifespan(app: FastAPI):
         fail_stale_ongoing_task.cancel()
         periodic_graperank_task.cancel()
         scheduler_task.cancel()
+        billing_sync_task.cancel()
+        # Awaited before the clients below are closed: a cancelled reconcile can
+        # still be mid-GET, and closing the shared httpx client under it would
+        # surface as a spurious Flash outage during every shutdown.
+        await asyncio.gather(billing_sync_task, return_exceptions=True)
         # regular_update_task.cancel()
         await vespa_aclose()
+        await flash_aclose()
 
 
 app = FastAPI(
