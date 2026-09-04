@@ -57,3 +57,15 @@ pattern as the cronjobs and queue consumers. Cancelled on shutdown.
 | Add a new kind to backfill | Add the kind to whatever drives the transfer loop, add a `BrainstormNostrRelayTransfer` row implicitly via `upsert_nostr_transfer_status_on_db`, add the matching handler in `process_strfry_event.py`. |
 | Add a relay | `settings.relays_to_transfer_from` list. No code change required. |
 | Force-resync a kind | Delete the relevant row in `brainstorm_nostr_relay_transfer` (or set `completed=False`, `oldest=NULL`). The transferer will treat it as a fresh backfill on next loop. |
+
+## Two kind lists, deliberately
+
+`ev_kinds` means "the kinds the follow/mute/report graph is built from".
+`backfill_redis_relationships._is_graph_db_populated` reads it with exactly
+that meaning — it gates the one-time Redis relationship backfill on *every*
+listed kind having a completed transfer row.
+
+So taggings (kind 39999) sync via a **separate** `tagging_ev_kinds` list.
+Appending them to `ev_kinds` would silently disable that backfill until the
+taggings transfer completed. If you add a kind to `ev_kinds`, re-check that
+module. See ADR `trusted-lists/0001` D10.
