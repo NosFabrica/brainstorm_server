@@ -1,7 +1,7 @@
 """add nostr_tag_element + nostr_user_tagging tables
 
 Revision ID: c1d2e3f4a5b6
-Revises: d4e5f6a7b8c9
+Revises: f1a4c8e27b60
 Create Date: 2026-08-25 00:00:00.000000
 
 The input set for Trusted Lists: kind-39999 tag elements and the taggings that
@@ -17,12 +17,14 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'c1d2e3f4a5b6'
-# Re-parented onto d4e5f6a7b8c9 (assistant kind-0), which landed on main while
-# this branch was open. Both were cut from b2c3d4e5f6a7, so leaving it there
-# gives alembic two heads and `alembic upgrade head` — which start.sh runs at
-# boot — fails outright. These two touch disjoint tables, so the order is
-# arbitrary; ours goes second because theirs is already released.
-down_revision = 'd4e5f6a7b8c9'
+# Re-parented twice, for the same reason both times: a sibling cut from the
+# same parent gives alembic two heads, and `alembic upgrade head` — which
+# start.sh runs at boot — then fails outright rather than picking one.
+# First onto d4e5f6a7b8c9 (assistant kind-0), then onto f1a4c8e27b60 (Flash
+# billing), which was itself cut from d4e5f6a7b8c9. Billing deploys ahead of
+# this branch, so it goes first; the tables are disjoint, so the order carries
+# no meaning beyond the deploy sequence.
+down_revision = 'f1a4c8e27b60'
 branch_labels = None
 depends_on = None
 

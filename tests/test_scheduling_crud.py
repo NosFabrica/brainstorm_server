@@ -15,11 +15,11 @@ from app.routers.admin.router import verify_admin_access
 
 
 def _policy(id=1, name="Weekly", interval=604800, priority=0, enabled=True,
-            is_default=True, limit=20, window=604800):
+            is_default=True, limit=20, window=604800, is_public=False):
     return SimpleNamespace(
         id=id, name=name, schedule_interval_seconds=interval, priority=priority,
         enabled=enabled, is_default=is_default, manual_quota_limit=limit,
-        manual_quota_window_seconds=window,
+        manual_quota_window_seconds=window, is_public=is_public,
     )
 
 
@@ -63,6 +63,43 @@ def test_create_scheduling_policy(admin_client, monkeypatch):
     assert response.status_code == 201
     assert response.json()["name"] == "Daily"
     assert create.await_count == 1
+
+
+def test_a_policy_is_private_unless_an_operator_puts_it_on_sale(
+    admin_client, monkeypatch
+):
+    """This form is where a tier is now defined — name, cadence, quota, queue
+    priority and whether it is on sale. Off by default so an internal policy
+    cannot reach a public pricing page merely by existing."""
+    create = AsyncMock(return_value=_policy(id=5, name="Internal"))
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.create_scheduling_on_db", create
+    )
+
+    response = admin_client.post(
+        "/admin/scheduling",
+        json={"name": "Internal", "schedule_interval_seconds": 86400},
+    )
+
+    assert response.status_code == 201
+    assert create.await_args.kwargs["is_public"] is False
+    assert response.json()["is_public"] is False
+
+
+def test_a_policy_can_be_withdrawn_from_the_pricing_page(admin_client, monkeypatch):
+    update = AsyncMock(return_value=_policy(id=2, name="Paid", is_public=False))
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.scheduling_exists_on_db",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.update_scheduling_on_db", update
+    )
+
+    response = admin_client.patch("/admin/scheduling/2", json={"is_public": False})
+
+    assert response.status_code == 200
+    assert update.await_args.kwargs == {"is_public": False}
 
 
 def test_create_as_default_unsets_previous_default(admin_client, monkeypatch):
@@ -201,3 +238,128 @@ def test_bulk_assign_unknown_policy_404(admin_client, monkeypatch):
     )
     response = admin_client.put("/admin/scheduling/9/users", json={"pubkeys": ["a" * 64]})
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Values the API must refuse
+#
+# Swagger's "Try it out" prefills every field from the schema example, so an
+# unedited body arrives fully *set* — `exclude_unset` cannot tell it from a
+# deliberate one. On staging that renamed a policy to "string" and set its
+# cadence to 0. The schema is the only place this can be stopped.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("interval", [0, -1])
+def test_a_policy_cannot_be_created_with_a_non_positive_cadence(
+    admin_client, monkeypatch, interval
+):
+    """is_overdue is `age >= interval_seconds`, so 0 makes everyone on the
+    policy permanently overdue and the scheduler recalculates them forever."""
+    create = AsyncMock()
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.create_scheduling_on_db", create
+    )
+
+    response = admin_client.post(
+        "/admin/scheduling",
+        json={"name": "Broken", "schedule_interval_seconds": interval},
+    )
+
+    assert response.status_code == 422
+    create.assert_not_awaited()
+
+
+@pytest.mark.parametrize("interval", [0, -1])
+def test_a_policy_cannot_be_patched_to_a_non_positive_cadence(
+    admin_client, monkeypatch, interval
+):
+    update = AsyncMock()
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.scheduling_exists_on_db",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.update_scheduling_on_db", update
+    )
+
+    response = admin_client.patch(
+        "/admin/scheduling/4", json={"schedule_interval_seconds": interval}
+    )
+
+    assert response.status_code == 422
+    update.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"manual_quota_limit": 0},
+        {"manual_quota_window_seconds": 0},
+    ],
+)
+def test_a_policy_cannot_be_patched_to_a_quota_nobody_can_use(
+    admin_client, monkeypatch, body
+):
+    """A zero limit bars every manual recalculation on the policy; a zero window
+    is a rolling period of no length."""
+    update = AsyncMock()
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.scheduling_exists_on_db",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.update_scheduling_on_db", update
+    )
+
+    response = admin_client.patch("/admin/scheduling/4", json=body)
+
+    assert response.status_code == 422
+    update.assert_not_awaited()
+
+
+def test_the_last_default_policy_cannot_be_un_defaulted(admin_client, monkeypatch):
+    """`is_default: false` is written straight through, and the promote-another
+    branch only fires on a truthy value — so this would leave no default at all.
+    Every unassigned user then has no policy, and the free plan vanishes from
+    /billing/plans, with nothing to signal it."""
+    update = AsyncMock()
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.scheduling_exists_on_db",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.get_scheduling_on_db",
+        AsyncMock(return_value=_policy(id=1, is_default=True)),
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.update_scheduling_on_db", update
+    )
+
+    response = admin_client.patch("/admin/scheduling/1", json={"is_default": False})
+
+    assert response.status_code == 409
+    update.assert_not_awaited()
+
+
+def test_un_defaulting_a_policy_that_is_not_the_default_is_a_no_op(
+    admin_client, monkeypatch
+):
+    """Only the last default is protected — saying so about a row that never
+    held it would block a legitimate edit."""
+    updated = _policy(id=4, name="Paid", interval=86400, is_default=False)
+    update = AsyncMock(return_value=updated)
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.scheduling_exists_on_db",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.get_scheduling_on_db",
+        AsyncMock(return_value=_policy(id=4, is_default=False)),
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.update_scheduling_on_db", update
+    )
+
+    response = admin_client.patch("/admin/scheduling/4", json={"is_default": False})
+
+    assert response.status_code == 200
+    update.assert_awaited_once()
