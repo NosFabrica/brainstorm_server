@@ -14,15 +14,16 @@ def _normalize_pubkey(raw: str) -> str:
     return raw
 
 
+def parse_pubkey_list(raw: str) -> set[str]:
+    """Comma-separated hex or npub, normalised to hex. Shared with the billing list."""
+    if not raw:
+        return set()
+    return {_normalize_pubkey(p.strip()) for p in raw.split(",") if p.strip()}
+
+
 def init_admin_whitelist() -> None:
     global _whitelisted_pubkeys
-    raw = settings.admin_whitelisted_pubkeys
-    if not raw:
-        _whitelisted_pubkeys = set()
-    else:
-        _whitelisted_pubkeys = {
-            _normalize_pubkey(p.strip()) for p in raw.split(",") if p.strip()
-        }
+    _whitelisted_pubkeys = parse_pubkey_list(settings.admin_whitelisted_pubkeys)
 
     if settings.admin_enabled:
         truncated = [

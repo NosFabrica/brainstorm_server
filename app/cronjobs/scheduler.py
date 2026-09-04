@@ -29,7 +29,7 @@ from app.services.scheduler import (
     choose_admission_lane,
     rank_overdue_candidates,
 )
-from app.services.scheduler_lock import acquire_or_renew_leader
+from app.services.leader_lock import SCHEDULER_LOCK_KEY, acquire_or_renew_leader
 
 logger = loggr.get_logger(__name__)
 
@@ -110,7 +110,7 @@ async def scheduler_cronjob() -> None:
         try:
             async with db_session() as db:
                 if await acquire_or_renew_leader(
-                    redis_client, _INSTANCE_ID, LEADER_LOCK_TTL_MS
+                    redis_client, _INSTANCE_ID, LEADER_LOCK_TTL_MS, key=SCHEDULER_LOCK_KEY
                 ):
                     await _run_cycle(db)
         except Exception as exc:

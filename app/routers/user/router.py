@@ -5,10 +5,14 @@ from app.utils.rate_limiting.rate_limiting import validateIfRequestedTooOftenByI
 from fastapi import HTTPException
 from fastapi import APIRouter, Depends, Query, Request, status
 from app.core.database import get_db
-from app.schemas.request_body_schemas import SubmitFollowListBody
+from app.schemas.request_body_schemas import (
+    RefreshSubscriptionBody,
+    SubmitFollowListBody,
+)
 from app.schemas.request_response_schemas import (
     ErrorResponseSchema,
     GetOwnLatestGraperankResponse,
+    GetSubscriptionResponse,
     GetOwnUserDataResponse,
     GetUserConnectionsResponse,
     GetUserDataResponse,
@@ -18,6 +22,7 @@ from app.schemas.request_response_schemas import (
     IsSearchObserverResponse,
     PublishAssistantProfileData,
     PublishAssistantProfileResponse,
+    RefreshSubscriptionResponse,
     SubmitFollowListResponse,
 )
 from app.repos.brainstorm_nsec import (
@@ -42,6 +47,15 @@ from app.services.user_service import (
     get_user_history_data,
     get_user_overview,
     get_user_stats,
+)
+from app.core.flash import FlashCredentialError, FlashUnavailable
+from app.services.billing_service import apply_entitlement
+from app.services.subscription_view_service import (
+    read_refreshed_subscription_view,
+    read_subscription_view,
+)
+from app.utils.rate_limiting.rate_limiting import (
+    validate_subscription_refresh_allowed,
 )
 from app.services.verified_cutoffs import VerifiedCutoffs
 from app.routers.user.dependencies import get_verified_cutoffs, resolve_observer
@@ -220,6 +234,57 @@ async def is_search_observer_endpoint(
     )
 
     return IsSearchObserverResponse(data=is_available)
+
+
+@router.get(
+    path="/subscription",
+    summary="The caller's subscription, as the UI displays it",
+)
+async def get_subscription_endpoint(
+    request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> GetSubscriptionResponse:
+    # Always mounted, billing configured or not: an instance without Flash
+    # answers the free default rather than 404ing every page load.
+    jwt_data: JWTData = request.state.jwt_data
+    view = await read_subscription_view(db, jwt_data.nostr_pubkey)
+    return GetSubscriptionResponse(data=view)
+
+
+@router.post(
+    path="/subscription/refresh",
+    summary="Re-read the caller's subscription from Flash and apply it",
+)
+async def refresh_subscription_endpoint(
+    request: Request,
+    body: RefreshSubscriptionBody | None = None,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> RefreshSubscriptionResponse:
+    # The guide's two return paths. Given the redirect's id we verify THAT
+    # subscription; without one — a `pending` checkout, which Flash issues no id
+    # for — we read by reference, its own instruction for that case.
+    # `apply_entitlement` is what makes the id safe to take, and `verification`
+    # is how the caller learns an id was refused rather than still confirming.
+    jwt_data: JWTData = request.state.jwt_data
+    pubkey = jwt_data.nostr_pubkey
+    await validate_subscription_refresh_allowed(pubkey)
+
+    subscription_id = body.subscription_id if body else None
+    outcome = None
+    if settings.flash_enabled:
+        try:
+            outcome = await apply_entitlement(
+                db, external_ref=pubkey, subscription_id=subscription_id
+            )
+        except (FlashUnavailable, FlashCredentialError):
+            # The caller wanted the current answer; an unreadable Flash means
+            # the current answer is whatever we already hold.
+            pass
+
+    view = await read_refreshed_subscription_view(
+        db, pubkey, outcome=outcome, id_given=subscription_id is not None
+    )
+    return RefreshSubscriptionResponse(data=view)
 
 
 @router.post(

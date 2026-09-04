@@ -94,6 +94,54 @@ Append-only audit log. Same 11 params plus `change_type`, `changed_by`,
 `changed_at`. No `updated_at` — history rows don't mutate. Repos in
 `app/repos/graperank_preset_repo.py` enforce the append.
 
+### `BillingPlan` — `billing_plan`
+
+A **way to buy a policy**. Data rather than config: dev and production are separate
+Flash vaults with different UUIDs, so the mapping travels with the database. There
+is **no tier column** — the policy a subscriber holds *is* their tier, and several
+plans may sell one policy (monthly beside yearly, a replacement beside the row it
+retires) with all of them granting identically.
+
+A **mapping and nothing more**. Price, currency, billing period, name, ordering and
+copy used to be transcribed here by hand, because Flash had no way to read a plan
+back; `GET /services/{id}` returns them now, so those columns are gone. What is left
+is what Flash cannot know. Don't add one back.
+
+| Column | Type | Notes |
+|---|---|---|
+| `flash_service_id` + `flash_plan_id` | str, **UNIQUE together** | Flash's own identifiers; how an inbound subscription is matched to a plan |
+| `scheduling_id` | int FK → `scheduling.id` | the policy this plan grants — the *rule*, and the tier |
+| `is_active` | bool | whether **we** sell it — not Flash's `status`, which says whether *they* offer it; we may map only a subset. Sellable and nothing else: never filtered in the entitlement lookup — doing so made retiring a plan freeze and un-revoke everyone on it |
+
+### `UserSubscription` — `user_subscription`
+
+Why a user is on the tier they're on, one row per pubkey. **Never consulted to
+decide whether someone is paid** — that is the scheduling assignment, and Flash's
+API is the authority.
+
+| Column | Type | Notes |
+|---|---|---|
+| `granted_scheduling_id` | int FK → `scheduling.id`, nullable | what we *actually granted*, distinct from `billing_plan.scheduling_id` (the rule). They diverge the moment a plan is retuned; revocation removes this, and the divergence report compares it against the live assignment |
+| `flash_status` | str | Flash's status **verbatim and unvalidated** — their set is documented as open, so an unrecognised value must land here intact rather than be coerced |
+| `current_period_end` / `cancel_effective_date` | DateTime | when entitlement lapses |
+| `portal_url` | str, nullable | where Flash says to manage this subscription, **stored as read rather than derived** — deriving it would put our spelling of their routing on the page, and re-asking them would put every signed-in view behind their API. Null until a row's next sync |
+| `pricing_amount_minor` / `pricing_currency` / `pricing_billing_interval` | nullable | Flash's `pricingSnapshot`: what **this** subscriber is charged, as at the moment they bought. Stored because the only other source is the plan catalogue, which answers what is on sale *today* — so repricing a plan would rewrite what everyone already on it is told they pay while Flash went on charging the old amount. Null is **unpriced, never free**, and the card says nothing rather than a different number. Null until a row's next sync |
+
+### `FlashWebhookEvent` — `flash_webhook_event`
+
+An **inbox, not a ledger**. Never read to decide who is paid; it exists to collapse
+Flash's retries, recover events we acknowledged then dropped, and preserve statuses
+we don't yet map. Rows commit *before* the webhook is acknowledged — Flash stops
+retrying after a few attempts and never replays.
+
+| Column | Type | Notes |
+|---|---|---|
+| `dedupe_key` | str **UNIQUE** | identity of one delivery; the constraint is what makes a retry a no-op |
+| `event_timestamp` | DateTime | when the event *happened*, from Flash's body — the ordering signal |
+| `delivery_timestamp` | int | when Flash *attempted delivery*, from the signature header. Orders nothing: a retry of an old event carries a newer value |
+| `processing_started_at` / `processed_at` / `attempts` | — | claimed/finished markers. The webhook path sets `processing_started_at` **at insert** — it is the worker — or the sweep would treat every in-flight delivery as abandoned |
+| `payload` | JSONB, **nullable** | Flash's delivery, kept whole: it carries no personal data (verified against every event held and the documented schema), so nothing in it expires. Nullable only for the row shape; nothing nulls it — a payload still waiting to be applied must stay replayable. See [`docs/flash/lifecycle.md`](../../docs/flash/lifecycle.md) |
+
 ## Adding a new table
 
 1. New `class Foo(TimestampMixin, Base): __tablename__ = "foo"` in `__init__.py`.

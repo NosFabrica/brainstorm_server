@@ -1,4 +1,5 @@
 import enum
+from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
@@ -28,6 +29,14 @@ class BrainstormRequestStatus(enum.Enum):
     FAILURE = "failure"
 
 
+class SchedulingSource(enum.Enum):
+    """Who put a user on their scheduling policy. Billing declines to overrule ADMIN."""
+
+    DEFAULT = "default"
+    BILLING = "billing"
+    ADMIN = "admin"
+
+
 class TriggerSource(enum.Enum):
     MANUAL = "manual"
     SCHEDULED = "scheduled"
@@ -44,8 +53,10 @@ class TimestampMixin(object):
     def __tablename__(cls):
         return cls.__name__.lower()
 
-    created_at = mapped_column(DateTime, nullable=False, server_default=func.now())
-    updated_at = mapped_column(
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
@@ -160,6 +171,21 @@ class BrainstormNsec(TimestampMixin, Base):
         ForeignKey("scheduling.id"),
         nullable=True,
     )
+    # Barred from paid entitlement regardless of payment. Deliberately separate
+    # from scheduling_source: "blocked", "comped" and "billing-controlled" are
+    # three different states and must stay distinguishable. A blocked user is
+    # still charged until they cancel, so cancellation must never be gated on it.
+    billing_blocked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+    # See SchedulingSource. Billing only overwrites when this isn't ADMIN, so a
+    # comped user survives a lapse and stays distinguishable from a bug.
+    scheduling_source: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        server_default=SchedulingSource.DEFAULT.value,
+        default=SchedulingSource.DEFAULT.value,
+    )
 
 
 # Scheduling policies ("tiers"). DB-driven so policies (and their config) can be
@@ -199,6 +225,11 @@ class Scheduling(TimestampMixin, Base):
     is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # Whether this policy may reach /billing/plans. Off by default so an
+    # internal policy cannot leak onto a public pricing page by being created.
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
 
     __table_args__ = (
         # At most one default policy: partial unique index over the truthy rows.
@@ -209,6 +240,131 @@ class Scheduling(TimestampMixin, Base):
             postgresql_where=text("is_default"),
         ),
     )
+
+
+# What a Flash plan grants, and whether we sell it. Data rather than config:
+# dev and production are separate vaults with different UUIDs, so the mapping
+# travels with the database.
+#
+# A mapping and nothing more. Price, currency, billing period, name, ordering
+# and copy were transcribed here by hand while Flash had no way to read a plan
+# back — which is how staging recorded ten cents in dollars for a plan Flash
+# prices at a hundred sats, for weeks, with nothing able to notice. Flash
+# returns plan objects now, so every one of those columns is gone and
+# `GET /services/{id}` is the answer. Do not add one back.
+class BillingPlan(TimestampMixin, Base):
+    __tablename__ = "billing_plan"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    flash_service_id: Mapped[str] = mapped_column(String, nullable=False)
+    flash_plan_id: Mapped[str] = mapped_column(String, nullable=False)
+    # The policy this plan grants. It IS the tier: several plans may point at
+    # one policy (monthly beside yearly, a replacement beside the row it
+    # retires) and all of them grant identically.
+    scheduling_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("scheduling.id"), nullable=False
+    )
+    # Whether WE sell it — deliberately not Flash's `status`, which says
+    # whether THEY offer it. We may map only a subset of what they offer, and
+    # withdrawing a plan from sale is our decision alone. Sellable and nothing
+    # else: never filtered in the entitlement lookup.
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true", default=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("flash_service_id", "flash_plan_id", name="uq_billing_plan_flash_ids"),
+    )
+
+
+# Why a user is on the tier they're on. Never consulted to decide whether they
+# are paid — that is the scheduling assignment, and Flash's API is the authority.
+class UserSubscription(TimestampMixin, Base):
+    __tablename__ = "user_subscription"
+    pubkey: Mapped[str] = mapped_column(String, primary_key=True)
+    flash_subscription_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    flash_subscriber_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    billing_plan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("billing_plan.id"), nullable=False
+    )
+    # What we actually granted, distinct from billing_plan.scheduling_id (the
+    # rule). They diverge the moment a plan is retuned; revocation removes what
+    # was granted, and the divergence report compares this against the live
+    # assignment. NULL = recorded but nothing granted.
+    granted_scheduling_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("scheduling.id"), nullable=True
+    )
+    # Flash's status verbatim, unvalidated: their set is documented as open, so
+    # an unrecognised value must land here intact rather than be coerced.
+    flash_status: Mapped[str] = mapped_column(String, nullable=False)
+    current_period_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_billing_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    trial_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_effective_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Where Flash says to manage this subscription, recorded as read. Stored
+    # because re-asking Flash would put every signed-in page view behind their
+    # API; nullable because a row predates the column until its next sync.
+    portal_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Flash's `pricingSnapshot` — what THIS subscriber is charged, as at the
+    # moment they bought, rather than what the plan lists today. Null is
+    # unpriced, never zero: zero renders as "Free" to someone being charged.
+    # A row predating the column is unpriced until its next sync.
+    pricing_amount_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pricing_currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    pricing_billing_interval: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Kept, but off the wire: Flash's subscription object has no payment-method
+    # field, so this is structurally always null. Re-exposing it is one line the
+    # day they publish one; inferring it is how we'd invent a payment method.
+    rail: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Newest event timestamp seen for this subscriber; never moves backwards.
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    # When the *current* error first appeared. `last_synced_at` moves on every
+    # attempt and `updated_at` on every write, so neither can answer "how long
+    # has this been failing" — which is the only question that separates a
+    # blip from something that will never resolve. Cleared by a successful read.
+    sync_error_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# Inbound Flash webhooks. An inbox, not a ledger — never read to decide whether
+# someone is paid; that comes from Flash's API. It collapses Flash's retries,
+# recovers events we acknowledged then dropped, and preserves statuses we don't
+# yet map. Rows are committed before the 200, because Flash stops retrying after
+# a few attempts and never replays.
+class FlashWebhookEvent(TimestampMixin, Base):
+    __tablename__ = "flash_webhook_event"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Unconstrained: unrecognised events are recorded, never rejected.
+    event: Mapped[str] = mapped_column(String, nullable=False)
+    # When the event happened, per Flash's body. The ordering signal.
+    event_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # When Flash *attempted delivery*, from the signature header. A retry of an
+    # old event carries a newer value, so this orders nothing — audit only.
+    delivery_timestamp: Mapped[int] = mapped_column(Integer, nullable=False)
+    subscription_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
+    # Nullable only because a row can predate the payload column; Flash's
+    # deliveries carry no personal data, so nothing here expires.
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Claimed by a worker, so the recovery sweep can tell "in progress" from
+    # "abandoned". Written from the entitlement slice onward.
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    process_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Who settled this by hand, and as what. Null for everything the automatic
+    # path decided — a hand-granted entitlement should be as traceable as one a
+    # webhook produced.
+    resolved_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Identity of one delivery. UNIQUE is what makes a retry a no-op.
+    dedupe_key: Mapped[str] = mapped_column(String, nullable=False, unique=True)
 
 
 # Built-in GrapeRank presets. One row per template (DEFAULT, PERMISSIVE, RESTRICTIVE).
