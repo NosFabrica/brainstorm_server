@@ -41,6 +41,22 @@ def plans_for(service_id: str) -> list[dict]:
     return [plan for (service, _), plan in _plans.items() if service == service_id]
 
 
+def services() -> list[dict]:
+    """The services the mock plans imply: one per distinct `serviceId`."""
+    seen: dict[str, dict] = {}
+    for (service, _), plan in _plans.items():
+        seen.setdefault(
+            service,
+            {
+                "id": service,
+                "name": plan.get("serviceName") or service,
+                "description": None,
+                "signupUrl": None,
+            },
+        )
+    return list(seen.values())
+
+
 def clear() -> None:
     _subscriptions.clear()
     _plans.clear()

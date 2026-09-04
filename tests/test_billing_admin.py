@@ -694,6 +694,85 @@ def test_an_operator_can_force_one_subscriber_to_resynchronise(
     assert applied.await_args.kwargs["external_ref"] == PUBKEY
 
 
+# ---------------------------------------------------------------------------
+# The plan editor's pickers — what Flash holds, read live
+# ---------------------------------------------------------------------------
+def _flash_plan(plan_id="4f2a", sort_order=0):
+    from app.core.flash import FlashPlan
+
+    return FlashPlan(
+        id=plan_id,
+        service_id="9c1e",
+        name="Monthly",
+        description=None,
+        amount_minor=200,
+        currency="USD",
+        billing_interval="monthly",
+        sort_order=sort_order,
+        features=None,
+        not_included=None,
+        status="active",
+        signup_url="https://flash.example/subscriptions/signup/9c1e/" + plan_id,
+    )
+
+
+def test_the_service_picker_lists_what_flash_holds(billing_client, monkeypatch):
+    from app.core.flash import FlashService
+
+    monkeypatch.setattr(
+        "app.services.flash_catalog_service.fetch_services",
+        AsyncMock(
+            return_value=[
+                FlashService(
+                    id="9c1e", name="Brainstorm", description=None, signup_url=None
+                )
+            ]
+        ),
+    )
+
+    body = billing_client.get("/admin/billing/flash/services").json()
+
+    assert body["services"] == [
+        {"id": "9c1e", "name": "Brainstorm", "description": None, "signup_url": None}
+    ]
+
+
+def test_the_plan_picker_reads_flash_now_and_marks_what_is_already_mapped(
+    billing_client, monkeypatch
+):
+    """An operator who just edited a plan in Flash is asking what it is now,
+    and must not be offered a plan a mapping already claims."""
+    read = AsyncMock(return_value=[_flash_plan("b", 1), _flash_plan("a", 0)])
+    monkeypatch.setattr("app.services.flash_catalog_service.read_service_plans", read)
+    monkeypatch.setattr(
+        "app.services.flash_catalog_service.select_billing_plans_on_db",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(id=3, flash_service_id="9c1e", flash_plan_id="a")
+            ]
+        ),
+    )
+
+    body = billing_client.get("/admin/billing/flash/services/9c1e/plans").json()
+
+    assert read.await_args.kwargs == {"fresh": True}
+    assert [plan["id"] for plan in body["plans"]] == ["a", "b"]
+    assert [plan["mapping_id"] for plan in body["plans"]] == [3, None]
+
+
+def test_a_service_flash_does_not_hold_is_404_not_an_outage(
+    billing_client, monkeypatch
+):
+    from app.core.flash import FlashServiceMissing
+
+    monkeypatch.setattr(
+        "app.services.flash_catalog_service.read_service_plans",
+        AsyncMock(side_effect=FlashServiceMissing("typo")),
+    )
+
+    assert billing_client.get("/admin/billing/flash/services/typo/plans").status_code == 404
+
+
 def test_billing_visibility_survives_general_administration_being_off(
     billing_client, monkeypatch
 ):

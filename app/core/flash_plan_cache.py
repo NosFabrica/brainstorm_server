@@ -48,8 +48,12 @@ def last_good_key(service_id: str) -> str:
     return f"{_PREFIX}lkg:{service_id}"
 
 
-async def read_service_plans(service_id: str) -> list[FlashPlan]:
+async def read_service_plans(service_id: str, *, fresh: bool = False) -> list[FlashPlan]:
     """Every plan Flash offers on one service, from cache where possible.
+
+    `fresh=True` skips the short-lived copy and asks Flash now, rewriting both
+    cache entries on the way: for the operator's own reads, so a plan just
+    edited in Flash is what they see, and what the public page serves next.
 
     Raises `FlashUnavailable` only when Flash is unreadable AND we have never
     read it — the caller must be able to tell that from an empty catalogue.
@@ -65,15 +69,17 @@ async def read_service_plans(service_id: str) -> list[FlashPlan]:
 
         return [parse_plan(plan) for plan in flash_mock.plans_for(service_id)]
 
-    cached = await _load(fresh_key(service_id))
-    if cached is not None:
-        return cached
-
-    async with _reads.setdefault(service_id, asyncio.Lock()):
-        # Whoever held the lock has just refreshed it.
+    if not fresh:
         cached = await _load(fresh_key(service_id))
         if cached is not None:
             return cached
+
+    async with _reads.setdefault(service_id, asyncio.Lock()):
+        if not fresh:
+            # Whoever held the lock has just refreshed it.
+            cached = await _load(fresh_key(service_id))
+            if cached is not None:
+                return cached
         return await _refresh(service_id)
 
 

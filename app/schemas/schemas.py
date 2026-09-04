@@ -518,6 +518,41 @@ class BillingPlansData(BaseModel):
     plans: list[BillingPlanView]
 
 
+# The plan editor's two pickers: what Flash holds, read live, so an operator
+# chooses a service and a plan rather than typing ids.
+class FlashServiceItem(BaseModel):
+    id: str
+    name: str
+    description: str | None
+    signup_url: str | None
+
+
+class FlashServicesData(BaseModel):
+    services: list[FlashServiceItem]
+
+
+class FlashPlanItem(BaseModel):
+    """One plan as Flash offers it. `mapping_id` is set when a `billing_plan`
+    row already maps it, so the picker can show it as taken."""
+
+    id: str
+    service_id: str
+    name: str
+    description: str | None
+    amount_minor: int | None
+    currency: str
+    billing_interval: str | None
+    status: str
+    sort_order: int
+    signup_url: str | None
+    mapping_id: int | None
+
+
+class FlashServicePlansData(BaseModel):
+    service_id: str
+    plans: list[FlashPlanItem]
+
+
 class BillingPlanItem(CreatedAndUpdatedAtModel):
     """One plan mapping, as an operator sees it. Ids only — no secrets live here.
 

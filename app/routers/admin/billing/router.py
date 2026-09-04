@@ -16,6 +16,7 @@ from app.core.database import get_db
 from app.core.flash import (
     FlashCredentialError,
     FlashRefused,
+    FlashServiceMissing,
     FlashUnavailable,
     fetch_subscription_raw,
 )
@@ -30,6 +31,8 @@ from app.schemas.schemas import (
     CancelSubscriptionBody,
     CreateBillingPlanBody,
     DivergenceReportView,
+    FlashServicePlansData,
+    FlashServicesData,
     SetSubscriptionStatusBody,
     UnresolvedResolutionOutcome,
     UpdateBillingPlanBody,
@@ -46,6 +49,10 @@ from app.services.billing_service import (
     update_billing_plan,
 )
 from app.services.billing_visibility_service import build_divergence_response
+from app.services.flash_catalog_service import (
+    list_flash_service_plans,
+    list_flash_services,
+)
 from app.utils.auth.auth_models import JWTData
 from app.utils.rate_limiting.rate_limiting import validate_flash_record_read_allowed
 
@@ -334,6 +341,35 @@ async def dismiss_unresolved_endpoint(
         db, subscription_id=subscription_id, acting_pubkey=jwt_data.nostr_pubkey
     )
     return _resolution_response(outcome)
+
+
+@router.get(
+    path="/flash/services",
+    response_model=FlashServicesData,
+    summary="Billing: the services on our Flash account, read live",
+)
+async def list_flash_services_endpoint():
+    with _flash_failure_as_http():
+        return await list_flash_services()
+
+
+@router.get(
+    path="/flash/services/{service_id}/plans",
+    response_model=FlashServicePlansData,
+    summary="Billing: the plans Flash offers on one service, read live",
+)
+async def list_flash_service_plans_endpoint(
+    service_id: str,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    with _flash_failure_as_http():
+        try:
+            return await list_flash_service_plans(db, service_id)
+        except FlashServiceMissing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Flash has no service with this id.",
+            )
 
 
 @router.get(

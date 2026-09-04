@@ -831,6 +831,40 @@ async def fetch_service_plans_raw(service_id: str) -> dict:
     return body
 
 
+@dataclass(frozen=True)
+class FlashService:
+    """One service on our Flash account — what a plan mapping's `serviceId` names."""
+
+    id: str
+    name: str
+    description: str | None
+    signup_url: str | None
+
+
+def parse_service(raw: dict) -> FlashService:
+    return FlashService(
+        id=str(raw.get("id") or ""),
+        name=str(raw.get("name") or ""),
+        description=_text(raw.get("description")),
+        signup_url=_text(raw.get("signupUrl")),
+    )
+
+
+async def fetch_services() -> list[FlashService]:
+    """`GET /services` — every service on the account, read live. Admin-only
+    caller, so no cache: an operator picking a service wants what Flash holds now."""
+    if settings.flash_mock_enabled:
+        from app.core import flash_mock
+
+        return [parse_service(service) for service in flash_mock.services()]
+
+    body = await _read_body(_services_url(), {}) or {}
+    raw = body.get("services")
+    if not isinstance(raw, list):
+        return []
+    return [parse_service(service) for service in raw if isinstance(service, dict)]
+
+
 def _runs_until(row: dict) -> datetime:
     """How long a row entitles, as a moment — never as the string Flash sent.
 

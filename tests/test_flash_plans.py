@@ -76,6 +76,20 @@ def test_a_second_visit_does_not_ask_flash_again(redis, monkeypatch):
     assert [plan.id for plan in first] == [plan.id for plan in second] == ["4f2a"]
 
 
+def test_an_operator_read_asks_flash_now_and_refreshes_the_public_copy(
+    redis, monkeypatch
+):
+    """The admin editing a plan in Flash wants what it is now, not what the
+    cache held five minutes ago — and their look should catch the page up."""
+    reader = _flash(monkeypatch)
+    asyncio.run(cache.read_service_plans(SERVICE))
+
+    asyncio.run(cache.read_service_plans(SERVICE, fresh=True))
+
+    assert reader.await_count == 2
+    assert [key for key, _, _ in redis.sets].count(cache.fresh_key(SERVICE)) == 2
+
+
 def test_an_unreachable_flash_serves_the_last_copy_we_had(redis, monkeypatch):
     """A plan must not vanish from the pricing page because Flash blinked."""
     _flash(monkeypatch)
