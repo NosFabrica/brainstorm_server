@@ -10,9 +10,17 @@ waiting for a complaint.
 from dataclasses import dataclass
 from datetime import timedelta
 
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
+from app.core.flash import (
+    CANCELLED_STATUS,
+    ENDED_STATUSES,
+    ENTITLING_STATUSES,
+    PAST_DUE_STATUS,
+    PENDING_STATUS,
+)
 from app.repos.flash_webhook_event_repo import (
     select_exhausted_events_on_db,
     select_unmapped_plan_events_on_db,
@@ -27,18 +35,27 @@ from app.repos.user_subscription_repo import (
     select_stale_syncs_on_db,
     select_unrecognised_statuses_on_db,
 )
-from app.services.billing_service import (
-    CANCELLED_STATUS,
-    ENDED_STATUSES,
-    ENTITLING_STATUSES,
-    EntitlementReason,
-    utc_now,
+from app.schemas.schemas import (
+    AbandonedCheckoutRow,
+    DivergenceReportView,
+    DivergenceSection,
+    ExhaustedEventRow,
+    FailingSyncRow,
+    PolicyMismatchRow,
+    RetiredPlanSubscriberRow,
+    StaleSyncRow,
+    UnmappedPlanRow,
+    UnrecognisedStatusRow,
+    UnresolvedSignupRow,
 )
+from app.services.billing_service import EntitlementReason, utc_now
 
 # Everything decide_entitlement knows how to act on. Anything else is a status
 # Flash has started sending that we hold subscribers on indefinitely.
 KNOWN_STATUSES = sorted(
-    ENTITLING_STATUSES | ENDED_STATUSES | {CANCELLED_STATUS, "past_due", "pending"}
+    ENTITLING_STATUSES
+    | ENDED_STATUSES
+    | {CANCELLED_STATUS, PAST_DUE_STATUS, PENDING_STATUS}
 )
 
 
@@ -70,33 +87,33 @@ class DivergenceReport:
     retired_plan_subscribers: list
 
 
-def _section(rows: list) -> dict:
-    return {
-        "count": len(rows),
-        "truncated": len(rows) >= ROW_LIMIT,
-        "rows": [dict(row._mapping) for row in rows],
-    }
+def _section(rows: list, row_model: type[BaseModel]) -> DivergenceSection:
+    return DivergenceSection(
+        count=len(rows),
+        truncated=len(rows) >= ROW_LIMIT,
+        rows=[row_model.model_validate(row, from_attributes=True) for row in rows],
+    )
 
 
-async def build_divergence_response(db: AsyncDBSession) -> dict[str, dict]:
-    """The report as the API returns it.
-
-    Keys are written out rather than reflected off the dataclass: a renamed
-    field would otherwise quietly rename a JSON key that a caller depends on.
-    """
+async def build_divergence_response(db: AsyncDBSession) -> DivergenceReportView:
+    """The report as the API returns it, one named section per disagreement."""
     report = await build_divergence_report(db)
-    return {
-        "policy_mismatch": _section(report.policy_mismatch),
-        "admin_overrides": _section(report.admin_overrides),
-        "stale_syncs": _section(report.stale_syncs),
-        "failing_syncs": _section(report.failing_syncs),
-        "unresolved_signups": _section(report.unresolved_signups),
-        "unmapped_plans": _section(report.unmapped_plans),
-        "unrecognised_statuses": _section(report.unrecognised_statuses),
-        "exhausted_events": _section(report.exhausted_events),
-        "abandoned_checkouts": _section(report.abandoned_checkouts),
-        "retired_plan_subscribers": _section(report.retired_plan_subscribers),
-    }
+    return DivergenceReportView(
+        policy_mismatch=_section(report.policy_mismatch, PolicyMismatchRow),
+        admin_overrides=_section(report.admin_overrides, PolicyMismatchRow),
+        stale_syncs=_section(report.stale_syncs, StaleSyncRow),
+        failing_syncs=_section(report.failing_syncs, FailingSyncRow),
+        unresolved_signups=_section(report.unresolved_signups, UnresolvedSignupRow),
+        unmapped_plans=_section(report.unmapped_plans, UnmappedPlanRow),
+        unrecognised_statuses=_section(
+            report.unrecognised_statuses, UnrecognisedStatusRow
+        ),
+        exhausted_events=_section(report.exhausted_events, ExhaustedEventRow),
+        abandoned_checkouts=_section(report.abandoned_checkouts, AbandonedCheckoutRow),
+        retired_plan_subscribers=_section(
+            report.retired_plan_subscribers, RetiredPlanSubscriberRow
+        ),
+    )
 
 
 async def build_divergence_report(db: AsyncDBSession) -> DivergenceReport:

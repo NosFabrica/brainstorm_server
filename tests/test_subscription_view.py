@@ -18,6 +18,7 @@ import pytest
 from app.core.config import settings
 from app.core.database import get_db
 from app.services import subscription_view_service as view_svc
+from app.services.billing_service import EntitlementOutcome, EntitlementReason
 from app.services.subscription_view_service import _translate
 
 NOW = datetime(2026, 8, 25, 12, 0, 0)
@@ -535,22 +536,27 @@ def _stub_refresh(monkeypatch, applied):
     _stub_view(monkeypatch)
 
 
+def _outcome(reason=EntitlementReason.GRANTED, applied=True) -> AsyncMock:
+    return AsyncMock(return_value=EntitlementOutcome(applied=applied, reason=reason))
+
+
 def test_refresh_verifies_the_subscription_the_redirect_named(
     subscription_client, monkeypatch, caller
 ):
     """The guide's return path: verify THAT subscription, against the reference
     we already know. The id is a handle, never an authority — what makes it safe
     to accept is that the lookup is still checked against the signed-in caller."""
-    applied = AsyncMock(return_value=SimpleNamespace(applied=True))
+    applied = _outcome()
     _stub_refresh(monkeypatch, applied)
 
-    subscription_client.post(
+    response = subscription_client.post(
         "/user/subscription/refresh",
         json={"subscription_id": "7d3b", "ref": "b" * 64},
     )
 
     assert applied.await_args.kwargs["subscription_id"] == "7d3b"
     assert applied.await_args.kwargs["external_ref"] == caller.pubkey
+    assert response.json()["data"]["verification"] == "verified"
 
 
 def test_a_return_carrying_no_id_still_polls_by_reference(
@@ -559,13 +565,38 @@ def test_a_return_carrying_no_id_still_polls_by_reference(
     """Flash issues no `subscriptionId` for a `pending` checkout, so the
     reference poll is the guide's own instruction for that case, not a
     fallback of ours. An empty body must keep working exactly as before."""
-    applied = AsyncMock(return_value=SimpleNamespace(applied=True))
+    applied = _outcome()
     _stub_refresh(monkeypatch, applied)
 
-    subscription_client.post("/user/subscription/refresh")
+    response = subscription_client.post("/user/subscription/refresh")
 
     assert applied.await_args.kwargs["subscription_id"] is None
     assert applied.await_args.kwargs["external_ref"] == caller.pubkey
+    assert response.json()["data"]["verification"] == "not_given"
+
+
+@pytest.mark.parametrize(
+    "reason,verification",
+    [
+        (EntitlementReason.REFERENCE_MISMATCH, "mismatch"),
+        (EntitlementReason.NO_REFERENCE, "mismatch"),
+        (EntitlementReason.UNKNOWN_SUBSCRIPTION, "unknown"),
+        (EntitlementReason.UNKNOWN_PLAN, "verified"),
+        (EntitlementReason.HELD, "verified"),
+    ],
+)
+def test_a_refused_id_is_reported_as_refused_not_as_still_confirming(
+    subscription_client, monkeypatch, reason, verification
+):
+    """Someone who paid as one account and returned as another must not be
+    told their payment is confirming, then that nothing was charged."""
+    _stub_refresh(monkeypatch, _outcome(reason=reason, applied=False))
+
+    response = subscription_client.post(
+        "/user/subscription/refresh", json={"subscription_id": "7d3b"}
+    )
+
+    assert response.json()["data"]["verification"] == verification
 
 
 def test_refresh_answers_with_what_we_hold_when_flash_is_unreachable(
@@ -583,10 +614,13 @@ def test_refresh_answers_with_what_we_hold_when_flash_is_unreachable(
     )
     _stub_view(monkeypatch)
 
-    response = subscription_client.post("/user/subscription/refresh")
+    response = subscription_client.post(
+        "/user/subscription/refresh", json={"subscription_id": "7d3b"}
+    )
 
     assert response.status_code == 200
     assert response.json()["data"]["policy"]["is_default"] is True
+    assert response.json()["data"]["verification"] == "unavailable"
 
 
 # ---------------------------------------------------------------------------

@@ -10,15 +10,21 @@ an unrecognised status or an unmapped plan all leave the policy alone.
 import enum
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.flash import (
     CANCELLATION_IMMEDIATE,
+    CANCELLED_STATUS,
+    ENDED_STATUSES,
+    ENTITLING_STATUSES,
+    PAST_DUE_STATUS,
     FlashCredentialError,
     FlashLifecyclePolicy,
     FlashSubscription,
     FlashUnavailable,
+    SettableStatus,
     cancel_subscription,
     fetch_subscription,
     set_subscription_status,
@@ -58,13 +64,8 @@ from app.repos.scheduling_repo import get_scheduling_on_db, scheduling_exists_on
 
 logger = loggr.get_logger(__name__)
 
-# Flash's status set is documented as OPEN, so both of these are allow-lists and
-# anything unlisted falls through to HOLD. That asymmetry is the whole design:
-# a status we don't recognise can neither grant a tier nor take one away.
-ENTITLING_STATUSES = frozenset({"active", "trial"})
-ENDED_STATUSES = frozenset({"expired", "paused"})
-CANCELLED_STATUS = "canceled"
-PAST_DUE_STATUS = "past_due"
+# The status allow-lists live in `core/flash.py` and are imported above; the
+# decision table below is the only reader that turns them into an action.
 
 
 class EntitlementDecision(enum.Enum):
@@ -378,6 +379,25 @@ async def apply_entitlement(
             applied=False, reason=EntitlementReason.REFERENCE_MISMATCH
         )
 
+    # Locked above, so a plain read; the row may not exist yet.
+    existing = await get_user_subscription_on_db(db, external_ref)
+    if _names_another_subscription(existing, subscription):
+        # A re-subscribe leaves more than one row under one ref, and the id in
+        # hand — an old redirect replayed, or a late `expired` for the previous
+        # subscription — may name the one that no longer decides anything.
+        # Deciding from it alone would revoke someone who is paying, so ask by
+        # reference, which picks the row that still entitles.
+        current = await fetch_subscription(ref=external_ref)
+        if current is not None:
+            logger.info(
+                "%s: subscription %s is not the one on file (%s); deciding from %s",
+                external_ref,
+                subscription.id,
+                existing.flash_subscription_id,
+                current.id,
+            )
+            subscription = current
+
     plan = await get_billing_plan_on_db(
         db,
         flash_service_id=subscription.service_id,
@@ -392,7 +412,18 @@ async def apply_entitlement(
         )
         return EntitlementOutcome(applied=False, reason=EntitlementReason.UNKNOWN_PLAN)
 
-    return await _grant_and_record(db, external_ref, subscription, plan, utc_now())
+    return await _grant_and_record(
+        db, external_ref, subscription, plan, utc_now(), existing=existing
+    )
+
+
+def _names_another_subscription(existing, subscription: FlashSubscription) -> bool:
+    return bool(
+        subscription.ref
+        and existing is not None
+        and existing.flash_subscription_id
+        and existing.flash_subscription_id != subscription.id
+    )
 
 
 async def _grant_and_record(
@@ -401,11 +432,9 @@ async def _grant_and_record(
     subscription: FlashSubscription,
     plan: BillingPlan,
     now: datetime,
+    *,
+    existing,
 ) -> EntitlementOutcome:
-    # apply_entitlement already holds the subscriber's lock, so this is a plain
-    # read — the row may not exist yet on a first subscription.
-    existing = await get_user_subscription_on_db(db, pubkey)
-
     resolution = resolve_entitlement(
         decide_entitlement(
             subscription.status,
@@ -666,7 +695,7 @@ async def cancel_subscriber_subscription(
 
 
 async def set_subscriber_subscription_status(
-    db: AsyncDBSession, *, pubkey: str, flash_status: str, acting_pubkey: str
+    db: AsyncDBSession, *, pubkey: str, flash_status: SettableStatus, acting_pubkey: str
 ) -> SubscriptionActionOutcome:
     """Pause a subscriber's subscription, or put it back."""
     return await _act_on_subscription(
@@ -686,7 +715,7 @@ async def _act_on_subscription(
     pubkey: str,
     acting_pubkey: str,
     action: str,
-    write,
+    write: Callable[[str], Awaitable[FlashSubscription | None]],
 ) -> SubscriptionActionOutcome:
     """Write to Flash, then re-read the subscriber through the ordinary path.
 
@@ -730,7 +759,7 @@ async def _act_on_subscription(
     # The subscriber is left for the next webhook or resync to reconcile.
     try:
         outcome = await apply_entitlement(
-            db, external_ref=pubkey, subscription_id=None
+            db, external_ref=pubkey, subscription_id=held.flash_subscription_id
         )
         reason = outcome.reason.value
         applied = outcome.applied

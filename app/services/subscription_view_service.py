@@ -36,11 +36,13 @@ from app.repos.brainstorm_nsec import get_assigned_scheduling_id_on_db
 from app.schemas.schemas import (
     BillingPlanView,
     BillingPlansData,
+    RefreshedSubscriptionView,
     SubscriptionPlanView,
     SubscriptionPolicyView,
+    SubscriptionVerification,
     SubscriptionView,
 )
-from app.services.billing_service import EntitlementReason, utc_now
+from app.services.billing_service import EntitlementOutcome, EntitlementReason, utc_now
 
 logger = loggr.get_logger(__name__)
 
@@ -134,6 +136,39 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
         # is no link, and so is a subscription Flash named no portal for —
         # nothing here spells one out of a base URL any more.
         manage_url=row.portal_url if row else None,
+    )
+
+
+# Only the outcomes that say something about the id itself; every other reason
+# means Flash confirmed it carries the caller's reference.
+_VERIFICATION_BY_REASON: dict[EntitlementReason, SubscriptionVerification] = {
+    EntitlementReason.REFERENCE_MISMATCH: "mismatch",
+    EntitlementReason.NO_REFERENCE: "mismatch",
+    EntitlementReason.UNKNOWN_SUBSCRIPTION: "unknown",
+}
+
+
+def verification_of(
+    outcome: EntitlementOutcome | None, *, id_given: bool
+) -> SubscriptionVerification:
+    if not id_given:
+        return "not_given"
+    if outcome is None:
+        return "unavailable"
+    return _VERIFICATION_BY_REASON.get(outcome.reason, "verified")
+
+
+async def read_refreshed_subscription_view(
+    db: AsyncDBSession,
+    pubkey: str,
+    *,
+    outcome: EntitlementOutcome | None,
+    id_given: bool,
+) -> RefreshedSubscriptionView:
+    """The subscriber's view plus what the refresh learned about the id."""
+    view = await read_subscription_view(db, pubkey)
+    return RefreshedSubscriptionView(
+        verification=verification_of(outcome, id_given=id_given), **dict(view)
     )
 
 

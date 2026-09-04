@@ -9,6 +9,7 @@ which calls happen (and which don't), not persistence.
 """
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -237,6 +238,36 @@ def test_a_subscription_that_names_nobody_moves_nobody(billing):
     billing.upsert.assert_not_awaited()
 
 
+def test_an_id_for_a_superseded_subscription_is_decided_from_the_current_one(billing):
+    """A re-subscribe leaves two rows under one ref. An old redirect replayed, or
+    a late `expired` for the previous subscription, names the one that no longer
+    decides anything — deciding from it alone would revoke someone who is paying."""
+    stale = replace(_subscription(status="canceled"), id="old")
+    current = _subscription(status="active")
+    billing.fetch.side_effect = [stale, current]
+    billing.existing.return_value = SimpleNamespace(
+        flash_subscription_id=SUBSCRIPTION_ID, granted_scheduling_id=None
+    )
+
+    outcome = asyncio.run(
+        apply_entitlement(billing.db, external_ref=PUBKEY, subscription_id="old")
+    )
+
+    assert outcome.reason is EntitlementReason.GRANTED
+    assert billing.fetch.await_args_list[1].kwargs == {"ref": PUBKEY}
+    assert billing.upsert.await_args.kwargs["subscription"] is current
+
+
+def test_an_id_matching_the_row_on_file_is_read_once(billing):
+    billing.existing.return_value = SimpleNamespace(
+        flash_subscription_id=SUBSCRIPTION_ID, granted_scheduling_id=None
+    )
+
+    _apply(billing)
+
+    assert billing.fetch.await_count == 1
+
+
 def test_an_operator_attributing_by_hand_is_the_one_way_that_grants(billing):
     """An unresolved signup names nobody by definition, so attribution has to be
     able to grant one — and it is the only caller that can, because it is the
@@ -268,7 +299,9 @@ def test_a_subscription_that_does_not_entitle_moves_nobody(billing):
 def test_a_lapsed_status_keeps_the_record_of_what_was_granted(billing):
     """Blanking it would leave slice 03 with nothing to take back, while the
     user sits on a tier no record accounts for."""
-    billing.existing.return_value = SimpleNamespace(granted_scheduling_id=PAID_SCHEDULING_ID)
+    billing.existing.return_value = SimpleNamespace(
+        flash_subscription_id=SUBSCRIPTION_ID, granted_scheduling_id=PAID_SCHEDULING_ID
+    )
     billing.fetch.return_value = _subscription(status="past_due")
 
     _apply(billing)
@@ -376,7 +409,9 @@ def test_an_ended_subscription_loses_the_policy(billing):
 
 
 def test_revocation_clears_the_recorded_grant(billing):
-    billing.existing.return_value = SimpleNamespace(granted_scheduling_id=PAID_SCHEDULING_ID)
+    billing.existing.return_value = SimpleNamespace(
+        flash_subscription_id=SUBSCRIPTION_ID, granted_scheduling_id=PAID_SCHEDULING_ID
+    )
     billing.fetch.return_value = _subscription(status="expired")
 
     _apply(billing)

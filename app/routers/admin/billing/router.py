@@ -29,7 +29,7 @@ from app.schemas.schemas import (
     BillingSubscriptionItem,
     CancelSubscriptionBody,
     CreateBillingPlanBody,
-    DivergenceSection,
+    DivergenceReportView,
     SetSubscriptionStatusBody,
     UnresolvedResolutionOutcome,
     UpdateBillingPlanBody,
@@ -87,7 +87,7 @@ async def list_billing_subscriptions_endpoint(
 
 @router.get(
     path="/divergence",
-    response_model=dict[str, DivergenceSection],
+    response_model=DivergenceReportView,
     summary="Billing: everything nobody has settled",
 )
 async def billing_divergence_endpoint(

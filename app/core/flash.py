@@ -165,6 +165,14 @@ class FlashLifecyclePolicy:
 # behind it, and unknown never revokes.
 UNKNOWN_LIFECYCLE_POLICY = FlashLifecyclePolicy()
 
+# Flash's status set is documented as OPEN, so these are allow-lists; anything
+# unlisted is held, neither granted nor revoked.
+ENTITLING_STATUSES = frozenset({"active", "trial"})
+ENDED_STATUSES = frozenset({"expired", "paused"})
+CANCELLED_STATUS = "canceled"
+PAST_DUE_STATUS = "past_due"
+PENDING_STATUS = "pending"
+
 
 @dataclass(frozen=True)
 class FlashSubscription:
@@ -727,7 +735,7 @@ def _choose_subscription(subscriptions: list) -> dict | None:
     if not rows:
         return None
 
-    live = [row for row in rows if row.get("status") in ("active", "trial")] or rows
+    live = [row for row in rows if row.get("status") in ENTITLING_STATUSES] or rows
     return max(live, key=_runs_until)
 
 

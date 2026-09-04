@@ -13,7 +13,7 @@ one running longest.
 from dataclasses import replace
 from datetime import datetime
 
-from app.core.flash import FlashPricing, FlashSubscription
+from app.core.flash import ENTITLING_STATUSES, FlashPricing, FlashSubscription
 
 _subscriptions: dict[str, FlashSubscription] = {}
 # Plans, in Flash's own field names — the shape `GET /services/{id}` returns,
@@ -77,7 +77,7 @@ def lookup(
     matches = _matches(subscription_id, ref)
     if not matches:
         return None
-    live = [row for row in matches if row.status in ("active", "trial")] or matches
+    live = [row for row in matches if row.status in ENTITLING_STATUSES] or matches
     return max(live, key=lambda row: row.current_period_end or datetime.min)
 
 

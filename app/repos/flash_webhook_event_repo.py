@@ -147,10 +147,8 @@ async def settle_unresolved_events_on_db(
     would keep the sweep re-checking a subscription somebody has already
     resolved.
 
-    Writing `processed_at` is what stops that re-checking, and it is also what
-    makes the row prunable — an unattributed event is never processed, so its
-    payload keeps the subscriber's email for as long as it takes to match them,
-    and ages out normally from the moment it is settled.
+    Writing `processed_at` is what stops that re-checking: an unattributed event
+    is never processed, so nothing else would ever mark it settled.
     """
     statement = (
         update(FlashWebhookEvent)

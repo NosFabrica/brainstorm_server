@@ -1,15 +1,15 @@
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Generic, Literal, TypeVar
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    field_serializer,
+    PlainSerializer,
     model_validator,
 )
 
-from app.core.flash import is_whole_day_boundary
+from app.core.flash import SettableStatus, is_whole_day_boundary
 from app.schemas.error_codes import ErrorCode
 
 
@@ -32,6 +32,17 @@ def _billing_date_wire_format(value: datetime | None) -> str | None:
     if value is not None and is_whole_day_boundary(value):
         return value.date().isoformat()
     return _instant_wire_format(value)
+
+
+# Our own timestamps (naive UTC in the DB) go out as instants; Flash's billing
+# dates go out in the shape Flash named them. Annotate the field, no serializer.
+Instant = Annotated[
+    datetime | None, PlainSerializer(_instant_wire_format, return_type=str | None)
+]
+BillingDate = Annotated[
+    datetime | None,
+    PlainSerializer(_billing_date_wire_format, return_type=str | None),
+]
 
 
 #################
@@ -271,15 +282,15 @@ class BillingSubscriptionItem(BaseModel):
     # The billing dates as Flash reports them. next_billing_date is what
     # answers "when is this person charged again" — without it an operator
     # cannot tell a renewal that is due from one that has silently stopped.
-    current_period_start: datetime | None = None
-    current_period_end: datetime | None = None
-    next_billing_date: datetime | None = None
+    current_period_start: BillingDate = None
+    current_period_end: BillingDate = None
+    next_billing_date: BillingDate = None
     # Set means this subscription ends then, however `flash_status` reads —
     # under the account's end-of-period policy a cancelled subscriber stays
     # `active` until the date lands, so the column is the only thing that
     # separates "renews then" from "ends then".
-    cancel_effective_date: datetime | None = None
-    last_synced_at: datetime | None = None
+    cancel_effective_date: BillingDate = None
+    last_synced_at: Instant = None
     last_sync_error: str | None = None
     granted_scheduling_id: int | None = None
     granted_scheduling_name: str | None = None
@@ -290,28 +301,94 @@ class BillingSubscriptionItem(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    @field_serializer(
-        "current_period_start",
-        "current_period_end",
-        "next_billing_date",
-        "cancel_effective_date",
-    )
-    def _serialize_billing_date(self, value: datetime | None) -> str | None:
-        return _billing_date_wire_format(value)
 
-    @field_serializer("last_synced_at")
-    def _serialize_instant(self, value: datetime | None) -> str | None:
-        # Ours, not Flash's, and always a real instant.
-        return _instant_wire_format(value)
+# Divergence rows, one model per section so the API documents what each carries.
+class PolicyMismatchRow(BaseModel):
+    pubkey: str
+    flash_status: str
+    granted_scheduling_id: int | None
+    scheduling_id: int | None
+    scheduling_source: str
 
 
-class DivergenceSection(BaseModel):
+class StaleSyncRow(BaseModel):
+    pubkey: str
+    flash_status: str
+    last_synced_at: Instant
+
+
+class FailingSyncRow(BaseModel):
+    pubkey: str
+    last_sync_error: str | None
+    last_synced_at: Instant
+
+
+class UnresolvedSignupRow(BaseModel):
+    id: int
+    event: str
+    created_at: Instant
+    process_error: str | None
+    flash_subscription_id: str | None
+
+
+class UnmappedPlanRow(UnresolvedSignupRow):
+    external_ref: str | None
+    flash_service_id: str | None
+    flash_plan_id: str | None
+
+
+class UnrecognisedStatusRow(BaseModel):
+    flash_status: str
+    subscribers: int
+
+
+class ExhaustedEventRow(BaseModel):
+    id: int
+    event: str
+    attempts: int
+    process_error: str | None
+
+
+class AbandonedCheckoutRow(BaseModel):
+    pubkey: str
+    flash_subscription_id: str | None
+    sync_error_since: Instant
+
+
+class RetiredPlanSubscriberRow(BaseModel):
+    pubkey: str
+    flash_subscription_id: str | None
+    flash_status: str
+    billing_plan_id: int | None
+    granted_scheduling_id: int | None
+
+
+RowT = TypeVar("RowT", bound=BaseModel)
+
+
+class DivergenceSection(BaseModel, Generic[RowT]):
     """One kind of disagreement. `truncated` is explicit because a capped list
     that looks complete is worse than one that admits it isn't."""
 
     count: int
     truncated: bool
-    rows: list[dict]
+    rows: list[RowT]
+
+
+class DivergenceReportView(BaseModel):
+    """Everything nobody has settled, one named section per kind. Keys are
+    spelled out here so a renamed field cannot quietly rename a JSON key."""
+
+    policy_mismatch: DivergenceSection[PolicyMismatchRow]
+    admin_overrides: DivergenceSection[PolicyMismatchRow]
+    stale_syncs: DivergenceSection[StaleSyncRow]
+    failing_syncs: DivergenceSection[FailingSyncRow]
+    unresolved_signups: DivergenceSection[UnresolvedSignupRow]
+    unmapped_plans: DivergenceSection[UnmappedPlanRow]
+    unrecognised_statuses: DivergenceSection[UnrecognisedStatusRow]
+    exhausted_events: DivergenceSection[ExhaustedEventRow]
+    abandoned_checkouts: DivergenceSection[AbandonedCheckoutRow]
+    retired_plan_subscribers: DivergenceSection[RetiredPlanSubscriberRow]
 
 
 class SubscriptionPolicyView(BaseModel):
@@ -374,25 +451,30 @@ class SubscriptionView(BaseModel):
     policy: SubscriptionPolicyView | None
     plan: SubscriptionPlanView | None
     status: str
-    current_period_start: datetime | None
-    current_period_end: datetime | None
-    next_billing_date: datetime | None
+    current_period_start: BillingDate
+    current_period_end: BillingDate
+    next_billing_date: BillingDate
     # Set once the subscriber has cancelled but the paid period is still
     # running. Flash reports that state as `active` with a date, so status
     # alone cannot distinguish "renews on the 1st" from "ends on the 1st" —
     # they are still entitled either way, which is why this is a field rather
     # than a status.
-    cancel_effective_date: datetime | None
+    cancel_effective_date: BillingDate
     manage_url: str | None
 
-    @field_serializer(
-        "current_period_start",
-        "current_period_end",
-        "next_billing_date",
-        "cancel_effective_date",
-    )
-    def _serialize_billing_date(self, value: datetime | None) -> str | None:
-        return _billing_date_wire_format(value)
+
+# What a refresh found out about the id the checkout return handed over.
+# `verified`: Flash confirms it carries the caller's reference. `mismatch`: it
+# exists but names someone else, or nobody. `unknown`: Flash has no such
+# subscription. `not_given`: a `pending` return, read by reference instead.
+# `unavailable`: Flash could not be asked; the view is what we already held.
+SubscriptionVerification = Literal[
+    "verified", "mismatch", "unknown", "not_given", "unavailable"
+]
+
+
+class RefreshedSubscriptionView(SubscriptionView):
+    verification: SubscriptionVerification
 
 
 class BillingPlanView(BaseModel):
@@ -513,7 +595,7 @@ class SetSubscriptionStatusBody(BaseModel):
     """Pause, or put back. Cancellation is its own endpoint, because it carries a
     reason, an effective date, and consequences a pause does not."""
 
-    status: Literal["paused", "active"]
+    status: SettableStatus
 
 
 class BillingSubscriptionActionOutcome(BaseModel):
@@ -527,7 +609,7 @@ class BillingSubscriptionActionOutcome(BaseModel):
     pubkey: str
     subscription_id: str
     flash_status: str
-    cancel_effective_date: datetime | None = None
+    cancel_effective_date: BillingDate = None
     # The field to read after a cancellation, never `flash_status` — see
     # `flash.cancel_subscription` for why the status stays `active`.
     cancellation_scheduled: bool
@@ -537,10 +619,6 @@ class BillingSubscriptionActionOutcome(BaseModel):
     reason: str
 
     model_config = ConfigDict(from_attributes=True)
-
-    @field_serializer("cancel_effective_date")
-    def _serialize_billing_date(self, value: datetime | None) -> str | None:
-        return _billing_date_wire_format(value)
 
 
 class AttributeUnresolvedBody(BaseModel):

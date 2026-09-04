@@ -42,12 +42,10 @@ Four duties per cycle, in order of how far they can be trusted:
 2. **Revoke what has provably lapsed** — locally decidable, no network.
 3. **Re-read Flash for what is not** — `past_due` rows, ones still recorded
    `active` past their period end, and anything not asked about lately.
-4. **Drop personal data from old events**, keeping the audit trail and the
-   redelivery protection.
 
 - **Safe on N replicas.** Correctness does not rest on the leader lock: replay
   claims each event through the database (`UPDATE … WHERE` decides, not whoever
-  read first) and the other three are idempotent. The lock is there so N
+  read first) and the other two are idempotent. The lock is there so N
   replicas don't all ask Flash the same questions.
 - **The lock's TTL covers one cycle's work, not the gap between cycles.** At a
   six-hour interval nothing renews it — there is no second acquisition inside

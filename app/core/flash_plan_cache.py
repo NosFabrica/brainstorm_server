@@ -54,6 +54,8 @@ async def read_service_plans(service_id: str) -> list[FlashPlan]:
     Raises `FlashUnavailable` only when Flash is unreadable AND we have never
     read it — the caller must be able to tell that from an empty catalogue.
     `FlashServiceMissing` passes through: our configuration names nothing.
+    `read_plans_for_services` catches both per service, so one bad id degrades
+    the page rather than refusing it.
     """
     if settings.flash_mock_enabled:
         # Deliberately ahead of the cache and never written to it: the LOCAL

@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import execute_db_statement
-from app.core.flash import FlashSubscription
+from app.core.flash import PAST_DUE_STATUS, PENDING_STATUS, FlashSubscription
 from app.db_models import (
     BillingPlan,
     BrainstormNsec,
@@ -290,7 +290,7 @@ async def select_reconcile_candidates_on_db(
         select(UserSubscription)
         .where(
             or_(
-                UserSubscription.flash_status.in_(("past_due", "pending")),
+                UserSubscription.flash_status.in_((PAST_DUE_STATUS, PENDING_STATUS)),
                 and_(
                     UserSubscription.flash_status == "active",
                     UserSubscription.current_period_end.is_not(None),

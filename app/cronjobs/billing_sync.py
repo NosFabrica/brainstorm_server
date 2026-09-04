@@ -8,8 +8,6 @@ Four duties, in order of how much they can be trusted:
 2. **Revoke what has provably lapsed** — locally decidable, no network.
 3. **Re-read Flash for what is not** — a `past_due` row, one still recorded
    `active` past its period end, or one we haven't asked about lately.
-4. **Drop personal data from old events**, keeping the audit trail and the
-   redelivery protection.
 
 Correctness does not depend on the leader lock: replay claims each event through
 the database, and the other three are idempotent. The lock is there so N

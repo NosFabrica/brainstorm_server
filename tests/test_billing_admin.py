@@ -185,7 +185,15 @@ def test_the_roster_hands_an_operator_the_day_flash_named():
 def test_a_divergence_report_names_each_disagreement(billing_client, monkeypatch):
     report = AsyncMock(
         return_value=SimpleNamespace(
-            policy_mismatch=[SimpleNamespace(_mapping={"pubkey": PUBKEY})],
+            policy_mismatch=[
+                SimpleNamespace(
+                    pubkey=PUBKEY,
+                    flash_status="active",
+                    granted_scheduling_id=7,
+                    scheduling_id=None,
+                    scheduling_source="billing",
+                )
+            ],
             admin_overrides=[],
             stale_syncs=[],
             failing_syncs=[],
@@ -230,7 +238,11 @@ def test_subscribers_on_a_retired_plan_are_visible_and_reachable_in_flash(
                 abandoned_checkouts=[],
                 retired_plan_subscribers=[
                     SimpleNamespace(
-                        _mapping={"pubkey": PUBKEY, "flash_subscription_id": "7d3b"}
+                        pubkey=PUBKEY,
+                        flash_subscription_id="7d3b",
+                        flash_status="active",
+                        billing_plan_id=1,
+                        granted_scheduling_id=7,
                     )
                 ],
             )
@@ -280,6 +292,20 @@ def _flash_subscription(status="active", cancel_effective_date=None):
     return SimpleNamespace(
         id="7d3b", status=status, cancel_effective_date=cancel_effective_date
     )
+
+
+def test_the_re_read_names_the_subscription_that_was_written(
+    billing_client, monkeypatch
+):
+    """By reference, the re-read would pick whichever row under this ref still
+    entitles — which after a pause is not necessarily the one just paused."""
+    acts = _acts(monkeypatch, set_status=_flash_subscription(status="paused"))
+
+    billing_client.patch(
+        f"/admin/billing/subscriptions/{PUBKEY}/status", json={"status": "paused"}
+    )
+
+    assert acts.entitlement.await_args.kwargs["subscription_id"] == "7d3b"
 
 
 def test_an_operator_can_cancel_without_opening_flash(billing_client, monkeypatch):

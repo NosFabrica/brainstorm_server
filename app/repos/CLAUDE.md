@@ -15,7 +15,7 @@ never touch SQLAlchemy `Select`s or Cypher strings directly.
 | `billing_plan_repo.py` | PostgreSQL (`billing_plan`) | Mapping CRUD — Flash plan → scheduling policy, and whether we sell it. Listed by `id`, which is a stable order rather than a meaningful one: display order is Flash's `sortOrder`. `is_active` means *sellable*: only the plans-for-sale listing filters on it, never the entitlement lookup. There is **no** scheduling-id → plan lookup — a subscriber's tier is their policy, read straight off the assignment |
 | `scheduling_repo.py` | PostgreSQL (`scheduling`) | Policy CRUD, the default policy, and the public-policies selector that gates `/billing/plans` |
 | `user_subscription_repo.py` | PostgreSQL (`user_subscription`) | Subscription upsert, subscriber lock, reconcile/lapse candidates, divergence reads (policy mismatches, stale/failing syncs, unrecognised statuses, retired-plan subscribers), and the per-plan subscriber count that decides whether a mapping's Flash ids may still be rewritten |
-| `flash_webhook_event_repo.py` | PostgreSQL (`flash_webhook_event`) | The inbox: insert/claim/replay, unresolved signups vs unmapped plans (two failures, selected apart), exhausted events, settling one by hand, payment history |
+| `flash_webhook_event_repo.py` | PostgreSQL (`flash_webhook_event`) | The inbox: insert/claim/replay, unresolved signups vs unmapped plans (two failures, selected apart), exhausted events, settling one by hand |
 
 ## Conventions (read these once, save yourself debugging)
 

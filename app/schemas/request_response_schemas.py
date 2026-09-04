@@ -11,6 +11,7 @@ from app.schemas.schemas import (
     BrainstormRequestInstance,
     FollowListIngestResult,
     OwnUserData,
+    RefreshedSubscriptionView,
     SubscriptionView,
     PaginatedUserConnections,
     UserGraphData,
@@ -105,6 +106,10 @@ class IsSearchObserverResponse(SuccessfulResponseDataSchema):
 
 class GetSubscriptionResponse(SuccessfulResponseDataSchema):
     data: SubscriptionView
+
+
+class RefreshSubscriptionResponse(SuccessfulResponseDataSchema):
+    data: RefreshedSubscriptionView
 
 
 class GetBillingPlansResponse(SuccessfulResponseDataSchema):
