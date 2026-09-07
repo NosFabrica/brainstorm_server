@@ -889,6 +889,8 @@ async def attribute_unresolved_subscription(
         now=utc_now(),
         resolution=EntitlementReason.ATTRIBUTED.value,
         resolved_by=acting_pubkey,
+        # Every open event of the subscription is this person's, ref or no ref.
+        only_unattributed=False,
     )
     await db.commit()
     logger.info(
@@ -917,6 +919,10 @@ async def dismiss_unresolved_subscription(
     and a subscription Flash no longer recognises is exactly the kind of row
     that needs writing off. Refunds and cancellation stay with Flash, which took
     the money.
+
+    Only the deliveries that named nobody are written off. A sibling delivery of
+    the same subscription that carried a ref belongs to somebody, whatever went
+    wrong with it, and is not this verb's to settle.
     """
     settled = await settle_unresolved_events_on_db(
         db,
@@ -924,12 +930,17 @@ async def dismiss_unresolved_subscription(
         now=utc_now(),
         resolution=EntitlementReason.DISMISSED.value,
         resolved_by=acting_pubkey,
+        only_unattributed=True,
     )
     if not settled:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No unresolved signup with this subscription id.",
+            detail=(
+                "No unresolved signup with this subscription id. Any open "
+                "deliveries it has name a subscriber, so they are not a "
+                "signup to write off."
+            ),
         )
     await db.commit()
     logger.info(

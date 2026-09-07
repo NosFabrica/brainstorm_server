@@ -191,6 +191,9 @@ def test_attributing_settles_the_event_so_the_sweep_stops_rechecking_it(seams):
     assert settled["resolution"] == "attributed"
     # Who acted: a hand-granted entitlement is as traceable as an automatic one.
     assert settled["resolved_by"] == ADMIN
+    # Every open event of the subscription, ref or no ref: the subscription now
+    # has a name on it, so the ref-less siblings are this person's too.
+    assert settled["only_unattributed"] is False
 
 
 def test_a_settled_event_becomes_prunable_like_any_other():
@@ -346,6 +349,17 @@ def test_dismissing_settles_the_event_and_says_who_did_it(seams):
     assert settled["subscription_id"] == SUBSCRIPTION_ID
     assert settled["resolution"] == "dismissed"
     assert settled["resolved_by"] == ADMIN
+
+
+def test_dismissing_writes_off_only_the_deliveries_that_named_nobody(seams):
+    """One subscription's events reach the report through different sections: a
+    ref-carrying activation among the unmapped plans, its ref-less cancellation
+    among the signups. Settling on the id alone wrote off both — and mapping the
+    plan frees only rows still unprocessed, so the subscriber was stranded where
+    the fix for their actual problem could no longer reach them."""
+    _dismiss(seams)
+
+    assert seams.settle.await_args.kwargs["only_unattributed"] is True
 
 
 def test_dismissing_something_with_nothing_open_is_refused(seams):

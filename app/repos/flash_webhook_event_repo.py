@@ -132,6 +132,14 @@ async def mark_webhook_event_processed_on_db(
     await execute_db_statement(db, statement, __name__)
 
 
+def _unattributed():
+    """No reference at all. An empty one is as absent as a missing one — that is
+    how the entitlement path reads it, and the two must agree on which rows
+    count as unattributed."""
+    ref = FlashWebhookEvent.payload["data"]["externalRef"].astext
+    return or_(ref.is_(None), ref == "")
+
+
 async def settle_unresolved_events_on_db(
     db: AsyncDBSession,
     *,
@@ -139,22 +147,32 @@ async def settle_unresolved_events_on_db(
     now: datetime,
     resolution: str,
     resolved_by: str,
+    only_unattributed: bool,
 ) -> int:
-    """Mark every still-open delivery for one subscription decided by hand.
+    """Mark still-open deliveries for one subscription decided by hand.
 
-    Every delivery, not one: a plain-link signup that also renewed has more than
-    one event carrying the same unattributable id, and leaving the siblings open
-    would keep the sweep re-checking a subscription somebody has already
-    resolved.
+    More than one: a plain-link signup that also renewed has several events
+    carrying the same unattributable id, and leaving the siblings open would
+    keep the sweep re-checking a subscription somebody has already resolved.
 
-    Writing `processed_at` is what stops that re-checking: an unattributed event
+    `only_unattributed` bounds that reach, and both callers need their own
+    answer. Attributing names the person behind the subscription, so every open
+    event of it is theirs. Dismissing says nobody is behind it — true only of
+    the events that named nobody. A sibling that *did* carry a ref failed for
+    its own reason, usually an unmapped plan, and writing it off here would
+    strand a paying subscriber somewhere no later fix reaches: mapping the plan
+    frees only rows still unprocessed.
+
+    Writing `processed_at` is what stops the re-checking: an unattributed event
     is never processed, so nothing else would ever mark it settled.
     """
+    scope = (_unattributed(),) if only_unattributed else ()
     statement = (
         update(FlashWebhookEvent)
         .where(
             FlashWebhookEvent.subscription_id == subscription_id,
             FlashWebhookEvent.processed_at.is_(None),
+            *scope,
         )
         .values(
             processed_at=now,
@@ -187,14 +205,6 @@ _UNAPPLIED = (
     FlashWebhookEvent.processed_at.is_(None),
     FlashWebhookEvent.process_error.is_not(None),
 )
-
-
-def _unattributed():
-    """No reference at all. An empty one is as absent as a missing one — that is
-    how the entitlement path reads it, and the two must agree on which rows
-    count as unattributed."""
-    ref = FlashWebhookEvent.payload["data"]["externalRef"].astext
-    return or_(ref.is_(None), ref == "")
 
 
 async def select_unresolved_signups_on_db(db: AsyncDBSession, *, limit: int) -> list:

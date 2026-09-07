@@ -102,6 +102,7 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
         "reason": "because",
         "resolution": "attributed",
         "resolved_by": PUBKEY,
+        "only_unattributed": True,
         "error": "unknown_plan",
         "now": NOW,
         "stale_after": timedelta(minutes=5),
@@ -348,6 +349,43 @@ def test_no_query_reads_contact_details_flash_never_sends(monkeypatch):
     for personal in ("'email'", "'name'", "'about'", "'picture_url'"):
         assert personal not in signups
         assert personal not in plans
+
+
+def _settle_where(monkeypatch, *, only_unattributed: bool) -> str:
+    """The WHERE of one hand-resolution, as SQL."""
+    from app.repos import flash_webhook_event_repo
+
+    statement = _built(
+        monkeypatch,
+        flash_webhook_event_repo,
+        flash_webhook_event_repo.settle_unresolved_events_on_db,
+        subscription_id="7d3b",
+        now=NOW,
+        resolution="dismissed",
+        resolved_by=PUBKEY,
+        only_unattributed=only_unattributed,
+    )
+    return _sql(statement).partition("WHERE")[2]
+
+
+def test_dismissing_reaches_only_the_deliveries_that_named_nobody(monkeypatch):
+    """The blast radius of a write-off. Matching on the subscription id alone
+    also settled the siblings that *did* carry a ref — a subscriber whose plan
+    we never mapped — and `reset_events_awaiting_plan_on_db` only frees rows
+    still unprocessed, so mapping the plan afterwards would never find them."""
+    where = _settle_where(monkeypatch, only_unattributed=True)
+
+    assert "'externalRef'" in where and "IS NULL OR" in where and "= ''" in where
+
+
+def test_attributing_reaches_every_open_delivery_of_the_subscription(monkeypatch):
+    """The other direction, and not symmetrical: naming the person makes the
+    ref-less siblings theirs, so narrowing here would leave the sweep
+    re-checking a subscription somebody has already resolved."""
+    where = _settle_where(monkeypatch, only_unattributed=False)
+
+    assert "'externalRef'" not in where
+    assert "processed_at IS NULL" in where
 
 
 def test_only_the_events_that_were_waiting_on_this_plan_are_freed(monkeypatch):
