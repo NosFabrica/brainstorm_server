@@ -168,3 +168,15 @@ the `{name: value}` map in Python and does `SET n += row.props`.
 - **No commits in repos** (except the one noted above). If your DB writes mysteriously don't persist, you forgot `async with db_session() as db:` around the call.
 - **`InvalidParameterError` on Cypher with dynamic property keys** means you string-interpolated when you should've parametrized — use `user[$key]`.
 - **`fastapi_pagination.paginate` requires a `Select`**, not a coroutine. Build the statement in the repo, hand the statement (not the result) to the router.
+
+## `tagging_repo.py`
+
+kind-39999 tag elements and taggings. **Replaceability is enforced at write
+time**, not by a read-time dedupe: both upserts are latest-wins on the event's
+own `created_at` (never ingest time), so an out-of-order delivery can't regress
+a row and an apply→dispute flip replaces the prior stance rather than
+double-counting. Reads are therefore plain aggregates.
+
+`get_dictionary_on_db` joins through to the element table, so a tagging
+referencing an element we never ingested is dropped rather than producing a
+Trusted List with an empty title.

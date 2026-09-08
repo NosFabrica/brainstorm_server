@@ -154,3 +154,16 @@ retrying after a few attempts and never replays.
 1. Add `Mapped[type] = mapped_column(...)` to the existing class.
 2. Generate the migration. Always set `server_default` on non-nullable columns so existing rows don't break the migration.
 3. If the column is large, expose it through a `defer(...)` option in the repo, never select it by default.
+
+## Tagging tables (Trusted Lists input)
+
+- **`NostrTagElement`** — a kind-39999 tag declaration. Natural key is the
+  *addressable coordinate* `(author_pubkey, slug)`, not the event id: tags with
+  the same slug by different authors are distinct elements.
+- **`NostrUserTagging`** — an assertion that a target holds a tag. Keyed
+  `(asserter_pubkey, d_tag)`, which is what gives each asserter exactly one live
+  stance per (target, tag).
+
+Both carry `created_at_unix` — the *event's* clock, not ingest time — because
+replaceability is decided on it. `tag_event_id` is deliberately **not** an FK:
+taggings legitimately arrive before the element they reference.

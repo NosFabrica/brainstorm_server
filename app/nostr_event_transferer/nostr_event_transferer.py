@@ -10,6 +10,7 @@ from collections import deque
 import time
 from app.core.database import db_session
 from app.core.config import settings
+from app.services.tagging_parse import TAGGING_KIND
 from app.repos.brainstorm_nostr_transferer import (
     get_nostr_transfer_status_by_kind_from_db,
     upsert_nostr_transfer_status_on_db,
@@ -23,6 +24,17 @@ ev_kinds: list[tuple[Kind, int]] = [
     (Kind(1984), 1800000),
     (Kind(0), 1800000),
     (Kind(5), 1800000),
+]
+
+# Taggings sync. DELIBERATELY SEPARATE from `ev_kinds` above — see ADR
+# trusted-lists/0001 D10. `ev_kinds` means "the kinds the follow/mute/report
+# graph is built from", and `backfill_redis_relationships._is_graph_db_populated`
+# reads it with exactly that meaning: it gates the one-time Redis relationship
+# backfill on EVERY listed kind having a completed transfer row. Appending
+# kind 39999 there would silently disable that backfill until the taggings
+# transfer completed. Taggings are not a graph-relationship kind.
+tagging_ev_kinds: list[tuple[Kind, int]] = [
+    (Kind(TAGGING_KIND), 100000),
 ]
 
 
@@ -55,7 +67,8 @@ async def nostr_event_transferer():
 
     async with db_session() as db:
 
-        for kind, estimated_events in ev_kinds:
+        # Taggings ride the same sync loop but a separate list (ADR D10).
+        for kind, estimated_events in [*ev_kinds, *tagging_ev_kinds]:
 
             logger.info(f"Getting events of Kind {kind.as_u16()}")
 
