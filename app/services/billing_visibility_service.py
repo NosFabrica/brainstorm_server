@@ -1,0 +1,153 @@
+"""What nobody has settled — the states a human has to resolve.
+
+Everything here is a disagreement between three parties: Flash took the money,
+our record says what we believe, and the scheduling assignment says what the
+subscriber actually receives. Where those diverge is the bug, and the point of
+gathering them is that it should be findable by sorting a column rather than by
+waiting for a complaint.
+"""
+
+from dataclasses import dataclass
+from datetime import timedelta
+
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+
+from app.core.config import settings
+from app.core.flash import (
+    CANCELLED_STATUS,
+    ENDED_STATUSES,
+    ENTITLING_STATUSES,
+    PAST_DUE_STATUS,
+    PENDING_STATUS,
+)
+from app.repos.flash_webhook_event_repo import (
+    select_exhausted_events_on_db,
+    select_unmapped_plan_events_on_db,
+    select_unresolved_signups_on_db,
+)
+from app.repos.user_subscription_repo import (
+    AbandonRule,
+    select_abandoned_checkouts_on_db,
+    select_failing_syncs_on_db,
+    select_policy_mismatches_on_db,
+    select_retired_plan_subscribers_on_db,
+    select_stale_syncs_on_db,
+    select_unrecognised_statuses_on_db,
+)
+from app.schemas.schemas import (
+    AbandonedCheckoutRow,
+    DivergenceReportView,
+    DivergenceSection,
+    ExhaustedEventRow,
+    FailingSyncRow,
+    PolicyMismatchRow,
+    RetiredPlanSubscriberRow,
+    StaleSyncRow,
+    UnmappedPlanRow,
+    UnrecognisedStatusRow,
+    UnresolvedSignupRow,
+)
+from app.services.billing_service import EntitlementReason, utc_now
+
+# Everything decide_entitlement knows how to act on. Anything else is a status
+# Flash has started sending that we hold subscribers on indefinitely.
+KNOWN_STATUSES = sorted(
+    ENTITLING_STATUSES
+    | ENDED_STATUSES
+    | {CANCELLED_STATUS, PAST_DUE_STATUS, PENDING_STATUS}
+)
+
+
+# Every query is capped: a report nobody can open is no use on the day it
+# matters, and these are read while something is already wrong.
+ROW_LIMIT = 200
+
+
+@dataclass(frozen=True)
+class DivergenceReport:
+    """Seven kinds of disagreement, plus admin overrides, abandoned checkouts
+    and subscribers on a retired plan — which are not faults, but must be
+    visible somewhere, and must not be *here*, or a genuine failed write hides
+    among them.
+
+    A payment that named nobody and a payment naming a plan we never mapped are
+    two of the seven, not one: different fixes, so a count that mixes them says
+    nothing an admin can act on."""
+
+    policy_mismatch: list
+    admin_overrides: list
+    stale_syncs: list
+    failing_syncs: list
+    unresolved_signups: list
+    unmapped_plans: list
+    unrecognised_statuses: list
+    exhausted_events: list
+    abandoned_checkouts: list
+    retired_plan_subscribers: list
+
+
+def _section(rows: list, row_model: type[BaseModel]) -> DivergenceSection:
+    return DivergenceSection(
+        count=len(rows),
+        truncated=len(rows) >= ROW_LIMIT,
+        rows=[row_model.model_validate(row, from_attributes=True) for row in rows],
+    )
+
+
+async def build_divergence_response(db: AsyncDBSession) -> DivergenceReportView:
+    """The report as the API returns it, one named section per disagreement."""
+    report = await build_divergence_report(db)
+    return DivergenceReportView(
+        policy_mismatch=_section(report.policy_mismatch, PolicyMismatchRow),
+        admin_overrides=_section(report.admin_overrides, PolicyMismatchRow),
+        stale_syncs=_section(report.stale_syncs, StaleSyncRow),
+        failing_syncs=_section(report.failing_syncs, FailingSyncRow),
+        unresolved_signups=_section(report.unresolved_signups, UnresolvedSignupRow),
+        unmapped_plans=_section(report.unmapped_plans, UnmappedPlanRow),
+        unrecognised_statuses=_section(
+            report.unrecognised_statuses, UnrecognisedStatusRow
+        ),
+        exhausted_events=_section(report.exhausted_events, ExhaustedEventRow),
+        abandoned_checkouts=_section(report.abandoned_checkouts, AbandonedCheckoutRow),
+        retired_plan_subscribers=_section(
+            report.retired_plan_subscribers, RetiredPlanSubscriberRow
+        ),
+    )
+
+
+async def build_divergence_report(db: AsyncDBSession) -> DivergenceReport:
+    now = utc_now()
+    stale_before = now - timedelta(hours=settings.billing_stale_sync_hours)
+    abandoned = AbandonRule(
+        after=timedelta(seconds=settings.billing_abandon_pending_after_seconds),
+        error=EntitlementReason.UNKNOWN_SUBSCRIPTION.value,
+    )
+    return DivergenceReport(
+        policy_mismatch=await select_policy_mismatches_on_db(
+            db, admin_held=False, limit=ROW_LIMIT
+        ),
+        admin_overrides=await select_policy_mismatches_on_db(
+            db, admin_held=True, limit=ROW_LIMIT
+        ),
+        stale_syncs=await select_stale_syncs_on_db(
+            db, older_than=stale_before, limit=ROW_LIMIT, now=now, abandoned=abandoned
+        ),
+        failing_syncs=await select_failing_syncs_on_db(
+            db, limit=ROW_LIMIT, now=now, abandoned=abandoned
+        ),
+        unresolved_signups=await select_unresolved_signups_on_db(db, limit=ROW_LIMIT),
+        unmapped_plans=await select_unmapped_plan_events_on_db(db, limit=ROW_LIMIT),
+        unrecognised_statuses=await select_unrecognised_statuses_on_db(
+            db, known=KNOWN_STATUSES
+        ),
+        exhausted_events=await select_exhausted_events_on_db(
+            db, max_attempts=settings.billing_replay_max_attempts, limit=ROW_LIMIT
+        ),
+        abandoned_checkouts=await select_abandoned_checkouts_on_db(
+            db, limit=ROW_LIMIT, now=now, abandoned=abandoned
+        ),
+        retired_plan_subscribers=await select_retired_plan_subscribers_on_db(
+            db, limit=ROW_LIMIT
+        ),
+    )

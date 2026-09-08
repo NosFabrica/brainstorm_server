@@ -6,16 +6,20 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.schemas import (
     AdminStats,
     AuthSuccessfulToken,
+    BillingPlansData,
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
     FollowListIngestResult,
     OwnUserData,
+    RefreshedSubscriptionView,
+    SubscriptionView,
     PaginatedUserConnections,
     UserGraphData,
     UserHistoryInstance,
     UserOverviewData,
     UserSectionsStats,
 )
+from app.schemas.trusted_list_schemas import TrustedListRunData
 from app.schemas.graperank_schemas import (
     BuiltinPresetTemplate,
     GrapeRankPresetParams,
@@ -101,6 +105,18 @@ class IsSearchObserverResponse(SuccessfulResponseDataSchema):
     data: bool
 
 
+class GetSubscriptionResponse(SuccessfulResponseDataSchema):
+    data: SubscriptionView
+
+
+class RefreshSubscriptionResponse(SuccessfulResponseDataSchema):
+    data: RefreshedSubscriptionView
+
+
+class GetBillingPlansResponse(SuccessfulResponseDataSchema):
+    data: BillingPlansData
+
+
 class WhitelistedPubkeys(BaseModel):
     observerPubkey: str
     numPubkeys: int
@@ -122,6 +138,10 @@ class PublishAssistantProfileResponse(SuccessfulResponseDataSchema):
 
 class AdminStatsResponse(SuccessfulResponseDataSchema):
     data: AdminStats
+
+
+class TrustedListRunResponse(SuccessfulResponseDataSchema):
+    data: TrustedListRunData
 
 
 class GrapeRankPreset(BaseModel):

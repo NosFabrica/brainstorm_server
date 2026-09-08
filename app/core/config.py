@@ -40,6 +40,62 @@ class Settings(BaseSettings):
     # Priority-weighted admission (w=priority+1). Off = strict highest-first.
     scheduler_fairness_enabled: bool = Field(default=False)
     periodic_graperank_pubkey: str = Field(default="")
+    # Flash payments. Off by default so self-hosted and one-click deployments —
+    # which have no Flash account — never mount the surface at all. Enabling it
+    # without credentials refuses to start (see flash_webhook_service).
+    flash_enabled: bool = Field(default=False)
+    flash_base_url: str = Field(default="https://dev.server.vault.paywithflash.com")
+    flash_api_key: str = Field(default="")
+    flash_webhook_secret: str = Field(default="")
+    # Set only during a rotation, so deliveries Flash signed before the swap are
+    # still accepted. Clearing it is what ends the window.
+    flash_webhook_secret_previous: str = Field(default="")
+    # Where checkout sends the user back. Empty = {frontend_url}/billing/return.
+    # Must exactly match a URL registered in the Flash dashboard.
+    flash_checkout_redirect_url: str = Field(default="")
+    # Routes Flash reads to the in-process fake (app/core/flash_mock.py).
+    # Test-only; with no Flash sandbox this is how the paid paths are exercised.
+    flash_mock_enabled: bool = Field(default=False)
+    # Per-attempt HTTP timeout for Flash reads.
+    flash_http_timeout_seconds: float = Field(default=5.0)
+    # How long a plan read stays fresh. The pricing page is public, so this is
+    # what keeps anonymous traffic off Flash's quota; a price change takes this
+    # long to appear. The last-known-good copy behind it never expires.
+    flash_plans_cache_ttl_seconds: int = Field(default=300)
+    # Replay window for webhook signatures, per Flash's own reference handler.
+    flash_webhook_tolerance_seconds: int = Field(default=300)
+    # Periodic billing reconciliation. Unset = follows flash_enabled; set it
+    # explicitly only to stop the sweep on its own. See billing_sync_active.
+    billing_sync_enabled: bool | None = Field(default=None)
+    billing_sync_interval_seconds: int = Field(default=21600)
+    # Subscribers re-read from Flash per cycle. Bounded so a backlog drains
+    # steadily instead of hammering their API in one burst.
+    billing_reconcile_batch: int = Field(default=25)
+    # How long since a subscriber was last read from Flash before we ask again.
+    billing_reconcile_stale_after_seconds: int = Field(default=21600)
+    # A checkout that never confirmed and that Flash no longer knows about is
+    # abandoned, not pending: stop re-reading it once the failure is this old.
+    # Long enough that the answer has to repeat before we act — the only thing
+    # this guards against is Flash answering 200 with an empty list for a
+    # subscription that exists, and the discard it usually means is not undone.
+    # It also gates what the subscriber is shown, so longer is not free.
+    #
+    # Deliberately SHORTER than billing_sync_interval_seconds. The window is a
+    # minimum age and the sweep can only act on cycle boundaries, so at exactly
+    # one interval a row becomes eligible the instant the cycle evaluating it
+    # runs — on staging that race was lost by milliseconds and the row waited
+    # another six hours. The margin makes the first eligible cycle deterministic.
+    billing_abandon_pending_after_seconds: int = Field(default=18000)
+    # Replay of events we acknowledged and then dropped.
+    billing_replay_batch: int = Field(default=25)
+    # How long a claim is honoured before the event is treated as abandoned.
+    billing_replay_stale_after_seconds: int = Field(default=300)
+    # Replay attempts before an event is left for a human rather than retried.
+    billing_replay_max_attempts: int = Field(default=5)
+    # Who may see billing. Empty = fall back to admin_whitelisted_pubkeys.
+    billing_admin_whitelisted_pubkeys: str = Field(default="")
+    # A subscriber not read from Flash within this is reported as stale.
+    billing_stale_sync_hours: int = Field(default=24)
     vespa_url: str = Field(...)
     # Per-sink publish mode. False (default) = only changed scores; True =
     # re-assert every above-cutoff score each run. Re-assertion only, not deletes.
@@ -58,6 +114,21 @@ class Settings(BaseSettings):
     # off the event loop so concurrent requests aren't starved.
     sign_parallel_threshold: int = Field(default=10_000)
     sign_parallel_max_workers: int | None = Field(default=None)
+    # --- Trusted Lists (kind-30392 from kind-39999 taggings) ---------------
+    # Inclusive floor on the asserter's Rank (0-100) in the Observer's own web
+    # of trust. Default 3 is exactly issue #73's "rank > 2" — stated as an
+    # inclusive floor so the comparison has no off-by-one. Compared against raw
+    # Influence (rank/100) to avoid double-rounding against published Rank.
+    trusted_list_min_rank: int = Field(default=3)
+    # How many distinct qualifying asserters must have used a Tag for it to
+    # enter the dictionary. Issue #73 anticipates raising this, so it is not a
+    # literal.
+    trusted_list_min_tag_uses: int = Field(default=1)
+    # Membership predicate floor: applications >= cutoff (and > disputes).
+    trusted_list_cutoff: int = Field(default=1)
+    # Where TLs are published. Empty = fall back to the TA relay, so retargeting
+    # to the nip85.* relays is an env change rather than a diff.
+    trusted_list_relay: str = Field(default="")
     # Published-state-drift backstop: every Nth *scheduled* run for an observer
     # forces a full re-assert on both sinks.
     # <= 0 disables the backstop.
@@ -73,6 +144,23 @@ class Settings(BaseSettings):
     # the endpoints are open/unauthenticated and use the public global observer
     # plus any client-supplied `pov` per ORE-01.
     open_ranking_require_auth: bool = Field(default=False)
+
+    @property
+    def billing_sync_active(self) -> bool:
+        """Whether the billing reconciliation loop should run.
+
+        Follows `flash_enabled` unless overridden, because the two being
+        separately switchable is not a conservative default — a configured Flash
+        with the sweep off grants tiers and never takes them back, which leaks
+        quietly rather than failing.
+
+        The override exists because `flash_enabled=false` is not a safe way to
+        stop the sweep once live: it unmounts the webhook route, so Flash's
+        deliveries 404, exhaust their few retries and are lost for good.
+        """
+        if self.billing_sync_enabled is None:
+            return self.flash_enabled
+        return self.billing_sync_enabled
 
 
 settings = Settings()

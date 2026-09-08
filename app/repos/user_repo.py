@@ -1,6 +1,7 @@
 from typing import NamedTuple
 
 from neo4j import AsyncDriver as AsyncNeoDriver
+from neo4j import AsyncSession as AsyncNeoSession
 
 from app.core.tier_thresholds import (
     FLAGGED_TIER,
@@ -218,6 +219,56 @@ async def get_influence_for_observer(
     result = await session.run(query, pubkey=pubkey, property_name=property_name)
     record = await result.single()
     return record["influence"] if record and record["influence"] is not None else None
+
+
+async def get_qualifying_asserters_for_observer(
+    # Typed as the real session type, not the AsyncNeoDriver annotation used by
+    # this module's older queries — that one is wrong (they all call .run() on a
+    # session) and mypy flags it at user_repo.py:47,119,131,...
+    session: AsyncNeoSession,
+    pubkeys: list[str],
+    observer_pubkey: str,
+    min_influence: float,
+) -> dict[str, float]:
+    """Of `pubkeys`, those whose Influence in `observer_pubkey`'s web of trust
+    clears `min_influence` (inclusive), mapped to their trust weight.
+
+    The weight is the asserter's Influence quantized to the Rank quantum —
+    `round(influence * 100) / 100`. Tapestry derives the same weight as
+    `wot_rank_<pov> / 100` (`src/api/profile-tags/index.js:679`), and Rank is
+    `round(Influence * 100)` (CONTEXT.md), so quantizing here is what makes the
+    two implementations agree exactly rather than merely closely.
+
+    One round trip for the whole set — the per-pubkey `get_influence_for_observer`
+    would be N queries during a Trusted List run. The observer key is passed as a
+    VALUE via `node[$property_name]`, never f-string-interpolated, matching
+    `_get_pubkeys_with_influence`.
+
+    A pubkey with no node, or no influence property for this observer, is absent
+    from the result: unscored is NOT treated as zero-and-below-threshold, it is
+    simply not qualifying. Callers must not read an empty list as "everyone
+    failed" without checking whether the observer has been scored at all.
+    """
+    if not pubkeys:
+        return {}
+    property_name = f"influence_{observer_pubkey}"
+    query = """
+    UNWIND $pubkeys AS pk
+    MATCH (user:NostrUser {pubkey: pk})
+    WITH pk, user[$property_name] AS influence
+    WHERE influence IS NOT NULL AND influence >= $min_influence
+    RETURN pk, influence
+    """
+    result = await session.run(
+        query,
+        pubkeys=pubkeys,
+        property_name=property_name,
+        min_influence=min_influence,
+    )
+    return {
+        record["pk"]: round(float(record["influence"]) * 100) / 100
+        async for record in result
+    }
 
 
 # ----------------- overview / stats / paginated connections -----------------
@@ -665,9 +716,7 @@ async def get_paginated_flagged_connections(
     )
     # Every row matched the flagged predicate — the exact complement of
     # verified — so neither needs recomputing per row.
-    items = [
-        _row_to_item({**row, "tier": FLAGGED_TIER}) for row in rows
-    ]
+    items = [_row_to_item({**row, "tier": FLAGGED_TIER}) for row in rows]
     last_cursor: tuple[float, str] | None = None
     if len(rows) == limit and rows:
         last = rows[-1]
@@ -729,8 +778,7 @@ async def get_all_section_stats(
         }}"""
         )
         return_fields.extend(
-            f"{name}_{suffix}"
-            for suffix in ("total", "verified", *_TIER_PREDICATES)
+            f"{name}_{suffix}" for suffix in ("total", "verified", *_TIER_PREDICATES)
         )
     blocks.append("RETURN " + ", ".join(return_fields))
     query = "\n".join(blocks)
@@ -886,9 +934,7 @@ async def batch_influence_for_pubkeys(
     OPTIONAL MATCH (user:NostrUser {pubkey: pk})
     RETURN pk AS pubkey, user[$influence_key] AS influence
     """
-    result = await session.run(
-        query, pubkeys=pubkeys, influence_key=influence_key
-    )
+    result = await session.run(query, pubkeys=pubkeys, influence_key=influence_key)
     out: dict[str, float | None] = {pk: None for pk in pubkeys}
     async for record in result:
         out[record["pubkey"]] = record["influence"]
@@ -1201,6 +1247,5 @@ async def count_verified_muters(
         verified_threshold=verified_threshold,
     )
     return {
-        record["pubkey"]: int(record["verified_muters"] or 0)
-        async for record in result
+        record["pubkey"]: int(record["verified_muters"] or 0) async for record in result
     }

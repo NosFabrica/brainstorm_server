@@ -12,6 +12,10 @@ never touch SQLAlchemy `Select`s or Cypher strings directly.
 | `graperank_preset_repo.py` | PostgreSQL (`graperank_preset`, `graperank_preset_history`) | Builtin preset CRUD + audit-log helpers + camelCase ↔ snake_case converters |
 | `brainstorm_nostr_transferer.py` | PostgreSQL (`brainstorm_nostr_relay_transfer`) | Relay-sync state machine (per-kind cursor + completion) |
 | `user_repo.py` | **Neo4j** | All Cypher queries for the social graph (follows/mutes/reports + influence-weighted counts/paginations) |
+| `billing_plan_repo.py` | PostgreSQL (`billing_plan`) | Mapping CRUD — Flash plan → scheduling policy, and whether we sell it. Listed by `id`, which is a stable order rather than a meaningful one: display order is Flash's `sortOrder`. `is_active` means *sellable*: only the plans-for-sale listing filters on it, never the entitlement lookup. There is **no** scheduling-id → plan lookup — a subscriber's tier is their policy, read straight off the assignment |
+| `scheduling_repo.py` | PostgreSQL (`scheduling`) | Policy CRUD, the default policy, and the public-policies selector that gates `/billing/plans` |
+| `user_subscription_repo.py` | PostgreSQL (`user_subscription`) | Subscription upsert, subscriber lock, reconcile/lapse candidates, divergence reads (policy mismatches, stale/failing syncs, unrecognised statuses, retired-plan subscribers), and the per-plan subscriber count that decides whether a mapping's Flash ids may still be rewritten |
+| `flash_webhook_event_repo.py` | PostgreSQL (`flash_webhook_event`) | The inbox: insert/claim/replay, unresolved signups vs unmapped plans (two failures, selected apart), exhausted events, settling one by hand |
 
 ## Conventions (read these once, save yourself debugging)
 
@@ -164,3 +168,15 @@ the `{name: value}` map in Python and does `SET n += row.props`.
 - **No commits in repos** (except the one noted above). If your DB writes mysteriously don't persist, you forgot `async with db_session() as db:` around the call.
 - **`InvalidParameterError` on Cypher with dynamic property keys** means you string-interpolated when you should've parametrized — use `user[$key]`.
 - **`fastapi_pagination.paginate` requires a `Select`**, not a coroutine. Build the statement in the repo, hand the statement (not the result) to the router.
+
+## `tagging_repo.py`
+
+kind-39999 tag elements and taggings. **Replaceability is enforced at write
+time**, not by a read-time dedupe: both upserts are latest-wins on the event's
+own `created_at` (never ingest time), so an out-of-order delivery can't regress
+a row and an apply→dispute flip replaces the prior stance rather than
+double-counting. Reads are therefore plain aggregates.
+
+`get_dictionary_on_db` joins through to the element table, so a tagging
+referencing an element we never ingested is dropped rather than producing a
+Trusted List with an empty title.

@@ -31,6 +31,24 @@ Smoke test for `/admin/nsec-encryption/rotate` + `/verify`:
 
 Run after touching `app/services/nsec_encryption_service.py` or `app/utils/encryption.py`.
 
+### `emit_flash_webhook.py`
+
+Signs a Flash webhook and posts it at a running server. There is no Flash
+sandbox, so this is how the receiving path gets exercised without paying for a
+subscription. Stdlib-only and app-free, so it runs against a deployed host with
+no `.env`; `tests/test_flash_webhook.py` asserts its HMAC matches the server's.
+
+Pin `--at` to repeat a delivery byte-for-byte and see the retry path
+(`"duplicate": true`); `--skew` a long way to see the replay window reject it;
+`--tamper` to see a signature mismatch.
+
+### `check_flash_credentials.py`
+
+Confirms both Flash credentials work, independently, so a failure says which
+one. Used at step 4 of a rotation — see
+[`../docs/flash/credential-rotation.md`](../docs/flash/credential-rotation.md).
+Exit code is 0 only if everything checked passed. Also stdlib-only.
+
 ### Search testing helpers (`search_*.sh`, `search_open_ranking.py`)
 
 Ad-hoc tools for poking the three search surfaces against a **deployed** host
@@ -102,6 +120,6 @@ Don't add one if it should be a proper test — put it in a `tests/` directory a
 
 ## Conventions
 
-- All scripts import `from app.core.config import settings` to pick up env. **You need `.env` populated** to run any of them.
+- Most scripts import `from app.core.config import settings` to pick up env, and **need `.env` populated**. The exceptions are deliberate: `emit_flash_webhook.py`, `check_flash_credentials.py` and the `search_*.sh` set are stdlib-only and app-free so they can run against a **deployed** host with no `.env` — they take everything from flags and environment variables instead. A stdlib-only script that re-derives app logic (the Flash HMAC) must be held to the real one by a test.
 - Output is plain `print()` — these are CLI tools, not library code.
 - Exit codes: 0 = ok, non-zero = something failed. The smoke tests assert and let `AssertionError` propagate.

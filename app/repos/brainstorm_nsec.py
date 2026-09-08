@@ -7,7 +7,7 @@ from sqlalchemy.orm import defer
 
 from app.core.database import execute_db_statement, handle_no_data
 from app.core.loggr import loggr
-from app.db_models import BrainstormNsec, Scheduling
+from app.db_models import BrainstormNsec, Scheduling, SchedulingSource
 from app.repos.scheduling_repo import (
     get_default_scheduling_on_db,
     get_scheduling_on_db,
@@ -233,33 +233,87 @@ async def get_scheduling_for_pubkey_on_db(
 
 
 async def bulk_set_scheduling_for_pubkeys_on_db(
-    db: AsyncDBSession, pubkeys: list[str], scheduling_id: int
+    db: AsyncDBSession, pubkeys: list[str], scheduling_id: int, *, source: str
 ) -> int:
-    """Assign many users to a policy in one statement; returns rows updated."""
+    """Assign many users to a policy in one statement; returns rows updated.
+
+    Writes `source` for the same reason the single-user setter does — leaving it
+    stale here would let billing overwrite a policy an admin had just bulk-assigned.
+    """
     if not pubkeys:
         return 0
     statement = (
         update(BrainstormNsec)
         .where(BrainstormNsec.pubkey.in_(pubkeys))
-        .values(scheduling_id=scheduling_id)
+        .values(scheduling_id=scheduling_id, scheduling_source=source)
     )
     result = await db.execute(statement)
     return result.rowcount
 
 
+async def is_billing_blocked_on_db(db: AsyncDBSession, pubkey: str) -> bool:
+    """Whether this user is barred from paid entitlement, payment notwithstanding."""
+    statement = select(BrainstormNsec.billing_blocked).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return bool(result.scalar_one_or_none())
+
+
+async def get_assigned_scheduling_id_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> int | None:
+    """The explicit assignment only — None means the default policy applies."""
+    statement = select(BrainstormNsec.scheduling_id).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none()
+
+
+async def set_billing_blocked_on_db(
+    db: AsyncDBSession, pubkey: str, blocked: bool
+) -> bool:
+    """Bar (or re-admit) a user from paid entitlement. False if no such user."""
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(billing_blocked=blocked)
+    )
+    result = await db.execute(statement)
+    return result.rowcount > 0
+
+
+async def get_scheduling_source_on_db(db: AsyncDBSession, pubkey: str) -> str:
+    """Who put this user on their policy: default | billing | admin."""
+    statement = select(BrainstormNsec.scheduling_source).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none() or SchedulingSource.DEFAULT.value
+
+
 async def set_scheduling_for_pubkey_on_db(
-    db: AsyncDBSession, pubkey: str, scheduling_id: int
+    db: AsyncDBSession,
+    pubkey: str,
+    scheduling_id: int | None,
+    *,
+    source: str,
 ) -> None:
     """Assign a user to a scheduling policy (auto-creating the row if absent).
 
-    This is the single seam a future admin-CRUD or external service would reuse
-    to move a user between policies.
+    The single seam anything — admin CRUD, billing — reuses to move a user
+    between policies. NULL `scheduling_id` returns them to the default policy.
+
+    `source` is required rather than defaulted: it records who decided, and
+    billing declines to overrule 'admin'. A caller that silently inherited a
+    default would opt that user out of billing forever.
     """
     await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey)
     statement = (
         update(BrainstormNsec)
         .where(BrainstormNsec.pubkey == pubkey)
-        .values(scheduling_id=scheduling_id)
+        .values(scheduling_id=scheduling_id, scheduling_source=source)
     )
     await db.execute(statement)
 
