@@ -48,7 +48,7 @@ from app.services.billing_service import (
     resolve_entitlement,
     utc_now,
 )
-from app.services.flash_webhook_service import delivery_target
+from app.services.flash_webhook_service import RECOGNISED_EVENTS, delivery_target
 
 logger = loggr.get_logger(__name__)
 
@@ -227,7 +227,12 @@ async def replay_unprocessed_events(
     replayed = 0
 
     for event in await select_abandoned_webhook_events_on_db(
-        db, now=at, stale_after=stale_after, max_attempts=max_attempts, limit=limit
+        db,
+        now=at,
+        stale_after=stale_after,
+        max_attempts=max_attempts,
+        limit=limit,
+        events=RECOGNISED_EVENTS,
     ):
         claimed = await claim_webhook_event_on_db(
             db, event.id, now=at, stale_after=stale_after

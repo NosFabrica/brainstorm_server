@@ -1,6 +1,7 @@
 """Data access for `flash_webhook_event` — the inbox, not a ledger. Never read
 to decide whether someone is paid; that comes from Flash's API."""
 
+from collections.abc import Collection
 from datetime import datetime, timedelta
 
 from sqlalchemy import not_, or_, select, update
@@ -59,17 +60,25 @@ async def select_abandoned_webhook_events_on_db(
     stale_after: timedelta,
     max_attempts: int,
     limit: int,
+    events: Collection[str],
 ) -> list[FlashWebhookEvent]:
     """Events we acknowledged and then never finished.
 
     The staleness window is what separates "a worker has this" from "a worker
     died holding this" — without it the sweep would fight live processing.
+
+    `events` is the set we act on, passed in rather than known here so the repo
+    stays ignorant of what an event means. An unrecognised name is never
+    replayed for the same reason the live path never processes one, and
+    filtering here rather than in the loop keeps it out of the attempt count —
+    otherwise it would retry to exhaustion and surface as a fault.
     """
     statement = (
         select(FlashWebhookEvent)
         .where(
             FlashWebhookEvent.processed_at.is_(None),
             FlashWebhookEvent.attempts < max_attempts,
+            FlashWebhookEvent.event.in_(events),
             or_(
                 FlashWebhookEvent.processing_started_at.is_(None),
                 FlashWebhookEvent.processing_started_at <= now - stale_after,

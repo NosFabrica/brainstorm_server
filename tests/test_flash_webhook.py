@@ -22,7 +22,9 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.services.flash_webhook_service import (
     MALFORMED_EVENT,
+    PROBE_EVENT,
     FlashConfigError,
+    RecordedDelivery,
     build_dedupe_key,
     compute_signature,
     is_timestamp_fresh,
@@ -356,6 +358,104 @@ def test_unrecognised_event_type_is_recorded_and_acknowledged(
 
     assert response.status_code == 200
     assert insert_event.await_args.kwargs["event"] == "subscription.something_new"
+
+
+# ---------------------------------------------------------------------------
+# ...and never processed — the other half of the same rule.
+#
+# Recording was always asserted; dispatch was not, so an unrecognised event was
+# reconciled like any other. It converged on the right answer (nothing is
+# granted from a payload) which is exactly why it stayed invisible.
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def dispatch(monkeypatch) -> AsyncMock:
+    """Patched where the router schedules it, so these assert what was handed to
+    BackgroundTasks rather than what a background task later managed to do."""
+    mock = AsyncMock()
+    monkeypatch.setattr(
+        "app.routers.webhooks.flash.process_delivery_in_background", mock
+    )
+    return mock
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        "subscription.something_new",  # a name Flash adds after we shipped
+        "credential.check",  # the rotation probe
+        "",  # signed, parseable, no event name
+    ],
+)
+def test_an_event_we_do_not_recognise_is_never_dispatched(
+    webhook_client, insert_event, dispatch, event
+):
+    raw = _body(event=event)
+
+    response = webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
+
+    assert response.status_code == 200
+    assert insert_event.await_count == 1
+    dispatch.assert_not_called()
+
+
+def test_an_unparseable_body_is_recorded_but_never_dispatched(
+    webhook_client, insert_event, dispatch
+):
+    raw = b"not json at all"
+
+    response = webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
+
+    assert response.status_code == 200
+    assert insert_event.await_args.kwargs["event"] == MALFORMED_EVENT
+    dispatch.assert_not_called()
+
+
+def test_a_recognised_event_is_still_dispatched(webhook_client, insert_event, dispatch):
+    """The control. Without it, refusing to process anything at all would pass
+    every other test in this block."""
+    raw = _body(event="subscription.activated")
+
+    response = webhook_client.post("/webhooks/flash", content=raw, headers=_sign(raw))
+
+    assert response.status_code == 200
+    dispatch.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "event, expected",
+    [
+        ("subscription.activated", True),
+        ("subscription.renewed", True),
+        ("subscription.past_due", True),
+        ("subscription.canceled", True),
+        ("subscription.expired", True),
+        ("subscription.something_new", False),
+        (PROBE_EVENT, False),
+        (MALFORMED_EVENT, False),
+    ],
+)
+def test_only_recognised_events_need_processing(event, expected):
+    recorded = RecordedDelivery(
+        event_id=1,
+        event=event,
+        subscription_id="7d3b",
+        external_ref="user_18342",
+        duplicate=False,
+    )
+
+    assert recorded.needs_processing is expected
+
+
+def test_a_duplicate_of_a_recognised_event_still_needs_nothing():
+    recorded = RecordedDelivery(
+        event_id=1,
+        event="subscription.activated",
+        subscription_id="7d3b",
+        external_ref="user_18342",
+        duplicate=True,
+    )
+
+    assert recorded.needs_processing is False
 
 
 def test_signed_but_unparseable_body_is_still_recorded(webhook_client, insert_event):

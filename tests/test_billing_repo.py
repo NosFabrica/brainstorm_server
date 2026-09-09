@@ -113,6 +113,7 @@ def test_every_query_builds_against_the_real_models(monkeypatch):
         "max_attempts": 5,
         "limit": 10,
         "known": ["active"],
+        "events": ["subscription.activated"],
         "admin_held": False,
         "since": NOW,
         "until": NOW,
@@ -420,9 +421,30 @@ def test_an_unmapped_plan_that_is_never_mapped_stops_replaying(monkeypatch):
         stale_after=timedelta(minutes=5),
         max_attempts=5,
         limit=25,
+        events=("subscription.activated",),
     )
 
     assert "attempts <" in str(statement.whereclause)
+
+
+def test_replay_never_picks_up_an_event_we_do_not_act_on(monkeypatch):
+    """The live path refuses to process an unrecognised event; the sweep has to
+    refuse it too, or the rule holds for one delivery and not its retry."""
+    from app.repos import flash_webhook_event_repo
+
+    statement = _built(
+        monkeypatch,
+        flash_webhook_event_repo,
+        flash_webhook_event_repo.select_abandoned_webhook_events_on_db,
+        now=NOW,
+        stale_after=timedelta(minutes=5),
+        max_attempts=5,
+        limit=25,
+        events=("subscription.activated", "subscription.renewed"),
+    )
+
+    where = str(statement.whereclause)
+    assert "flash_webhook_event.event IN" in where
 
 
 def test_the_retired_plan_report_names_the_flash_subscription(monkeypatch):

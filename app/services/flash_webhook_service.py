@@ -59,6 +59,24 @@ _DISCRIMINATORS: dict[str, tuple[str, ...]] = {
     "subscription.expired": ("expiredAt",),
 }
 
+# The events we act on. Anything else — a name Flash adds later, a body with no
+# event name at all (MALFORMED_EVENT), the rotation probe — is recorded and
+# acknowledged, then left alone: Flash's set is documented as open, and acting
+# on a name we have never seen means guessing what it meant.
+#
+# Kept as its own set rather than read off _DISCRIMINATORS, which answers a
+# different question (how to tell two deliveries of one event apart). An event
+# with no natural discriminator would still be one we act on.
+RECOGNISED_EVENTS: frozenset[str] = frozenset(
+    {
+        "subscription.activated",
+        "subscription.renewed",
+        "subscription.past_due",
+        "subscription.canceled",
+        "subscription.expired",
+    }
+)
+
 
 class FlashConfigError(RuntimeError):
     """Payments are enabled but unusable. Raised at startup, never per-request."""
@@ -109,12 +127,17 @@ class RecordedDelivery:
 
     @property
     def needs_processing(self) -> bool:
-        """Whether anything should happen after the ack. Duplicates are already
-        owned by their original row; probes are settled on receipt."""
+        """Whether anything should happen after the ack.
+
+        Duplicates are already owned by their original row. Everything else
+        turns on the event name: an unrecognised one — a name Flash adds later,
+        a body carrying none, the rotation probe — is recorded and acknowledged
+        and nothing more, because we cannot know what it was meant to change.
+        """
         return (
             not self.duplicate
             and self.event_id is not None
-            and self.event != PROBE_EVENT
+            and self.event in RECOGNISED_EVENTS
         )
 
 
