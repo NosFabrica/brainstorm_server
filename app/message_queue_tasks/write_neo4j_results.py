@@ -1,15 +1,14 @@
+import time
+
+from tqdm import tqdm
+
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.db_models import BrainstormRequestStatus
 from app.models.grapeRankResult import GrapeRankResult
 from app.neo4j_db.driver import driver as neo4j_driver
-
-import time
-from tqdm import tqdm
-
 from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_internal_publication_status_by_id_on_db,
-    update_brainstorm_request_status_by_id_on_db,
 )
 
 BATCH_SIZE = 100  # Adjust as needed
@@ -25,7 +24,7 @@ async def process_neo4j_write_message(message: dict):
     run_id = message["private_id"]
     is_success = message["result"]["success"]
     logger.info(f"neo4j write run={run_id}")
-    logger.info(message["result"]["success"])
+    logger.info(is_success)
     # if not is_success:
     #     return
 
@@ -68,9 +67,7 @@ async def process_neo4j_write_message(message: dict):
 
     start_time = time.time()
 
-    for i in tqdm(
-        range(0, len(rows), BATCH_SIZE), desc="Processing Neo4j batches"
-    ):
+    for i in tqdm(range(0, len(rows), BATCH_SIZE), desc="Processing Neo4j batches"):
         batch = rows[i : i + BATCH_SIZE]
         await process_batch(batch=batch)
 

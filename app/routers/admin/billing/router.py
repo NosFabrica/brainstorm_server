@@ -127,7 +127,9 @@ async def block_subscription_endpoint(
 ):
     outcome = await set_billing_block(db, pubkey, blocked=True)
     if not outcome.found:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such user"
+        )
     return BillingBlockOutcome(pubkey=pubkey, blocked=True, revoked=outcome.revoked)
 
 
@@ -142,7 +144,9 @@ async def unblock_subscription_endpoint(
 ):
     outcome = await set_billing_block(db, pubkey, blocked=False)
     if not outcome.found:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such user")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such user"
+        )
     return BillingBlockOutcome(pubkey=pubkey, blocked=False, revoked=False)
 
 
@@ -258,9 +262,7 @@ async def _read_flash_record(
     await validate_flash_record_read_allowed(jwt_data.nostr_pubkey)
 
     with _flash_failure_as_http():
-        record = await fetch_subscription_raw(
-            subscription_id=subscription_id, ref=ref
-        )
+        record = await fetch_subscription_raw(subscription_id=subscription_id, ref=ref)
 
     if record is None:
         raise HTTPException(
@@ -282,9 +284,7 @@ async def read_subscriber_flash_record_endpoint(request: Request, pubkey: str):
     path="/unresolved/{subscription_id}/flash",
     summary="Billing: what Flash says about a signup we could not attribute",
 )
-async def read_unresolved_flash_record_endpoint(
-    request: Request, subscription_id: str
-):
+async def read_unresolved_flash_record_endpoint(request: Request, subscription_id: str):
     # An unresolved signup has no pubkey, so its Flash id is the only handle it
     # has — hence a second sub-resource rather than one two-parameter endpoint
     # nobody could call with both.

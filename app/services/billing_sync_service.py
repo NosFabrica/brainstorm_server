@@ -13,8 +13,16 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
-from app.core.flash import UNKNOWN_LIFECYCLE_POLICY, FlashCredentialError, FlashUnavailable
+from app.core.flash import (
+    UNKNOWN_LIFECYCLE_POLICY,
+    FlashCredentialError,
+    FlashUnavailable,
+)
 from app.core.loggr import loggr
+from app.repos.brainstorm_nsec import (
+    get_scheduling_source_on_db,
+    set_scheduling_for_pubkey_on_db,
+)
 from app.repos.flash_webhook_event_repo import (
     claim_webhook_event_on_db,
     mark_webhook_event_processed_on_db,
@@ -29,22 +37,18 @@ from app.repos.user_subscription_repo import (
     select_reconcile_candidates_on_db,
     update_last_event_at_on_db,
 )
-from app.repos.brainstorm_nsec import (
-    get_scheduling_source_on_db,
-    set_scheduling_for_pubkey_on_db,
-)
-from app.services.flash_webhook_service import delivery_target
 from app.services.billing_service import (
     SETTLED_REASONS,
     EntitlementDecision,
     EntitlementReason,
-    is_admin_held,
-    utc_now,
     apply_entitlement,
     apply_payload_fallback,
     decide_entitlement,
+    is_admin_held,
     resolve_entitlement,
+    utc_now,
 )
+from app.services.flash_webhook_service import delivery_target
 
 logger = loggr.get_logger(__name__)
 
@@ -90,9 +94,7 @@ async def revoke_lapsed_entitlements(
         resolution = resolve_entitlement(
             decision,
             blocked=False,
-            admin_held=is_admin_held(
-                await get_scheduling_source_on_db(db, row.pubkey)
-            ),
+            admin_held=is_admin_held(await get_scheduling_source_on_db(db, row.pubkey)),
             plan_scheduling_id=row.granted_scheduling_id,
             existing_granted=row.granted_scheduling_id,
         )
@@ -177,7 +179,9 @@ async def reconcile_subscriptions(
                 await record_sync_failure_on_db(db, row.pubkey, outcome.reason.value)
                 await db.commit()
                 logger.warning(
-                    "Reconciling %s settled nothing (%s)", row.pubkey, outcome.reason.value
+                    "Reconciling %s settled nothing (%s)",
+                    row.pubkey,
+                    outcome.reason.value,
                 )
                 continue
             reconciled += 1

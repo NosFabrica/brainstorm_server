@@ -4,14 +4,7 @@ to decide whether someone is paid; that comes from Flash's API."""
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import (
-    String,
-    Text,
-    not_,
-    or_,
-    select,
-    update,
-)
+from sqlalchemy import String, Text, not_, or_, select, update
 from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -59,7 +52,6 @@ async def insert_flash_webhook_event_on_db(
     )
     result = await execute_db_statement(db, statement, __name__)
     return result.scalar_one_or_none()
-
 
 
 async def select_abandoned_webhook_events_on_db(
@@ -297,14 +289,18 @@ async def select_exhausted_events_on_db(
     db: AsyncDBSession, *, max_attempts: int, limit: int
 ) -> list:
     """Events that ran out of replay attempts and are now nobody's job."""
-    statement = select(
-        FlashWebhookEvent.id,
-        FlashWebhookEvent.event,
-        FlashWebhookEvent.attempts,
-        FlashWebhookEvent.process_error,
-    ).where(
-        FlashWebhookEvent.processed_at.is_(None),
-        FlashWebhookEvent.attempts >= max_attempts,
-    ).limit(limit)
+    statement = (
+        select(
+            FlashWebhookEvent.id,
+            FlashWebhookEvent.event,
+            FlashWebhookEvent.attempts,
+            FlashWebhookEvent.process_error,
+        )
+        .where(
+            FlashWebhookEvent.processed_at.is_(None),
+            FlashWebhookEvent.attempts >= max_attempts,
+        )
+        .limit(limit)
+    )
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())

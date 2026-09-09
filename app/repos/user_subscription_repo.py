@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Select, and_, case, func, not_, or_, select, update
-from sqlalchemy.orm import aliased
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+from sqlalchemy.orm import aliased
 
 from app.core.database import execute_db_statement
 from app.core.flash import PAST_DUE_STATUS, PENDING_STATUS, FlashSubscription
@@ -374,7 +374,6 @@ async def lock_user_for_update_on_db(
     return result.scalar_one_or_none() is not None
 
 
-
 def build_billing_subscriptions_stmt() -> Select:
     """Every subscriber, with what Flash says and what they actually receive.
 
@@ -464,18 +463,22 @@ async def select_stale_syncs_on_db(
     they would otherwise every one of them age into this section within a day
     and never leave.
     """
-    statement = select(
-        UserSubscription.pubkey,
-        UserSubscription.flash_status,
-        UserSubscription.last_synced_at,
-    ).where(
-        or_(
-            UserSubscription.last_synced_at.is_(None),
-            UserSubscription.last_synced_at <= older_than,
-        ),
-        not_(abandoned.condition(now)),
-        not_(settled_condition()),
-    ).limit(limit)
+    statement = (
+        select(
+            UserSubscription.pubkey,
+            UserSubscription.flash_status,
+            UserSubscription.last_synced_at,
+        )
+        .where(
+            or_(
+                UserSubscription.last_synced_at.is_(None),
+                UserSubscription.last_synced_at <= older_than,
+            ),
+            not_(abandoned.condition(now)),
+            not_(settled_condition()),
+        )
+        .limit(limit)
+    )
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())
 
@@ -490,14 +493,18 @@ async def select_failing_syncs_on_db(
     both expected and unbounded in number — left in, they would displace the
     credential error or the lost paying subscriber this section exists to show.
     """
-    statement = select(
-        UserSubscription.pubkey,
-        UserSubscription.last_sync_error,
-        UserSubscription.last_synced_at,
-    ).where(
-        UserSubscription.last_sync_error.is_not(None),
-        not_(abandoned.condition(now)),
-    ).limit(limit)
+    statement = (
+        select(
+            UserSubscription.pubkey,
+            UserSubscription.last_sync_error,
+            UserSubscription.last_synced_at,
+        )
+        .where(
+            UserSubscription.last_sync_error.is_not(None),
+            not_(abandoned.condition(now)),
+        )
+        .limit(limit)
+    )
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())
 
@@ -511,11 +518,15 @@ async def select_abandoned_checkouts_on_db(
     their own so the count is visible: a spike is not a billing fault but a
     broken checkout, which nothing else in this report would show.
     """
-    statement = select(
-        UserSubscription.pubkey,
-        UserSubscription.flash_subscription_id,
-        UserSubscription.sync_error_since,
-    ).where(abandoned.condition(now)).limit(limit)
+    statement = (
+        select(
+            UserSubscription.pubkey,
+            UserSubscription.flash_subscription_id,
+            UserSubscription.sync_error_since,
+        )
+        .where(abandoned.condition(now))
+        .limit(limit)
+    )
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())
 
@@ -566,5 +577,3 @@ async def select_unrecognised_statuses_on_db(
     )
     result = await execute_db_statement(db, statement, __name__)
     return list(result.all())
-
-

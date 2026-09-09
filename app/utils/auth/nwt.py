@@ -29,7 +29,6 @@ from nostr_sdk import Event
 
 from app.core.config import settings
 
-
 NWT_KIND = 27519
 
 # Recommended clock skew per the NWT spec ("Verifiers SHOULD allow a small
@@ -157,9 +156,7 @@ def validate_nwt_token(encoded_token: str) -> str:
     if not aud_values:
         raise _bad_token("Bad NWT: missing aud claim")
     if expected_aud not in aud_values:
-        raise _bad_token(
-            f"Bad NWT: aud {aud_values} does not include this provider"
-        )
+        raise _bad_token(f"Bad NWT: aud {aud_values} does not include this provider")
 
     return event.author().to_hex()
 

@@ -79,5 +79,3 @@ async def update_billing_plan_on_db(
         setattr(plan, field, value)
     await db.flush()
     return plan
-
-

@@ -19,7 +19,6 @@ from app.routers.open_ranking.schemas import (
 from app.services.user_service import get_user_rank_and_counts
 from app.utils.auth.nwt import optional_nwt_signer
 
-
 router = APIRouter()
 
 

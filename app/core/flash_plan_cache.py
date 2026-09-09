@@ -48,7 +48,9 @@ def last_good_key(service_id: str) -> str:
     return f"{_PREFIX}lkg:{service_id}"
 
 
-async def read_service_plans(service_id: str, *, fresh: bool = False) -> list[FlashPlan]:
+async def read_service_plans(
+    service_id: str, *, fresh: bool = False
+) -> list[FlashPlan]:
     """Every plan Flash offers on one service, from cache where possible.
 
     `fresh=True` skips the short-lived copy and asks Flash now, rewriting both
@@ -136,7 +138,11 @@ async def _refresh(service_id: str) -> list[FlashPlan]:
         return last_good
 
     raw = body.get("plans")
-    plans = [plan for plan in raw if isinstance(plan, dict)] if isinstance(raw, list) else []
+    plans = (
+        [plan for plan in raw if isinstance(plan, dict)]
+        if isinstance(raw, list)
+        else []
+    )
     await _store(service_id, plans)
     return [parse_plan(plan) for plan in plans]
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.flash import (
@@ -31,8 +32,6 @@ from app.core.flash import (
 )
 from app.core.loggr import loggr
 from app.db_models import BillingPlan, SchedulingSource
-from fastapi import HTTPException, status
-
 from app.repos.billing_plan_repo import (
     get_billing_plan_by_id_on_db,
     get_billing_plan_on_db,
@@ -40,10 +39,18 @@ from app.repos.billing_plan_repo import (
     select_billing_plans_on_db,
     update_billing_plan_on_db,
 )
+from app.repos.brainstorm_nsec import (
+    brainstorm_nsec_exists_by_pubkey_on_db,
+    get_scheduling_source_on_db,
+    is_billing_blocked_on_db,
+    set_billing_blocked_on_db,
+    set_scheduling_for_pubkey_on_db,
+)
 from app.repos.flash_webhook_event_repo import (
     reset_events_awaiting_plan_on_db,
     settle_unresolved_events_on_db,
 )
+from app.repos.scheduling_repo import get_scheduling_on_db, scheduling_exists_on_db
 from app.repos.user_subscription_repo import (
     clear_granted_scheduling_on_db,
     count_subscriptions_for_plan_on_db,
@@ -53,14 +60,6 @@ from app.repos.user_subscription_repo import (
     update_flash_status_on_db,
     upsert_user_subscription_on_db,
 )
-from app.repos.brainstorm_nsec import (
-    brainstorm_nsec_exists_by_pubkey_on_db,
-    get_scheduling_source_on_db,
-    is_billing_blocked_on_db,
-    set_billing_blocked_on_db,
-    set_scheduling_for_pubkey_on_db,
-)
-from app.repos.scheduling_repo import get_scheduling_on_db, scheduling_exists_on_db
 
 logger = loggr.get_logger(__name__)
 
@@ -348,7 +347,9 @@ async def apply_entitlement(
             external_ref,
             subscription_id or "not given",
         )
-        return EntitlementOutcome(applied=False, reason=EntitlementReason.UNKNOWN_SUBSCRIPTION)
+        return EntitlementOutcome(
+            applied=False, reason=EntitlementReason.UNKNOWN_SUBSCRIPTION
+        )
 
     if not subscription.ref and not allow_unreferenced:
         # A subscription naming nobody entitles nobody, however its id arrived.
@@ -473,9 +474,7 @@ async def _grant_and_record(
         subscription.status,
         resolution.reason.value,
     )
-    return EntitlementOutcome(
-        applied=resolution.write_policy, reason=resolution.reason
-    )
+    return EntitlementOutcome(applied=resolution.write_policy, reason=resolution.reason)
 
 
 async def list_billing_plans_admin(db: AsyncDBSession) -> list[BillingPlan]:
@@ -575,7 +574,10 @@ async def update_billing_plan(
     await db.refresh(plan)
     if waiting:
         logger.info(
-            "Mapping %s/%s freed %s event(s) to be replayed", service_id, plan_ref, waiting
+            "Mapping %s/%s freed %s event(s) to be replayed",
+            service_id,
+            plan_ref,
+            waiting,
         )
     return plan
 
@@ -636,9 +638,7 @@ async def set_billing_block(
             revoked = True
 
     await db.commit()
-    logger.info(
-        "%s billing_blocked set to %s (revoked=%s)", pubkey, blocked, revoked
-    )
+    logger.info("%s billing_blocked set to %s (revoked=%s)", pubkey, blocked, revoked)
     return BlockOutcome(found=True, blocked=blocked, revoked=revoked)
 
 

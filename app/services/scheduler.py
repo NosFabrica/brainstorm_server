@@ -74,7 +74,9 @@ def _overdue_seconds(candidate: SchedulerCandidate, now: datetime) -> float:
     return (now - candidate.last_published).total_seconds()
 
 
-def _in_retry_backoff(candidate: SchedulerCandidate, now: datetime, backoff: int) -> bool:
+def _in_retry_backoff(
+    candidate: SchedulerCandidate, now: datetime, backoff: int
+) -> bool:
     if candidate.last_failed_at is None:
         return False
     return (now - candidate.last_failed_at).total_seconds() < backoff

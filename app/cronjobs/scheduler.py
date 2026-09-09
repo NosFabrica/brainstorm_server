@@ -24,12 +24,12 @@ from app.repos.scheduler_repo import load_scheduler_candidates_on_db
 from app.repos.scheduling_repo import get_default_scheduling_on_db
 from app.repos.user_repo import count_user_follows
 from app.services.brainstorm_request_service import create_brainstorm_request
+from app.services.leader_lock import SCHEDULER_LOCK_KEY, acquire_or_renew_leader
 from app.services.scheduler import (
     admission_budget,
     choose_admission_lane,
     rank_overdue_candidates,
 )
-from app.services.leader_lock import SCHEDULER_LOCK_KEY, acquire_or_renew_leader
 
 logger = loggr.get_logger(__name__)
 
@@ -45,9 +45,7 @@ _admitted_counts: dict[int, int] = {}
 async def _run_cycle(db) -> None:
     inflight = await count_scheduled_publishing_inflight_on_db(db)
     interactive = await any_interactive_in_pipeline_on_db(db)
-    budget = admission_budget(
-        settings.scheduler_inflight_target, inflight, interactive
-    )
+    budget = admission_budget(settings.scheduler_inflight_target, inflight, interactive)
     if budget <= 0:
         logger.info(
             f"Scheduler: admission paused (inflight={inflight}, interactive={interactive})."
@@ -96,9 +94,7 @@ async def _run_cycle(db) -> None:
         enqueued += 1
 
     if ranked:
-        logger.info(
-            f"Scheduler: {len(ranked)} overdue, enqueued {enqueued}/{budget}."
-        )
+        logger.info(f"Scheduler: {len(ranked)} overdue, enqueued {enqueued}/{budget}.")
 
 
 async def scheduler_cronjob() -> None:
@@ -110,7 +106,10 @@ async def scheduler_cronjob() -> None:
         try:
             async with db_session() as db:
                 if await acquire_or_renew_leader(
-                    redis_client, _INSTANCE_ID, LEADER_LOCK_TTL_MS, key=SCHEDULER_LOCK_KEY
+                    redis_client,
+                    _INSTANCE_ID,
+                    LEADER_LOCK_TTL_MS,
+                    key=SCHEDULER_LOCK_KEY,
                 ):
                     await _run_cycle(db)
         except Exception as exc:

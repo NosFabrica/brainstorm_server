@@ -35,7 +35,6 @@ from app.routers.open_ranking.schemas import (
 )
 from app.utils.auth.nwt import optional_nwt_signer
 
-
 router = APIRouter()
 
 
@@ -55,7 +54,7 @@ def _safe_rank(value) -> float:
 
 
 async def _redis_inbound_count(prefix: str, pubkey: str) -> int:
-    return int(await redis_client.scard(f"{prefix}{pubkey}"))
+    return int(await redis_client.scard(f"{prefix}{pubkey}"))  # type: ignore[misc]
 
 
 async def _top_inbound_response(
@@ -88,8 +87,7 @@ async def _top_inbound_response(
     )
 
     results = [
-        RankResult(pubkey=conn.pubkey, rank=_safe_rank(conn.influence))
-        for conn in top
+        RankResult(pubkey=conn.pubkey, rank=_safe_rank(conn.influence)) for conn in top
     ]
 
     return FollowersOrMutersResponse(

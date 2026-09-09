@@ -9,7 +9,6 @@ import re
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 
-
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # Per-endpoint TTL hints (seconds). The protocol treats these as advisory.

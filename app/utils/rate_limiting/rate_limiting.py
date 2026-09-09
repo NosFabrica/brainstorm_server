@@ -2,7 +2,6 @@ from fastapi import HTTPException
 
 from app.core.redis_db import get_redis_client
 
-
 RATE_LIMIT = 3
 WINDOW_SECONDS = 1800  # 30 minutes
 

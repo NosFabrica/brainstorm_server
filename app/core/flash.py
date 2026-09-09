@@ -428,7 +428,11 @@ async def _with_retries(
             if attempt == CONNECT_RETRIES:
                 raise FlashUnavailable(f"Could not reach Flash: {failed}") from failed
         else:
-            if not retry_5xx or response.status_code < 500 or attempt == CONNECT_RETRIES:
+            if (
+                not retry_5xx
+                or response.status_code < 500
+                or attempt == CONNECT_RETRIES
+            ):
                 return response
         await asyncio.sleep(0.1 * (attempt + 1))
     raise AssertionError("unreachable")
@@ -454,9 +458,7 @@ def _require_a_handle(subscription_id: str | None, ref: str | None) -> None:
 _WRITE_RETRYABLE = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
 
 
-async def _send_with_retries(
-    method: str, url: str, payload: dict
-) -> httpx.Response:
+async def _send_with_retries(method: str, url: str, payload: dict) -> httpx.Response:
     """POST or PATCH, retried only where nothing can have been sent.
 
     A 5xx is not retried either, because Flash answering at all means Flash
@@ -679,7 +681,9 @@ def _subscription_from(raw: object) -> FlashSubscription | None:
         _report_policy_differences(raw)
         return parse_subscription(raw)
     except (AttributeError, TypeError) as failed:
-        raise FlashUnavailable("Flash sent a subscription we could not read") from failed
+        raise FlashUnavailable(
+            "Flash sent a subscription we could not read"
+        ) from failed
 
 
 async def fetch_subscription_raw(
@@ -872,4 +876,7 @@ def _runs_until(row: dict) -> datetime:
     so the row with a whole day left would lose to one a second past midnight.
     Read as a deadline, for the same reason `current_period_end` is.
     """
-    return parse_flash_timestamp(row.get("currentPeriodEnd"), deadline=True) or datetime.min
+    return (
+        parse_flash_timestamp(row.get("currentPeriodEnd"), deadline=True)
+        or datetime.min
+    )

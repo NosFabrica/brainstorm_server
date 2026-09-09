@@ -75,6 +75,7 @@ def _word_max_edits(word: str) -> int:
 def _field_clauses(field: str, var: str, max_edits: int, role: str) -> list[str]:
     """Match clauses for one (field, word): exact, prefix, and up to two fuzzy
     tiers. Labels depend on the field `role` (§10 / §11)."""
+
     def _ann(extra: list[str], label: str | None) -> str:
         ann = [f'defaultIndex:"{field}"'] + extra
         if label:

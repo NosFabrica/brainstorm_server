@@ -4,10 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.database import execute_db_statement
 from app.db_models import GrapeRankPreset, GrapeRankPresetHistory
 
-
 # camelCase ↔ snake_case mapping. The pydantic GrapeRankPresetParams uses
 # camelCase to match the Java record; DB columns are snake_case per project convention.
-# Single source of truth for the mapping lives here so the service layer can work in camelCase end-to-end.
+# Single source of truth for the mapping lives here so the service layer can
+# work in camelCase end-to-end.
 COLUMN_MAP: dict[str, str] = {
     "rigor": "rigor",
     "attenuationFactor": "attenuation_factor",
@@ -24,7 +24,9 @@ COLUMN_MAP: dict[str, str] = {
 }
 
 
-def row_to_camel_dict(row: GrapeRankPreset) -> dict[str, float]:
+def row_to_camel_dict(
+    row: GrapeRankPreset | GrapeRankPresetHistory,
+) -> dict[str, float]:
     return {camel: getattr(row, snake) for camel, snake in COLUMN_MAP.items()}
 
 

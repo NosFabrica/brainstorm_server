@@ -94,9 +94,7 @@ async def update_preset_params(
     params: GrapeRankPresetParams,
     changed_by: str | None,
 ) -> GrapeRankPresetParams:
-    row = await update_preset_on_db(
-        db, preset.value, params.model_dump(), changed_by
-    )
+    row = await update_preset_on_db(db, preset.value, params.model_dump(), changed_by)
     return GrapeRankPresetParams(**row_to_camel_dict(row))
 
 

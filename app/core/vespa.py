@@ -24,7 +24,9 @@ import httpx
 from app.core import vespa_feed
 from app.core.config import settings
 from app.core.loggr import loggr
-from app.core.vespa_query import MAX_QUERY_WORDS, build_query
+
+# MAX_QUERY_WORDS is re-exported: root CLAUDE.md documents it on vespa.py.
+from app.core.vespa_query import MAX_QUERY_WORDS, build_query  # noqa: F401
 
 logger = loggr.get_logger(__name__)
 
@@ -107,7 +109,9 @@ _RETRYABLE = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
 # image ships a JRE + the JAR); the live-profile trickle stays on the httpx path.
 _FEEDER_JAR = os.getenv("VESPA_FEEDER_JAR", "/opt/vespa-feed-client.jar")
 _FEEDER_ENABLED = os.path.exists(_FEEDER_JAR)
-_FEEDER_THRESHOLD = 5000  # ops; below this the httpx path wins (JVM startup not worth it)
+_FEEDER_THRESHOLD = (
+    5000  # ops; below this the httpx path wins (JVM startup not worth it)
+)
 # Optional --connections override; feed-client auto-tunes when unset.
 _FEEDER_CONNECTIONS = os.getenv("VESPA_FEEDER_CONNECTIONS")
 
@@ -170,9 +174,7 @@ async def aclose() -> None:
 # document URLs
 # ---------------------------------------------------------------------------
 def _doc_url(pubkey: str) -> str:
-    return (
-        f"{settings.vespa_url}/document/v1/{NAMESPACE}/{DOCTYPE}/docid/{pubkey}"
-    )
+    return f"{settings.vespa_url}/document/v1/{NAMESPACE}/{DOCTYPE}/docid/{pubkey}"
 
 
 def _raise_with_context(
@@ -267,9 +269,7 @@ async def upsert_profile(pubkey: str, profile: dict) -> None:
     # under PUT, while POST is full-doc replace with direct values. `?create=true`
     # creates the doc from the partial update ops if it doesn't exist yet,
     # which preserves the quality_scores tensor across profile updates.
-    r = await _put_with_retry(
-        _doc_url(pubkey), params={"create": "true"}, json=body
-    )
+    r = await _put_with_retry(_doc_url(pubkey), params={"create": "true"}, json=body)
     _raise_with_context("upsert_profile", pubkey, body, r)
 
 
@@ -284,9 +284,7 @@ async def upsert_score(
     or replace). Written in one partial update so the two stay consistent.
     """
     body = vespa_feed.upsert_body(observer, score, followers)
-    r = await _put_with_retry(
-        _doc_url(pubkey), params={"create": "true"}, json=body
-    )
+    r = await _put_with_retry(_doc_url(pubkey), params={"create": "true"}, json=body)
     _raise_with_context("upsert_score", pubkey, body, r)
 
 
@@ -389,9 +387,7 @@ async def batch_upsert_scores(
     n_shards, per_shard = _feed_plan(total)
     if n_shards <= 1:
         return await _batch_upsert_inprocess(upserts, removes, observer, per_shard)
-    return await _batch_upsert_sharded(
-        upserts, removes, observer, n_shards, per_shard
-    )
+    return await _batch_upsert_sharded(upserts, removes, observer, n_shards, per_shard)
 
 
 async def _batch_upsert_feeder(
@@ -412,9 +408,13 @@ async def _batch_upsert_feeder(
     # --stdin, not `--file /dev/stdin`: on Linux the feed-client can't reopen a
     # PIPE'd fd 0 via /dev/stdin (ENXIO "No such device or address").
     cmd = [
-        "java", "-Xmx2g", "-jar", _FEEDER_JAR,
+        "java",
+        "-Xmx2g",
+        "-jar",
+        _FEEDER_JAR,
         "--stdin",
-        "--endpoint", settings.vespa_url,
+        "--endpoint",
+        settings.vespa_url,
         "--benchmark",
     ]
     if _FEEDER_CONNECTIONS:
@@ -429,29 +429,36 @@ async def _batch_upsert_feeder(
         stderr=asyncio.subprocess.PIPE,
     )
 
+    # Narrow the Optional pipes once: the process is created with all three
+    # set to PIPE, so None is impossible here.
+    assert (
+        proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+    )
+    stdin = proc.stdin
+
     async def _feed_stdin() -> None:
         buf: list[str] = []
         try:
             for pk, sc, fc in upserts:
                 buf.append(vespa_feed.upsert_feed_line(observer, pk, sc, fc))
                 if len(buf) >= 5000:
-                    proc.stdin.write(("\n".join(buf) + "\n").encode())
-                    await proc.stdin.drain()
+                    stdin.write(("\n".join(buf) + "\n").encode())
+                    await stdin.drain()
                     buf.clear()
             for pk in removes:
                 buf.append(vespa_feed.remove_feed_line(observer, pk))
                 if len(buf) >= 5000:
-                    proc.stdin.write(("\n".join(buf) + "\n").encode())
-                    await proc.stdin.drain()
+                    stdin.write(("\n".join(buf) + "\n").encode())
+                    await stdin.drain()
                     buf.clear()
             if buf:
-                proc.stdin.write(("\n".join(buf) + "\n").encode())
-                await proc.stdin.drain()
+                stdin.write(("\n".join(buf) + "\n").encode())
+                await stdin.drain()
         except (BrokenPipeError, ConnectionResetError):
             pass  # feeder died early; exit code + empty stdout handled below
         finally:
-            if proc.stdin and not proc.stdin.is_closing():
-                proc.stdin.close()
+            if not stdin.is_closing():
+                stdin.close()
 
     writer = asyncio.create_task(_feed_stdin())
     # Read both streams concurrently: the client streams periodic progress to
@@ -523,8 +530,15 @@ async def _batch_upsert_sharded(
     rm_shards = vespa_feed.shard(removes, n_shards)
     sizes = [len(up_shards[i]) + len(rm_shards[i]) for i in range(n_shards)]
     args = [
-        (settings.vespa_url, observer, up_shards[i], rm_shards[i],
-         per_shard, _CONNECT_RETRIES, _HTTP2)
+        (
+            settings.vespa_url,
+            observer,
+            up_shards[i],
+            rm_shards[i],
+            per_shard,
+            _CONNECT_RETRIES,
+            _HTTP2,
+        )
         for i in range(n_shards)
     ]
     logger.info(
@@ -620,7 +634,8 @@ async def search(
         children = [
             h
             for h in children
-            if (h.get("fields", {}).get("matchfeatures", {}).get("user_score", 0) or 0) > 0
+            if (h.get("fields", {}).get("matchfeatures", {}).get("user_score", 0) or 0)
+            > 0
         ]
     children = children[:hits]
 

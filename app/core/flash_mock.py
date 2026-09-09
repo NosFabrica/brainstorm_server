@@ -72,7 +72,8 @@ def cancel(subscription_id: str) -> FlashSubscription | None:
     if found is None:
         return None
     cancelled = replace(
-        found, cancel_effective_date=found.cancel_effective_date or found.current_period_end
+        found,
+        cancel_effective_date=found.cancel_effective_date or found.current_period_end,
     )
     _subscriptions[subscription_id] = cancelled
     return cancelled
@@ -87,9 +88,7 @@ def set_status(subscription_id: str, status: str) -> FlashSubscription | None:
     return changed
 
 
-def lookup(
-    subscription_id: str | None, ref: str | None
-) -> FlashSubscription | None:
+def lookup(subscription_id: str | None, ref: str | None) -> FlashSubscription | None:
     matches = _matches(subscription_id, ref)
     if not matches:
         return None
@@ -103,9 +102,7 @@ def lookup_raw(subscription_id: str | None, ref: str | None) -> list[dict]:
     return [_as_flash_row(row) for row in _matches(subscription_id, ref)]
 
 
-def _matches(
-    subscription_id: str | None, ref: str | None
-) -> list[FlashSubscription]:
+def _matches(subscription_id: str | None, ref: str | None) -> list[FlashSubscription]:
     if subscription_id:
         found = _subscriptions.get(subscription_id)
         return [found] if found else []

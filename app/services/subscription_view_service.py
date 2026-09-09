@@ -26,16 +26,16 @@ from app.repos.billing_plan_repo import (
     get_billing_plan_by_id_on_db,
     select_billing_plans_on_db,
 )
-from app.repos.user_subscription_repo import AbandonRule, get_user_subscription_on_db
+from app.repos.brainstorm_nsec import get_assigned_scheduling_id_on_db
 from app.repos.scheduling_repo import (
     get_default_scheduling_on_db,
     get_scheduling_on_db,
     select_public_scheduling_on_db,
 )
-from app.repos.brainstorm_nsec import get_assigned_scheduling_id_on_db
+from app.repos.user_subscription_repo import AbandonRule, get_user_subscription_on_db
 from app.schemas.schemas import (
-    BillingPlanView,
     BillingPlansData,
+    BillingPlanView,
     RefreshedSubscriptionView,
     SubscriptionPlanView,
     SubscriptionPolicyView,
@@ -58,6 +58,7 @@ def _abandon_rule() -> AbandonRule:
         after=timedelta(seconds=settings.billing_abandon_pending_after_seconds),
         error=EntitlementReason.UNKNOWN_SUBSCRIPTION.value,
     )
+
 
 # Flash subscription status → the UI's vocabulary. `past_due` reads as `grace`
 # because the user is inside Flash's dunning and still entitled —
@@ -121,7 +122,9 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
 
     return SubscriptionView(
         policy=(
-            SubscriptionPolicyView.model_validate(policy) if policy is not None else None
+            SubscriptionPolicyView.model_validate(policy)
+            if policy is not None
+            else None
         ),
         plan=(_subscriber_plan_view(row, plan) if plan is not None else None),
         status=_translate(
@@ -278,9 +281,7 @@ def _plan_row(policy: Scheduling, flash: FlashPlan) -> BillingPlanView:
         amount_minor=flash.amount_minor,
         currency=flash.currency,
         billing_interval=flash.billing_interval,
-        checkout_url=(
-            _checkout_url(flash.signup_url) if flash.signup_url else None
-        ),
+        checkout_url=(_checkout_url(flash.signup_url) if flash.signup_url else None),
         features=flash.features,
         not_included=flash.not_included,
     )

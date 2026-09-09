@@ -430,7 +430,7 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
         return
 
     raw_search: str = search_filter["search"]
-    query, observer_override, sort_spec, filters, parse_notices = _parse_search(
+    query, observer_override, sort_spec, rank_filters, parse_notices = _parse_search(
         raw_search
     )
     for note in parse_notices:
@@ -450,7 +450,7 @@ async def _handle_req(ws: WebSocket, msg: list) -> None:
     # Sort + filter are pushed into Vespa via a dedicated rank profile and a
     # query(min_rank) cut-off, so Vespa's top-N IS the answer — no over-fetch,
     # no Python re-ranking. See docs/search-precision-and-filtering.md.
-    ranking_profile, min_rank = _select_ranking(sort_spec, filters)
+    ranking_profile, min_rank = _select_ranking(sort_spec, rank_filters)
 
     # Vespa already drops hits below query(min_rank) (default rank>=2, §8.1), so
     # the Python zero-score post-filter is redundant here — leave it off.
@@ -591,9 +591,7 @@ async def _maybe_provision_observer(observer: str) -> None:
         return
     try:
         async with db_session() as db:
-            result = await get_or_create_brainstorm_pubkey(
-                db, nostr_pubkey=observer
-            )
+            result = await get_or_create_brainstorm_pubkey(db, nostr_pubkey=observer)
             await db.commit()
         logger.info(
             "nip50: cold-start provisioning for observer=%s triggered=%s",

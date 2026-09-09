@@ -19,11 +19,8 @@ from app.routers.network_alerts.dependencies import (
 )
 from app.schemas.request_response_schemas import GetNetworkAlertsResponse
 from app.services import network_alerts_service
+from app.services.network_alerts_service import DEFAULT_ALERT_LIMIT, MAX_ALERT_LIMIT
 from app.services.verified_cutoffs import VerifiedCutoffs
-from app.services.network_alerts_service import (
-    DEFAULT_ALERT_LIMIT,
-    MAX_ALERT_LIMIT,
-)
 
 router = APIRouter()
 

@@ -1,13 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Generic, Literal, TypeVar
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    PlainSerializer,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 
 from app.core.flash import SettableStatus, is_whole_day_boundary
 from app.schemas.error_codes import ErrorCode

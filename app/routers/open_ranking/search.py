@@ -27,7 +27,6 @@ from app.routers.open_ranking.schemas import (
 )
 from app.utils.auth.nwt import optional_nwt_signer
 
-
 router = APIRouter()
 
 
@@ -110,9 +109,7 @@ async def search_pubkeys(
         pk = h.get("pubkey")
         if not isinstance(pk, str):
             continue
-        results.append(
-            RankResult(pubkey=pk, rank=_safe_rank(h.get("_relevance")))
-        )
+        results.append(RankResult(pubkey=pk, rank=_safe_rank(h.get("_relevance"))))
 
     return SearchPubkeysResponse(
         results=results,

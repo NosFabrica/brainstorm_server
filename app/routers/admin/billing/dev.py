@@ -117,7 +117,8 @@ async def emit_webhook_endpoint(body: EmitWebhookBody):
 
     payload = {
         "event": body.event,
-        "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        "timestamp": datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z"),
         "data": body.data,
     }

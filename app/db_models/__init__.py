@@ -94,9 +94,7 @@ class BrainstormRequest(TimestampMixin, Base):
     graperank_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Wall-clock seconds to publish this run's TAs (set on publish success).
     # Feeds the scheduler's measured median publish duration.
-    publish_duration_seconds: Mapped[float | None] = mapped_column(
-        Float, nullable=True
-    )
+    publish_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     # manual/scheduled/admin/periodic — drives priority-lane routing.
     trigger_source: Mapped[str] = mapped_column(
         String(128),
@@ -199,9 +197,7 @@ class Scheduling(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     # How often a user on this policy is recalculated (consumed by the
     # scheduler, issue 03). Stored in seconds for uniform, sub-day granularity.
-    schedule_interval_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False
-    )
+    schedule_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     # Scheduling priority; higher is served first. Policies sharing a priority
     # share a lane (issue 02/03 routing).
     priority: Mapped[int] = mapped_column(
@@ -272,7 +268,9 @@ class BillingPlan(TimestampMixin, Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("flash_service_id", "flash_plan_id", name="uq_billing_plan_flash_ids"),
+        UniqueConstraint(
+            "flash_service_id", "flash_plan_id", name="uq_billing_plan_flash_ids"
+        ),
     )
 
 
@@ -281,7 +279,9 @@ class BillingPlan(TimestampMixin, Base):
 class UserSubscription(TimestampMixin, Base):
     __tablename__ = "user_subscription"
     pubkey: Mapped[str] = mapped_column(String, primary_key=True)
-    flash_subscription_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    flash_subscription_id: Mapped[str] = mapped_column(
+        String, nullable=False, index=True
+    )
     flash_subscriber_id: Mapped[str | None] = mapped_column(String, nullable=True)
     billing_plan_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("billing_plan.id"), nullable=False
@@ -296,11 +296,15 @@ class UserSubscription(TimestampMixin, Base):
     # Flash's status verbatim, unvalidated: their set is documented as open, so
     # an unrecognised value must land here intact rather than be coerced.
     flash_status: Mapped[str] = mapped_column(String, nullable=False)
-    current_period_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    current_period_start: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
     current_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     next_billing_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     trial_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    cancel_effective_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_effective_date: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
     # Where Flash says to manage this subscription, recorded as read. Stored
     # because re-asking Flash would put every signed-in page view behind their
     # API; nullable because a row predates the column until its next sync.
@@ -381,9 +385,15 @@ class GrapeRankPreset(TimestampMixin, Base):
     report_rating: Mapped[float] = mapped_column(Float, nullable=False)
     report_confidence: Mapped[float] = mapped_column(Float, nullable=False)
     follow_confidence_of_observer: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_followers_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_reporters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_muters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
+    verified_followers_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
+    verified_reporters_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
+    verified_muters_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
 
 
 class ObserverWhitelist(TimestampMixin, Base):
@@ -412,11 +422,17 @@ class GrapeRankPresetHistory(Base):
     report_rating: Mapped[float] = mapped_column(Float, nullable=False)
     report_confidence: Mapped[float] = mapped_column(Float, nullable=False)
     follow_confidence_of_observer: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_followers_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_reporters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
-    verified_muters_influence_cutoff: Mapped[float] = mapped_column(Float, nullable=False)
+    verified_followers_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
+    verified_reporters_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
+    verified_muters_influence_cutoff: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
     change_type: Mapped[str] = mapped_column(String, nullable=False)
     changed_by: Mapped[str | None] = mapped_column(String, nullable=True)
-    changed_at: Mapped[DateTime] = mapped_column(
+    changed_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

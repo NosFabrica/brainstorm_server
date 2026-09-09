@@ -33,4 +33,4 @@ async def enqueue_calc_request(db, instance, pubkey: str, trigger_source: str) -
     if trigger_source == TriggerSource.SCHEDULED.value:
         scheduling = await get_scheduling_for_pubkey_on_db(db, pubkey)
     lane = resolve_scheduler_lane(trigger_source, scheduling)
-    await redis_client.rpush(lane, instance.model_dump_json())
+    await redis_client.rpush(lane, instance.model_dump_json())  # type: ignore[misc]

@@ -1,17 +1,16 @@
 from datetime import datetime
+from typing import cast
 
 from nostr_sdk import Keys  # type: ignore
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from sqlalchemy.orm import defer
 
 from app.core.database import execute_db_statement, handle_no_data
 from app.core.loggr import loggr
 from app.db_models import BrainstormNsec, Scheduling, SchedulingSource
-from app.repos.scheduling_repo import (
-    get_default_scheduling_on_db,
-    get_scheduling_on_db,
-)
+from app.repos.scheduling_repo import get_default_scheduling_on_db, get_scheduling_on_db
 from app.utils.encryption import decrypt_nsec, encrypt_nsec
 from app.utils.nostr import generate_random_nsec
 
@@ -248,7 +247,8 @@ async def bulk_set_scheduling_for_pubkeys_on_db(
         .values(scheduling_id=scheduling_id, scheduling_source=source)
     )
     result = await db.execute(statement)
-    return result.rowcount
+    # DML results are CursorResult at runtime; the base Result stub lacks rowcount.
+    return cast(CursorResult, result).rowcount
 
 
 async def is_billing_blocked_on_db(db: AsyncDBSession, pubkey: str) -> bool:
@@ -281,7 +281,8 @@ async def set_billing_blocked_on_db(
         .values(billing_blocked=blocked)
     )
     result = await db.execute(statement)
-    return result.rowcount > 0
+    # DML results are CursorResult at runtime; the base Result stub lacks rowcount.
+    return cast(CursorResult, result).rowcount > 0
 
 
 async def get_scheduling_source_on_db(db: AsyncDBSession, pubkey: str) -> str:

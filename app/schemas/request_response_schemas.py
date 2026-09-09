@@ -3,6 +3,11 @@ from typing import Any
 from fastapi import status
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.graperank_schemas import (
+    BuiltinPresetTemplate,
+    GrapeRankPresetParams,
+    GrapeRankPresetTemplate,
+)
 from app.schemas.schemas import (
     AdminStats,
     AuthSuccessfulToken,
@@ -11,18 +16,13 @@ from app.schemas.schemas import (
     BrainstormRequestInstance,
     FollowListIngestResult,
     OwnUserData,
+    PaginatedUserConnections,
     RefreshedSubscriptionView,
     SubscriptionView,
-    PaginatedUserConnections,
     UserGraphData,
     UserHistoryInstance,
     UserOverviewData,
     UserSectionsStats,
-)
-from app.schemas.graperank_schemas import (
-    BuiltinPresetTemplate,
-    GrapeRankPresetParams,
-    GrapeRankPresetTemplate,
 )
 
 

@@ -15,8 +15,8 @@ from app.core.database import get_db
 from app.core.loggr import loggr
 from app.services.flash_webhook_service import (
     SIGNATURE_HEADER,
-    accepted_webhook_secrets,
     FlashSignatureError,
+    accepted_webhook_secrets,
     handle_delivery,
     process_delivery_in_background,
     verify_delivery,

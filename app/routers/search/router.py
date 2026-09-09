@@ -5,10 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from nostr_sdk import PublicKey
 
 from app.core.vespa import DEFAULT_MIN_RANK, SORT_PROFILES, get_document, search
-from app.schemas.request_response_schemas import (
-    SearchByTextResponse,
-    SearchResults,
-)
+from app.schemas.request_response_schemas import SearchByTextResponse, SearchResults
 from app.utils.api_validators import verify_token_optional
 from app.utils.auth.auth_models import JWTData
 from app.utils.observer import default_observer_pubkey
