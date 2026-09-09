@@ -10,7 +10,7 @@ an unrecognised status or an unmapped plan all leave the policy alone.
 import enum
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, cast
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -382,7 +382,7 @@ async def apply_entitlement(
 
     # Locked above, so a plain read; the row may not exist yet.
     existing = await get_user_subscription_on_db(db, external_ref)
-    if _names_another_subscription(existing, subscription):
+    if existing is not None and _names_another_subscription(existing, subscription):
         # A re-subscribe leaves more than one row under one ref, and the id in
         # hand — an old redirect replayed, or a late `expired` for the previous
         # subscription — may name the one that no longer decides anything.
@@ -555,7 +555,8 @@ async def update_billing_plan(
             db, flash_service_id=service_id, flash_plan_id=plan_ref
         )
 
-    plan = await update_billing_plan_on_db(db, plan_id, values)
+    # The repo returns None only for a missing row, which the 404 above settled.
+    plan = cast(BillingPlan, await update_billing_plan_on_db(db, plan_id, values))
     waiting = 0
     if reidentified:
         # The same reason `create_billing_plan` does this: the events that

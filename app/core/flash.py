@@ -26,7 +26,7 @@ not two — see `fetch_subscription`.
 import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
-from typing import Literal
+from typing import Literal, cast
 from urllib.parse import quote
 
 import httpx
@@ -678,8 +678,10 @@ def _subscription_from(raw: object) -> FlashSubscription | None:
     if raw is None:
         return None
     try:
-        _report_policy_differences(raw)
-        return parse_subscription(raw)
+        # Anything that is not a dict falls to the except below as
+        # FlashUnavailable, which is the intent — don't narrow it to None here.
+        _report_policy_differences(cast(dict, raw))
+        return parse_subscription(cast(dict, raw))
     except (AttributeError, TypeError) as failed:
         raise FlashUnavailable(
             "Flash sent a subscription we could not read"
@@ -777,6 +779,7 @@ class FlashPlan:
 
 def parse_plan(raw: dict) -> FlashPlan:
     """Map one entry of a service's `plans` array onto our shape. Pure."""
+    sort_order = raw.get("sortOrder")
     return FlashPlan(
         id=str(raw.get("id") or ""),
         service_id=str(raw.get("serviceId") or ""),
@@ -785,7 +788,7 @@ def parse_plan(raw: dict) -> FlashPlan:
         amount_minor=_minor_units(raw.get("amount")),
         currency=str(raw.get("currency") or ""),
         billing_interval=_text(raw.get("billingInterval")),
-        sort_order=raw.get("sortOrder") if isinstance(raw.get("sortOrder"), int) else 0,
+        sort_order=sort_order if isinstance(sort_order, int) else 0,
         features=_lines(raw.get("features")),
         not_included=_lines(raw.get("notIncluded")),
         status=str(raw.get("status") or ""),

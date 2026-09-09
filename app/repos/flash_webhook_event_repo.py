@@ -2,10 +2,8 @@
 to decide whether someone is paid; that comes from Flash's API."""
 
 from datetime import datetime, timedelta
-from typing import Any
 
-from sqlalchemy import String, Text, not_, or_, select, update
-from sqlalchemy.dialects.postgresql import ARRAY, array
+from sqlalchemy import not_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 

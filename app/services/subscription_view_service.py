@@ -126,7 +126,11 @@ async def read_subscription_view(db: AsyncDBSession, pubkey: str) -> Subscriptio
             if policy is not None
             else None
         ),
-        plan=(_subscriber_plan_view(row, plan) if plan is not None else None),
+        plan=(
+            _subscriber_plan_view(row, plan)
+            if row is not None and plan is not None
+            else None
+        ),
         status=_translate(
             row.flash_status if row else None,
             is_default=policy.is_default if policy is not None else True,
