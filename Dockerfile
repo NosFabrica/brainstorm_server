@@ -1,4 +1,4 @@
-ARG PYTHON_VERSION=3.12-slim-bullseye
+ARG PYTHON_VERSION=3.12-slim-bookworm
 
 FROM python:${PYTHON_VERSION} AS python-base
 
@@ -23,7 +23,8 @@ FROM python-base AS example-app
 COPY --from=vespaengine/vespa:latest \
     /opt/vespa/lib/jars/vespa-feed-client-cli-jar-with-dependencies.jar \
     /opt/vespa-feed-client.jar
-# openjdk-17 explicitly — the JAR targets Java 17, and bullseye's default-jre is 11.
+# openjdk-17 explicitly — the JAR targets Java 17. It's bookworm's default-jre
+# too, but pin it so a base image bump can't silently move us off 17.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/*
