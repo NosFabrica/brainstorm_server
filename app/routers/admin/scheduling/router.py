@@ -21,11 +21,7 @@ from app.schemas.request_body_schemas import (
     CreateSchedulingBody,
     UpdateSchedulingBody,
 )
-from app.schemas.schemas import (
-    SchedulerStats,
-    SchedulingItem,
-    SchedulingUserItem,
-)
+from app.schemas.schemas import SchedulerStats, SchedulingItem, SchedulingUserItem
 from app.services.scheduler_stats_service import get_scheduler_stats
 
 router = APIRouter()

@@ -15,10 +15,11 @@ logger = loggr.get_logger(__name__)
 async def get_or_create_brainstorm_pubkey(
     db: AsyncDBSession, nostr_pubkey: str
 ) -> BrainstormPubkeyInstance:
-    result, was_created_now = (
-        await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
-            db, pubkey=nostr_pubkey
-        )
+    (
+        result,
+        was_created_now,
+    ) = await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
+        db, pubkey=nostr_pubkey
     )
 
     # Read ORM attributes eagerly before any further DB ops expire the object
@@ -41,9 +42,7 @@ async def get_or_create_brainstorm_pubkey(
             raise  # preserve downstream HTTP status
         except Exception as exc:
             # Observer is created; GrapeRank is re-triggerable, don't fail the request.
-            logger.error(
-                f"Failed to auto-trigger GrapeRank for {nostr_pubkey}: {exc}"
-            )
+            logger.error(f"Failed to auto-trigger GrapeRank for {nostr_pubkey}: {exc}")
 
     return BrainstormPubkeyInstance(
         global_pubkey=result_pubkey,

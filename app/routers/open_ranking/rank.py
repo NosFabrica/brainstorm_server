@@ -28,7 +28,6 @@ from app.routers.open_ranking.schemas import (
 )
 from app.utils.auth.nwt import optional_nwt_signer
 
-
 router = APIRouter()
 
 
@@ -75,15 +74,12 @@ async def rank_pubkeys(
     effective_limit = min(effective_limit, len(pubkeys))
 
     async with neo4j_driver.session() as session:
-        influence_map = await batch_influence_for_pubkeys(
-            session, pubkeys, observer
-        )
+        influence_map = await batch_influence_for_pubkeys(session, pubkeys, observer)
 
     # Build results: 0.0 for unknown / missing; sort DESC by rank then
     # deterministic by pubkey for stable output across calls.
     ranked = [
-        RankResult(pubkey=pk, rank=_safe_rank(influence_map.get(pk)))
-        for pk in pubkeys
+        RankResult(pubkey=pk, rank=_safe_rank(influence_map.get(pk))) for pk in pubkeys
     ]
     ranked.sort(key=lambda r: (-r.rank, r.pubkey))
     ranked = ranked[:effective_limit]

@@ -9,10 +9,7 @@ from fastapi import Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
-from app.services.verified_cutoffs import (
-    VerifiedCutoffs,
-    resolve_verified_cutoffs,
-)
+from app.services.verified_cutoffs import VerifiedCutoffs, resolve_verified_cutoffs
 from app.utils.nostr import resolve_pubkey_or_400
 
 

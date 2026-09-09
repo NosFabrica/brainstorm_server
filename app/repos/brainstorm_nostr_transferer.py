@@ -1,8 +1,9 @@
-from sqlalchemy import insert, select
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+
 from app.core.database import execute_db_statement
 from app.db_models import BrainstormNostrRelayTransfer
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
-from sqlalchemy.dialects.postgresql import insert
 
 
 async def get_nostr_transfer_status_by_kind_from_db(
@@ -23,7 +24,7 @@ async def upsert_nostr_transfer_status_on_db(
     total_events: int,
     oldest: int,
     started_at: float,
-) -> BrainstormNostrRelayTransfer | None:
+) -> None:
     stmt = insert(BrainstormNostrRelayTransfer).values(
         kind=kind,
         completed=completed,

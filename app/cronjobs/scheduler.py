@@ -45,9 +45,7 @@ _admitted_counts: dict[int, int] = {}
 async def _run_cycle(db) -> None:
     inflight = await count_scheduled_publishing_inflight_on_db(db)
     interactive = await any_interactive_in_pipeline_on_db(db)
-    budget = admission_budget(
-        settings.scheduler_inflight_target, inflight, interactive
-    )
+    budget = admission_budget(settings.scheduler_inflight_target, inflight, interactive)
     if budget <= 0:
         logger.info(
             f"Scheduler: admission paused (inflight={inflight}, interactive={interactive})."
@@ -96,9 +94,7 @@ async def _run_cycle(db) -> None:
         enqueued += 1
 
     if ranked:
-        logger.info(
-            f"Scheduler: {len(ranked)} overdue, enqueued {enqueued}/{budget}."
-        )
+        logger.info(f"Scheduler: {len(ranked)} overdue, enqueued {enqueued}/{budget}.")
 
 
 async def scheduler_cronjob() -> None:

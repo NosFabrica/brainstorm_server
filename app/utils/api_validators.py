@@ -22,13 +22,17 @@ def validate_nostr_pubkey(pubkey: str) -> str:
     if not _HEX64_RE.match(normalised):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid nostr pubkey: expected 64-character hex, got {len(normalised)} characters",
+            detail=f"Invalid nostr pubkey: expected 64-character hex, "
+            f"got {len(normalised)} characters",
         )
     return normalised
 
+
 # Accept both the standard Authorization: Bearer header and the legacy
 # custom access_token header for backward compatibility.
-auth_jwt_header = APIKeyHeader(name="access_token", scheme_name="auth_token", auto_error=False)
+auth_jwt_header = APIKeyHeader(
+    name="access_token", scheme_name="auth_token", auto_error=False
+)
 
 
 async def verify_token(

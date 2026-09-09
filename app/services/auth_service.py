@@ -1,13 +1,9 @@
 from datetime import datetime, timedelta
 
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
-
-from app.core.config import settings
-
-
 from app.core.admin_whitelist import get_whitelisted_pubkeys
+from app.core.config import settings
 from app.schemas.schemas import AuthSuccessfulToken
-from app.utils.auth.auth_util import create_jwt_token, encrypt_password
+from app.utils.auth.auth_util import create_jwt_token
 
 
 def generate_authentication_token(nostr_pubkey: str) -> AuthSuccessfulToken:

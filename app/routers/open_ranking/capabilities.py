@@ -11,7 +11,6 @@ from fastapi import HTTPException, status
 
 from app.utils.observer import default_observer_pubkey
 
-
 # Endpoint -> ordered list of supported Algorithm Objects. The first element of
 # each list is the default algorithm for that endpoint (ORE-01 §"Algorithm
 # selection").
@@ -118,6 +117,7 @@ def resolve_algorithm(
             detail=f"Endpoint {endpoint} not in capability document",
         )
 
+    algo: dict | None
     if requested is None:
         algo = algos[0]
     else:
@@ -125,9 +125,7 @@ def resolve_algorithm(
         if algo is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=(
-                    f"Algorithm '{requested}' is not supported by {endpoint}"
-                ),
+                detail=(f"Algorithm '{requested}' is not supported by {endpoint}"),
             )
 
     # Authenticated mode: the signer's own perspective overrides everything.
@@ -139,9 +137,7 @@ def resolve_algorithm(
         if not pov:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=(
-                    f"Algorithm '{algo['id']}' requires a 'pov' pubkey"
-                ),
+                detail=(f"Algorithm '{algo['id']}' requires a 'pov' pubkey"),
             )
         return algo["id"], pov
 

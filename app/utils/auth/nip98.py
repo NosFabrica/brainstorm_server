@@ -72,7 +72,9 @@ async def validate_nip98_event(request: Request, encoded_event: str) -> str:
     payload_tag = _find_tag_value(event, "payload")
     if body:
         if not payload_tag:
-            raise _unauthorized("Bad NIP-98 token: missing payload tag for request with body")
+            raise _unauthorized(
+                "Bad NIP-98 token: missing payload tag for request with body"
+            )
         expected = hashlib.sha256(body).hexdigest()
         if payload_tag.lower() != expected:
             raise _unauthorized("Bad NIP-98 token: payload hash mismatch")

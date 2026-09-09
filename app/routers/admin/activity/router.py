@@ -6,9 +6,7 @@ from fastapi_pagination.ext.sqlalchemy import paginate
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
-from app.repos.brainstorm_request_repo import (
-    build_recent_brainstorm_requests_stmt,
-)
+from app.repos.brainstorm_request_repo import build_recent_brainstorm_requests_stmt
 from app.schemas.schemas import BrainstormRequestInstance
 from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,

@@ -1,8 +1,12 @@
-from datetime import datetime
-from fastapi import HTTPException
 import json
-from fastapi import APIRouter, Depends, status
+import secrets
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from nostr_sdk import Event
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+
 from app.core.database import get_db
+from app.core.redis_db import redis_client
 from app.repos.brainstorm_nsec import (
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
 )
@@ -12,15 +16,7 @@ from app.schemas.request_response_schemas import (
     NostrAuthChallengeResponse,
     SubmitNostrAuthChallengeResponse,
 )
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
-from app.core.redis_db import redis_client
-import secrets
-
-from nostr_sdk import Event, TagKind
-
-
 from app.services.auth_service import generate_authentication_token
-
 
 CHALLENGE_TTL = 12000  # seconds (2 minutes)
 
@@ -36,7 +32,6 @@ router = APIRouter()
 async def get_nostr_auth_challenge_endpoint(
     pubkey: str,
 ) -> NostrAuthChallengeResponse:
-
     challenge = secrets.token_hex(16)  # random 32-char hex string
     key = f"nostr:challenge:{pubkey}"
     await redis_client.set(key, challenge, ex=CHALLENGE_TTL)
@@ -54,7 +49,6 @@ async def submit_nostr_auth_challenge_endpoint(
     submit_nostr_auth_challenge_body: SubmitNostrAuthChallengeBody,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> SubmitNostrAuthChallengeResponse:
-
     key = f"nostr:challenge:{pubkey}"
     challenge = await redis_client.get(key)
 
@@ -65,7 +59,6 @@ async def submit_nostr_auth_challenge_endpoint(
         )
 
     try:
-
         signed_event = Event.from_json(
             json.dumps(submit_nostr_auth_challenge_body.signed_event)
         )
@@ -105,7 +98,7 @@ async def submit_nostr_auth_challenge_endpoint(
         await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey)
 
         return SubmitNostrAuthChallengeResponse(data=auth_token)
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid event"
         )

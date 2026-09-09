@@ -1,8 +1,15 @@
 import asyncio
 import json
+
+from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import get_redis_client
+from app.core.tier_thresholds import (
+    DEFAULT_VERIFIED_THRESHOLD,
+    TIER_NAMES,
+    classify_tier,
+)
 from app.db_models import BrainstormRequestStatus
 from app.message_queue_tasks.process_strfry_event import (
     create_pubkey_index,
@@ -13,24 +20,18 @@ from app.message_queue_tasks.set_brainstorm_request_as_ongoing import (
 )
 from app.message_queue_tasks.upload_nostr_events import process_nostr_upload_message
 from app.message_queue_tasks.write_neo4j_results import process_neo4j_write_message
-from app.core.tier_thresholds import (
-    DEFAULT_VERIFIED_THRESHOLD,
-    TIER_NAMES,
-    classify_tier,
-)
-from app.core.config import settings
 from app.models.grapeRankResult import GrapeRankResult
+from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.brainstorm_nsec import update_last_time_calculated_graperank_on_db
-from app.repos.observer_whitelist_repo import upsert_observer_whitelist_on_db
 from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
     update_brainstorm_request_internal_publication_status_by_id_on_db,
     update_brainstorm_request_result_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
 )
+from app.repos.observer_whitelist_repo import upsert_observer_whitelist_on_db
 from app.schemas.graperank_schemas import GrapeRankPresetParams
 from app.services.verified_cutoffs import build_cutoffs_from_params
-from app.neo4j_db.driver import driver as neo4j_driver
 
 logger = loggr.get_logger(__name__)
 
@@ -53,9 +54,7 @@ def verified_line_for_run(request_row) -> float:
     if not params:
         return DEFAULT_VERIFIED_THRESHOLD
     try:
-        return build_cutoffs_from_params(
-            GrapeRankPresetParams(**params)
-        ).verified_line
+        return build_cutoffs_from_params(GrapeRankPresetParams(**params)).verified_line
     except (TypeError, ValueError):
         logger.warning(
             "Unusable graperank_params snapshot on the run; "
@@ -94,7 +93,6 @@ def bucket_scorecards_by_confidence_and_hops(
 
 
 async def process_message(message: dict):
-
     grape_rank_result = GrapeRankResult.model_validate(message["result"])
 
     status = (
@@ -114,11 +112,12 @@ async def process_message(message: dict):
         request_row = await select_brainstorm_request_by_id_on_db(
             db, message["private_id"]
         )
-        number_by_confidence_by_hops, whitelist = (
-            bucket_scorecards_by_confidence_and_hops(
-                grape_rank_result.scorecards,
-                verified_line_for_run(request_row),
-            )
+        (
+            number_by_confidence_by_hops,
+            whitelist,
+        ) = bucket_scorecards_by_confidence_and_hops(
+            grape_rank_result.scorecards,
+            verified_line_for_run(request_row),
         )
 
         await update_brainstorm_request_result_by_id_on_db(
@@ -126,7 +125,9 @@ async def process_message(message: dict):
             brainstorm_request_id=message["private_id"],
             status=status,
             count_values=json.dumps(number_by_confidence_by_hops),
-            error=grape_rank_result.error.model_dump() if grape_rank_result.error else None,
+            error=grape_rank_result.error.model_dump()
+            if grape_rank_result.error
+            else None,
         )
         if status == BrainstormRequestStatus.FAILURE:
             # Calc failed -> the publish + neo4j-write stages never run; mark
@@ -159,7 +160,6 @@ async def process_message(message: dict):
 
 
 async def consume_messages():
-
     logger.info(
         f"Connected to Redis. Waiting for messages on '{RESULTS_QUEUE_NAME}'..."
     )
@@ -181,7 +181,7 @@ async def consume_messages():
                     except Exception as e:
                         logger.error(e)
 
-        except Exception as e:
+        except Exception:
             await asyncio.sleep(2)  # backoff
 
         finally:
@@ -243,7 +243,6 @@ async def consume_strfry_plugin_messages():
 
 
 async def consume_nostr_upload_messages():
-
     logger.info(
         f"Connected to Redis. Waiting for messages on '{UPLOAD_NOSTR_RESULTS_QUEUE_NAME}'..."
     )
@@ -267,7 +266,7 @@ async def consume_nostr_upload_messages():
                     except Exception as e:
                         logger.error(e)
 
-        except Exception as e:
+        except Exception:
             await asyncio.sleep(2)  # backoff
 
         finally:
@@ -302,7 +301,7 @@ async def consume_neo4j_write_messages():
                     except Exception as e:
                         logger.error(e)
 
-        except Exception as e:
+        except Exception:
             await asyncio.sleep(2)  # backoff
 
         finally:
@@ -314,7 +313,6 @@ async def consume_neo4j_write_messages():
 
 
 async def consume_job_started_messages():
-
     logger.info(
         f"Connected to Redis. Waiting for messages on '{JOB_STARTED_QUEUE_NAME}'..."
     )
@@ -336,7 +334,7 @@ async def consume_job_started_messages():
                     except Exception as e:
                         logger.error(e)
 
-        except Exception as e:
+        except Exception:
             await asyncio.sleep(2)  # backoff
 
         finally:

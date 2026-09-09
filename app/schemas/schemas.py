@@ -4,7 +4,6 @@ from pydantic import BaseModel, model_validator
 
 from app.schemas.error_codes import ErrorCode
 
-
 #################
 
 # Specific data #

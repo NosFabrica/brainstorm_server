@@ -2,13 +2,11 @@ from fastapi import HTTPException
 
 from app.core.redis_db import get_redis_client
 
-
 RATE_LIMIT = 3
 WINDOW_SECONDS = 1800  # 30 minutes
 
 
 async def validateIfRequestedTooOftenByIP(ip_address: str) -> None:
-
     redis_client = get_redis_client()
     key = f"rate_limit:{ip_address}"
 

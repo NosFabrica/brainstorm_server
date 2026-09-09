@@ -7,6 +7,7 @@ from app.repos.graperank_preset_repo import (
     get_preset_on_db,
     row_to_camel_dict,
 )
+from app.schemas.graperank_schemas import BuiltinPresetTemplate, GrapeRankPresetParams
 from app.schemas.request_response_schemas import (
     AdminPreset,
     AdminPresetHistoryData,
@@ -16,13 +17,8 @@ from app.schemas.request_response_schemas import (
     AdminPresetItemResponse,
     AdminPresetResponse,
 )
-from app.schemas.graperank_schemas import (
-    BuiltinPresetTemplate,
-    GrapeRankPresetParams,
-)
 from app.services.graperank_preset_service import update_preset_params
 from app.utils.auth.auth_models import JWTData
-
 
 router = APIRouter()
 

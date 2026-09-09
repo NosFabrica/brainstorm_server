@@ -7,7 +7,6 @@ from fastapi.responses import JSONResponse
 
 from app.routers.open_ranking.capabilities import CAPABILITY_DOC
 
-
 router = APIRouter()
 
 

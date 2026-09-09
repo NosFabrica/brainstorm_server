@@ -8,13 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
 from app.db_models import TriggerSource
-from app.repos.brainstorm_request_repo import (
-    build_recent_active_pubkeys_stmt,
-    build_recent_brainstorm_requests_stmt,
-)
 from app.repos.brainstorm_nsec import (
     get_scheduling_for_pubkey_on_db,
     set_scheduling_for_pubkey_on_db,
+)
+from app.repos.brainstorm_request_repo import (
+    build_recent_active_pubkeys_stmt,
+    build_recent_brainstorm_requests_stmt,
 )
 from app.repos.scheduling_repo import (
     get_default_scheduling_on_db,
@@ -68,9 +68,7 @@ async def get_recent_users_endpoint(
     return await paginate(
         db,
         stmt,
-        transformer=lambda rows: [
-            _row_to_user_item(r, default_name) for r in rows
-        ],
+        transformer=lambda rows: [_row_to_user_item(r, default_name) for r in rows],
     )
 
 
