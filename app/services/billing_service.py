@@ -339,6 +339,22 @@ async def apply_entitlement(
         subscription_id=subscription_id, ref=None if subscription_id else external_ref
     )
 
+    if subscription is None and not subscription_id:
+        # Asked by reference and Flash has none. A signup made outside our
+        # checkout never got a `ref` and one cannot be set afterwards, so the
+        # id we already stored is the only handle that will ever find it.
+        # By reference stays first: it picks the subscription that still
+        # entitles, where a stored id can name a dead one after a re-subscribe.
+        stored = await get_user_subscription_on_db(db, external_ref)
+        if stored is not None:
+            subscription = await fetch_subscription(
+                subscription_id=stored.flash_subscription_id
+            )
+            # The id came from our own row, not from a caller, so the guard
+            # below has nothing to protect against here. The mismatch check
+            # still applies.
+            allow_unreferenced = True
+
     if subscription is None:
         # Named by ref, not by id: every caller here looks up by reference, so
         # interpolating the id alone identifies nobody.

@@ -21,22 +21,14 @@ from app.services.billing_sync_service import reconcile_subscriptions
 NOW = datetime(2026, 8, 25, 12, 0, 0)
 STALE = NOW - timedelta(days=30)
 PUBKEY = "a" * 64
-SUBSCRIPTION_ID = "01a04924-134c-7008-8c32-ec7581931442"
 
 
-def _row(
-    pubkey=PUBKEY,
-    status="past_due",
-    period_end=STALE,
-    synced=STALE,
-    flash_subscription_id=SUBSCRIPTION_ID,
-):
+def _row(pubkey=PUBKEY, status="past_due", period_end=STALE, synced=STALE):
     return SimpleNamespace(
         pubkey=pubkey,
         flash_status=status,
         current_period_end=period_end,
         last_synced_at=synced,
-        flash_subscription_id=flash_subscription_id,
     )
 
 
@@ -79,52 +71,6 @@ def test_a_stuck_subscriber_is_re_read_by_their_own_reference(reconcile):
 
     reconcile.apply.assert_awaited_once()
     assert reconcile.apply.await_args.kwargs["external_ref"] == PUBKEY
-    assert reconcile.apply.await_args.kwargs["subscription_id"] is None
-
-
-def test_a_signup_flash_holds_no_ref_for_is_retried_by_its_stored_id(reconcile):
-    """Paid outside our checkout, so no ref was ever set and none can be. Asking
-    by reference is answered "no such subscription" every cycle, forever."""
-    reconcile.apply.side_effect = [
-        SimpleNamespace(
-            applied=False, reason=EntitlementReason.UNKNOWN_SUBSCRIPTION
-        ),
-        SimpleNamespace(applied=True, reason=EntitlementReason.GRANTED),
-    ]
-
-    result = _run(reconcile)
-
-    assert reconcile.apply.await_count == 2
-    first, second = reconcile.apply.await_args_list
-    assert first.kwargs["subscription_id"] is None
-    assert second.kwargs["subscription_id"] == SUBSCRIPTION_ID
-    assert second.kwargs["allow_unreferenced"] is True
-    assert result.reconciled == 1
-    assert result.failed == 0
-    reconcile.record_error.assert_not_awaited()
-
-
-def test_a_subscription_that_is_simply_gone_is_still_recorded_as_failing(reconcile):
-    """The same first answer, and the retry by id agrees. Nothing is invented
-    from a handle Flash no longer knows."""
-    reconcile.apply.return_value = SimpleNamespace(
-        applied=False, reason=EntitlementReason.UNKNOWN_SUBSCRIPTION
-    )
-
-    result = _run(reconcile)
-
-    assert reconcile.apply.await_count == 2
-    assert result.reconciled == 0
-    assert result.failed == 1
-    reconcile.record_error.assert_awaited_once()
-
-
-def test_a_reference_that_resolves_is_never_retried_by_id(reconcile):
-    """The retry is for one answer only. Reading by reference is what picks the
-    subscription that still entitles after a re-subscribe, so it stays first."""
-    _run(reconcile)
-
-    assert reconcile.apply.await_count == 1
     assert reconcile.apply.await_args.kwargs["subscription_id"] is None
 
 

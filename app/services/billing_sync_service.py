@@ -169,17 +169,6 @@ async def reconcile_subscriptions(
             outcome = await apply_entitlement(
                 db, external_ref=row.pubkey, subscription_id=None
             )
-            if outcome.reason is EntitlementReason.UNKNOWN_SUBSCRIPTION:
-                # A signup made outside our checkout carries no ref and never
-                # can, so asking by one is answered "no such subscription"
-                # forever. By reference stays first — it picks the subscription
-                # that still entitles, where a stored id can name a dead one.
-                outcome = await apply_entitlement(
-                    db,
-                    external_ref=row.pubkey,
-                    subscription_id=row.flash_subscription_id,
-                    allow_unreferenced=True,
-                )
             if outcome.reason in _UNSETTLED_REASONS:
                 # Flash answered, but not in a way that settles anything: no
                 # subscription, an unmapped plan, a reference that disagrees.

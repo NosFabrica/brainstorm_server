@@ -690,3 +690,85 @@ def test_editing_a_plan_that_does_not_exist_is_a_404(edit_plan):
         _update(edit_plan, {"sort_order": 3})
 
     assert caught.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# A signup Flash holds no reference for
+#
+# Paid outside our checkout, so no `ref` was ever set and none can be set
+# afterwards — Flash's PATCH takes `status` only. Asking by reference is
+# answered "no such subscription" every time, so the id on the row an admin
+# already attributed is the only handle that will ever find it.
+# ---------------------------------------------------------------------------
+def _by_reference(billing) -> EntitlementOutcome:
+    """How the sweep, the operator resync and a plain refresh all ask."""
+    return asyncio.run(
+        apply_entitlement(billing.db, external_ref=PUBKEY, subscription_id=None)
+    )
+
+
+def _stored(flash_subscription_id: str = SUBSCRIPTION_ID) -> SimpleNamespace:
+    return SimpleNamespace(
+        pubkey=PUBKEY,
+        flash_subscription_id=flash_subscription_id,
+        granted_scheduling_id=PAID_SCHEDULING_ID,
+    )
+
+
+def test_a_reference_flash_cannot_find_falls_back_to_the_stored_id(billing):
+    billing.existing.return_value = _stored()
+    billing.fetch.side_effect = [None, _subscription(ref=None)]
+
+    outcome = _by_reference(billing)
+
+    assert outcome.reason is EntitlementReason.GRANTED
+    first, second = billing.fetch.await_args_list
+    assert first.kwargs["ref"] == PUBKEY
+    assert second.kwargs["subscription_id"] == SUBSCRIPTION_ID
+    billing.set_scheduling.assert_awaited_once()
+
+
+def test_no_stored_row_means_nothing_to_fall_back_to(billing):
+    billing.existing.return_value = None
+    billing.fetch.return_value = None
+
+    outcome = _by_reference(billing)
+
+    assert outcome.reason is EntitlementReason.UNKNOWN_SUBSCRIPTION
+    assert billing.fetch.await_count == 1
+
+
+def test_a_subscription_gone_from_flash_entirely_still_settles_nothing(billing):
+    """Both handles agree it is gone. Nothing is invented from a stale id."""
+    billing.existing.return_value = _stored()
+    billing.fetch.return_value = None
+
+    outcome = _by_reference(billing)
+
+    assert outcome.reason is EntitlementReason.UNKNOWN_SUBSCRIPTION
+    assert billing.fetch.await_count == 2
+    billing.set_scheduling.assert_not_awaited()
+
+
+def test_an_id_the_caller_supplied_is_never_retried_by_reference(billing):
+    """The fallback is for a reference read only. An id handed in that names
+    nothing is the caller's answer, not a reason to go looking."""
+    billing.existing.return_value = _stored()
+    billing.fetch.return_value = None
+
+    outcome = _apply(billing)
+
+    assert outcome.reason is EntitlementReason.UNKNOWN_SUBSCRIPTION
+    assert billing.fetch.await_count == 1
+
+
+def test_the_fallback_still_refuses_a_subscription_naming_someone_else(billing):
+    """`allow_unreferenced` waives one check — that it names somebody — and the
+    id came from our own row. It does not waive the mismatch check."""
+    billing.existing.return_value = _stored()
+    billing.fetch.side_effect = [None, _subscription(ref="b" * 64)]
+
+    outcome = _by_reference(billing)
+
+    assert outcome.reason is EntitlementReason.REFERENCE_MISMATCH
+    billing.set_scheduling.assert_not_awaited()
