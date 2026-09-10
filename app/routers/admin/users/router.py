@@ -6,7 +6,10 @@ from fastapi_pagination.ext.sqlalchemy import paginate
 from nostr_sdk import Keys
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.core.config import settings
 from app.core.database import get_db
+from app.core.flash import FlashCredentialError, FlashUnavailable
+from app.core.loggr import loggr
 from app.db_models import SchedulingSource, TriggerSource
 from app.repos.brainstorm_nsec import (
     get_scheduling_for_pubkey_on_db,
@@ -29,11 +32,14 @@ from app.schemas.schemas import (
     AdminUserListItem,
     BrainstormRequestInstance,
 )
+from app.services.billing_service import apply_entitlement
 from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
     create_brainstorm_request,
 )
 from app.services.publish_drift import resync_target_to_flags
+
+logger = loggr.get_logger(__name__)
 
 router = APIRouter()
 
@@ -126,20 +132,34 @@ async def clear_user_scheduling_override_endpoint(
 ):
     """Undo an admin assignment rather than replace it with another one.
 
-    Assigning always records `admin`, which billing declines to overrule — so
-    moving a comped user to the free policy pins them there, and a subscription
-    they pay for grants them nothing. Setting a policy cannot say "no opinion".
+    Assigning always records `admin`. Billing keeps that source even when it
+    grants, and refuses to revoke against it — so a comped user who later stops
+    paying keeps the tier forever, and moving them to the free policy does not
+    stick while they are still paying. Setting a policy cannot say "no opinion".
 
-    Billing decides again from its next read: the sweep, or
-    `POST /admin/billing/subscriptions/{pubkey}/resync` to apply it now.
+    Hands them straight back to billing rather than leaving the gap: clearing
+    alone would drop a paying subscriber to the default policy until the next
+    sweep, up to six hours later. The re-read is best-effort — an unreachable
+    Flash leaves the release standing and the sweep settles it.
+
+    Returns the policy in effect afterwards, which is the paid one again if they
+    are paying and the default if they are not.
     """
     await set_scheduling_for_pubkey_on_db(
         db, pubkey, None, source=SchedulingSource.DEFAULT.value
     )
-    scheduling = await get_default_scheduling_on_db(db)
+    if settings.flash_enabled:
+        try:
+            await apply_entitlement(db, external_ref=pubkey, subscription_id=None)
+        except (FlashUnavailable, FlashCredentialError):
+            logger.warning(
+                "Released %s but could not re-read Flash; the sweep will settle it",
+                pubkey,
+            )
+    scheduling = await get_scheduling_for_pubkey_on_db(db, pubkey)
     return AdminUserDetail(
         pubkey=pubkey,
-        scheduling_id=None,
+        scheduling_id=scheduling.id if scheduling else None,
         scheduling_name=scheduling.name if scheduling else "",
     )
 
