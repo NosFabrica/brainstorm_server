@@ -115,6 +115,35 @@ async def set_user_scheduling_endpoint(
     )
 
 
+@router.delete(
+    path="/{pubkey}/scheduling/override",
+    response_model=AdminUserDetail,
+    summary="Admin: drop the override and return a user to the default policy",
+)
+async def clear_user_scheduling_override_endpoint(
+    pubkey: str,
+    db: AsyncDBSession = Depends(dependency=get_db),
+):
+    """Undo an admin assignment rather than replace it with another one.
+
+    Assigning always records `admin`, which billing declines to overrule — so
+    moving a comped user to the free policy pins them there, and a subscription
+    they pay for grants them nothing. Setting a policy cannot say "no opinion".
+
+    Billing decides again from its next read: the sweep, or
+    `POST /admin/billing/subscriptions/{pubkey}/resync` to apply it now.
+    """
+    await set_scheduling_for_pubkey_on_db(
+        db, pubkey, None, source=SchedulingSource.DEFAULT.value
+    )
+    scheduling = await get_default_scheduling_on_db(db)
+    return AdminUserDetail(
+        pubkey=pubkey,
+        scheduling_id=None,
+        scheduling_name=scheduling.name if scheduling else "",
+    )
+
+
 @router.get(
     path="/{pubkey}/history",
     response_model=Page[BrainstormRequestInstance],

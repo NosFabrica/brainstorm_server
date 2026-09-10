@@ -196,3 +196,70 @@ def test_admin_user_list_exposes_scheduling():
     )
     assert assigned.scheduling_id == 2
     assert assigned.scheduling_name == "Daily"
+
+
+# ---------------------------------------------------------------------------
+# Dropping the override
+# ---------------------------------------------------------------------------
+def test_dropping_the_override_returns_the_user_to_the_default(
+    admin_client, monkeypatch
+):
+    setter = AsyncMock()
+    monkeypatch.setattr(
+        "app.routers.admin.users.router.set_scheduling_for_pubkey_on_db", setter
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.users.router.get_default_scheduling_on_db",
+        AsyncMock(return_value=_sched(1, "Weekly")),
+    )
+
+    response = admin_client.delete(f"/admin/users/{PUBKEY}/scheduling/override")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scheduling_id"] is None
+    assert body["scheduling_name"] == "Weekly"
+
+    _db, passed_pubkey, passed_id = setter.await_args.args
+    assert passed_pubkey == PUBKEY
+    # NULL, not the free row's id, which would go stale if is_default moves.
+    assert passed_id is None
+    assert setter.await_args.kwargs["source"] == "default"
+
+
+def test_dropping_the_override_hands_the_user_back_to_billing(
+    admin_client, monkeypatch
+):
+    """`admin` is what billing refuses to overrule."""
+    setter = AsyncMock()
+    monkeypatch.setattr(
+        "app.routers.admin.users.router.set_scheduling_for_pubkey_on_db", setter
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.users.router.get_default_scheduling_on_db",
+        AsyncMock(return_value=_sched(1, "Weekly")),
+    )
+
+    admin_client.delete(f"/admin/users/{PUBKEY}/scheduling/override")
+
+    from app.services.billing_service import is_admin_held
+
+    assert is_admin_held(setter.await_args.kwargs["source"]) is False
+
+
+def test_non_admin_cannot_drop_an_override_403(client, fake_session, monkeypatch):
+    from app.api import app
+
+    async def _fake_get_db():
+        yield fake_session
+
+    setter = AsyncMock()
+    monkeypatch.setattr(
+        "app.routers.admin.users.router.set_scheduling_for_pubkey_on_db", setter
+    )
+    app.dependency_overrides[get_db] = _fake_get_db
+
+    response = client.delete(f"/admin/users/{PUBKEY}/scheduling/override")
+
+    assert response.status_code == 403
+    assert setter.await_count == 0
