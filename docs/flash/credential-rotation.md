@@ -1,5 +1,7 @@
 # Rotating the Flash credentials
 
+> **Untested as of 2026-09-10** — never rehearsed, and the API key is shared with staging, so it cannot be rotated for one environment alone.
+
 Two secrets, rotated differently, for a reason worth understanding before you
 start: **we are the caller for one and the receiver for the other.**
 
