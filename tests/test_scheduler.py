@@ -15,7 +15,7 @@ from app.services.scheduler import (
     rank_overdue_candidates,
     request_in_pipeline,
 )
-from app.services.scheduler_lock import acquire_or_renew_leader
+from app.services.leader_lock import SCHEDULER_LOCK_KEY, acquire_or_renew_leader
 
 
 class _FakeRedis:
@@ -122,12 +122,31 @@ def test_only_one_instance_holds_the_leader_lock():
     redis = _FakeRedis()
 
     async def _run():
-        a = await acquire_or_renew_leader(redis, "instance-A", ttl_ms=120000)
-        b = await acquire_or_renew_leader(redis, "instance-B", ttl_ms=120000)
-        renew = await acquire_or_renew_leader(redis, "instance-A", ttl_ms=120000)
+        a = await acquire_or_renew_leader(redis, "instance-A", ttl_ms=120000, key=SCHEDULER_LOCK_KEY)
+        b = await acquire_or_renew_leader(redis, "instance-B", ttl_ms=120000, key=SCHEDULER_LOCK_KEY)
+        renew = await acquire_or_renew_leader(redis, "instance-A", ttl_ms=120000, key=SCHEDULER_LOCK_KEY)
         return a, b, renew
 
     a, b, renew = asyncio.run(_run())
     assert a is True       # first acquires
     assert b is False      # second is locked out
     assert renew is True   # holder renews
+
+
+def test_two_jobs_on_different_keys_do_not_lock_each_other_out():
+    """The key is required rather than defaulted precisely so a job cannot
+    silently inherit another's — one of the two would simply never run."""
+    from app.services.leader_lock import BILLING_LOCK_KEY
+
+    redis = _FakeRedis()
+
+    async def _run():
+        scheduler = await acquire_or_renew_leader(
+            redis, "instance-A", ttl_ms=120000, key=SCHEDULER_LOCK_KEY
+        )
+        billing = await acquire_or_renew_leader(
+            redis, "instance-A", ttl_ms=120000, key=BILLING_LOCK_KEY
+        )
+        return scheduler, billing
+
+    assert asyncio.run(_run()) == (True, True)

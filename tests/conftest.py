@@ -66,6 +66,12 @@ _DUMMY_ENV = {
     "CUTOFF_OF_VALID_GRAPERANK_SCORES": "0.05",
     "PERFORM_NOSTR_FULL_SYNC": "false",
     "FRONTEND_URL": "http://localhost:3000",
+    # Payments on, so the webhook receiver is mounted for the fast suite. The
+    # "absent when unconfigured" case is asserted against a bare router instead,
+    # since app routes are fixed at import time.
+    "FLASH_ENABLED": "true",
+    "FLASH_API_KEY": "sk_live_test",
+    "FLASH_WEBHOOK_SECRET": "whsec_test_secret",
     "PUBLIC_BASE_URL": "http://localhost:8080",
     "VESPA_URL": "http://localhost:8080",
     # Default observer perspective for the Open Ranking endpoints (their global

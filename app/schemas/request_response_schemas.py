@@ -11,11 +11,14 @@ from app.schemas.graperank_schemas import (
 from app.schemas.schemas import (
     AdminStats,
     AuthSuccessfulToken,
+    BillingPlansData,
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
     FollowListIngestResult,
     OwnUserData,
     PaginatedUserConnections,
+    RefreshedSubscriptionView,
+    SubscriptionView,
     UserGraphData,
     UserHistoryInstance,
     UserOverviewData,
@@ -99,6 +102,18 @@ class GetOwnLatestGraperankResponse(SuccessfulResponseDataSchema):
 
 class IsSearchObserverResponse(SuccessfulResponseDataSchema):
     data: bool
+
+
+class GetSubscriptionResponse(SuccessfulResponseDataSchema):
+    data: SubscriptionView
+
+
+class RefreshSubscriptionResponse(SuccessfulResponseDataSchema):
+    data: RefreshedSubscriptionView
+
+
+class GetBillingPlansResponse(SuccessfulResponseDataSchema):
+    data: BillingPlansData
 
 
 class WhitelistedPubkeys(BaseModel):
