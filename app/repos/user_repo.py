@@ -395,6 +395,48 @@ async def get_outbound_counts_and_influence(
     )
 
 
+class TrustSignalRow(NamedTuple):
+    influence: float | None
+    verified: bool
+    flagged: bool
+
+
+async def get_trust_signals_for_pubkeys(
+    session: AsyncNeoSession,
+    pubkeys: list[str],
+    influence_key: str,
+    trusted_reporters_key: str,
+    verified_line: float,
+) -> dict[str, TrustSignalRow]:
+    """`/overview`'s verdicts for many subjects in one UNWIND; unknown pubkeys unrated."""
+    if not pubkeys:
+        return {}
+    query = f"""
+    UNWIND $pubkeys AS pk
+    OPTIONAL MATCH (user:NostrUser {{pubkey: pk}})
+    RETURN
+        pk AS pubkey,
+        user[$influence_key] AS influence,
+        coalesce({_expand(_VERIFIED_LINE, "user")}, false) AS verified,
+        coalesce({_expand(_TIER_PREDICATES[FLAGGED_TIER], "user")}, false) AS flagged
+    """
+    result = await session.run(
+        query,
+        pubkeys=pubkeys,
+        influence_key=influence_key,
+        trusted_reporters_key=trusted_reporters_key,
+        verified_line=verified_line,
+    )
+    out = {pk: TrustSignalRow(None, False, False) for pk in pubkeys}
+    async for record in result:
+        out[record["pubkey"]] = TrustSignalRow(
+            influence=record["influence"],
+            verified=bool(record["verified"]),
+            flagged=bool(record["flagged"]),
+        )
+    return out
+
+
 def _verified(param: str) -> str:
     """Verified against the Cypher parameter `param`: strict `>`, to match
     GrapeRank's countTrustedRaters."""

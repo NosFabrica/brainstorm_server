@@ -59,15 +59,12 @@ def validate_pubkey_list(values: list[str], field_name: str) -> list[str]:
     return [validate_pubkey(p, f"{field_name}[{i}]") for i, p in enumerate(values)]
 
 
-def enforce_batch_size(n: int) -> None:
-    """Enforce the ORE-03 / ORE-08 1000-pubkey soft cap with HTTP 413."""
-    if n > MAX_BATCH_PUBKEYS:
+def enforce_batch_size(n: int, cap: int = MAX_BATCH_PUBKEYS) -> None:
+    """Enforce a pubkey batch cap (ORE-03 / ORE-08: 1000) with HTTP 413."""
+    if n > cap:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail=(
-                f"Request exceeds the provider's limit of "
-                f"{MAX_BATCH_PUBKEYS} pubkeys per call"
-            ),
+            detail=(f"Request exceeds the provider's limit of {cap} pubkeys per call"),
         )
 
 
