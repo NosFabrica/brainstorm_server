@@ -107,6 +107,7 @@ in `brainstorm_nsec.py` are the only safe entry points.
 are `get_list_of_pubkeys_*` and `count_*` helpers. Plus the bigger composite
 queries:
 
+- `get_trust_signals_for_pubkeys(session, pubkeys, influence_key, trusted_reporters_key, verified_line) → {pubkey: TrustSignalRow(influence, verified, flagged)}` — `/overview`'s verdicts for many subjects in one UNWIND, expanding the same `_VERIFIED_LINE` / flagged predicates onto `user`.
 - `get_outbound_counts_and_influence(session, pubkey, influence_key, trusted_reporters_key, verified_line, …) → OutboundOverview(influence, following, muting, reporting, flagged_by_observer, flagged_count, verified, tier)` — single round-trip vs four sequential. `verified`/`tier` are the subject's *own* verdict, off the same `_TIER_PREDICATES` table the section rows use.
 - `get_paginated_section_connections(session, pubkey, influence_key, rel_type, direction, limit, cursor_inf, cursor_pk, …)` → `(items, next_cursor, total)` — cursor = `(influence, pubkey)`; ordered influence DESC, pubkey ASC. **Drives `/user/{pubkey}/connections`**. `verified_cutoff` is that section's preset cutoff — every row reports whether it clears it (`verified`) and which bucket it lands in (`tier`), and `verified_only` narrows the page to the verified rows. `verified_line` is the tier fallthrough boundary. There is no client-supplied `min_influence`.
 - `get_all_section_stats(...)` — one query covering all 6 sections; ~20 % faster than firing them in parallel.

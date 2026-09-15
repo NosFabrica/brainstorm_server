@@ -19,6 +19,7 @@ from app.schemas.schemas import (
     PaginatedUserConnections,
     RefreshedSubscriptionView,
     SubscriptionView,
+    TrustSignalsData,
     UserGraphData,
     UserHistoryInstance,
     UserOverviewData,
@@ -78,6 +79,10 @@ class GetUserDataResponse(SuccessfulResponseDataSchema):
 
 class GetUserOverviewResponse(SuccessfulResponseDataSchema):
     data: UserOverviewData
+
+
+class GetTrustSignalsResponse(SuccessfulResponseDataSchema):
+    data: TrustSignalsData
 
 
 class GetUserConnectionsResponse(SuccessfulResponseDataSchema):

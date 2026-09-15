@@ -118,6 +118,7 @@ token still 401s:
 
 | Method | Path | Response | Notes |
 |---|---|---|---|
+| POST | `/trustSignals` | `GetTrustSignalsResponse` | Body `{pubkeys}` (≤500, 413 before per-item 422). Per pubkey: `/overview`'s `influence` + `flagged`, and `verified` on the same line. One UNWIND — for list surfaces that would otherwise call `/overview` per author |
 | GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence. The subject's own `verified` / `tier` and `flagged_by_observer` / `flagged_count` sit on the saved preset's verified line |
 | GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Per-section total + verified + tier breakdown. No query params — the tier bands are fixed constants |
 | GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor`. `verified_only=true` filters on the section's own preset cutoff; `tier` uses the same fallthrough as `/stats`; each row carries the preset's `verified` verdict + `tier` |

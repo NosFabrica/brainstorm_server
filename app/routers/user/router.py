@@ -12,8 +12,10 @@ from app.repos.brainstorm_nsec import (
     get_is_observer_search_available_by_pubkey_on_db,
     update_assistant_kind0_published_at_on_db,
 )
+from app.routers.open_ranking.common import enforce_batch_size, validate_pubkey_list
 from app.routers.user.dependencies import get_verified_cutoffs, resolve_observer
 from app.schemas.request_body_schemas import (
+    GetTrustSignalsBody,
     RefreshSubscriptionBody,
     SubmitFollowListBody,
 )
@@ -22,6 +24,7 @@ from app.schemas.request_response_schemas import (
     GetOwnLatestGraperankResponse,
     GetOwnUserDataResponse,
     GetSubscriptionResponse,
+    GetTrustSignalsResponse,
     GetUserConnectionsResponse,
     GetUserDataResponse,
     GetUserHistoryResponse,
@@ -33,7 +36,7 @@ from app.schemas.request_response_schemas import (
     RefreshSubscriptionResponse,
     SubmitFollowListResponse,
 )
-from app.schemas.schemas import FollowListIngestResult, OwnUserData
+from app.schemas.schemas import FollowListIngestResult, OwnUserData, TrustSignalsData
 from app.services.assistant_profile_service import publish_assistant_kind0_for_user
 from app.services.billing_service import apply_entitlement
 from app.services.brainstorm_request_service import create_brainstorm_request
@@ -48,6 +51,7 @@ from app.services.user_service import (
     MAX_PAGE_SIZE,
     ConnectionKind,
     get_own_latest_graperank,
+    get_trust_signals,
     get_user_connections,
     get_user_graph_data,
     get_user_history_data,
@@ -63,6 +67,7 @@ from app.utils.rate_limiting.rate_limiting import (
 )
 
 CHALLENGE_TTL = 120  # seconds (2 minutes)
+MAX_TRUST_SIGNALS_PUBKEYS = 500
 
 router = APIRouter()
 
@@ -308,6 +313,26 @@ async def publish_assistant_profile_endpoint(
             assistant_pubkey=assistant_pubkey,
         )
     )
+
+
+@public_router.post(
+    path="/trustSignals",
+    summary="Influence, verified and flagged for many pubkeys — /overview's verdicts in one call",
+)
+async def get_trust_signals_endpoint(
+    body: GetTrustSignalsBody,
+    jwt_data: Optional[JWTData] = Depends(verify_token_optional),
+    cutoffs: VerifiedCutoffs = Depends(get_verified_cutoffs),
+) -> GetTrustSignalsResponse:
+    # 413 before per-item validation, as ORE-03 does.
+    enforce_batch_size(len(body.pubkeys), MAX_TRUST_SIGNALS_PUBKEYS)
+    pubkeys = validate_pubkey_list(body.pubkeys, "pubkeys")
+    results = await get_trust_signals(
+        pubkeys=pubkeys,
+        observer=resolve_observer(jwt_data),
+        verified_line=cutoffs.verified_line,
+    )
+    return GetTrustSignalsResponse(data=TrustSignalsData(results=results))
 
 
 @public_router.get(

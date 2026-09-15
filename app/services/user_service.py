@@ -42,11 +42,13 @@ from app.repos.user_repo import (
     get_outbound_counts_and_influence,
     get_paginated_flagged_connections,
     get_paginated_section_connections,
+    get_trust_signals_for_pubkeys,
 )
 from app.repos.user_repo import get_user_graph_data as _repo_get_user_graph_data
 from app.schemas.schemas import (
     BrainstormRequestInstance,
     PaginatedUserConnections,
+    TrustSignal,
     UserConnectionCounts,
     UserConnectionItem,
     UserGraphData,
@@ -225,6 +227,32 @@ async def get_user_overview(
             reporting=neo.reporting,
         ),
     )
+
+
+async def get_trust_signals(
+    pubkeys: list[str],
+    observer: str,
+    verified_line: float,
+) -> list[TrustSignal]:
+    """Trust signals for many subjects, deduped, in input order."""
+    unique = list(dict.fromkeys(pubkeys))
+    async with neo4j_driver.session() as session:
+        rows = await get_trust_signals_for_pubkeys(
+            session,
+            unique,
+            f"influence_{observer}",
+            f"trusted_reporters_{observer}",
+            verified_line,
+        )
+    return [
+        TrustSignal(
+            pubkey=pk,
+            influence=safe_float(rows[pk].influence),
+            verified=rows[pk].verified,
+            flagged=rows[pk].flagged,
+        )
+        for pk in unique
+    ]
 
 
 class UserRankAndCounts(NamedTuple):
