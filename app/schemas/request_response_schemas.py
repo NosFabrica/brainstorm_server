@@ -24,6 +24,7 @@ from app.schemas.schemas import (
     UserOverviewData,
     UserSectionsStats,
 )
+from app.schemas.trusted_list_schemas import TrustedListRunData
 
 
 class BaseResponseDataSchema(BaseModel):
@@ -137,6 +138,10 @@ class PublishAssistantProfileResponse(SuccessfulResponseDataSchema):
 
 class AdminStatsResponse(SuccessfulResponseDataSchema):
     data: AdminStats
+
+
+class TrustedListRunResponse(SuccessfulResponseDataSchema):
+    data: TrustedListRunData
 
 
 class GrapeRankPreset(BaseModel):
