@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import String, any_, bindparam, func, select
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
@@ -136,7 +137,10 @@ async def get_dictionary_on_db(
             NostrUserTagging,
             NostrUserTagging.tag_event_id == NostrTagElement.event_id,
         )
-        .where(NostrUserTagging.asserter_pubkey.in_(qualifying_asserters))
+        .where(
+            NostrUserTagging.asserter_pubkey
+            == any_(bindparam("asserters", qualifying_asserters, type_=ARRAY(String)))
+        )
         .where(
             (NostrUserTagging.polarity >= APPLY_THRESHOLD)
             | (NostrUserTagging.polarity <= DISPUTE_THRESHOLD)
@@ -184,7 +188,10 @@ async def get_taggings_for_tag_on_db(
             NostrUserTagging.asserter_pubkey,
         )
         .where(NostrUserTagging.tag_event_id == tag_event_id)
-        .where(NostrUserTagging.asserter_pubkey.in_(qualifying_asserters))
+        .where(
+            NostrUserTagging.asserter_pubkey
+            == any_(bindparam("asserters", qualifying_asserters, type_=ARRAY(String)))
+        )
     )
     result = await db.execute(stmt)
     return [(row[0], float(row[1]), row[2]) for row in result.all()]
