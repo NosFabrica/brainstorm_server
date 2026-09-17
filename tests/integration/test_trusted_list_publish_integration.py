@@ -31,6 +31,7 @@ pytestmark = pytest.mark.integration
 TAG_AUTHOR = "8" * 64
 TAG_EV = "7" * 64
 TARGET = "9" * 64
+SEEDED_SLUGS = ("podcaster", "chef")
 
 
 async def _read_slots(signing_pubkey: str) -> dict[str, dict]:
@@ -145,8 +146,17 @@ def test_publish_retract_idempotence_and_observer_scoping():
         await seed_influence({asserter: 0.9}, observer_y)
         try:
             async with async_session_factory() as db:
-                await db.execute(delete(NostrUserTagging))
-                await db.execute(delete(NostrTagElement))
+                await db.execute(
+                    delete(NostrUserTagging).where(
+                        NostrUserTagging.asserter_pubkey == asserter
+                    )
+                )
+                await db.execute(
+                    delete(NostrTagElement).where(
+                        NostrTagElement.author_pubkey == TAG_AUTHOR,
+                        NostrTagElement.slug.in_(SEEDED_SLUGS),
+                    )
+                )
                 await upsert_tag_element_on_db(db, _element())
                 await upsert_user_tagging_on_db(db, _tagging(asserter))
                 await db.commit()
@@ -160,7 +170,11 @@ def test_publish_retract_idempotence_and_observer_scoping():
             # stays trustworthy (taggings exist, asserters qualify) but the
             # podcaster slot is now stale and must be retracted.
             async with async_session_factory() as db:
-                await db.execute(delete(NostrUserTagging))
+                await db.execute(
+                    delete(NostrUserTagging).where(
+                        NostrUserTagging.asserter_pubkey == asserter
+                    )
+                )
                 await upsert_tag_element_on_db(db, _element2())
                 await upsert_user_tagging_on_db(db, _tagging2(asserter))
                 await db.commit()
@@ -173,12 +187,24 @@ def test_publish_retract_idempotence_and_observer_scoping():
             return first, after_publish, second, third, after_retract, y_slots
         finally:
             async with async_session_factory() as db:
-                await db.execute(delete(NostrUserTagging))
-                await db.execute(delete(NostrTagElement))
+                await db.execute(
+                    delete(NostrUserTagging).where(
+                        NostrUserTagging.asserter_pubkey == asserter
+                    )
+                )
+                await db.execute(
+                    delete(NostrTagElement).where(
+                        NostrTagElement.author_pubkey == TAG_AUTHOR,
+                        NostrTagElement.slug.in_(SEEDED_SLUGS),
+                    )
+                )
                 await db.commit()
             drv = neo_driver()
             async with drv.session() as s:
-                await s.run("MATCH (u:NostrUser) DETACH DELETE u")
+                await s.run(
+                    "MATCH (u:NostrUser) WHERE u.pubkey IN $pubkeys DETACH DELETE u",
+                    pubkeys=[asserter],
+                )
             await drv.close()
             await engine.dispose()
 
