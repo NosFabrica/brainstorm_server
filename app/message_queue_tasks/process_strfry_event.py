@@ -2,16 +2,23 @@ import json
 
 from neo4j import AsyncSession as AsyncNeoSession
 
+from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import redis_client
 from app.core.vespa import PROFILE_FIELDS as KIND_0_PROFILE_FIELDS
 from app.core.vespa import upsert_profile
+from app.repos.tagging_repo import upsert_tag_element_on_db, upsert_user_tagging_on_db
 from app.services.report_graph_service import (
     diff_author_targets,
     extract_report_targets,
     surviving_report_targets,
 )
 from app.services.report_relay_service import fetch_author_user_reports
+from app.services.tagging_parse import (
+    TAGGING_KIND,
+    parse_tag_element,
+    parse_user_tagging,
+)
 
 BATCH_SIZE = 100  # Adjust as needed
 
@@ -44,6 +51,10 @@ async def process_strfry_event(session: AsyncNeoSession, event: dict):
     if kind == 5:
         # logger.info("Consuming event of kind 5")
         return await process_event_kind_5(session, event)
+
+    if kind == TAGGING_KIND:
+        # Tag elements and taggings are both kind 39999, told apart by `z`.
+        return await process_event_kind_39999(event)
 
 
 # Canonical kind-0 field -> candidate keys in PRIORITY order (canonical first,
@@ -365,3 +376,24 @@ async def process_event_kind_5(session: AsyncNeoSession, event: dict):
             len(diff.to_add),
             len(diff.to_remove),
         )
+
+
+async def process_event_kind_39999(event: dict):
+    """Persist a kind-39999 tag element or tagging.
+
+    Both shapes ride the same kind and are distinguished by their `z` tag; an
+    event matching neither concept is foreign traffic and is dropped silently
+    (kind 39999 is a general Decentralized-Lists item kind, so unrelated events
+    legitimately arrive here). Malformed events are dropped the same way — a bad
+    event must never stall the queue for the good ones behind it.
+    """
+    element = parse_tag_element(event)
+    tagging = parse_user_tagging(event)
+    if element is None and tagging is None:
+        return
+
+    async with db_session() as db:
+        if element is not None:
+            await upsert_tag_element_on_db(db, element)
+        elif tagging is not None:
+            await upsert_user_tagging_on_db(db, tagging)
