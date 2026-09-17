@@ -18,6 +18,10 @@ class SubmitFollowListBody(BaseModel):
     signed_event: NostrEvent
 
 
+class GetTrustSignalsBody(BaseModel):
+    pubkeys: list[str]
+
+
 class SetGrapeRankPresetBody(BaseModel):
     preset: GrapeRankPresetTemplate
 

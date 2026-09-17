@@ -214,6 +214,19 @@ class UserOverviewData(BaseModel):
     counts: UserConnectionCounts
 
 
+class TrustSignal(BaseModel):
+    """What a list surface draws per subject, on `/overview`'s line."""
+
+    pubkey: str
+    influence: float | None
+    verified: bool
+    flagged: bool
+
+
+class TrustSignalsData(BaseModel):
+    results: list[TrustSignal]
+
+
 class ConnectionTierCounts(BaseModel):
     """Bucket names match the GR result writer's `count_values` keys
     (message_queue_consumer.py) so a single mental model applies across
