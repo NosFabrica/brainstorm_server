@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import String, any_, bindparam, func, select
+from sqlalchemy import String, any_, bindparam, func, select, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -37,7 +37,19 @@ async def upsert_tag_element_on_db(db: AsyncDBSession, element: TagElement) -> N
     """Insert or replace a tag element at its addressable coordinate.
 
     Latest-wins on `created_at_unix`: an out-of-order older event is ignored.
+
+    When a newer event replaces the row, taggings that referenced the
+    superseded event id are re-pointed at the new one, so an edit to a tag's
+    name or description does not orphan the assertions already made against it.
     """
+    prior = (
+        await db.execute(
+            select(NostrTagElement.event_id, NostrTagElement.created_at_unix).where(
+                NostrTagElement.author_pubkey == element.author_pubkey,
+                NostrTagElement.slug == element.slug,
+            )
+        )
+    ).one_or_none()
     stmt = (
         pg_insert(NostrTagElement)
         .values(
@@ -60,6 +72,16 @@ async def upsert_tag_element_on_db(db: AsyncDBSession, element: TagElement) -> N
         )
     )
     await db.execute(stmt)
+    if (
+        prior is not None
+        and prior.event_id != element.event_id
+        and prior.created_at_unix < element.created_at_unix
+    ):
+        await db.execute(
+            update(NostrUserTagging)
+            .where(NostrUserTagging.tag_event_id == prior.event_id)
+            .values(tag_event_id=element.event_id)
+        )
 
 
 async def upsert_user_tagging_on_db(db: AsyncDBSession, tagging: UserTagging) -> None:

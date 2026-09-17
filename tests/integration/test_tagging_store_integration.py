@@ -35,13 +35,13 @@ def _element(event_id, name, created_at, slug="podcaster", author=AUTHOR):
     )
 
 
-def _tagging(event_id, polarity, created_at, d_tag="dt-1"):
+def _tagging(event_id, polarity, created_at, d_tag="dt-1", tag_event_id=TAGEV):
     return UserTagging(
         event_id=event_id,
         asserter_pubkey=ASSERTER,
         d_tag=d_tag,
         target_pubkey=TARGET,
-        tag_event_id=TAGEV,
+        tag_event_id=tag_event_id,
         polarity=polarity,
         created_at_unix=created_at,
     )
@@ -84,6 +84,34 @@ def test_same_slug_by_different_authors_are_distinct_elements():
 
     # tags.md: same slug by different authors are DISTINCT elements.
     assert run_with_db(work) == ["Mine", "Theirs"]
+
+
+def test_tag_element_republish_repoints_existing_taggings():
+    async def work(db):
+        await upsert_tag_element_on_db(db, _element("1" * 64, "Old", 100))
+        await upsert_user_tagging_on_db(
+            db, _tagging("3" * 64, 1.0, 150, tag_event_id="1" * 64)
+        )
+        await upsert_tag_element_on_db(db, _element("2" * 64, "New", 200))
+        result = await db.execute(select(NostrUserTagging.tag_event_id))
+        return result.scalars().all()
+
+    # An edited element gets a new event id; assertions made against the old
+    # id must follow it or they silently drop out of the dictionary join.
+    assert run_with_db(work) == ["2" * 64]
+
+
+def test_tag_element_older_event_does_not_repoint_taggings():
+    async def work(db):
+        await upsert_tag_element_on_db(db, _element("2" * 64, "New", 200))
+        await upsert_user_tagging_on_db(
+            db, _tagging("3" * 64, 1.0, 250, tag_event_id="2" * 64)
+        )
+        await upsert_tag_element_on_db(db, _element("1" * 64, "Old", 100))
+        result = await db.execute(select(NostrUserTagging.tag_event_id))
+        return result.scalars().all()
+
+    assert run_with_db(work) == ["2" * 64]
 
 
 # --- AC2 -------------------------------------------------------------------
