@@ -4,8 +4,6 @@ The repo layer is mocked so these run in the fast suite. Input validation is not
 here — it lives in the request schema, covered by ``test_shorturl_contract.py``.
 The pure helpers are in ``test_shorturl_codes.py``, and a real-Postgres round
 trip in ``tests/integration/test_shorturl_roundtrip.py``.
-
-Issue: .scratch/shorturl/issues/02-durable-storage.md
 """
 
 import asyncio
@@ -70,11 +68,11 @@ def repo(monkeypatch):
 def test_a_first_mint_inserts_and_returns_the_new_code(repo):
     repo.insert.return_value = _row("AB3XK9QZ")
 
-    code, content = _run(svc.create_short_url(_FakeSession(), PK, RELAYS))
+    created = _run(svc.create_short_url(_FakeSession(), PK, RELAYS))
 
-    assert code == "AB3XK9QZ"
-    assert content.pubkey == PK
-    assert content.relays == RELAYS
+    assert created.short_code == "AB3XK9QZ"
+    assert created.content.pubkey == PK
+    assert created.content.relays == RELAYS
     assert repo.insert.await_count == 1
 
 
@@ -82,9 +80,9 @@ def test_the_same_pubkey_and_relay_set_returns_the_existing_code(repo):
     """AC: 'the same pubkey and relay set returns the same code'."""
     repo.by_content.return_value = _row("MBD5M41Y")
 
-    code, _ = _run(svc.create_short_url(_FakeSession(), PK, RELAYS))
+    created = _run(svc.create_short_url(_FakeSession(), PK, RELAYS))
 
-    assert code == "MBD5M41Y"
+    assert created.short_code == "MBD5M41Y"
     assert repo.insert.await_count == 0, "a dedup hit must not insert"
 
 
@@ -107,23 +105,23 @@ def test_a_dedup_hit_returns_the_stored_relays_not_the_callers(repo):
     stored = ["wss://relay.damus.io", "wss://nos.lol"]
     repo.by_content.return_value = _row("MBD5M41Y", relays=stored)
 
-    _, content = _run(
+    created = _run(
         svc.create_short_url(
             _FakeSession(), PK, ["wss://NOS.lol/", "wss://relay.damus.io"]
         )
     )
 
-    assert content.relays == stored
+    assert created.content.relays == stored
 
 
 def test_an_empty_relay_list_mints_its_own_code(repo):
     """`[]` is a legitimate content value with its own fingerprint."""
     repo.insert.return_value = _row("7YJR9PD6", relays=[])
 
-    code, content = _run(svc.create_short_url(_FakeSession(), PK, []))
+    created = _run(svc.create_short_url(_FakeSession(), PK, []))
 
-    assert code == "7YJR9PD6"
-    assert content.relays == []
+    assert created.short_code == "7YJR9PD6"
+    assert created.content.relays == []
 
 
 def test_a_code_collision_is_retried(repo):
@@ -136,9 +134,9 @@ def test_a_code_collision_is_retried(repo):
     # settle-on-the-winner path.
     repo.by_content.side_effect = [None, None]
 
-    code, _ = _run(svc.create_short_url(_FakeSession(), PK, RELAYS))
+    created = _run(svc.create_short_url(_FakeSession(), PK, RELAYS))
 
-    assert code == "SH4R8CKY"
+    assert created.short_code == "SH4R8CKY"
     assert repo.insert.await_count == 2
 
 
@@ -148,10 +146,10 @@ def test_a_concurrent_mint_settles_on_the_winner(repo):
     repo.insert.side_effect = IntegrityError("insert", {}, Exception("uq_ violation"))
     repo.by_content.side_effect = [None, winner]
 
-    code, content = _run(svc.create_short_url(_FakeSession(), PK, RELAYS))
+    created = _run(svc.create_short_url(_FakeSession(), PK, RELAYS))
 
-    assert code == "7YJR9PD6"
-    assert content.relays == winner.relays
+    assert created.short_code == "7YJR9PD6"
+    assert created.content.relays == winner.relays
     assert repo.insert.await_count == 1, "the loser must not keep retrying"
 
 

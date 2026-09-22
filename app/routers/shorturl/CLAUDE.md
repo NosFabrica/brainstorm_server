@@ -1,8 +1,8 @@
 # app/routers/shorturl
 
 A tiny URL shortener: maps a short code to a `{pubkey, relays}` payload.
-Backed by Postgres (`short_url`) — the record of truth, deliberately not Redis:
-an evicted code would 404 a public URL permanently and cannot be recomputed.
+Backed by Postgres (`short_url`); why not Redis:
+[ADR 0002](../../../docs/adr/0002-short-links-in-postgres.md).
 Business logic lives in
 [`app/services/shorturl_service.py`](../../services/shorturl_service.py); this
 router is a thin HTTP wrapper.
@@ -14,7 +14,7 @@ URL prefix: `/shorturl` (registered in [`routers/router.py`](../router.py)).
 | Method | Path | Auth | Response | Notes |
 |---|---|---|---|---|
 | POST | `/shorturl` | none, **rate-limited 1 req/s/IP** | `CreateShortUrlResponse` (`data.shortCode`, `data.content`) | Body: `CreateShortUrlBody{pubkey, relays}`. Idempotent per `(pubkey, relay-set)`. Bad input is a **422** from the request schema. |
-| GET | `/shorturl/{short_code}` | none | `GetShortUrlResponse` (`data.pubkey`, `data.relays`) | 404 if unknown/expired. |
+| GET | `/shorturl/{short_code}` | none | `GetShortUrlResponse` (`data.pubkey`, `data.relays`) | 404 if unknown; 422 if not `[A-Za-z0-9]{6,32}`. Codes never expire. |
 
 ## Validation
 
@@ -48,8 +48,8 @@ is built against it.
 
 ## Rate limiting
 
-The POST has a `Depends(rate_limit_create_short_url)` that calls the generic
-[`validate_rate_limit`](../../utils/rate_limiting/rate_limiting.py) with
+The POST has a `Depends(rate_limit_create_short_url)`, built by the generic
+[`rate_limit`](../../utils/rate_limiting/rate_limiting.py) factory with
 `key_prefix="shorturl_create"`, `limit=1`, `window_seconds=1`. Client IP comes
 from the shared `resolve_client_ip` helper, which reads the hop **our ingress
 wrote** (`settings.trusted_proxy_hops` from the right of `X-Forwarded-For`),

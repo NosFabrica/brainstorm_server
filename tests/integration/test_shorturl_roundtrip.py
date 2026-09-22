@@ -3,23 +3,19 @@
 The fast suite mocks the repo, so this is the only place the unique constraints,
 the JSONB column and the savepoint retry meet an actual database.
 
-Each test runs in exactly one event loop and disposes the engine on the way out:
-the engine is module-level and pools connections, so a second ``asyncio.run``
-would inherit connections bound to a loop that has already closed.
-
 Requires the local stack (`docker compose up -d`) and migrations at head.
 Deselect with `-m 'not integration'`.
-
-Issue: .scratch/shorturl/issues/02-durable-storage.md
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.core.database import db_session, engine
+from app.core.config import settings
 from app.db_models import ShortUrl
 from app.services.shorturl_service import create_short_url, get_short_url_content
 
@@ -29,36 +25,49 @@ PK = "f4d1866e8599563c52ceeedf11c28b8567e465c6e9a91df92add535d57f02ab0"
 
 
 def run(main):
-    """Drive one async body, then release pooled connections in the same loop."""
+    """Run `async main(session, minted)` on a fresh engine, as tagging_harness does.
 
-    async def _wrapped():
+    `session()` opens a new session and commits on exit; codes appended to
+    `minted` are deleted afterwards.
+    """
+
+    async def _go():
+        engine = create_async_engine(settings.db_url, future=True)
+        factory = async_sessionmaker(bind=engine, expire_on_commit=False, future=True)
+
+        @asynccontextmanager
+        async def session():
+            async with factory() as db:
+                yield db
+                await db.commit()
+
         minted: list[str] = []
         try:
-            return await main(minted)
+            return await main(session, minted)
         finally:
             if minted:
-                async with db_session() as db:
+                async with session() as db:
                     await db.execute(
                         delete(ShortUrl).where(ShortUrl.short_code.in_(minted))
                     )
             await engine.dispose()
 
-    return asyncio.run(_wrapped())
+    return asyncio.run(_go())
 
 
 def test_a_link_survives_a_new_connection():
     """AC: 'Mint a code, restart the API, resolve it — it still works'.
 
-    A second ``db_session()`` is a fresh session and identity map, so resolving
+    A second ``session()`` is a fresh session and identity map, so resolving
     through it proves the row came back from Postgres, not from memory.
     """
 
-    async def main(minted):
-        async with db_session() as db:
-            code, _ = await create_short_url(db, PK, ["wss://relay.damus.io"])
+    async def main(session, minted):
+        async with session() as db:
+            code = (await create_short_url(db, PK, ["wss://relay.damus.io"])).short_code
         minted.append(code)
 
-        async with db_session() as db:
+        async with session() as db:
             content = await get_short_url_content(db, code)
 
         assert content.pubkey == PK
@@ -68,22 +77,24 @@ def test_a_link_survives_a_new_connection():
 
 
 def test_minting_is_idempotent_across_equivalent_relay_sets():
-    async def main(minted):
-        async with db_session() as db:
-            first, _ = await create_short_url(
-                db, PK, ["wss://relay.damus.io", "wss://nos.lol"]
-            )
+    async def main(session, minted):
+        async with session() as db:
+            first = (
+                await create_short_url(
+                    db, PK, ["wss://relay.damus.io", "wss://nos.lol"]
+                )
+            ).short_code
         minted.append(first)
 
-        async with db_session() as db:
-            again, content = await create_short_url(
+        async with session() as db:
+            again = await create_short_url(
                 db, PK, ["wss://NOS.lol/", "wss://relay.damus.io"]
             )
-        assert again == first, "an equivalent relay set must reuse the code"
-        assert content.relays == ["wss://relay.damus.io", "wss://nos.lol"]
+        assert again.short_code == first, "an equivalent relay set must reuse the code"
+        assert again.content.relays == ["wss://relay.damus.io", "wss://nos.lol"]
 
-        async with db_session() as db:
-            different, _ = await create_short_url(db, PK, ["wss://nos.lol"])
+        async with session() as db:
+            different = (await create_short_url(db, PK, ["wss://nos.lol"])).short_code
         minted.append(different)
         assert different != first, "a different relay set must mint its own code"
 
@@ -91,22 +102,22 @@ def test_minting_is_idempotent_across_equivalent_relay_sets():
 
 
 def test_a_code_resolves_however_it_was_typed():
-    async def main(minted):
-        async with db_session() as db:
-            code, _ = await create_short_url(db, PK, [])
+    async def main(session, minted):
+        async with session() as db:
+            code = (await create_short_url(db, PK, [])).short_code
         minted.append(code)
 
         folded = code.replace("1", "I").replace("0", "O")
         for variant in (code, code.lower(), code.swapcase(), folded, f"  {code}  "):
-            async with db_session() as db:
+            async with session() as db:
                 assert (await get_short_url_content(db, variant)).pubkey == PK, variant
 
     run(main)
 
 
 def test_an_unknown_code_is_a_404():
-    async def main(minted):
-        async with db_session() as db:
+    async def main(session, minted):
+        async with session() as db:
             with pytest.raises(HTTPException) as excinfo:
                 await get_short_url_content(db, "ZZZZZZZZ")
             assert excinfo.value.status_code == 404

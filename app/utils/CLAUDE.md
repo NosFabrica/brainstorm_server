@@ -88,13 +88,13 @@ check in `user_service.py`.
   (default 1, env `TRUSTED_PROXY_HOPS`) is how far from the right our entry sits
   — raise it if a CDN or WAF is ever put in front.
 
-  The fallback to the direct peer **logs a warning**, deliberately. uvicorn runs
-  without a trusted `forwarded_allow_ips` (it defaults to `127.0.0.1`, and the
-  ingress pod is not loopback), so `request.client.host` behind the ingress is
-  the *ingress pod's* address — the same string for every caller. Falling back
-  silently would throttle unrelated callers as one.
+  The fallback to the direct peer **logs a warning**, deliberately. If uvicorn's
+  `FORWARDED_ALLOW_IPS` doesn't cover the ingress (the chart sets
+  `server.forwardedAllowIps`), `request.client.host` is the *ingress pod's*
+  address — the same string for every caller. Falling back silently would
+  throttle unrelated callers as one.
 
-### The graperank counter key moved (issue 01)
+### The graperank counter key moved
 
 It used to be `rate_limit:<request.client.host>` with no prefix. Because of the
 uvicorn behaviour above, that resolved to the ingress pod address in production —
@@ -103,8 +103,7 @@ not a per-IP limit. It is now `rate_limit:graperank:<real client ip>`.
 
 Two consequences, both intended: live counters were abandoned once on deploy, and
 the throttle changed from global to genuinely per-caller (a large capacity
-increase). Splitting `/user/graperank` from `/user/followList`, which still share
-the bucket, is issue 09.
+increase). `/user/graperank` and `/user/followList` still share the bucket.
 
 ## constants.py
 

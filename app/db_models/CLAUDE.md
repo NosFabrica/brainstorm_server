@@ -145,9 +145,8 @@ retrying after a few attempts and never replays.
 
 ### `ShortUrl` — `short_url`
 
-Share links: a short code standing in for a pubkey + relay-hint set. Record of
-truth, deliberately **not** Redis — an evicted code would 404 a public URL
-permanently and, unlike the caches, cannot be recomputed.
+Share links: a short code standing in for a pubkey + relay-hint set. Why
+Postgres, not Redis: [ADR 0002](../../docs/adr/0002-short-links-in-postgres.md).
 
 | Column | Type | Notes |
 |---|---|---|

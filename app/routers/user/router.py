@@ -63,8 +63,7 @@ from app.utils.api_validators import verify_token_optional
 from app.utils.auth.auth_models import JWTData
 from app.utils.rate_limiting.rate_limiting import (
     GRAPERANK_POLICY,
-    resolve_client_ip,
-    validate_rate_limit,
+    rate_limit,
     validate_subscription_refresh_allowed,
 )
 
@@ -79,8 +78,7 @@ router = APIRouter()
 public_router = APIRouter()
 
 
-async def rate_limit_graperank(request: Request) -> None:
-    await validate_rate_limit(resolve_client_ip(request), GRAPERANK_POLICY)
+rate_limit_graperank = rate_limit(GRAPERANK_POLICY)
 
 
 @router.get(
