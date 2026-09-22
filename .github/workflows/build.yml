@@ -20,26 +20,39 @@ jobs:
   test:
     name: Lint and test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # The Dockerfile is the single source for both versions, so CI can never
+      # lint and test against a toolchain the image doesn't use.
+      - name: Read toolchain versions from the Dockerfile
+        id: toolchain
+        run: |
+          poetry_version=$(sed -n 's/^ENV POETRY_VERSION=//p' Dockerfile | head -1)
+          python_version=$(sed -n 's/^ARG PYTHON_VERSION=\([0-9.]*\).*/\1/p' Dockerfile | head -1)
+          test -n "$poetry_version" && test -n "$python_version"
+          echo "poetry=$poetry_version" >> "$GITHUB_OUTPUT"
+          echo "python=$python_version" >> "$GITHUB_OUTPUT"
+
       # Poetry first: setup-python's `cache: poetry` resolves the cache dir by
       # shelling out to poetry, so it has to already be on PATH.
       - name: Install Poetry
-        run: pipx install poetry
+        run: pipx install "poetry==${{ steps.toolchain.outputs.poetry }}"
 
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: ${{ steps.toolchain.outputs.python }}
           cache: 'poetry'
 
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
 
-      # poe check_all = black --check, isort --check, flake8, mypy, pytest.
-      # PYTEST_ADDOPTS deselects integration tests (they need real services).
+      # Integration tests need real services, so they never gate.
       - name: Lint and test
         env:
           PYTEST_ADDOPTS: "-m 'not integration'"
