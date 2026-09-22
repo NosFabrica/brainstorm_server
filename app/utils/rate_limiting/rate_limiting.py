@@ -18,8 +18,7 @@ class RateLimitPolicy:
     window_seconds: int
 
 
-# Shared by POST /user/graperank and POST /user/followList — one bucket for both,
-# which is pre-existing behaviour. Splitting them is issue 09.
+# Shared by POST /user/graperank and POST /user/followList (pre-existing).
 GRAPERANK_POLICY = RateLimitPolicy(key_prefix="graperank", limit=3, window_seconds=1800)
 
 
@@ -33,17 +32,7 @@ async def _enforce_window(key: str, limit: int, window_seconds: int) -> None:
 
 
 def resolve_client_ip(request: Request) -> str:
-    """The caller's address, read from the hop our own proxy wrote.
-
-    Anything the client sends in ``X-Forwarded-For`` survives at the front of the
-    chain, so the leading entry is attacker-controlled and must not be trusted.
-
-    The fallback is deliberately noisy: uvicorn runs without a trusted
-    ``forwarded_allow_ips``, so ``request.client.host`` behind the ingress is the
-    *ingress pod's* address — identical for every caller. Falling back silently
-    would collapse unrelated callers into a single bucket.
-    """
-
+    """The X-Forwarded-For hop our own proxy wrote; the leading entries are client-controlled."""
     hops_back = settings.trusted_proxy_hops
     forwarded = request.headers.get("x-forwarded-for", "")
     hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
@@ -64,18 +53,21 @@ def resolve_client_ip(request: Request) -> str:
 
 
 async def validate_rate_limit(ip_address: str, policy: RateLimitPolicy) -> None:
-    """Fixed-window rate limit per IP.
-
-    Counts requests in a ``policy.window_seconds`` bucket. The first request in a
-    window sets the expiry; once the count exceeds ``policy.limit`` the rest of
-    the window is rejected with HTTP 429.
-    """
-
+    """Fixed-window rate limit per IP; 429 once the window's count exceeds the limit."""
     await _enforce_window(
         f"rate_limit:{policy.key_prefix}:{ip_address}",
         policy.limit,
         policy.window_seconds,
     )
+
+
+def rate_limit(policy: RateLimitPolicy):
+    """A FastAPI dependency enforcing ``policy`` per client IP."""
+
+    async def dependency(request: Request) -> None:
+        await validate_rate_limit(resolve_client_ip(request), policy)
+
+    return dependency
 
 
 # Generous enough for the pending-checkout poll (every few seconds), tight

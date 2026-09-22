@@ -5,8 +5,6 @@ replacing the header, so a client-supplied value survives at the front. Reading
 the first entry therefore reads attacker-controlled text; the trustworthy entry
 is the one our own proxy wrote, counting back ``settings.trusted_proxy_hops``
 from the right.
-
-Issue: .scratch/shorturl/issues/01-rate-limit-utility.md
 """
 
 import asyncio
@@ -43,7 +41,7 @@ def _request(xff: str | None = None, peer: str | None = _PEER) -> Request:
 
 
 class _FakeRedis:
-    """Enough of the redis surface for the counter plus the shortener."""
+    """Enough of the redis surface for the counter."""
 
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
@@ -57,21 +55,6 @@ class _FakeRedis:
     async def expire(self, key: str, seconds: int) -> bool:
         self.expiries[key] = seconds
         return True
-
-    async def get(self, key: str):
-        return self.store.get(key)
-
-    async def set(self, key: str, value: str, nx: bool = False, ex=None):
-        if nx and key in self.store:
-            return None
-        self.store[key] = value
-        return True
-
-    async def exists(self, key: str) -> int:
-        return 1 if key in self.store else 0
-
-    async def delete(self, key: str) -> int:
-        return 1 if self.store.pop(key, None) is not None else 0
 
 
 @pytest.fixture
@@ -152,7 +135,7 @@ def test_every_policy_gets_its_own_bucket(fake_redis):
 
 
 def test_graperank_counter_is_scoped_by_name(fake_redis):
-    """Previously unscoped. See issue 01 — the key move is deliberate."""
+    """Previously unscoped; the key move is deliberate."""
     _apply_graperank(_REAL)
     assert f"rate_limit:graperank:{_REAL}" in fake_redis.store
     assert f"rate_limit:{_REAL}" not in fake_redis.store
@@ -206,7 +189,7 @@ def test_a_burst_is_throttled_whether_or_not_the_caller_spoofs(
     """
     from app.core.database import get_db
     from app.api import app as fastapi_app
-    from app.schemas.schemas import ShortUrlContent
+    from app.schemas.schemas import CreatedShortUrl, ShortUrlContent
 
     async def _no_db():
         yield None
@@ -215,7 +198,10 @@ def test_a_burst_is_throttled_whether_or_not_the_caller_spoofs(
     monkeypatch.setattr(
         "app.routers.shorturl.router.create_short_url",
         AsyncMock(
-            return_value=("AB3XK9QZ", ShortUrlContent(pubkey="a" * 64, relays=[]))
+            return_value=CreatedShortUrl(
+                short_code="AB3XK9QZ",
+                content=ShortUrlContent(pubkey="a" * 64, relays=[]),
+            )
         ),
     )
     try:

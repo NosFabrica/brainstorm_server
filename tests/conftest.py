@@ -93,6 +93,7 @@ from fastapi.testclient import TestClient
 from nostr_sdk import EventBuilder, Keys, Kind, Tag
 
 from app.api import app
+from app.routers.user.router import rate_limit_graperank
 from app.utils.api_validators import verify_token
 from app.utils.auth.auth_models import JWTData
 
@@ -199,11 +200,16 @@ def client(caller: _Caller):
 
 
 @pytest.fixture(autouse=True)
-def mock_rate_limit(monkeypatch) -> AsyncMock:
+def mock_rate_limit() -> AsyncMock:
     """No-op rate limiter by default; tests can set ``.side_effect`` to trip it."""
     limiter = AsyncMock()
-    monkeypatch.setattr("app.routers.user.router.validate_rate_limit", limiter)
-    return limiter
+
+    async def _limited() -> None:
+        await limiter()
+
+    app.dependency_overrides[rate_limit_graperank] = _limited
+    yield limiter
+    app.dependency_overrides.pop(rate_limit_graperank, None)
 
 
 @pytest.fixture

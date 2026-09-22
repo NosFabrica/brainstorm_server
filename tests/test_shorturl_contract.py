@@ -4,8 +4,6 @@ Validation belongs in the request schema, so bad input is a 422 from the
 framework rather than a hand-rolled 400 in service code. The wire format is
 frozen: the response field is `shortCode`, whatever the Python attribute is
 called.
-
-Issue: .scratch/shorturl/issues/03-api-contract.md
 """
 
 import pytest
@@ -35,7 +33,9 @@ def api(client, monkeypatch):
     fastapi_app.dependency_overrides[get_db] = _no_db
     fastapi_app.dependency_overrides[rate_limit_create_short_url] = _no_rate_limit
     created = AsyncMock(
-        return_value=("AB3XK9QZ", ShortUrlContent(pubkey=PK_HEX, relays=[]))
+        return_value=CreatedShortUrl(
+            short_code="AB3XK9QZ", content=ShortUrlContent(pubkey=PK_HEX, relays=[])
+        )
     )
     monkeypatch.setattr("app.routers.shorturl.router.create_short_url", created)
     yield client, created
@@ -173,3 +173,26 @@ def test_an_npub_is_normalised_to_hex_before_storage(api):
         == 200
     )
     assert created.await_args.args[1] == PK_HEX, "stored form is always hex"
+
+
+# --------------------------------------------------------------------------
+# resolve — the path only admits a plausible code
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["abc12", "A" * 33, "AB3XK9Q-", "AB3XK9QZ.png"])
+def test_a_malformed_code_is_a_422_before_any_lookup(api, monkeypatch, bad):
+    client, _ = api
+    lookup = AsyncMock()
+    monkeypatch.setattr("app.routers.shorturl.router.get_short_url_content", lookup)
+    assert client.get(f"/shorturl/{bad}").status_code == 422
+    lookup.assert_not_awaited()
+
+
+@pytest.mark.parametrize("code", ["ab3xk9", "AB3XK9QZ", "A" * 32])
+def test_a_plausible_code_reaches_the_lookup(api, monkeypatch, code):
+    client, _ = api
+    lookup = AsyncMock(return_value=ShortUrlContent(pubkey=PK_HEX, relays=[]))
+    monkeypatch.setattr("app.routers.shorturl.router.get_short_url_content", lookup)
+    assert client.get(f"/shorturl/{code}").status_code == 200
+    lookup.assert_awaited_once()

@@ -8,14 +8,7 @@ def generate_random_nsec() -> str:
 
 
 def to_hex_pubkey(value: str) -> str:
-    """Hex or npub in, canonical hex out. Raises ValueError if unparseable.
-
-    The pure half, so a pydantic ``field_validator`` can reuse it and still get
-    422 aggregation — raising HTTPException inside a validator would bypass it.
-
-    Does NOT strip: `resolve_pubkey_or_400` rejects padded input today and the
-    other pubkey endpoints rely on that. Callers that want leniency strip first.
-    """
+    """Hex or npub in, canonical hex out; ValueError if unparseable. Does not strip."""
     try:
         return PublicKey.parse(value).to_hex()
     except Exception:

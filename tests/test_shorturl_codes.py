@@ -3,8 +3,6 @@
 Codes are Crockford base32: uppercase, and never `I`, `L`, `O` or `U`. Those four
 are the glyphs people mistype when a link is read aloud or retyped, so resolution
 folds them back (`I`/`L` -> `1`, `O` -> `0`) and is case-insensitive.
-
-Issue: .scratch/shorturl/issues/02-durable-storage.md
 """
 
 import pytest

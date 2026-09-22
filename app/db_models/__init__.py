@@ -497,21 +497,14 @@ class NostrUserTagging(Base):
 
 
 class ShortUrl(TimestampMixin, Base):
-    """A share link: a short code standing in for a pubkey + relay-hint set.
-
-    Record of truth, deliberately not Redis — an evicted short code would 404 a
-    public URL permanently, and unlike everything else in that cache it cannot
-    be recomputed. See .scratch/shorturl/PRD.md D1.
-    """
+    """A share link: a short code for a pubkey + relay-hint set. See docs/adr/0002-short-links-in-postgres.md."""
 
     __tablename__ = "short_url"
     id: Mapped[int] = mapped_column(primary_key=True)
-    # Variable-length on purpose: the generated length may change later and old
-    # codes must keep resolving. Nothing may infer a length from this column.
+    # Variable-length on purpose: the generated length may change.
     short_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     pubkey: Mapped[str] = mapped_column(String(64), nullable=False)
-    # sha256 of the normalized relay set; makes minting idempotent per
-    # (pubkey, relay-set) without comparing JSON.
+    # sha256 of the normalized relay set.
     relays_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     relays: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")

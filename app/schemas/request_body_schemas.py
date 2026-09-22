@@ -58,15 +58,13 @@ class CreateShortUrlBody(BaseModel):
     @field_validator("pubkey")
     @classmethod
     def _normalise_pubkey(cls, value: str) -> str:
-        """Accept hex or npub, store hex. Shares `to_hex_pubkey` with the
-        `resolve_pubkey_or_400` used by the other pubkey-taking endpoints."""
+        """Hex or npub in, hex out."""
         return to_hex_pubkey(value.strip())
 
     @field_validator("relays")
     @classmethod
     def _relays_well_formed(cls, relays: list[str]) -> list[str]:
-        """Validate and normalise together — returning the raw list would store
-        and echo back surrounding whitespace the check already ignored."""
+        """Returns the stripped relays, so stored values match what was checked."""
         cleaned = []
         for relay in relays:
             stripped = relay.strip()
