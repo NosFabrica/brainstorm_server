@@ -497,7 +497,10 @@ class NostrUserTagging(Base):
 
 
 class ShortUrl(TimestampMixin, Base):
-    """A share link: a short code for a pubkey + relay-hint set. See docs/adr/0002-short-links-in-postgres.md."""
+    """A share link: a short code for a pubkey + relay-hint set.
+
+    See docs/adr/0002-short-links-in-postgres.md.
+    """
 
     __tablename__ = "short_url"
     id: Mapped[int] = mapped_column(primary_key=True)
