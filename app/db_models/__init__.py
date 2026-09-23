@@ -226,6 +226,10 @@ class Scheduling(TimestampMixin, Base):
     is_public: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # Entitlement: users on this policy may open support tickets (ADR 0003).
+    support_included: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
 
     __table_args__ = (
         # At most one default policy: partial unique index over the truthy rows.
