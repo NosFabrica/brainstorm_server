@@ -5,7 +5,13 @@ from fastapi_pagination.ext.sqlalchemy import paginate
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
-from app.db_models import SupportAuthor, SupportEventType, SupportMessage, SupportTicket
+from app.db_models import (
+    SupportAuthor,
+    SupportEventType,
+    SupportMessage,
+    SupportTicket,
+    SupportTicketStatus,
+)
 from app.repos.support_repo import (
     build_user_support_tickets_stmt,
     count_unclosed_support_tickets_on_db,
@@ -13,6 +19,7 @@ from app.repos.support_repo import (
     insert_support_message_on_db,
     insert_support_ticket_on_db,
     lock_support_filing_on_db,
+    lock_support_ticket_on_db,
     select_support_events_on_db,
     select_support_messages_on_db,
     select_support_ticket_on_db,
@@ -29,6 +36,7 @@ from app.services.support_entitlement import (
     is_entitled_to_support,
     require_entitled_to_support,
 )
+from app.utils.datetimes import utc_now
 
 
 async def get_support_state(
@@ -103,6 +111,72 @@ async def get_thread(
             pubkey=ticket.pubkey, notify_email=ticket.notify_email
         ),
     )
+
+
+async def add_user_message(
+    db: AsyncDBSession, ticket_id: int, pubkey: str, body: str
+) -> SupportMessageItem:
+    """A reply always puts the ticket back in support's court.
+
+    From closed that is a reopen — there is no separate action, because a
+    closed ticket is not a wall. Entitlement-gated: continuing a conversation
+    is a write. Resolving is not — closing a ticket you already own stays
+    open to a lapsed user.
+    """
+    await require_entitled_to_support(db, pubkey)
+    ticket = await _locked_own_ticket(db, ticket_id, pubkey)
+    message = await _append_message(db, ticket, SupportAuthor.USER.value, body, pubkey)
+    await _set_status(
+        db, ticket, SupportTicketStatus.OPEN.value, SupportAuthor.USER.value, pubkey
+    )
+    return SupportMessageItem.model_validate(message)
+
+
+async def resolve_ticket(
+    db: AsyncDBSession, ticket_id: int, pubkey: str
+) -> SupportTicketItem:
+    """The user closing their own ticket. Replying reopens it."""
+    ticket = await _locked_own_ticket(db, ticket_id, pubkey)
+    await _set_status(
+        db, ticket, SupportTicketStatus.CLOSED.value, SupportAuthor.USER.value, pubkey
+    )
+    return SupportTicketItem.model_validate(ticket)
+
+
+async def _locked_own_ticket(
+    db: AsyncDBSession, ticket_id: int, pubkey: str
+) -> SupportTicket:
+    ticket = await lock_support_ticket_on_db(db, ticket_id)
+    if ticket is None or ticket.pubkey != pubkey:
+        raise HTTPException(status_code=404, detail="No such ticket.")
+    return ticket
+
+
+async def _set_status(
+    db: AsyncDBSession,
+    ticket: SupportTicket,
+    status: str,
+    actor: str,
+    actor_pubkey: str | None = None,
+) -> None:
+    """The only writer of `status` / `closed_at`, and the only emitter of the
+    lifecycle events that go with them. A no-op move records nothing, which is
+    what makes resolving twice one closure rather than two."""
+    was = ticket.status
+    if was == status:
+        return
+    closed = SupportTicketStatus.CLOSED.value
+    event: str | None = None
+    if status == closed:
+        ticket.closed_at = utc_now()
+        event = SupportEventType.CLOSED.value
+    elif was == closed:
+        ticket.closed_at = None
+        event = SupportEventType.REOPENED.value
+    # Anything else is a shuffle between live states; the message is the event.
+    ticket.status = status
+    if event is not None:
+        await insert_support_event_on_db(db, ticket.id, event, actor, actor_pubkey)
 
 
 async def _append_message(

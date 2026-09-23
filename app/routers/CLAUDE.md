@@ -32,7 +32,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/shorturl` | `shorturl/` | none — POST is rate-limited 1 req/s/IP |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
-| `/user/support` | `support/` | `verify_token`. **Must be included before `public_user_router`** — otherwise `/{pubkey}` answers `GET /user/support` as a profile, 200 with the wrong body (pinned in `tests/test_support.py`). `GET ''` the state, `POST /tickets` to file, `GET /tickets/{id}` the thread (404 when absent *or* not the caller's) |
+| `/user/support` | `support/` | `verify_token`. **Must be included before `public_user_router`** — otherwise `/{pubkey}` answers `GET /user/support` as a profile, 200 with the wrong body (pinned in `tests/test_support.py`). `GET ''` the state, `POST /tickets` to file, `GET /tickets/{id}` the thread (404 when absent *or* not the caller's), `POST /tickets/{id}/messages` to reply (rate-limited per pubkey; reopens a closed ticket), `POST /tickets/{id}/resolve` to close |
 | `/admin` | `admin/` | `verify_token` + `verify_admin_access` |
 | `/admin/brainstormPubkey` | `brainstorm_pubkey/` | (admin, included from `admin/router.py`) |
 | `/admin/brainstormRequest` | `brainstorm_request/` | (admin, included from `admin/router.py`) |

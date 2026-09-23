@@ -37,6 +37,16 @@ async def select_support_ticket_on_db(
     return result.scalar_one_or_none()
 
 
+async def lock_support_ticket_on_db(
+    db: AsyncDBSession, ticket_id: int
+) -> SupportTicket | None:
+    """The ticket, held until commit. Every mutation read-modify-writes it."""
+    result = await db.execute(
+        select(SupportTicket).where(SupportTicket.id == ticket_id).with_for_update()
+    )
+    return result.scalar_one_or_none()
+
+
 async def select_support_messages_on_db(
     db: AsyncDBSession, ticket_id: int
 ) -> list[SupportMessage]:
