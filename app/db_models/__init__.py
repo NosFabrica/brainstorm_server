@@ -44,6 +44,19 @@ class TriggerSource(enum.Enum):
     PERIODIC = "periodic"
 
 
+class SupportTicketStatus(enum.Enum):
+    """Known values only; the column is an open set with no CHECK."""
+
+    OPEN = "open"
+    ANSWERED = "answered"
+    CLOSED = "closed"
+
+
+class SupportAuthor(enum.Enum):
+    USER = "user"
+    SUPPORT = "support"
+
+
 class Base(DeclarativeBase, AsyncAttrs):
     pass
 
@@ -522,4 +535,33 @@ class ShortUrl(TimestampMixin, Base):
         UniqueConstraint(
             "pubkey", "relays_fingerprint", name="uq_short_url_pubkey_fingerprint"
         ),
+    )
+
+
+class SupportTicket(TimestampMixin, Base):
+    __tablename__ = "support_ticket"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pubkey: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=SupportTicketStatus.OPEN.value
+    )
+    notify_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    diagnostics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Stored, not derived: the ORDER BY key of both ticket lists.
+    last_message_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    last_message_author: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=SupportAuthor.USER.value
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    __table_args__ = (
+        Index(
+            "ix_support_ticket_pubkey_last_message_at",
+            "pubkey",
+            text("last_message_at DESC"),
+        ),
+        Index("ix_support_ticket_last_message_at", text("last_message_at DESC")),
     )

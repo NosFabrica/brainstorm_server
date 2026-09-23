@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Generic, Literal, TypeVar
 
+from fastapi_pagination import Page
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 
 from app.core.flash import SettableStatus, is_whole_day_boundary
@@ -700,3 +701,23 @@ class CreatedShortUrl(BaseModel):
 
     short_code: str = Field(serialization_alias="shortCode")
     content: ShortUrlContent
+
+
+class SupportTicketItem(BaseModel):
+    id: int
+    subject: str
+    category: str
+    status: str
+    created_at: datetime
+    last_message_at: datetime
+    last_message_author: str
+    closed_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupportState(BaseModel):
+    # Named for the Policy column, not a permission: a user at the open-ticket
+    # cap is still included and still cannot file. Whitelisted admins read true.
+    support_included: bool
+    tickets: Page[SupportTicketItem]

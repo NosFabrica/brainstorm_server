@@ -21,6 +21,7 @@ from app.schemas.schemas import (
     RefreshedSubscriptionView,
     ShortUrlContent,
     SubscriptionView,
+    SupportState,
     TrustSignalsData,
     UserGraphData,
     UserHistoryInstance,
@@ -299,3 +300,7 @@ class NetworkAlertsData(BaseModel):
 
 class GetNetworkAlertsResponse(SuccessfulResponseDataSchema):
     data: NetworkAlertsData
+
+
+class GetSupportStateResponse(SuccessfulResponseDataSchema):
+    data: SupportState

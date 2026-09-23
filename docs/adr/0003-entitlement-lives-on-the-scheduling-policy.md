@@ -71,7 +71,7 @@ accepted
   user by construction, and `resolve_entitlement`'s REVOKE is all-or-nothing with no notion of
   dropping one capability and leaving the Policy. Selling an add-on is a payments change, not
   an entitlement one.
-- **`is_support_allowed` is the single seam.** Every alternative above — capability map,
+- **`is_entitled_to_support` is the single seam.** Every alternative above — capability map,
   per-user overlay, add-on union — changes that one function body and nothing else.
 - Entitlements stay distinct from the `*_enabled` settings in `config.py`, which are deploy
   flags: "does this installation have X", not "did this account pay for X". A flag must never

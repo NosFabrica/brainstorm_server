@@ -64,12 +64,12 @@ Stick to these — handler signatures are a lot easier to scan.
 
 ## camelCase vs snake_case
 
-- **Public API (request / response JSON)**: camelCase (e.g. `displayName`, `lastTriggered`, `attenuationFactor`).
+- **Public API (request / response JSON)**: new endpoints ship **snake_case** (`/admin/users`, `/admin/scheduling`, billing, support). Older ones are camelCase (e.g. `displayName`, `lastTriggered`, `attenuationFactor`) and stay that way.
 - **Python / DB columns**: snake_case (e.g. `display_name`, `last_triggered`, `attenuation_factor`).
 
 The `GrapeRankPreset` repo provides explicit `row_to_camel_dict` / `camel_dict_to_columns` converters because the JSONB column stores snake_case but the API uses camelCase — keep that conversion at the repo boundary.
 
-For new endpoints, Pydantic field aliases (`Field(..., alias="someCamelKey")`) are the cleanest way to bridge the cases.
+When extending an older camelCase shape, Pydantic field aliases (`Field(..., alias="someCamelKey")`) are the cleanest way to bridge the cases.
 
 ## Adding a new endpoint shape
 
