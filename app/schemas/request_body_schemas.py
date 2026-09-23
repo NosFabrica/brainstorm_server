@@ -121,6 +121,17 @@ _DIAGNOSTICS_MAX_KEYS = 50
 _DIAGNOSTICS_MAX_KEY_LENGTH = 100
 
 
+class CloseSupportTicketBody(BaseModel):
+    """A closing note is optional; absent means close without saying more."""
+
+    message: str | None = Field(default=None, min_length=1, max_length=10_000)
+
+
+class UpdateSupportTicketBody(BaseModel):
+    # Free string, like the category at filing: the set is open.
+    category: str = Field(min_length=1, max_length=64)
+
+
 class CreateSupportMessageBody(BaseModel):
     body: str = Field(min_length=1, max_length=10_000)
 

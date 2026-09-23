@@ -13,6 +13,7 @@ from app.db_models import (
     SupportTicketStatus,
 )
 from app.repos.support_repo import (
+    build_admin_support_tickets_stmt,
     build_user_support_tickets_stmt,
     count_unclosed_support_tickets_on_db,
     insert_support_event_on_db,
@@ -25,6 +26,10 @@ from app.repos.support_repo import (
     select_support_ticket_on_db,
 )
 from app.schemas.schemas import (
+    AdminSupportEventItem,
+    AdminSupportMessageItem,
+    AdminSupportThread,
+    AdminSupportTicketItem,
     SupportEventItem,
     SupportMessageItem,
     SupportRequester,
@@ -143,11 +148,134 @@ async def resolve_ticket(
     return SupportTicketItem.model_validate(ticket)
 
 
+async def get_admin_support_tickets(
+    db: AsyncDBSession,
+    params: Params,
+    *,
+    status: str | None,
+    category: str | None,
+    pubkey: str | None,
+) -> Page[AdminSupportTicketItem]:
+    """The queue. Rows carry the requester, so an admin knows who they are
+    talking to before typing."""
+    with set_page(Page[AdminSupportTicketItem]):
+        return await paginate(
+            db,
+            build_admin_support_tickets_stmt(status, category, pubkey),
+            params=params,
+            transformer=lambda rows: [
+                AdminSupportTicketItem.model_validate(r) for r in rows
+            ],
+        )
+
+
+async def get_admin_thread(db: AsyncDBSession, ticket_id: int) -> AdminSupportThread:
+    """Any thread, with attribution. No ownership check — that protects users
+    from each other, not support from its own queue."""
+    ticket = await select_support_ticket_on_db(db, ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="No such ticket.")
+    messages = await select_support_messages_on_db(db, ticket_id)
+    events = await select_support_events_on_db(db, ticket_id)
+    return AdminSupportThread(
+        ticket=AdminSupportTicketItem.model_validate(ticket),
+        messages=[AdminSupportMessageItem.model_validate(m) for m in messages],
+        events=[
+            AdminSupportEventItem(
+                type=e.type, at=e.at, by=e.actor, actor_pubkey=e.actor_pubkey
+            )
+            for e in events
+        ],
+        diagnostics=ticket.diagnostics,
+        requester=SupportRequester(
+            pubkey=ticket.pubkey, notify_email=ticket.notify_email
+        ),
+    )
+
+
+async def add_support_message(
+    db: AsyncDBSession, ticket_id: int, body: str, actor_pubkey: str
+) -> AdminSupportMessageItem:
+    """Support answering. From closed this reopens rather than posting into a
+    closed thread — a reply nobody can see is worse than none."""
+    ticket = await _locked_ticket(db, ticket_id)
+    message = await _append_message(
+        db, ticket, SupportAuthor.SUPPORT.value, body, actor_pubkey
+    )
+    await _set_status(
+        db,
+        ticket,
+        SupportTicketStatus.ANSWERED.value,
+        SupportAuthor.SUPPORT.value,
+        actor_pubkey,
+    )
+    return AdminSupportMessageItem.model_validate(message)
+
+
+async def close_ticket_as_support(
+    db: AsyncDBSession, ticket_id: int, message: str | None, actor_pubkey: str
+) -> AdminSupportTicketItem:
+    """A closing note, if there is one, belongs to the thread — so it lands
+    before the ticket closes."""
+    ticket = await _locked_ticket(db, ticket_id)
+    if message is not None:
+        await _append_message(
+            db, ticket, SupportAuthor.SUPPORT.value, message, actor_pubkey
+        )
+    await _set_status(
+        db,
+        ticket,
+        SupportTicketStatus.CLOSED.value,
+        SupportAuthor.SUPPORT.value,
+        actor_pubkey,
+    )
+    return AdminSupportTicketItem.model_validate(ticket)
+
+
+async def reopen_ticket_as_support(
+    db: AsyncDBSession, ticket_id: int, actor_pubkey: str
+) -> AdminSupportTicketItem:
+    ticket = await _locked_ticket(db, ticket_id)
+    await _set_status(
+        db,
+        ticket,
+        SupportTicketStatus.OPEN.value,
+        SupportAuthor.SUPPORT.value,
+        actor_pubkey,
+    )
+    return AdminSupportTicketItem.model_validate(ticket)
+
+
+async def set_ticket_category(
+    db: AsyncDBSession, ticket_id: int, category: str, actor_pubkey: str
+) -> AdminSupportTicketItem:
+    """Users mislabel; the category drives the queue's filters."""
+    ticket = await _locked_ticket(db, ticket_id)
+    if ticket.category != category:
+        ticket.category = category
+        await insert_support_event_on_db(
+            db,
+            ticket.id,
+            SupportEventType.RECATEGORIZED.value,
+            SupportAuthor.SUPPORT.value,
+            actor_pubkey,
+        )
+    return AdminSupportTicketItem.model_validate(ticket)
+
+
+async def _locked_ticket(db: AsyncDBSession, ticket_id: int) -> SupportTicket:
+    ticket = await lock_support_ticket_on_db(db, ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="No such ticket.")
+    return ticket
+
+
 async def _locked_own_ticket(
     db: AsyncDBSession, ticket_id: int, pubkey: str
 ) -> SupportTicket:
-    ticket = await lock_support_ticket_on_db(db, ticket_id)
-    if ticket is None or ticket.pubkey != pubkey:
+    ticket = await _locked_ticket(db, ticket_id)
+    if ticket.pubkey != pubkey:
+        # Same answer as absent: a 403 would confirm the ticket exists.
         raise HTTPException(status_code=404, detail="No such ticket.")
     return ticket
 
