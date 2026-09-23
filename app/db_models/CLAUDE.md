@@ -160,6 +160,10 @@ UNIQUE `(pubkey, relays_fingerprint)` is what makes minting idempotent: a
 concurrent double-mint loses the race in the database rather than creating a
 second code for the same content.
 
+### `SupportTicket` — `support_ticket`
+
+A user's support ticket. `status` / `category` / `last_message_author` are open sets stored as `String`, no CHECK — `SupportTicketStatus` / `SupportAuthor` name the known values. `last_message_at` is **stored**: it is the `ORDER BY` of both ticket lists (`ix_support_ticket_pubkey_last_message_at`, `ix_support_ticket_last_message_at`, both DESC). Naive `DateTime`, like `scheduling`.
+
 ## Adding a new table
 
 1. New `class Foo(TimestampMixin, Base): __tablename__ = "foo"` in `__init__.py`.

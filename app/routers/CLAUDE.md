@@ -32,6 +32,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/shorturl` | `shorturl/` | none — POST is rate-limited 1 req/s/IP |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
+| `/user/support` | `support/` | `verify_token`. **Must be included before `public_user_router`** — otherwise `/{pubkey}` answers `GET /user/support` as a profile, 200 with the wrong body (pinned in `tests/test_support.py`) |
 | `/admin` | `admin/` | `verify_token` + `verify_admin_access` |
 | `/admin/brainstormPubkey` | `brainstorm_pubkey/` | (admin, included from `admin/router.py`) |
 | `/admin/brainstormRequest` | `brainstorm_request/` | (admin, included from `admin/router.py`) |
@@ -60,7 +61,7 @@ Read `request.state.jwt_data` inside a handler to get the calling pubkey.
 
 Two patterns:
 
-- **`fastapi_pagination.Page[...]`** — used by `/admin/users`, `/admin/users/{pubkey}/history`, `/admin/activity`. Hooked into the app via `add_pagination(app)` (`app/api.py:177`). Repos build a SQLAlchemy `Select` and the router calls `paginate(db, stmt, transformer=...)`.
+- **`fastapi_pagination.Page[...]`** — used by `/admin/users`, `/admin/users/{pubkey}/history`, `/admin/activity`. Hooked into the app via `add_pagination(app)` (`app/api.py:177`). Repos build a SQLAlchemy `Select` and the router calls `paginate(db, stmt, transformer=...)`. A `Page` nested inside the success envelope (`GET /user/support`) is paginated in the service with explicit `params` under `set_page(Page[T])`, since the router's `response_model` isn't the `Page`.
 - **Custom cursor pagination** — used by `GET /user/{pubkey}/connections` (cursor is a `(influence, pubkey)` tuple ordered by influence DESC, pubkey ASC). Implementation lives in `app/repos/user_repo.py::get_paginated_section_connections`.
 
 Don't mix them: list endpoints over relational tables → `Page`. Graph-traversal endpoints → cursor.
