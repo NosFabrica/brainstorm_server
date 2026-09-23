@@ -22,6 +22,7 @@ from app.schemas.schemas import (
     ShortUrlContent,
     SubscriptionView,
     SupportState,
+    SupportTicketItem,
     TrustSignalsData,
     UserGraphData,
     UserHistoryInstance,
@@ -304,3 +305,7 @@ class GetNetworkAlertsResponse(SuccessfulResponseDataSchema):
 
 class GetSupportStateResponse(SuccessfulResponseDataSchema):
     data: SupportState
+
+
+class CreateSupportTicketResponse(SuccessfulResponseDataSchema):
+    data: SupportTicketItem

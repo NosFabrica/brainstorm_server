@@ -27,8 +27,8 @@ publishing — and routers just thin-wrap them.
 | `billing_visibility_service.py` | 153 | What nobody has settled: the divergence report an operator reads, built as `DivergenceReportView` with one typed row model per section. Read-only over the billing tables. |
 | `subscription_view_service.py`  | 347 | The UI-facing read side: one subscriber's view (`tier` from the scheduling assignment, Flash statuses translated on read), the refresh variant that adds `verification` (what the checkout return's id turned out to be), and the public plans list. The **plans list** joins our mappings to Flash's live plans through `core/flash_plan_cache`, so price, name, period, ordering, copy and both links are Flash's while the policy and the decision to sell are ours. The **subscriber's view** asks Flash nothing: it is priced from the `pricingSnapshot` recorded on their `user_subscription` row, because the catalogue answers what is on sale today rather than what they are charged. The checkout link is Flash's `signupUrl` plus our `redirect_uri`; the manage link is the `portalUrl` recorded on the subscription. Nothing here spells a URL out of a base and an id. Read-only. |
 | `flash_catalog_service.py` | 67 | What Flash holds, for the plan editor's pickers: the account's services and one service's plans, read **live** (`read_service_plans(fresh=True)`, which also rewrites the public cache) and joined to our mappings so a plan already claimed says so. |
-| `support_entitlement.py` | 13 | `is_entitled_to_support`: admin-whitelisted, or the caller's Policy has `support_included` (ADR 0003). Read live, never touches billing. The single seam for support entitlement. |
-| `support_service.py` | 25 | Support lifecycle. `get_support_state`: entitlement + the caller's own tickets, listed whether entitled or not — entitlement gates writing only. |
+| `support_entitlement.py` | 22 | `is_entitled_to_support`: admin-whitelisted, or the caller's Policy has `support_included` (ADR 0003). Read live, never touches billing. `require_entitled_to_support` 403s — every write calls it. The single seam for support entitlement. |
+| `support_service.py` | 84 | Support lifecycle. `get_support_state`: entitlement + the caller's own tickets, listed whether entitled or not — entitlement gates writing only. `create_ticket`: entitlement, the unclosed-ticket cap counted under a per-pubkey advisory lock (409, **plain-string `detail`** — the UI toasts it verbatim), ticket + first message + `opened` event. `_append_message` is the only writer of `last_message_*`. |
 | `leader_lock.py` | 30 | Redis leader lock, parameterized by key — generalizes the old `scheduler_lock` so the billing cron and the scheduler each hold their own. |
 | `report_relay_service.py` | 90 | Reads an author's surviving kind-1984 back from the internal relay (REQ over websocket). Returns `None` for *unknown* vs `[]` for *no reports* — see `../message_queue_tasks/CLAUDE.md`. |
 
@@ -41,15 +41,20 @@ a repo-only signal). Routers expose them under whatever HTTP shape they want.
 
 ### Errors
 
-Services raise `HTTPException` directly. Routers don't translate — that's why
-error handling lives close to the domain logic.
+Services raise `HTTPException` directly, with a **plain string** in the `detail`.
+Routers don't translate. That's why error handling lives close to the domain logic.
 
-**`detail` is a plain string.** Every endpoint in this repo does this, and the
-frontend reads it as one (`api.ts` does `data?.detail || data?.message` and
-feeds it to `new Error(...)`; two paths have no object guard and would render
-`[object Object]`). `ErrorResponseSchema` exists and is declared in `responses={}`
-for OpenAPI, but nothing raises it — don't be the first without migrating the
-clients too.
+`ErrorResponseSchema` is declared as the error model on a few `/user` routes'
+`responses={...}`, but **nothing raises it** — every error path in the codebase is a
+plain string, and the clients read `detail` as text (their shared extractor does
+`data?.detail || data?.message`, so an object arrives as an object). Write plain
+strings until that changes, and keep them fit to show a user: some are surfaced
+verbatim in a toast.
+
+Making the envelope real is worth doing — it is what those `responses={...}`
+declarations already promise — but it is one change across every raise site plus the
+clients' extractor, not something to start one endpoint at a time. Half-migrated, the
+clients face two shapes and cannot tell which they have.
 
 Prefer input validation in the request schema over hand-rolled checks: the
 framework then answers 422 with a field-level body, which is more useful than a

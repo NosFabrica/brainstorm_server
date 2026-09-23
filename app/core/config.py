@@ -140,6 +140,11 @@ class Settings(BaseSettings):
     # /relay handler proxies search results out, never raw client traffic.
     nip50_backing_relay_url: str = Field(default="ws://localhost:7777")
     nip50_strfry_timeout_seconds: float = Field(default=3.0)
+    # --- Priority support ----------------------------------------------------
+    # Unclosed tickets a user may hold at once; `answered` still counts.
+    support_max_open_tickets: int = Field(default=5)
+    # A filed diagnostics snapshot larger than this (serialized) is rejected.
+    support_diagnostics_max_bytes: int = Field(default=10_240)
     # Open Ranking (ORE) auth posture. When True, every data endpoint requires
     # a valid NWT (ORE-A) and answers ONLY from the signer's own observer
     # perspective (a client-supplied `pov` is ignored). When False (default),

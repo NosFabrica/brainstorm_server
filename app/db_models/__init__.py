@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     String,
+    Text,
     UniqueConstraint,
     func,
     text,
@@ -55,6 +56,15 @@ class SupportTicketStatus(enum.Enum):
 class SupportAuthor(enum.Enum):
     USER = "user"
     SUPPORT = "support"
+
+
+class SupportEventType(enum.Enum):
+    """Known values only; the column is an open set with no CHECK."""
+
+    OPENED = "opened"
+    CLOSED = "closed"
+    REOPENED = "reopened"
+    RECATEGORIZED = "recategorized"
 
 
 class Base(DeclarativeBase, AsyncAttrs):
@@ -565,3 +575,37 @@ class SupportTicket(TimestampMixin, Base):
         ),
         Index("ix_support_ticket_last_message_at", text("last_message_at DESC")),
     )
+
+
+class SupportMessage(Base):
+    """Append-only, so no TimestampMixin (the GrapeRankPresetHistory precedent)."""
+
+    __tablename__ = "support_message"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticket_id: Mapped[int] = mapped_column(
+        ForeignKey("support_ticket.id", ondelete="CASCADE"), nullable=False
+    )
+    author: Mapped[str] = mapped_column(String(16), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    # Which human wrote it; internal only — the wire carries `author`.
+    actor_pubkey: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    __table_args__ = (Index("ix_support_message_ticket_id_id", "ticket_id", "id"),)
+
+
+class SupportEvent(Base):
+    __tablename__ = "support_event"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticket_id: Mapped[int] = mapped_column(
+        ForeignKey("support_ticket.id", ondelete="CASCADE"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # `by` on the wire; `by` is reserved in PostgreSQL.
+    actor: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_pubkey: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    __table_args__ = (Index("ix_support_event_ticket_id_id", "ticket_id", "id"),)
