@@ -558,7 +558,10 @@ class SupportTicket(TimestampMixin, Base):
         String(32), nullable=False, server_default=SupportTicketStatus.OPEN.value
     )
     notify_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
-    diagnostics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # none_as_null: None must be SQL NULL, or the expiry sweep's IS NOT NULL never settles.
+    diagnostics: Mapped[dict | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     # Stored, not derived: the ORDER BY key of both ticket lists.
     last_message_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()

@@ -1,6 +1,7 @@
-from typing import TypeVar
+from datetime import timedelta
+from typing import TypeVar, cast
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import CursorResult, Select, Update, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.db_models import (
@@ -9,6 +10,7 @@ from app.db_models import (
     SupportTicket,
     SupportTicketStatus,
 )
+from app.utils.datetimes import utc_now
 
 _Row = TypeVar("_Row", SupportTicket, SupportMessage, SupportEvent)
 
@@ -143,3 +145,30 @@ async def insert_support_event_on_db(
         ticket_id=ticket_id, type=event_type, actor=actor, actor_pubkey=actor_pubkey
     )
     return await _insert(db, row)
+
+
+def build_expired_diagnostics_stmt(retention: timedelta) -> Update:
+    """Clear the snapshot on tickets filed longer ago than `retention`.
+
+    Dated from filing, not closing: the snapshot describes the moment it was
+    taken and is stale well before the window is out, and dating from closure
+    would let a ticket nobody ever closes keep its snapshot forever. Only the
+    snapshot goes — the ticket, its messages and its events stay.
+    """
+    return (
+        update(SupportTicket)
+        .where(
+            SupportTicket.created_at < utc_now() - retention,
+            # Without this, every sweep rewrites every old row forever.
+            SupportTicket.diagnostics.is_not(None),
+        )
+        .values(diagnostics=None)
+    )
+
+
+async def clear_expired_support_diagnostics_on_db(
+    db: AsyncDBSession, retention: timedelta
+) -> int:
+    result = await db.execute(build_expired_diagnostics_stmt(retention))
+    # DML results are CursorResult at runtime; the base Result stub lacks rowcount.
+    return cast(CursorResult, result).rowcount
