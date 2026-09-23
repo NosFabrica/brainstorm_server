@@ -465,3 +465,167 @@ def test_filing_never_reads_billing_tables(filing_client, filing_session):
     sql = " ".join(_sql(s) for s in filing_session.statements)
     assert "billing_plan" not in sql
     assert "user_subscription" not in sql
+
+
+# --- Reading a thread (`GET /user/support/tickets/{id}`) --------------------
+
+
+class _ThreadSession:
+    """Answers the ticket lookup and its two child selects.
+
+    `ticket` None stands for a ticket that does not exist; a ticket whose
+    `pubkey` is somebody else's stands for one the caller may not read. Both
+    must look the same from outside.
+    """
+
+    def __init__(
+        self,
+        ticket: SupportTicket | None,
+        messages: list[SupportMessage] | None = None,
+        events: list[SupportEvent] | None = None,
+    ) -> None:
+        self.ticket = ticket
+        self.messages = messages or []
+        self.events = events or []
+        self.statements: list = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        sql = _sql(stmt)
+        if "FROM support_message" in sql:
+            return _ScalarsResult(self.messages)
+        if "FROM support_event" in sql:
+            return _ScalarsResult(self.events)
+        return _Result(self.ticket)
+
+
+class _ScalarsResult:
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+
+    def scalars(self):
+        return SimpleNamespace(all=lambda: self._rows)
+
+
+def _ticket_row(pubkey: str, **overrides) -> SupportTicket:
+    now = datetime(2026, 9, 23, 12, 0, 0)
+    row = SupportTicket(
+        pubkey=pubkey,
+        subject="Scores look wrong",
+        category="scores",
+        status="open",
+        notify_email="someone@example.com",
+        diagnostics={"App": "v0.1.0-alpha"},
+        last_message_at=now,
+        last_message_author="user",
+        closed_at=None,
+    )
+    row.id = 7
+    row.created_at = now
+    row.updated_at = now
+    for key, value in overrides.items():
+        setattr(row, key, value)
+    return row
+
+
+def _thread_client(client, session):
+    from app.api import app
+
+    async def _fake_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = _fake_get_db
+    return client
+
+
+def test_a_thread_carries_its_messages_events_diagnostics_and_requester(
+    client, caller
+):
+    now = datetime(2026, 9, 23, 12, 0, 0)
+    message = SupportMessage(
+        ticket_id=7, author="user", body="My scores are stale", actor_pubkey=None
+    )
+    message.id, message.created_at = 1, now
+    event = SupportEvent(ticket_id=7, type="opened", actor="user", actor_pubkey=None)
+    event.id, event.at = 1, now
+    session = _ThreadSession(_ticket_row(caller.pubkey), [message], [event])
+
+    response = _thread_client(client, session).get("/user/support/tickets/7")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert set(data) == {"ticket", "messages", "events", "diagnostics", "requester"}
+    assert data["ticket"]["id"] == 7
+    assert data["messages"] == [
+        {
+            "id": 1,
+            "author": "user",
+            "body": "My scores are stale",
+            "created_at": now.isoformat(),
+        }
+    ]
+    assert data["events"] == [{"type": "opened", "at": now.isoformat(), "by": "user"}]
+    assert data["diagnostics"] == {"App": "v0.1.0-alpha"}
+    assert data["requester"] == {
+        "pubkey": caller.pubkey,
+        "notify_email": "someone@example.com",
+    }
+
+
+def test_a_thread_never_exposes_which_human_replied(client, caller):
+    now = datetime(2026, 9, 23, 12, 0, 0)
+    message = SupportMessage(
+        ticket_id=7, author="support", body="Looking into it", actor_pubkey="a" * 64
+    )
+    message.id, message.created_at = 1, now
+    event = SupportEvent(
+        ticket_id=7, type="reopened", actor="support", actor_pubkey="a" * 64
+    )
+    event.id, event.at = 1, now
+    session = _ThreadSession(_ticket_row(caller.pubkey), [message], [event])
+
+    body = _thread_client(client, session).get("/user/support/tickets/7").text
+
+    assert "a" * 64 not in body
+    assert "actor_pubkey" not in body
+
+
+def test_somebody_elses_ticket_is_not_found_rather_than_forbidden(client):
+    session = _ThreadSession(_ticket_row("f" * 64))
+
+    response = _thread_client(client, session).get("/user/support/tickets/7")
+
+    # 403 would confirm the ticket exists.
+    assert response.status_code == 404
+    assert session.statements, "the route never ran — a 404 from the router itself"
+
+
+def test_a_ticket_that_does_not_exist_is_not_found(client):
+    session = _ThreadSession(None)
+
+    response = _thread_client(client, session).get("/user/support/tickets/7")
+
+    assert response.status_code == 404
+    assert session.statements, "the route never ran — a 404 from the router itself"
+
+
+def test_a_thread_is_readable_when_support_is_not_included(client, caller):
+    # Entitlement gates writing only: a lapsed subscriber keeps their answers.
+    session = _ThreadSession(_ticket_row(caller.pubkey))
+
+    response = _thread_client(client, session).get("/user/support/tickets/7")
+
+    assert response.status_code == 200
+    sql = " ".join(_sql(s) for s in session.statements)
+    assert "scheduling" not in sql
+
+
+def test_a_thread_reads_in_a_stable_order(client, caller):
+    session = _ThreadSession(_ticket_row(caller.pubkey))
+
+    _thread_client(client, session).get("/user/support/tickets/7")
+
+    # `created_at` ties when two rows land in the same millisecond.
+    ordered = [_sql(s) for s in session.statements if "ORDER BY" in _sql(s)]
+    assert len(ordered) == 2
+    assert all(sql.rstrip().endswith(".id") for sql in ordered)

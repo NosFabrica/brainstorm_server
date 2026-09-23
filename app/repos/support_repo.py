@@ -28,6 +28,38 @@ def build_user_support_tickets_stmt(pubkey: str) -> Select:
     )
 
 
+async def select_support_ticket_on_db(
+    db: AsyncDBSession, ticket_id: int
+) -> SupportTicket | None:
+    result = await db.execute(
+        select(SupportTicket).where(SupportTicket.id == ticket_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def select_support_messages_on_db(
+    db: AsyncDBSession, ticket_id: int
+) -> list[SupportMessage]:
+    """Ordered by id: `created_at` ties when two land in the same millisecond."""
+    result = await db.execute(
+        select(SupportMessage)
+        .where(SupportMessage.ticket_id == ticket_id)
+        .order_by(SupportMessage.id)
+    )
+    return list(result.scalars().all())
+
+
+async def select_support_events_on_db(
+    db: AsyncDBSession, ticket_id: int
+) -> list[SupportEvent]:
+    result = await db.execute(
+        select(SupportEvent)
+        .where(SupportEvent.ticket_id == ticket_id)
+        .order_by(SupportEvent.id)
+    )
+    return list(result.scalars().all())
+
+
 async def lock_support_filing_on_db(db: AsyncDBSession, pubkey: str) -> None:
     """Serialize one caller's filings until commit, so the cap count holds."""
     await db.execute(select(func.pg_advisory_xact_lock(func.hashtext(pubkey))))
