@@ -70,6 +70,19 @@ async def select_support_events_on_db(
     return list(result.scalars().all())
 
 
+def build_admin_support_tickets_stmt(
+    status: str | None, category: str | None, pubkey: str | None
+) -> Select:
+    stmt = select(SupportTicket)
+    if status is not None:
+        stmt = stmt.where(SupportTicket.status == status)
+    if category is not None:
+        stmt = stmt.where(SupportTicket.category == category)
+    if pubkey is not None:
+        stmt = stmt.where(SupportTicket.pubkey == pubkey)
+    return stmt.order_by(SupportTicket.last_message_at.desc(), SupportTicket.id.desc())
+
+
 async def lock_support_filing_on_db(db: AsyncDBSession, pubkey: str) -> None:
     """Serialize one caller's filings until commit, so the cap count holds."""
     await db.execute(select(func.pg_advisory_xact_lock(func.hashtext(pubkey))))

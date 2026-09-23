@@ -39,6 +39,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/admin/users` | `admin/users/` | admin |
 | `/admin/activity` | `admin/activity/` | admin |
 | `/admin/stats` | `admin/stats/` | admin |
+| `/admin/support` | `admin/support/` | admin. The responder side: `GET /tickets` the queue (paginated, filter by status/category/pubkey), `GET /tickets/{id}` any thread **with** `actor_pubkey` — the user-facing thread never carries it — `POST /tickets/{id}/messages` to answer (reopens a closed ticket), `/close` (optional note first), `/reopen`, and `PATCH` to recategorize |
 | `/admin/graperank` | `admin/graperank/` | admin |
 | `/admin/nsec-encryption` | `admin/nsec_encryption/` | admin |
 | `/admin/trustedLists` | `admin/trusted_lists/` | admin |

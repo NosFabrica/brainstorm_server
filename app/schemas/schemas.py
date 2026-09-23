@@ -745,9 +745,33 @@ class SupportRequester(BaseModel):
     notify_email: str | None
 
 
+class AdminSupportTicketItem(SupportTicketItem):
+    """A queue row: the ticket, plus who it is from and where a nudge would go."""
+
+    pubkey: str
+    notify_email: str | None
+
+
+class AdminSupportMessageItem(SupportMessageItem):
+    # Which human replied. Admin surfaces only — the user sees `author`.
+    actor_pubkey: str | None
+
+
+class AdminSupportEventItem(SupportEventItem):
+    actor_pubkey: str | None
+
+
 class SupportThread(BaseModel):
     ticket: SupportTicketItem
     messages: list[SupportMessageItem]
     events: list[SupportEventItem]
+    diagnostics: dict[str, str] | None
+    requester: SupportRequester
+
+
+class AdminSupportThread(BaseModel):
+    ticket: AdminSupportTicketItem
+    messages: list[AdminSupportMessageItem]
+    events: list[AdminSupportEventItem]
     diagnostics: dict[str, str] | None
     requester: SupportRequester
