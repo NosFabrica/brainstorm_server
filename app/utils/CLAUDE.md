@@ -20,6 +20,7 @@ app/utils/
 ├── rate_limiting/
 │   └── rate_limiting.py     # Redis-backed rate limiter + trusted-proxy client IP
 ├── datetimes.py             # utc_now() for the naive timestamp columns
+├── etags.py                 # etag_digest() + the 304 helpers
 └── constants.py             # Truly app-wide constants
 ```
 
@@ -110,6 +111,18 @@ Keyed by IP for the anonymous paths, by **pubkey** where the caller is
 authenticated and the cost is per-account: the billing refresh poll, the Flash
 record read, and support replies — the open-ticket cap bounds how many threads
 exist, nothing else bounds how much is written into them.
+
+## etags.py
+
+`etag_digest(*parts)` — a validator over everything that decides what a response
+would contain. Every part that varies the body must be passed, or a client
+holding the tag for one view is told a different view is unchanged. `not_modified(etag)` and `tag_response(response, etag)` carry the 304 and the
+headers, so the cache policy is written once. Used by both support listings;
+`_whitelist_etag` in `routers/router.py` predates these and duplicates the
+digest — worth migrating when someone is next in that file.
+
+Nothing here is called *weak*: RFC 7232 reserves that for a `W/`-prefixed
+validator, and these are plain quoted digests.
 
 ## datetimes.py
 

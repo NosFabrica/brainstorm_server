@@ -32,14 +32,14 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/shorturl` | `shorturl/` | none — POST is rate-limited 1 req/s/IP |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
-| `/user/support` | `support/` | `verify_token`. **Must be included before `public_user_router`** — otherwise `/{pubkey}` answers `GET /user/support` as a profile, 200 with the wrong body (pinned in `tests/test_support.py`). `GET ''` the state, `POST /tickets` to file, `GET /tickets/{id}` the thread (404 when absent *or* not the caller's), `POST /tickets/{id}/messages` to reply (rate-limited per pubkey; reopens a closed ticket), `POST /tickets/{id}/resolve` to close |
+| `/user/support` | `support/` | `verify_token`. **Must be included before `public_user_router`** — otherwise `/{pubkey}` answers `GET /user/support` as a profile, 200 with the wrong body (pinned in `tests/test_support.py`). `GET ''` the state, `POST /tickets` to file, `GET /tickets/{id}` the thread (404 when absent *or* not the caller's), `POST /tickets/{id}/messages` to reply (rate-limited per pubkey; reopens a closed ticket), `POST /tickets/{id}/resolve` to close. The listing answers **304** to a matching `If-None-Match` — see the conditional-GET note below |
 | `/admin` | `admin/` | `verify_token` + `verify_admin_access` |
 | `/admin/brainstormPubkey` | `brainstorm_pubkey/` | (admin, included from `admin/router.py`) |
 | `/admin/brainstormRequest` | `brainstorm_request/` | (admin, included from `admin/router.py`) |
 | `/admin/users` | `admin/users/` | admin |
 | `/admin/activity` | `admin/activity/` | admin |
 | `/admin/stats` | `admin/stats/` | admin |
-| `/admin/support` | `admin/support/` | admin. The responder side: `GET /tickets` the queue (paginated, filter by status/category/pubkey), `GET /tickets/{id}` any thread **with** `actor_pubkey` — the user-facing thread never carries it — `POST /tickets/{id}/messages` to answer (reopens a closed ticket), `/close` (optional note first), `/reopen`, and `PATCH` to recategorize |
+| `/admin/support` | `admin/support/` | admin. The queue also answers **304**. The responder side: `GET /tickets` the queue (paginated, filter by status/category/pubkey), `GET /tickets/{id}` any thread **with** `actor_pubkey` — the user-facing thread never carries it — `POST /tickets/{id}/messages` to answer (reopens a closed ticket), `/close` (optional note first), `/reopen`, and `PATCH` to recategorize |
 | `/admin/graperank` | `admin/graperank/` | admin |
 | `/admin/nsec-encryption` | `admin/nsec_encryption/` | admin |
 | `/admin/trustedLists` | `admin/trusted_lists/` | admin |
@@ -205,3 +205,26 @@ Attribute and dismiss both answer `UnresolvedResolutionOutcome`. `applied` false
 | Paginate a SQL list | Build a `Select`, hand to `paginate(db, stmt, transformer=...)` |
 | Paginate graph results | Follow the `get_paginated_section_connections` pattern (opaque tuple cursor) |
 | Add custom CORS / middleware | `app/api.py` (CORS is wide-open at `["*"]` for dev) |
+
+## Conditional GET on the support listings
+
+Nothing is pushed and nothing is emailed, so a slow background poll is the only
+way new activity reaches anyone. Both listings carry an `ETag` and answer a
+matching `If-None-Match` with a bodyless 304 and no row read at all — the same
+shape as `/whitelisted/{observer_pubkey}`, and like it, the 304 path is why the
+handler is annotated `-> Response | …` while `response_model` pins the
+documented shape.
+
+The tag must cover **everything that varies what the client renders**, not just
+new messages:
+
+- `max(updated_at)` and the row count, so resolving, recategorizing and a
+  message-less reopen all move it. Keyed on message activity those return
+  "unchanged" forever and the poller stalls silently.
+- `support_included` on the user listing, or a Policy being ticked stays hidden
+  behind an unchanged ticket list.
+- page, size and every filter, or page two comes back unchanged against page
+  one's tag.
+
+`Cache-Control: private, no-cache`: one caller's tickets are not a shared
+cache's business.
