@@ -1,10 +1,11 @@
-"""User-facing support surface: the support state (`GET /user/support`).
+"""User-facing support surface: the support state and filing a ticket.
 
 Router + service + repo run for real; `get_db` yields a mock session that
 records every statement it is handed, and the ticket-list `paginate` is patched
 at the service's import site so the listing never needs a real database.
 """
 
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,6 +15,7 @@ from fastapi_pagination import Page
 from sqlalchemy.dialects import postgresql
 
 from app.core.database import get_db
+from app.db_models import SupportEvent, SupportMessage, SupportTicket
 from app.repos.support_repo import build_user_support_tickets_stmt
 
 
@@ -32,6 +34,9 @@ def _sql(stmt) -> str:
 class _Result:
     def __init__(self, scalar):
         self._scalar = scalar
+
+    def scalar_one(self):
+        return self._scalar
 
     def scalar_one_or_none(self):
         return self._scalar
@@ -193,3 +198,270 @@ def test_ticket_list_is_the_owners_newest_activity_first():
 
     assert f"support_ticket.pubkey = '{'b' * 64}'" in sql
     assert "ORDER BY support_ticket.last_message_at DESC" in sql
+
+
+# --- Filing a ticket (`POST /user/support/tickets`) -------------------------
+
+
+class _FilingSession:
+    """Answers the policy lookup and the open-ticket count; records every add.
+
+    `flush` stands in for the database's server defaults: ids, and `now()` on
+    the timestamp columns the models leave to the server.
+    """
+
+    def __init__(self, policy: SimpleNamespace, open_count: int = 0) -> None:
+        self.policy = policy
+        self.open_count = open_count
+        self.statements: list = []
+        self.added: list = []
+        self._next_id = 1
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        sql = _sql(stmt)
+        if "brainstorm_nsec" in sql:
+            return _Result(1)
+        if "pg_advisory_xact_lock" in sql:
+            return _Result(None)
+        if "count(" in sql:
+            return _Result(self.open_count)
+        return _Result(self.policy)
+
+    def add(self, obj) -> None:
+        self.added.append(obj)
+
+    async def flush(self) -> None:
+        now = datetime(2026, 9, 23, 12, 0, 0)
+        for obj in self.added:
+            if getattr(obj, "id", None) is None:
+                obj.id = self._next_id
+                self._next_id += 1
+            for column in ("created_at", "updated_at", "at"):
+                if hasattr(type(obj), column) and getattr(obj, column) is None:
+                    setattr(obj, column, now)
+
+    async def refresh(self, obj) -> None:
+        pass
+
+    def of(self, model) -> list:
+        return [o for o in self.added if isinstance(o, model)]
+
+
+@pytest.fixture
+def filing_session():
+    return _FilingSession(_policy(True))
+
+
+@pytest.fixture
+def filing_client(client, filing_session):
+    from app.api import app
+
+    async def _fake_get_db():
+        yield filing_session
+
+    app.dependency_overrides[get_db] = _fake_get_db
+    yield client
+
+
+_TICKET = {
+    "subject": "Scores stuck",
+    "body": "Nothing since Monday.",
+    "category": "scores",
+}
+
+
+def test_filing_records_the_ticket_its_first_message_and_an_opened_event(
+    filing_client, filing_session, caller
+):
+    response = filing_client.post("/user/support/tickets", json=_TICKET)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["subject"] == "Scores stuck"
+    assert data["category"] == "scores"
+    assert data["status"] == "open"
+    assert data["last_message_author"] == "user"
+    assert data["closed_at"] is None
+
+    [ticket] = filing_session.of(SupportTicket)
+    assert ticket.pubkey == caller.pubkey
+    assert data["id"] == ticket.id
+    [message] = filing_session.of(SupportMessage)
+    assert (message.ticket_id, message.author, message.body) == (
+        ticket.id,
+        "user",
+        "Nothing since Monday.",
+    )
+    assert ticket.last_message_at == message.created_at
+    [event] = filing_session.of(SupportEvent)
+    assert (event.ticket_id, event.type, event.actor) == (ticket.id, "opened", "user")
+
+
+def test_filing_is_refused_when_support_is_not_included(filing_client, filing_session):
+    filing_session.policy = _policy(False)
+
+    response = filing_client.post("/user/support/tickets", json=_TICKET)
+
+    assert response.status_code == 403
+    assert isinstance(response.json()["detail"], str)
+    assert filing_session.added == []
+
+
+def test_whitelisted_pubkey_may_file_without_the_policy(
+    filing_client, filing_session, caller, monkeypatch
+):
+    filing_session.policy = _policy(False)
+    monkeypatch.setattr(
+        "app.services.support_entitlement.get_whitelisted_pubkeys",
+        lambda: {caller.pubkey},
+    )
+
+    response = filing_client.post("/user/support/tickets", json=_TICKET)
+
+    assert response.status_code == 200
+
+
+def test_category_is_required(filing_client):
+    body = {k: v for k, v in _TICKET.items() if k != "category"}
+
+    response = filing_client.post("/user/support/tickets", json=body)
+
+    assert response.status_code == 422
+
+
+def test_an_unrecognised_category_is_stored_verbatim(filing_client, filing_session):
+    response = filing_client.post(
+        "/user/support/tickets", json={**_TICKET, "category": "Brand-New Thing"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["category"] == "Brand-New Thing"
+    [ticket] = filing_session.of(SupportTicket)
+    assert ticket.category == "Brand-New Thing"
+
+
+def test_past_the_cap_filing_is_refused_with_a_plain_string(
+    filing_client, filing_session
+):
+    filing_session.open_count = 5
+
+    response = filing_client.post("/user/support/tickets", json=_TICKET)
+
+    assert response.status_code == 409
+    assert isinstance(response.json()["detail"], str)
+    assert filing_session.added == []
+
+
+def test_just_under_the_cap_filing_goes_through(filing_client, filing_session):
+    filing_session.open_count = 4
+
+    response = filing_client.post("/user/support/tickets", json=_TICKET)
+
+    assert response.status_code == 200
+
+
+def test_the_cap_counts_every_unclosed_ticket_of_the_caller(
+    filing_client, filing_session, caller
+):
+    filing_client.post("/user/support/tickets", json=_TICKET)
+
+    [count_sql] = [_sql(s) for s in filing_session.statements if "count(" in _sql(s)]
+    assert f"support_ticket.pubkey = '{caller.pubkey}'" in count_sql
+    assert "support_ticket.status != 'closed'" in count_sql
+
+
+def test_the_cap_is_counted_under_a_per_caller_lock(
+    filing_client, filing_session, caller
+):
+    # Two filings at once must not both see 4 and leave 6 unclosed.
+    filing_client.post("/user/support/tickets", json=_TICKET)
+
+    sqls = [_sql(s) for s in filing_session.statements]
+    [lock] = [i for i, sql in enumerate(sqls) if "pg_advisory_xact_lock" in sql]
+    [count] = [i for i, sql in enumerate(sqls) if "count(" in sql]
+    assert lock < count
+    assert caller.pubkey in sqls[lock]
+
+
+def test_email_and_diagnostics_are_stored_as_given(filing_client, filing_session):
+    diagnostics = {"App version": "1.4.2", "Browser": "Firefox 131"}
+
+    response = filing_client.post(
+        "/user/support/tickets",
+        json={**_TICKET, "notify_email": "me@example.com", "diagnostics": diagnostics},
+    )
+
+    assert response.status_code == 200
+    [ticket] = filing_session.of(SupportTicket)
+    assert ticket.notify_email == "me@example.com"
+    assert ticket.diagnostics == diagnostics
+
+
+def test_email_is_stored_exactly_as_typed(filing_client, filing_session):
+    filing_client.post(
+        "/user/support/tickets", json={**_TICKET, "notify_email": "Me@Example.COM"}
+    )
+
+    [ticket] = filing_session.of(SupportTicket)
+    assert ticket.notify_email == "Me@Example.COM"
+
+
+def test_email_and_diagnostics_are_optional(filing_client, filing_session):
+    response = filing_client.post("/user/support/tickets", json=_TICKET)
+
+    assert response.status_code == 200
+    [ticket] = filing_session.of(SupportTicket)
+    assert ticket.notify_email is None
+    assert ticket.diagnostics is None
+
+
+def test_a_malformed_email_is_rejected(filing_client):
+    response = filing_client.post(
+        "/user/support/tickets", json={**_TICKET, "notify_email": "not-an-email"}
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "diagnostics",
+    [
+        pytest.param({"blob": "x" * 20_000}, id="oversized"),
+        pytest.param({f"k{i}": "v" for i in range(51)}, id="too-many-keys"),
+        pytest.param({"k" * 200: "v"}, id="absurd-key"),
+        pytest.param({"nested": {"a": "b"}}, id="not-flat"),
+    ],
+)
+def test_bad_diagnostics_are_rejected(filing_client, filing_session, diagnostics):
+    response = filing_client.post(
+        "/user/support/tickets", json={**_TICKET, "diagnostics": diagnostics}
+    )
+
+    assert response.status_code == 422
+    assert filing_session.added == []
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        pytest.param({"subject": "   "}, id="blank-subject"),
+        pytest.param({"subject": "s" * 201}, id="long-subject"),
+        pytest.param({"body": ""}, id="empty-body"),
+        pytest.param({"body": "b" * 10_001}, id="long-body"),
+        pytest.param({"category": ""}, id="empty-category"),
+        pytest.param({"category": "c" * 65}, id="long-category"),
+    ],
+)
+def test_out_of_bounds_fields_are_rejected(filing_client, override):
+    response = filing_client.post("/user/support/tickets", json={**_TICKET, **override})
+
+    assert response.status_code == 422
+
+
+def test_filing_never_reads_billing_tables(filing_client, filing_session):
+    filing_client.post("/user/support/tickets", json=_TICKET)
+
+    sql = " ".join(_sql(s) for s in filing_session.statements)
+    assert "billing_plan" not in sql
+    assert "user_subscription" not in sql
