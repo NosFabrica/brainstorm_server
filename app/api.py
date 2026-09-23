@@ -17,6 +17,7 @@ from app.core.loggr import loggr
 from app.core.sql_admin_panel import add_sql_admin_panel
 from app.core.vespa import aclose as vespa_aclose
 from app.cronjobs.billing_sync import billing_sync_cronjob
+from app.cronjobs.expire_support_diagnostics import expire_support_diagnostics_cronjob
 from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
     fail_stale_ongoing_brainstorm_requests_cronjob,
 )
@@ -128,6 +129,7 @@ async def lifespan(app: FastAPI):
     periodic_graperank_task = asyncio.create_task(periodic_graperank_trigger_cronjob())
     scheduler_task = asyncio.create_task(scheduler_cronjob())
     billing_sync_task = asyncio.create_task(billing_sync_cronjob())
+    support_diagnostics_task = asyncio.create_task(expire_support_diagnostics_cronjob())
 
     try:
         yield
@@ -142,6 +144,8 @@ async def lifespan(app: FastAPI):
         periodic_graperank_task.cancel()
         scheduler_task.cancel()
         billing_sync_task.cancel()
+        support_diagnostics_task.cancel()
+        await asyncio.gather(support_diagnostics_task, return_exceptions=True)
         # Awaited before the clients below are closed: a cancelled reconcile can
         # still be mid-GET, and closing the shared httpx client under it would
         # surface as a spurious Flash outage during every shutdown.

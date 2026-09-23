@@ -145,6 +145,8 @@ class Settings(BaseSettings):
     support_max_open_tickets: int = Field(default=5)
     # A filed diagnostics snapshot larger than this (serialized) is rejected.
     support_diagnostics_max_bytes: int = Field(default=10_240)
+    # Cadence only. The retention window itself is a constant in the cronjob.
+    support_diagnostics_sweep_interval_hours: int = Field(default=6)
     # Open Ranking (ORE) auth posture. When True, every data endpoint requires
     # a valid NWT (ORE-A) and answers ONLY from the signer's own observer
     # perspective (a client-supplied `pov` is ignored). When False (default),
