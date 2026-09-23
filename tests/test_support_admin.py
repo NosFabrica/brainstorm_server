@@ -360,3 +360,55 @@ def test_a_non_admin_is_refused(client, session, method, path, payload):
 
     assert response.status_code == 403
     assert session.added == []
+
+
+# --- What reaches the notifier ---------------------------------------------
+
+
+@pytest.fixture
+def raised(monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(
+        "app.services.support_service.notify_after_commit",
+        lambda db, n: seen.append(n),
+    )
+    return seen
+
+
+def test_a_support_reply_tells_the_requester(admin_client, raised):
+    admin_client.post("/admin/support/tickets/7/messages", json={"body": "We found it"})
+
+    notification = raised[0]
+    assert (notification.kind.value, notification.audience) == (
+        "support_replied",
+        "user",
+    )
+    # A user notification carries where a transport could reach them.
+    assert notification.recipient_pubkey == OWNER
+    assert notification.recipient_email == "someone@example.com"
+
+
+def test_closing_with_a_note_tells_the_requester(admin_client, raised):
+    admin_client.post("/admin/support/tickets/7/close", json={"message": "All done"})
+
+    assert [(n.kind.value, n.audience) for n in raised] == [("support_replied", "user")]
+
+
+def test_closing_without_a_note_tells_nobody(admin_client, raised):
+    admin_client.post("/admin/support/tickets/7/close", json={})
+
+    assert raised == []
+
+
+def test_recategorizing_and_reopening_tell_nobody(admin_client, raised):
+    admin_client.patch("/admin/support/tickets/7", json={"category": "billing"})
+    admin_client.post("/admin/support/tickets/7/reopen")
+
+    assert raised == []
+
+
+def test_no_notification_carries_ticket_content(admin_client, raised):
+    admin_client.post("/admin/support/tickets/7/messages", json={"body": "secret"})
+
+    assert "secret" not in repr(raised[0])
+    assert "Scores look wrong" not in repr(raised[0])

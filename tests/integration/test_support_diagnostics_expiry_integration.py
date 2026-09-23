@@ -11,12 +11,13 @@ Requires the local Postgres (e.g. ``docker compose up -d``). Run with::
     poetry run pytest tests/integration -m integration
 """
 
+import asyncio
 from datetime import timedelta
 
 import pytest
 from sqlalchemy import text
 
-from app.core.database import db_session
+from app.core.database import db_session, engine
 from app.repos.support_repo import clear_expired_support_diagnostics_on_db
 from app.utils.datetimes import utc_now
 
@@ -69,81 +70,98 @@ async def _ticket(db, *, age_days: int, diagnostics: str | None = '{"App": "v1"}
     return ticket_id
 
 
-@pytest.mark.asyncio
-async def test_the_sweep_takes_the_snapshot_and_leaves_the_conversation():
-    async with db_session() as db:
-        await _cleanup(db)
-        ticket_id = await _ticket(db, age_days=31)
+def _drive(run) -> None:
+    # asyncpg connections are bound to the loop that opened them; dispose in-loop.
+    async def _go():
+        try:
+            await run()
+        finally:
+            await engine.dispose()
 
-        cleared = await clear_expired_support_diagnostics_on_db(db, RETENTION)
+    asyncio.run(_go())
 
-        assert cleared == 1
-        ticket = (
-            await db.execute(
-                text(
-                    "SELECT diagnostics, subject, category, status, notify_email,"
-                    " last_message_author FROM support_ticket WHERE id = :i"
-                ),
-                {"i": ticket_id},
+
+def test_the_sweep_takes_the_snapshot_and_leaves_the_conversation():
+    async def _run():
+        async with db_session() as db:
+            await _cleanup(db)
+            ticket_id = await _ticket(db, age_days=31)
+
+            cleared = await clear_expired_support_diagnostics_on_db(db, RETENTION)
+
+            assert cleared == 1
+            ticket = (
+                await db.execute(
+                    text(
+                        "SELECT diagnostics, subject, category, status, notify_email,"
+                        " last_message_author FROM support_ticket WHERE id = :i"
+                    ),
+                    {"i": ticket_id},
+                )
+            ).first()
+            assert ticket is not None, "the sweep deleted the ticket"
+            assert ticket[0] is None, "the snapshot survived"
+            assert tuple(ticket[1:]) == (
+                "Scores look wrong",
+                "scores",
+                "open",
+                "x@example.com",
+                "user",
             )
-        ).first()
-        assert ticket is not None, "the sweep deleted the ticket"
-        assert ticket[0] is None, "the snapshot survived"
-        assert tuple(ticket[1:]) == (
-            "Scores look wrong",
-            "scores",
-            "open",
-            "x@example.com",
-            "user",
-        )
 
-        messages = (
-            await db.execute(
-                text("SELECT body FROM support_message WHERE ticket_id = :i"),
-                {"i": ticket_id},
-            )
-        ).all()
-        events = (
-            await db.execute(
-                text("SELECT type FROM support_event WHERE ticket_id = :i"),
-                {"i": ticket_id},
-            )
-        ).all()
-        assert [m[0] for m in messages] == ["My scores are stale"]
-        assert [e[0] for e in events] == ["opened"]
+            messages = (
+                await db.execute(
+                    text("SELECT body FROM support_message WHERE ticket_id = :i"),
+                    {"i": ticket_id},
+                )
+            ).all()
+            events = (
+                await db.execute(
+                    text("SELECT type FROM support_event WHERE ticket_id = :i"),
+                    {"i": ticket_id},
+                )
+            ).all()
+            assert [m[0] for m in messages] == ["My scores are stale"]
+            assert [e[0] for e in events] == ["opened"]
 
-        await _cleanup(db)
+            await _cleanup(db)
+
+    _drive(_run)
 
 
-@pytest.mark.asyncio
-async def test_a_snapshot_inside_the_window_is_left_alone():
-    async with db_session() as db:
-        await _cleanup(db)
-        ticket_id = await _ticket(db, age_days=29)
+def test_a_snapshot_inside_the_window_is_left_alone():
+    async def _run():
+        async with db_session() as db:
+            await _cleanup(db)
+            ticket_id = await _ticket(db, age_days=29)
 
-        cleared = await clear_expired_support_diagnostics_on_db(db, RETENTION)
+            cleared = await clear_expired_support_diagnostics_on_db(db, RETENTION)
 
-        assert cleared == 0
-        kept = (
-            await db.execute(
-                text("SELECT diagnostics FROM support_ticket WHERE id = :i"),
-                {"i": ticket_id},
-            )
-        ).scalar_one()
-        assert kept == {"App": "v1"}
+            assert cleared == 0
+            kept = (
+                await db.execute(
+                    text("SELECT diagnostics FROM support_ticket WHERE id = :i"),
+                    {"i": ticket_id},
+                )
+            ).scalar_one()
+            assert kept == {"App": "v1"}
 
-        await _cleanup(db)
+            await _cleanup(db)
+
+    _drive(_run)
 
 
-@pytest.mark.asyncio
-async def test_a_second_sweep_rewrites_nothing():
-    async with db_session() as db:
-        await _cleanup(db)
-        await _ticket(db, age_days=31)
+def test_a_second_sweep_rewrites_nothing():
+    async def _run():
+        async with db_session() as db:
+            await _cleanup(db)
+            await _ticket(db, age_days=31)
 
-        assert await clear_expired_support_diagnostics_on_db(db, RETENTION) == 1
-        # Without the `diagnostics IS NOT NULL` guard this would keep matching
-        # every old row, forever, on every sweep.
-        assert await clear_expired_support_diagnostics_on_db(db, RETENTION) == 0
+            assert await clear_expired_support_diagnostics_on_db(db, RETENTION) == 1
+            # Without the `diagnostics IS NOT NULL` guard this would keep matching
+            # every old row, forever, on every sweep.
+            assert await clear_expired_support_diagnostics_on_db(db, RETENTION) == 0
 
-        await _cleanup(db)
+            await _cleanup(db)
+
+    _drive(_run)
