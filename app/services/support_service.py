@@ -13,8 +13,18 @@ from app.repos.support_repo import (
     insert_support_message_on_db,
     insert_support_ticket_on_db,
     lock_support_filing_on_db,
+    select_support_events_on_db,
+    select_support_messages_on_db,
+    select_support_ticket_on_db,
 )
-from app.schemas.schemas import SupportState, SupportTicketItem
+from app.schemas.schemas import (
+    SupportEventItem,
+    SupportMessageItem,
+    SupportRequester,
+    SupportState,
+    SupportThread,
+    SupportTicketItem,
+)
 from app.services.support_entitlement import (
     is_entitled_to_support,
     require_entitled_to_support,
@@ -68,6 +78,31 @@ async def create_ticket(
         db, ticket.id, SupportEventType.OPENED.value, SupportAuthor.USER.value, pubkey
     )
     return SupportTicketItem.model_validate(ticket)
+
+
+async def get_thread(
+    db: AsyncDBSession, ticket_id: int, *, pubkey: str
+) -> SupportThread:
+    """The caller's whole conversation.
+
+    Not gated on entitlement: it decides whether you can start or continue a
+    conversation, not whether you can read one you already had.
+    """
+    ticket = await select_support_ticket_on_db(db, ticket_id)
+    if ticket is None or ticket.pubkey != pubkey:
+        # Absent and not-yours answer alike: 403 would confirm it exists.
+        raise HTTPException(status_code=404, detail="No such ticket.")
+    messages = await select_support_messages_on_db(db, ticket_id)
+    events = await select_support_events_on_db(db, ticket_id)
+    return SupportThread(
+        ticket=SupportTicketItem.model_validate(ticket),
+        messages=[SupportMessageItem.model_validate(m) for m in messages],
+        events=[SupportEventItem(type=e.type, at=e.at, by=e.actor) for e in events],
+        diagnostics=ticket.diagnostics,
+        requester=SupportRequester(
+            pubkey=ticket.pubkey, notify_email=ticket.notify_email
+        ),
+    )
 
 
 async def _append_message(

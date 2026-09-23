@@ -721,3 +721,33 @@ class SupportState(BaseModel):
     # cap is still included and still cannot file. Whitelisted admins read true.
     support_included: bool
     tickets: Page[SupportTicketItem]
+
+
+class SupportMessageItem(BaseModel):
+    id: int
+    # The coarse "user" / "support"; which human replied stays internal.
+    author: str
+    body: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupportEventItem(BaseModel):
+    type: str
+    at: datetime
+    # `actor` in the column: `by` is reserved in PostgreSQL.
+    by: str
+
+
+class SupportRequester(BaseModel):
+    pubkey: str
+    notify_email: str | None
+
+
+class SupportThread(BaseModel):
+    ticket: SupportTicketItem
+    messages: list[SupportMessageItem]
+    events: list[SupportEventItem]
+    diagnostics: dict[str, str] | None
+    requester: SupportRequester

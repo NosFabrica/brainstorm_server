@@ -7,8 +7,9 @@ from app.schemas.request_body_schemas import CreateSupportTicketBody
 from app.schemas.request_response_schemas import (
     CreateSupportTicketResponse,
     GetSupportStateResponse,
+    GetSupportThreadResponse,
 )
-from app.services.support_service import create_ticket, get_support_state
+from app.services.support_service import create_ticket, get_support_state, get_thread
 from app.utils.auth.auth_models import JWTData
 
 router = APIRouter()
@@ -48,3 +49,17 @@ async def create_support_ticket_endpoint(
         diagnostics=body.diagnostics,
     )
     return CreateSupportTicketResponse(data=ticket)
+
+
+@router.get(
+    path="/tickets/{ticket_id}",
+    summary="One of the caller's own tickets, with its whole thread",
+)
+async def get_support_thread_endpoint(
+    request: Request,
+    ticket_id: int,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> GetSupportThreadResponse:
+    jwt_data: JWTData = request.state.jwt_data
+    thread = await get_thread(db, ticket_id, pubkey=jwt_data.nostr_pubkey)
+    return GetSupportThreadResponse(data=thread)
