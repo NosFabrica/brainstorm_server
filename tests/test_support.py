@@ -841,3 +841,51 @@ def test_closed_at_is_utc_not_the_hosts_local_clock(client, caller):
     # A local-clock `datetime.now()` fails this wherever TZ isn't UTC, and can
     # order `closed_at` before the `created_at` the database wrote.
     assert before <= session.ticket.closed_at <= after
+
+
+# --- What reaches the notifier ---------------------------------------------
+
+
+@pytest.fixture
+def raised(monkeypatch):
+    """Record what would be handed to a transport, without registering one."""
+    seen: list = []
+    monkeypatch.setattr(
+        "app.services.support_service.notify_after_commit",
+        lambda db, n: seen.append(n),
+    )
+    return seen
+
+
+def test_filing_a_ticket_tells_the_team(filing_client, raised):
+    filing_client.post("/user/support/tickets", json=_TICKET)
+
+    assert [(n.kind.value, n.audience) for n in raised] == [("ticket_opened", "team")]
+
+
+def test_a_user_reply_tells_the_team(client, caller, no_message_rate_limit, raised):
+    session = _WriteSession(_ticket_row(caller.pubkey, status="answered"))
+
+    _reply(client, session)
+
+    assert [(n.kind.value, n.audience) for n in raised] == [("user_replied", "team")]
+
+
+def test_resolving_tells_nobody(client, caller, raised):
+    session = _WriteSession(_ticket_row(caller.pubkey, status="answered"))
+
+    _write_client(client, session).post("/user/support/tickets/7/resolve")
+
+    # Closing your own ticket is not news for anyone.
+    assert raised == []
+
+
+def test_a_team_notification_carries_no_way_to_reach_the_user(filing_client, raised):
+    filing_client.post("/user/support/tickets", json=_TICKET)
+
+    notification = raised[0]
+    assert (notification.recipient_pubkey, notification.recipient_email) == (
+        None,
+        None,
+    )
+    assert notification.category == _TICKET["category"]

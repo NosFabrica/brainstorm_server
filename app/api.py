@@ -48,6 +48,7 @@ from app.services.flash_webhook_service import (
     validate_flash_config,
 )
 from app.services.nsec_encryption_service import bootstrap_keys
+from app.services.support_notifier import drain_notifications
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
 
 logger = loggr.get_logger(__name__)
@@ -146,6 +147,8 @@ async def lifespan(app: FastAPI):
         billing_sync_task.cancel()
         support_diagnostics_task.cancel()
         await asyncio.gather(support_diagnostics_task, return_exceptions=True)
+        # In-flight support notifications finish rather than being dropped.
+        await drain_notifications()
         # Awaited before the clients below are closed: a cancelled reconcile can
         # still be mid-GET, and closing the shared httpx client under it would
         # surface as a spurious Flash outage during every shutdown.

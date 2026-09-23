@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import HTTPException
 from fastapi_pagination import Page, Params
 from fastapi_pagination.api import set_page
@@ -40,6 +42,11 @@ from app.schemas.schemas import (
 from app.services.support_entitlement import (
     is_entitled_to_support,
     require_entitled_to_support,
+)
+from app.services.support_notifier import (
+    SupportNotification,
+    SupportNotificationKind,
+    notify_after_commit,
 )
 from app.utils.datetimes import utc_now
 
@@ -90,6 +97,7 @@ async def create_ticket(
     await insert_support_event_on_db(
         db, ticket.id, SupportEventType.OPENED.value, SupportAuthor.USER.value, pubkey
     )
+    _notify_about(db, SupportNotificationKind.TICKET_OPENED, "team", ticket)
     return SupportTicketItem.model_validate(ticket)
 
 
@@ -134,6 +142,7 @@ async def add_user_message(
     await _set_status(
         db, ticket, SupportTicketStatus.OPEN.value, SupportAuthor.USER.value, pubkey
     )
+    _notify_about(db, SupportNotificationKind.USER_REPLIED, "team", ticket)
     return SupportMessageItem.model_validate(message)
 
 
@@ -209,6 +218,7 @@ async def add_support_message(
         SupportAuthor.SUPPORT.value,
         actor_pubkey,
     )
+    _notify_about(db, SupportNotificationKind.SUPPORT_REPLIED, "user", ticket)
     return AdminSupportMessageItem.model_validate(message)
 
 
@@ -222,6 +232,8 @@ async def close_ticket_as_support(
         await _append_message(
             db, ticket, SupportAuthor.SUPPORT.value, message, actor_pubkey
         )
+        # Closing without saying anything is not news for the requester.
+        _notify_about(db, SupportNotificationKind.SUPPORT_REPLIED, "user", ticket)
     await _set_status(
         db,
         ticket,
@@ -321,3 +333,23 @@ async def _append_message(
     ticket.last_message_at = message.created_at
     ticket.last_message_author = author
     return message
+
+
+def _notify_about(
+    db: AsyncDBSession,
+    kind: SupportNotificationKind,
+    audience: Literal["team", "user"],
+    ticket: SupportTicket,
+) -> None:
+    """Built in one place, so no call site can smuggle ticket content in."""
+    notify_after_commit(
+        db,
+        SupportNotification(
+            kind=kind,
+            audience=audience,
+            ticket_id=ticket.id,
+            category=ticket.category,
+            recipient_pubkey=ticket.pubkey if audience == "user" else None,
+            recipient_email=ticket.notify_email if audience == "user" else None,
+        ),
+    )
