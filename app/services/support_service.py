@@ -52,10 +52,16 @@ from app.utils.datetimes import utc_now
 
 
 async def get_support_state(
-    db: AsyncDBSession, pubkey: str, params: Params
+    db: AsyncDBSession,
+    pubkey: str,
+    params: Params,
+    *,
+    support_included: bool | None = None,
 ) -> SupportState:
     # The list is the caller's own regardless: entitlement gates writing only.
-    support_included = await is_entitled_to_support(db, pubkey)
+    # The caller may pass an entitlement it already resolved for the ETag.
+    if support_included is None:
+        support_included = await is_entitled_to_support(db, pubkey)
     with set_page(Page[SupportTicketItem]):
         tickets = await paginate(
             db,

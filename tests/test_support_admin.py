@@ -38,6 +38,14 @@ class _Result:
         return self._scalar
 
 
+class _DigestResult:
+    def __init__(self, row=(datetime(2026, 9, 23, 12, 0, 0), 1)):
+        self._row = row
+
+    def one(self):
+        return self._row
+
+
 class _ScalarsResult:
     def __init__(self, rows: list) -> None:
         self._rows = rows
@@ -77,6 +85,8 @@ class _AdminSession:
     async def execute(self, stmt):
         self.statements.append(stmt)
         sql = _sql(stmt)
+        if "max(" in sql:
+            return _DigestResult()
         if "FROM support_message" in sql:
             return _ScalarsResult([])
         if "FROM support_event" in sql:

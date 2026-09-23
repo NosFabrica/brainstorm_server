@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi_pagination import Params
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
+from app.repos.support_repo import select_user_support_digest_on_db
 from app.schemas.request_body_schemas import (
     CreateSupportMessageBody,
     CreateSupportTicketBody,
@@ -14,6 +15,7 @@ from app.schemas.request_response_schemas import (
     GetSupportThreadResponse,
     ResolveSupportTicketResponse,
 )
+from app.services.support_entitlement import is_entitled_to_support
 from app.services.support_service import (
     add_user_message,
     create_ticket,
@@ -22,6 +24,7 @@ from app.services.support_service import (
     resolve_ticket,
 )
 from app.utils.auth.auth_models import JWTData
+from app.utils.etags import etag_digest, not_modified, tag_response
 from app.utils.rate_limiting.rate_limiting import validate_support_message_allowed
 
 router = APIRouter()
@@ -30,14 +33,32 @@ router = APIRouter()
 @router.get(
     path="",
     summary="Whether support is included for the caller, and their own tickets",
+    # The OpenAPI shape stays the envelope; the union below is for the type
+    # checker, since the 304 path returns a bare Response.
+    response_model=GetSupportStateResponse,
 )
 async def get_support_state_endpoint(
     request: Request,
+    response: Response,
     params: Params = Depends(),
     db: AsyncDBSession = Depends(dependency=get_db),
-) -> GetSupportStateResponse:
+) -> GetSupportStateResponse | Response:
     jwt_data: JWTData = request.state.jwt_data
-    result = await get_support_state(db, jwt_data.nostr_pubkey, params)
+    pubkey = jwt_data.nostr_pubkey
+    # Cheap: two scalars, not the rows. Entitlement is in the tag too, or a
+    # Policy being ticked stays invisible behind an unchanged ticket list.
+    latest, count = await select_user_support_digest_on_db(db, pubkey)
+    support_included = await is_entitled_to_support(db, pubkey)
+    etag = etag_digest(
+        pubkey, latest, count, support_included, params.page, params.size
+    )
+    if request.headers.get("if-none-match") == etag:
+        return not_modified(etag)
+
+    result = await get_support_state(
+        db, pubkey, params, support_included=support_included
+    )
+    tag_response(response, etag)
     return GetSupportStateResponse(data=result)
 
 

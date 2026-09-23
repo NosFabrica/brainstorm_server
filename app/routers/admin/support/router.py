@@ -3,11 +3,12 @@
 Bare `response_model`s, no success envelope — the admin convention.
 """
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi_pagination import Page, Params
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
+from app.repos.support_repo import select_admin_support_digest_on_db
 from app.schemas.request_body_schemas import (
     CloseSupportTicketBody,
     CreateSupportMessageBody,
@@ -27,6 +28,7 @@ from app.services.support_service import (
     set_ticket_category,
 )
 from app.utils.auth.auth_models import JWTData
+from app.utils.etags import etag_digest, not_modified, tag_response
 
 router = APIRouter()
 
@@ -37,15 +39,30 @@ router = APIRouter()
     summary="Support: the queue, newest activity first",
 )
 async def list_support_tickets_endpoint(
+    request: Request,
+    response: Response,
     params: Params = Depends(),
     status: str | None = None,
     category: str | None = None,
     pubkey: str | None = None,
     db: AsyncDBSession = Depends(dependency=get_db),
 ):
-    return await get_admin_support_tickets(
+    # Every filter is in the tag, or page two comes back unchanged against
+    # page one's and the queue renders stale rows.
+    latest, count = await select_admin_support_digest_on_db(
+        db, status, category, pubkey
+    )
+    etag = etag_digest(
+        latest, count, status, category, pubkey, params.page, params.size
+    )
+    if request.headers.get("if-none-match") == etag:
+        return not_modified(etag)
+
+    page = await get_admin_support_tickets(
         db, params, status=status, category=category, pubkey=pubkey
     )
+    tag_response(response, etag)
+    return page
 
 
 @router.get(

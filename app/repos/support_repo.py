@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TypeVar, cast
 
 from sqlalchemy import CursorResult, Select, Update, func, select, update
@@ -72,17 +72,62 @@ async def select_support_events_on_db(
     return list(result.scalars().all())
 
 
+def _admin_support_filters(
+    status: str | None, category: str | None, pubkey: str | None
+) -> list:
+    """Shared, so a listing and its digest can never disagree about scope."""
+    conditions = []
+    if status is not None:
+        conditions.append(SupportTicket.status == status)
+    if category is not None:
+        conditions.append(SupportTicket.category == category)
+    if pubkey is not None:
+        conditions.append(SupportTicket.pubkey == pubkey)
+    return conditions
+
+
 def build_admin_support_tickets_stmt(
     status: str | None, category: str | None, pubkey: str | None
 ) -> Select:
-    stmt = select(SupportTicket)
-    if status is not None:
-        stmt = stmt.where(SupportTicket.status == status)
-    if category is not None:
-        stmt = stmt.where(SupportTicket.category == category)
-    if pubkey is not None:
-        stmt = stmt.where(SupportTicket.pubkey == pubkey)
-    return stmt.order_by(SupportTicket.last_message_at.desc(), SupportTicket.id.desc())
+    return (
+        select(SupportTicket)
+        .where(*_admin_support_filters(status, category, pubkey))
+        .order_by(SupportTicket.last_message_at.desc(), SupportTicket.id.desc())
+    )
+
+
+def _digest_stmt(*conditions) -> Select:
+    """What a listing would contain, as two scalars.
+
+    Keyed on `updated_at`, never `last_message_at`: resolving, recategorizing
+    and a message-less reopen each change what the client renders while
+    touching no message, and a validator keyed on message activity reports
+    those as unchanged forever.
+    """
+    return select(func.max(SupportTicket.updated_at), func.count()).where(*conditions)
+
+
+async def select_user_support_digest_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> tuple[datetime | None, int]:
+    latest, count = (
+        await db.execute(_digest_stmt(SupportTicket.pubkey == pubkey))
+    ).one()
+    return latest, count
+
+
+async def select_admin_support_digest_on_db(
+    db: AsyncDBSession,
+    status: str | None,
+    category: str | None,
+    pubkey: str | None,
+) -> tuple[datetime | None, int]:
+    latest, count = (
+        await db.execute(
+            _digest_stmt(*_admin_support_filters(status, category, pubkey))
+        )
+    ).one()
+    return latest, count
 
 
 async def lock_support_filing_on_db(db: AsyncDBSession, pubkey: str) -> None:

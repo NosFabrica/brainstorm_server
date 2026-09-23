@@ -31,6 +31,16 @@ def _sql(stmt) -> str:
     )
 
 
+class _DigestResult:
+    """The `max(updated_at), count(*)` the conditional GET reads first."""
+
+    def __init__(self, row=(datetime(2026, 9, 23, 12, 0, 0), 1)):
+        self._row = row
+
+    def one(self):
+        return self._row
+
+
 class _Result:
     def __init__(self, scalar):
         self._scalar = scalar
@@ -55,7 +65,10 @@ class _FakeSession:
 
     async def execute(self, stmt):
         self.statements.append(stmt)
-        if "brainstorm_nsec" in _sql(stmt):
+        sql = _sql(stmt)
+        if "max(" in sql:
+            return _DigestResult()
+        if "brainstorm_nsec" in sql:
             return _Result(1)
         return _Result(self._policies.pop(0))
 
@@ -109,6 +122,8 @@ def test_default_policy_does_not_include_support(support_client, session):
     async def execute(stmt):
         session.statements.append(stmt)
         sql = _sql(stmt)
+        if "max(" in sql:
+            return _DigestResult()
         if "brainstorm_nsec" in sql:
             return _Result(None)  # unassigned → falls through to the default
         assert "scheduling.is_default IS true" in sql
@@ -119,7 +134,8 @@ def test_default_policy_does_not_include_support(support_client, session):
     response = support_client.get("/user/support")
 
     assert response.json()["data"]["support_included"] is False
-    assert len(session.statements) == 2
+    # the digest, the nsec lookup, then the default policy
+    assert len(session.statements) == 3
 
 
 def test_whitelisted_pubkey_is_always_included(support_client, caller, monkeypatch):
