@@ -19,6 +19,7 @@ app/utils/
 ├── nostr.py                 # Tiny Nostr helpers (constants, format conversions)
 ├── rate_limiting/
 │   └── rate_limiting.py     # Redis-backed rate limiter + trusted-proxy client IP
+├── datetimes.py             # utc_now() for the naive timestamp columns
 └── constants.py             # Truly app-wide constants
 ```
 
@@ -104,6 +105,21 @@ not a per-IP limit. It is now `rate_limit:graperank:<real client ip>`.
 Two consequences, both intended: live counters were abandoned once on deploy, and
 the throttle changed from global to genuinely per-caller (a large capacity
 increase). `/user/graperank` and `/user/followList` still share the bucket.
+
+Keyed by IP for the anonymous paths, by **pubkey** where the caller is
+authenticated and the cost is per-account: the billing refresh poll, the Flash
+record read, and support replies — the open-ticket cap bounds how many threads
+exist, nothing else bounds how much is written into them.
+
+## datetimes.py
+
+`utc_now()` — now in UTC, naive, which is what the naive timestamp columns hold.
+Use it for any Python-side write into one. Bare `datetime.now()` is the app
+host's local clock and skews against the columns the database fills with
+`now()`, which can order a `closed_at` before the `created_at` beside it.
+
+`billing_service.utc_now` predates this and is the same function; it should move
+here when someone is next in that file.
 
 ## constants.py
 

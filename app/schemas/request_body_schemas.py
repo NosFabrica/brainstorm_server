@@ -121,6 +121,10 @@ _DIAGNOSTICS_MAX_KEYS = 50
 _DIAGNOSTICS_MAX_KEY_LENGTH = 100
 
 
+class CreateSupportMessageBody(BaseModel):
+    body: str = Field(min_length=1, max_length=10_000)
+
+
 class CreateSupportTicketBody(BaseModel):
     subject: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=10_000)

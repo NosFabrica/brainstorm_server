@@ -21,6 +21,7 @@ from app.schemas.schemas import (
     RefreshedSubscriptionView,
     ShortUrlContent,
     SubscriptionView,
+    SupportMessageItem,
     SupportState,
     SupportThread,
     SupportTicketItem,
@@ -314,3 +315,11 @@ class CreateSupportTicketResponse(SuccessfulResponseDataSchema):
 
 class GetSupportThreadResponse(SuccessfulResponseDataSchema):
     data: SupportThread
+
+
+class CreateSupportMessageResponse(SuccessfulResponseDataSchema):
+    data: SupportMessageItem
+
+
+class ResolveSupportTicketResponse(SuccessfulResponseDataSchema):
+    data: SupportTicketItem

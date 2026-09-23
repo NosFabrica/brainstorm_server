@@ -629,3 +629,215 @@ def test_a_thread_reads_in_a_stable_order(client, caller):
     ordered = [_sql(s) for s in session.statements if "ORDER BY" in _sql(s)]
     assert len(ordered) == 2
     assert all(sql.rstrip().endswith(".id") for sql in ordered)
+
+
+# --- Replying and resolving -------------------------------------------------
+
+
+class _WriteSession(_FilingSession):
+    """Adds the locked ticket read that the reply/resolve paths open with."""
+
+    def __init__(self, ticket: SupportTicket | None) -> None:
+        super().__init__(_policy(True))
+        self.ticket = ticket
+        self._next_id = 100
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        if "FOR UPDATE" in _sql(stmt):
+            return _Result(self.ticket)
+        return await super().execute(stmt)
+
+
+@pytest.fixture
+def no_message_rate_limit(monkeypatch):
+    limiter = AsyncMock()
+    monkeypatch.setattr(
+        "app.routers.support.router.validate_support_message_allowed", limiter
+    )
+    return limiter
+
+
+def _write_client(client, session):
+    from app.api import app
+
+    async def _fake_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = _fake_get_db
+    return client
+
+
+def _reply(client, session, body="Still broken"):
+    return _write_client(client, session).post(
+        "/user/support/tickets/7/messages", json={"body": body}
+    )
+
+
+def test_a_reply_puts_an_answered_ticket_back_in_supports_court(
+    client, caller, no_message_rate_limit
+):
+    session = _WriteSession(_ticket_row(caller.pubkey, status="answered"))
+
+    response = _reply(client, session)
+
+    assert response.status_code == 200
+    assert session.ticket.status == "open"
+    # The message is the event; a shuffle between open states records none.
+    assert session.of(SupportEvent) == []
+
+
+def test_a_reply_to_an_open_ticket_records_no_event(
+    client, caller, no_message_rate_limit
+):
+    session = _WriteSession(_ticket_row(caller.pubkey, status="open"))
+
+    _reply(client, session)
+
+    assert session.ticket.status == "open"
+    assert session.of(SupportEvent) == []
+
+
+def test_a_reply_to_a_closed_ticket_reopens_it(client, caller, no_message_rate_limit):
+    closed = _ticket_row(
+        caller.pubkey, status="closed", closed_at=datetime(2026, 9, 1, 9, 0, 0)
+    )
+    session = _WriteSession(closed)
+
+    response = _reply(client, session)
+
+    assert response.status_code == 200
+    assert session.ticket.status == "open"
+    assert session.ticket.closed_at is None
+    events = session.of(SupportEvent)
+    assert [(e.type, e.actor) for e in events] == [("reopened", "user")]
+
+
+def test_a_reply_moves_the_tickets_last_activity(
+    client, caller, no_message_rate_limit
+):
+    session = _WriteSession(_ticket_row(caller.pubkey, status="answered"))
+
+    _reply(client, session)
+
+    message = session.of(SupportMessage)[0]
+    assert session.ticket.last_message_at == message.created_at
+    assert session.ticket.last_message_author == "user"
+
+
+def test_a_reply_is_recorded_as_the_users_own(client, caller, no_message_rate_limit):
+    session = _WriteSession(_ticket_row(caller.pubkey))
+
+    body = _reply(client, session, "Still broken").json()["data"]
+
+    assert (body["author"], body["body"]) == ("user", "Still broken")
+    assert session.of(SupportMessage)[0].actor_pubkey == caller.pubkey
+
+
+def test_replying_locks_the_ticket_row(client, caller, no_message_rate_limit):
+    session = _WriteSession(_ticket_row(caller.pubkey))
+
+    _reply(client, session)
+
+    # Read-modify-write: without the lock a concurrent admin reply can
+    # double-record an event or leave last-activity on the older message.
+    assert any("FOR UPDATE" in _sql(s) for s in session.statements)
+
+
+def test_replying_is_rate_limited_per_pubkey(client, caller, no_message_rate_limit):
+    session = _WriteSession(_ticket_row(caller.pubkey))
+
+    _reply(client, session)
+
+    no_message_rate_limit.assert_awaited_once_with(caller.pubkey)
+
+
+def test_a_reply_to_somebody_elses_ticket_is_not_found(
+    client, no_message_rate_limit
+):
+    session = _WriteSession(_ticket_row("f" * 64))
+
+    assert _reply(client, session).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "body", [pytest.param("", id="empty"), pytest.param("b" * 10_001, id="too-long")]
+)
+def test_an_out_of_bounds_reply_is_rejected(
+    client, caller, no_message_rate_limit, body
+):
+    session = _WriteSession(_ticket_row(caller.pubkey))
+
+    assert _reply(client, session, body).status_code == 422
+
+
+def test_resolving_closes_the_ticket_and_says_who(client, caller):
+    session = _WriteSession(_ticket_row(caller.pubkey, status="answered"))
+
+    response = _write_client(client, session).post(
+        "/user/support/tickets/7/resolve"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "closed"
+    assert session.ticket.closed_at is not None
+    assert [(e.type, e.actor) for e in session.of(SupportEvent)] == [
+        ("closed", "user")
+    ]
+
+
+def test_resolving_an_already_closed_ticket_records_one_closure(client, caller):
+    session = _WriteSession(_ticket_row(caller.pubkey, status="closed"))
+
+    response = _write_client(client, session).post(
+        "/user/support/tickets/7/resolve"
+    )
+
+    assert response.status_code == 200
+    assert session.of(SupportEvent) == []
+
+
+def test_resolving_somebody_elses_ticket_is_not_found(client):
+    session = _WriteSession(_ticket_row("f" * 64))
+
+    response = _write_client(client, session).post(
+        "/user/support/tickets/7/resolve"
+    )
+
+    assert response.status_code == 404
+
+
+def test_a_lapsed_user_cannot_reply(client, caller, no_message_rate_limit):
+    # Entitlement gates writing, and continuing a conversation is a write.
+    session = _WriteSession(_ticket_row(caller.pubkey))
+    session.policy = _policy(False)
+
+    response = _reply(client, session)
+
+    assert response.status_code == 403
+    assert session.of(SupportMessage) == []
+
+
+def test_a_lapsed_user_can_still_resolve_their_own_ticket(client, caller):
+    # Closing a ticket you already own is not continuing a conversation.
+    session = _WriteSession(_ticket_row(caller.pubkey, status="answered"))
+    session.policy = _policy(False)
+
+    response = _write_client(client, session).post("/user/support/tickets/7/resolve")
+
+    assert response.status_code == 200
+    assert session.ticket.status == "closed"
+
+
+def test_closed_at_is_utc_not_the_hosts_local_clock(client, caller):
+    from datetime import datetime, timezone
+
+    session = _WriteSession(_ticket_row(caller.pubkey, status="answered"))
+
+    before = datetime.now(timezone.utc).replace(tzinfo=None)
+    _write_client(client, session).post("/user/support/tickets/7/resolve")
+    after = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # A local-clock `datetime.now()` fails this wherever TZ isn't UTC, and can
+    # order `closed_at` before the `created_at` the database wrote.
+    assert before <= session.ticket.closed_at <= after
