@@ -148,6 +148,7 @@ class SchedulingItem(BaseModel):
     enabled: bool
     is_default: bool
     is_public: bool
+    support_included: bool
     manual_quota_limit: int
     manual_quota_window_seconds: int
 

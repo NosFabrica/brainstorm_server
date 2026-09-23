@@ -64,6 +64,7 @@ async def create_scheduling_on_db(
     manual_quota_limit: int,
     manual_quota_window_seconds: int,
     is_public: bool = False,
+    support_included: bool = False,
 ) -> Scheduling:
     row = Scheduling(
         name=name,
@@ -74,6 +75,7 @@ async def create_scheduling_on_db(
         manual_quota_limit=manual_quota_limit,
         manual_quota_window_seconds=manual_quota_window_seconds,
         is_public=is_public,
+        support_included=support_included,
     )
     db.add(row)
     await db.flush()
