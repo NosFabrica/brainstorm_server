@@ -117,6 +117,9 @@ async def create_brainstorm_request(
     force_full_vespa: bool = False,
     trigger_source: str = TriggerSource.MANUAL.value,
 ) -> BrainstormRequestInstance:
+    # Before any DB work, so a slow relay never holds a transaction open.
+    designated_pubkeys = await fetch_designated_pubkeys(parameters)
+
     stored_preset = await get_graperank_preset_by_pubkey_on_db(db, parameters)
     requested_preset = normalize_preset(stored_preset)
     effective_preset, params = await resolve_preset_params(
@@ -154,8 +157,6 @@ async def create_brainstorm_request(
         )
 
     await update_last_time_triggered_graperank_on_db(db, parameters)
-
-    designated_pubkeys = await fetch_designated_pubkeys(parameters)
 
     await enqueue_calc_request(
         db, instance, parameters, trigger_source, designated_pubkeys

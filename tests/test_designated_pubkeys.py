@@ -90,3 +90,63 @@ def test_a_relay_error_means_no_designation(monkeypatch):
 
     monkeypatch.setattr(designation_service, "_fetch_latest_designation", boom)
     assert asyncio.run(designation_service.fetch_designated_pubkeys(OBSERVER)) == []
+
+
+def test_ignores_non_string_tag_values():
+    assert (
+        parse_designated_pubkeys([["30382:rank", 42], [None, PROVIDER]], OBSERVER) == []
+    )
+
+
+def _serve(handler):
+    """Run `handler` as a one-shot local relay; returns (url, server)."""
+    import websockets
+
+    async def start():
+        server = await websockets.serve(handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        return f"ws://127.0.0.1:{port}", server
+
+    return start
+
+
+def _fetch_from(handler):
+    from app.services import designation_service
+
+    async def run():
+        url, server = await _serve(handler)()
+        try:
+            return await designation_service._fetch_latest_designation(url, OBSERVER)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    return asyncio.run(run())
+
+
+def test_fetch_reads_the_newest_designation_from_a_real_socket():
+    """Regression: the nostr_sdk Client returned before its socket opened, so the
+    lookup silently found nothing. This runs the REQ over an actual websocket."""
+    older = {"created_at": 1, "tags": [["30382:rank", OTHER_PROVIDER]]}
+    newer = {"created_at": 2, "tags": [["30382:rank", PROVIDER]]}
+
+    async def relay(ws):
+        _, sub_id, flt = json.loads(await ws.recv())
+        assert flt == {"kinds": [10040], "authors": [OBSERVER], "limit": 1}
+        await ws.send(json.dumps(["EVENT", sub_id, older]))
+        await ws.send(json.dumps(["EVENT", sub_id, newer]))
+        await ws.send(json.dumps(["EOSE", sub_id]))
+        async for _ in ws:
+            pass
+
+    assert _fetch_from(relay) == newer
+
+
+def test_fetch_returns_none_when_the_relay_has_no_designation():
+    async def relay(ws):
+        _, sub_id, _ = json.loads(await ws.recv())
+        await ws.send(json.dumps(["EOSE", sub_id]))
+        async for _ in ws:
+            pass
+
+    assert _fetch_from(relay) is None
