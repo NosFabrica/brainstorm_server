@@ -62,8 +62,9 @@ from app.services.verified_cutoffs import VerifiedCutoffs
 from app.utils.api_validators import verify_token_optional
 from app.utils.auth.auth_models import JWTData
 from app.utils.rate_limiting.rate_limiting import (
+    GRAPERANK_POLICY,
+    rate_limit,
     validate_subscription_refresh_allowed,
-    validateIfRequestedTooOftenByIP,
 )
 
 CHALLENGE_TTL = 120  # seconds (2 minutes)
@@ -75,6 +76,9 @@ router = APIRouter()
 # anonymously. When authenticated, the caller's pubkey is used as the observer
 # perspective; otherwise we fall back to the default observer.
 public_router = APIRouter()
+
+
+rate_limit_graperank = rate_limit(GRAPERANK_POLICY)
 
 
 @router.get(
@@ -98,7 +102,7 @@ async def get_own_latest_graperank_endpoint(
 @router.post(
     path="/graperank",
     tags=[],
-    dependencies=[],
+    dependencies=[Depends(rate_limit_graperank)],
     summary="Start a graperank calculation",
 )
 async def create_graperank_calc_endpoint(
@@ -107,9 +111,6 @@ async def create_graperank_calc_endpoint(
 ) -> GetOwnLatestGraperankResponse:
     jwt_data: JWTData = request.state.jwt_data
     user_pubkey = jwt_data.nostr_pubkey
-
-    if request.client:
-        await validateIfRequestedTooOftenByIP(request.client.host)
 
     await enforce_manual_quota(db, user_pubkey)
 
@@ -140,7 +141,7 @@ async def create_graperank_calc_endpoint(
 @router.post(
     path="/followList",
     tags=[],
-    dependencies=[],
+    dependencies=[Depends(rate_limit_graperank)],
     summary="Ingest a freshly-signed onboarding follow list synchronously",
     responses={
         status.HTTP_400_BAD_REQUEST: {
@@ -167,9 +168,6 @@ async def submit_follow_list_endpoint(
 ) -> SubmitFollowListResponse:
     jwt_data: JWTData = request.state.jwt_data
     user_pubkey = jwt_data.nostr_pubkey
-
-    if request.client:
-        await validateIfRequestedTooOftenByIP(request.client.host)
 
     follow_count = await ingest_follow_list(user_pubkey, body.signed_event.model_dump())
 

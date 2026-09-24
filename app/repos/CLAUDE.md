@@ -11,6 +11,7 @@ never touch SQLAlchemy `Select`s or Cypher strings directly.
 | `brainstorm_nsec.py` | PostgreSQL (`brainstorm_nsec`) | Per-user observer keypair + preset params + last-published-pubkeys binary blob |
 | `graperank_preset_repo.py` | PostgreSQL (`graperank_preset`, `graperank_preset_history`) | Builtin preset CRUD + audit-log helpers + camelCase ↔ snake_case converters |
 | `brainstorm_nostr_transferer.py` | PostgreSQL (`brainstorm_nostr_relay_transfer`) | Relay-sync state machine (per-kind cursor + completion) |
+| `short_url_repo.py` | PostgreSQL (`short_url`) | Share-link records: resolve by code, dedup lookup by (pubkey, relay-set fingerprint), insert |
 | `user_repo.py` | **Neo4j** | All Cypher queries for the social graph (follows/mutes/reports + influence-weighted counts/paginations) |
 | `billing_plan_repo.py` | PostgreSQL (`billing_plan`) | Mapping CRUD — Flash plan → scheduling policy, and whether we sell it. Listed by `id`, which is a stable order rather than a meaningful one: display order is Flash's `sortOrder`. `is_active` means *sellable*: only the plans-for-sale listing filters on it, never the entitlement lookup. There is **no** scheduling-id → plan lookup — a subscriber's tier is their policy, read straight off the assignment |
 | `scheduling_repo.py` | PostgreSQL (`scheduling`) | Policy CRUD, the default policy, and the public-policies selector that gates `/billing/plans` |

@@ -35,8 +35,15 @@ right payload. Examples:
 
 **Never return a bare dict** from a route handler. Always wrap.
 
-Error responses use `ErrorResponseSchema` (raised as `HTTPException(detail=...)`
-in services / route handlers).
+`ErrorResponseSchema` is declared in routers' `responses={}` for OpenAPI, but
+**nothing raises it** — `HTTPException(detail=...)` carries a plain string
+everywhere in this repo, and the frontend reads it as one. Don't be the first to
+raise the envelope without migrating the clients too; see
+[`app/services/CLAUDE.md`](../services/CLAUDE.md) → Errors.
+
+Prefer expressing validation as request-schema constraints, so the framework
+answers 422 with a field-level body instead of a hand-rolled 400 carrying a
+sentence. `CreateShortUrlBody` is the reference.
 
 ## Reused payloads
 

@@ -29,6 +29,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/webhooks` | `webhooks/` | none — HMAC-signed by the sender. **Only mounted when `flash_enabled`** (see `include_billing_routers` in `router.py`), so it does not exist on deployments without payments |
 | `/billing` | `billing/` | none — public plans list. **Always mounted**: an empty `plans` array is the "no billing here" signal the UI hides on. A mapping naming a service Flash does not hold drops that service's plans and logs an error, so one mistyped id degrades the page rather than refusing it |
 | `/admin/billing/dev` | `admin/billing/dev.py` | billing access; mounted only when `flash_enabled` AND `deploy_environment == LOCAL` — mock Flash state (subscriptions AND plans, so the pricing page the paid rehearsal starts on has something to render) + signed synthetic webhook emitter |
+| `/shorturl` | `shorturl/` | none — POST is rate-limited 1 req/s/IP |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
 | `/admin` | `admin/` | `verify_token` + `verify_admin_access` |
@@ -91,6 +92,14 @@ the app client's response handling; the admin UI reads models directly.
 ### `setup/router.py` — Nostr pubkey setup
 
 - **GET** `/{nostr_pubkey}` → 30382 relay hints (`list[list[str]]`).
+
+### `shorturl/router.py` — URL shortener
+
+Short codes for `{pubkey, relays}`, stored in Postgres. See
+[`shorturl/CLAUDE.md`](shorturl/CLAUDE.md) for the full design.
+
+- **POST** `/` (body: `CreateShortUrlBody{pubkey, relays}`) → `CreateShortUrlResponse` (`data.shortCode`, `data.content`). Rate-limited 1 req/s/IP. Idempotent per `(pubkey, relay-set)`; `[]` relays is valid; max 7 relays; relays format-checked as `ws://`/`wss://`.
+- **GET** `/{short_code}` → `GetShortUrlResponse` (`data.pubkey`, `data.relays`). 404 if unknown; 422 if not `[A-Za-z0-9]{6,32}`. Codes never expire.
 
 ### `user/router.py` — user endpoints
 

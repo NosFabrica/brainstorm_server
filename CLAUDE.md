@@ -17,9 +17,9 @@ The map of the estate's repos and deployments is
 
 | Service | Role |
 |---|---|
-| **PostgreSQL** | Domain DB. Alembic migrations in `alembic/`. Schema = `app/db_models/`. |
+| **PostgreSQL** | Domain DB, including the share-link records (`short_url`). Alembic migrations in `alembic/`. Schema = `app/db_models/`. |
 | **Neo4j** | Graph DB. Stores follow/mute/report relationships per `NostrUser` pubkey. |
-| **Redis** | Message queue (between strfry plugin → kind-event consumer, and between graperank workers → score uploader) **and** reverse-set caches (`followed_by:<pubkey>`, `muted_by:<pubkey>`, `reported_by:<pubkey>`). |
+| **Redis** | Message queue (between strfry plugin → kind-event consumer, and between graperank workers → score uploader), reverse-set caches (`followed_by:<pubkey>`, `muted_by:<pubkey>`, `reported_by:<pubkey>`), and rate-limit counters (including the shortener's — its *records* live in PostgreSQL, see [`app/routers/shorturl/`](app/routers/shorturl/CLAUDE.md)). |
 | **Vespa** | Search engine for Nostr profiles. Per-observer trust scores live in a sparse `quality_scores` tensor on each doc, keyed by observer pubkey. See `app/core/vespa.py`. |
 | **strfry / neofry** | Local Nostr relays. The server publishes signed TA (Trusted Assertions) events to them and consumes incoming events. |
 | **Nostr SDK** | `nostr_sdk` Python bindings, used for parsing pubkeys (npub ↔ hex), event signing, and relay clients. |

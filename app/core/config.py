@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     stale_ongoing_brainstorm_request_check_interval_minutes: float = Field(default=30.0)
     block_frequent_graperank_requests: bool = Field(default=False)
     block_frequent_graperank_requests_minutes: int = Field(default=30)
+    # Our proxy's position from the right of X-Forwarded-For (1 = ingress only).
+    trusted_proxy_hops: int = Field(default=1)
     # Global kill-switch for the tier scheduler. Default off; enable per environment
     scheduler_enabled: bool = Field(default=False)
     # Max scheduled runs whose publishing may be in flight before admission pauses.

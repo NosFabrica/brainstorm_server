@@ -7,11 +7,19 @@ def generate_random_nsec() -> str:
     return keys.secret_key().to_bech32()
 
 
-def resolve_pubkey_or_400(value: str, param_name: str) -> str:
-    """Hex or npub in, canonical hex out; anything unparseable is a 400."""
+def to_hex_pubkey(value: str) -> str:
+    """Hex or npub in, canonical hex out; ValueError if unparseable. Does not strip."""
     try:
         return PublicKey.parse(value).to_hex()
     except Exception:
+        raise ValueError("must be a valid hex pubkey or npub")
+
+
+def resolve_pubkey_or_400(value: str, param_name: str) -> str:
+    """Hex or npub in, canonical hex out; anything unparseable is a 400."""
+    try:
+        return to_hex_pubkey(value)
+    except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{param_name} is not a valid hex pubkey or npub",

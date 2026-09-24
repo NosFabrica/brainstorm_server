@@ -680,3 +680,22 @@ class UnresolvedResolutionOutcome(BaseModel):
     # The EntitlementReason behind `applied` — see app/routers/CLAUDE.md.
     entitlement_reason: str | None = None
     events_settled: int
+
+
+###################
+
+# URL shortener   #
+
+###################
+
+
+class ShortUrlContent(BaseModel):
+    pubkey: str
+    relays: list[str]
+
+
+class CreatedShortUrl(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    short_code: str = Field(serialization_alias="shortCode")
+    content: ShortUrlContent

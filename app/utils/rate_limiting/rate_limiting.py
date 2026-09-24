@@ -1,9 +1,25 @@
-from fastapi import HTTPException
+from dataclasses import dataclass
 
+from fastapi import HTTPException, Request
+
+from app.core.config import settings
+from app.core.loggr import loggr
 from app.core.redis_db import get_redis_client
 
-RATE_LIMIT = 3
-WINDOW_SECONDS = 1800  # 30 minutes
+logger = loggr.get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class RateLimitPolicy:
+    """A named throttle: which bucket, how many requests, over what window."""
+
+    key_prefix: str
+    limit: int
+    window_seconds: int
+
+
+# Shared by POST /user/graperank and POST /user/followList (pre-existing).
+GRAPERANK_POLICY = RateLimitPolicy(key_prefix="graperank", limit=3, window_seconds=1800)
 
 
 async def _enforce_window(key: str, limit: int, window_seconds: int) -> None:
@@ -15,8 +31,43 @@ async def _enforce_window(key: str, limit: int, window_seconds: int) -> None:
         raise HTTPException(status_code=429, detail="Too many requests")
 
 
-async def validateIfRequestedTooOftenByIP(ip_address: str) -> None:
-    await _enforce_window(f"rate_limit:{ip_address}", RATE_LIMIT, WINDOW_SECONDS)
+def resolve_client_ip(request: Request) -> str:
+    """The X-Forwarded-For hop our own proxy wrote; the leading entries are client-controlled."""
+    hops_back = settings.trusted_proxy_hops
+    forwarded = request.headers.get("x-forwarded-for", "")
+    hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+
+    if 1 <= hops_back <= len(hops):
+        return hops[-hops_back]
+
+    if hops:
+        logger.warning(
+            "X-Forwarded-For carried %d hop(s) but trusted_proxy_hops=%d; "
+            "falling back to the direct peer, which is shared behind a proxy "
+            "and will throttle unrelated callers together",
+            len(hops),
+            hops_back,
+        )
+
+    return request.client.host if request.client else "unknown"
+
+
+async def validate_rate_limit(ip_address: str, policy: RateLimitPolicy) -> None:
+    """Fixed-window rate limit per IP; 429 once the window's count exceeds the limit."""
+    await _enforce_window(
+        f"rate_limit:{policy.key_prefix}:{ip_address}",
+        policy.limit,
+        policy.window_seconds,
+    )
+
+
+def rate_limit(policy: RateLimitPolicy):
+    """A FastAPI dependency enforcing ``policy`` per client IP."""
+
+    async def dependency(request: Request) -> None:
+        await validate_rate_limit(resolve_client_ip(request), policy)
+
+    return dependency
 
 
 # Generous enough for the pending-checkout poll (every few seconds), tight

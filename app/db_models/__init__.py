@@ -494,3 +494,28 @@ class NostrUserTagging(Base):
         Index("ix_nostr_user_tagging_tag_event_id", "tag_event_id"),
         Index("ix_nostr_user_tagging_target", "target_pubkey"),
     )
+
+
+class ShortUrl(TimestampMixin, Base):
+    """A share link: a short code for a pubkey + relay-hint set.
+
+    See docs/adr/0002-short-links-in-postgres.md.
+    """
+
+    __tablename__ = "short_url"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Variable-length on purpose: the generated length may change.
+    short_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    pubkey: Mapped[str] = mapped_column(String(64), nullable=False)
+    # sha256 of the normalized relay set.
+    relays_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    relays: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+
+    # short_code needs no explicit Index: unique=True already creates one.
+    __table_args__ = (
+        UniqueConstraint(
+            "pubkey", "relays_fingerprint", name="uq_short_url_pubkey_fingerprint"
+        ),
+    )
