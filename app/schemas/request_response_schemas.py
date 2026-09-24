@@ -21,6 +21,10 @@ from app.schemas.schemas import (
     RefreshedSubscriptionView,
     ShortUrlContent,
     SubscriptionView,
+    SupportMessageItem,
+    SupportState,
+    SupportThread,
+    SupportTicketItem,
     TrustSignalsData,
     UserGraphData,
     UserHistoryInstance,
@@ -299,3 +303,23 @@ class NetworkAlertsData(BaseModel):
 
 class GetNetworkAlertsResponse(SuccessfulResponseDataSchema):
     data: NetworkAlertsData
+
+
+class GetSupportStateResponse(SuccessfulResponseDataSchema):
+    data: SupportState
+
+
+class CreateSupportTicketResponse(SuccessfulResponseDataSchema):
+    data: SupportTicketItem
+
+
+class GetSupportThreadResponse(SuccessfulResponseDataSchema):
+    data: SupportThread
+
+
+class CreateSupportMessageResponse(SuccessfulResponseDataSchema):
+    data: SupportMessageItem
+
+
+class ResolveSupportTicketResponse(SuccessfulResponseDataSchema):
+    data: SupportTicketItem

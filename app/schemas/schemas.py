@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Generic, Literal, TypeVar
 
+from fastapi_pagination import Page
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 
 from app.core.flash import SettableStatus, is_whole_day_boundary
@@ -148,6 +149,7 @@ class SchedulingItem(BaseModel):
     enabled: bool
     is_default: bool
     is_public: bool
+    support_included: bool
     manual_quota_limit: int
     manual_quota_window_seconds: int
 
@@ -699,3 +701,77 @@ class CreatedShortUrl(BaseModel):
 
     short_code: str = Field(serialization_alias="shortCode")
     content: ShortUrlContent
+
+
+class SupportTicketItem(BaseModel):
+    id: int
+    subject: str
+    category: str
+    status: str
+    created_at: datetime
+    last_message_at: datetime
+    last_message_author: str
+    closed_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupportState(BaseModel):
+    # Named for the Policy column, not a permission: a user at the open-ticket
+    # cap is still included and still cannot file. Whitelisted admins read true.
+    support_included: bool
+    tickets: Page[SupportTicketItem]
+
+
+class SupportMessageItem(BaseModel):
+    id: int
+    # The coarse "user" / "support"; which human replied stays internal.
+    author: str
+    body: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupportEventItem(BaseModel):
+    type: str
+    at: datetime
+    # `actor` in the column: `by` is reserved in PostgreSQL.
+    by: str
+
+
+class SupportRequester(BaseModel):
+    pubkey: str
+    notify_email: str | None
+
+
+class AdminSupportTicketItem(SupportTicketItem):
+    """A queue row: the ticket, plus who it is from and where a nudge would go."""
+
+    pubkey: str
+    notify_email: str | None
+
+
+class AdminSupportMessageItem(SupportMessageItem):
+    # Which human replied. Admin surfaces only — the user sees `author`.
+    actor_pubkey: str | None
+
+
+class AdminSupportEventItem(SupportEventItem):
+    actor_pubkey: str | None
+
+
+class SupportThread(BaseModel):
+    ticket: SupportTicketItem
+    messages: list[SupportMessageItem]
+    events: list[SupportEventItem]
+    diagnostics: dict[str, str] | None
+    requester: SupportRequester
+
+
+class AdminSupportThread(BaseModel):
+    ticket: AdminSupportTicketItem
+    messages: list[AdminSupportMessageItem]
+    events: list[AdminSupportEventItem]
+    diagnostics: dict[str, str] | None
+    requester: SupportRequester

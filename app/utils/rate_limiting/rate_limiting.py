@@ -96,3 +96,17 @@ async def validate_flash_record_read_allowed(operator_pubkey: str) -> None:
         FLASH_RECORD_RATE_LIMIT,
         FLASH_RECORD_WINDOW_SECONDS,
     )
+
+
+# Room for a real back-and-forth inside one sitting; the open-ticket cap bounds
+# how many threads exist, nothing else bounds how much is written into them.
+SUPPORT_MESSAGE_RATE_LIMIT = 20
+SUPPORT_MESSAGE_WINDOW_SECONDS = 60
+
+
+async def validate_support_message_allowed(pubkey: str) -> None:
+    await _enforce_window(
+        f"rate_limit:support_message:{pubkey}",
+        SUPPORT_MESSAGE_RATE_LIMIT,
+        SUPPORT_MESSAGE_WINDOW_SECONDS,
+    )

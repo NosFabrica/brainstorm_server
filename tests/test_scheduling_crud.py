@@ -15,11 +15,13 @@ from app.routers.admin.router import verify_admin_access
 
 
 def _policy(id=1, name="Weekly", interval=604800, priority=0, enabled=True,
-            is_default=True, limit=20, window=604800, is_public=False):
+            is_default=True, limit=20, window=604800, is_public=False,
+            support_included=False):
     return SimpleNamespace(
         id=id, name=name, schedule_interval_seconds=interval, priority=priority,
         enabled=enabled, is_default=is_default, manual_quota_limit=limit,
         manual_quota_window_seconds=window, is_public=is_public,
+        support_included=support_included,
     )
 
 
@@ -100,6 +102,107 @@ def test_a_policy_can_be_withdrawn_from_the_pricing_page(admin_client, monkeypat
 
     assert response.status_code == 200
     assert update.await_args.kwargs == {"is_public": False}
+
+
+def test_a_policy_includes_no_support_unless_an_operator_says_so(
+    admin_client, monkeypatch
+):
+    create = AsyncMock(return_value=_policy(id=5, name="Internal"))
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.create_scheduling_on_db", create
+    )
+
+    response = admin_client.post(
+        "/admin/scheduling",
+        json={"name": "Internal", "schedule_interval_seconds": 86400},
+    )
+
+    assert response.status_code == 201
+    assert create.await_args.kwargs["support_included"] is False
+    assert response.json()["support_included"] is False
+
+
+def test_a_policy_can_be_created_including_support(admin_client, monkeypatch):
+    create = AsyncMock(
+        return_value=_policy(id=6, name="Priority", support_included=True)
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.create_scheduling_on_db", create
+    )
+
+    response = admin_client.post(
+        "/admin/scheduling",
+        json={
+            "name": "Priority",
+            "schedule_interval_seconds": 86400,
+            "support_included": True,
+        },
+    )
+
+    assert response.status_code == 201
+    assert create.await_args.kwargs["support_included"] is True
+    assert response.json()["support_included"] is True
+
+
+@pytest.mark.parametrize("included", [True, False])
+def test_support_can_be_turned_on_and_off_on_a_policy(
+    admin_client, monkeypatch, included
+):
+    update = AsyncMock(return_value=_policy(id=2, support_included=included))
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.scheduling_exists_on_db",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.update_scheduling_on_db", update
+    )
+
+    response = admin_client.patch(
+        "/admin/scheduling/2", json={"support_included": included}
+    )
+
+    assert response.status_code == 200
+    assert update.await_args.kwargs == {"support_included": included}
+    assert response.json()["support_included"] is included
+
+
+def test_a_partial_edit_that_omits_support_leaves_it_alone(admin_client, monkeypatch):
+    update = AsyncMock(
+        return_value=_policy(id=2, name="Renamed", support_included=True)
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.scheduling_exists_on_db",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.update_scheduling_on_db", update
+    )
+
+    response = admin_client.patch("/admin/scheduling/2", json={"name": "Renamed"})
+
+    assert response.status_code == 200
+    assert "support_included" not in update.await_args.kwargs
+    assert response.json()["support_included"] is True
+
+
+def test_listing_policies_reports_whether_each_includes_support(
+    admin_client, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.routers.admin.scheduling.router.list_scheduling_on_db",
+        AsyncMock(return_value=[
+            _policy(id=1, name="Free"),
+            _policy(id=2, name="Priority", support_included=True),
+        ]),
+    )
+
+    response = admin_client.get("/admin/scheduling")
+
+    assert response.status_code == 200
+    assert {r["name"]: r["support_included"] for r in response.json()} == {
+        "Free": False,
+        "Priority": True,
+    }
 
 
 def test_create_as_default_unsets_previous_default(admin_client, monkeypatch):

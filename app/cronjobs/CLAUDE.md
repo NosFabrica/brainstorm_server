@@ -18,6 +18,23 @@ with a synthetic error so callers see a real terminal state instead of
 - Delegates to `fail_stale_ongoing_brainstorm_requests_on_db` (repo). Logs the rowcount each cycle.
 - **Safe to run on N replicas** — the UPDATE filters by `status=ONGOING AND updated_at < cutoff` so concurrent writers race-OK (worst case: one row written twice with the same terminal status).
 
+### `expire_support_diagnostics.py`
+
+Drops the diagnostics snapshot off support tickets past `RETENTION`
+(30 days), on `settings.support_diagnostics_sweep_interval_hours` (6).
+**The cadence is a setting; the window is not** — how long personal data is
+kept is a policy decision rather than a per-deployment knob. It guards the
+policy and not the outcome, since an absurd cadence lengthens retention in
+effect; that is drift to catch in review. **The only thing in
+this database that expires** — everything else is kept, and `FlashWebhookEvent`
+is kept on the stated grounds that it carries no personal data. This does not,
+which is the whole reason it goes.
+
+- Only the snapshot is cleared. The ticket, its messages and its events stay, and the thread still reads.
+- **Dated from `created_at`, not `closed_at`** — the snapshot describes the moment of filing and is stale long before the window is out, and dating from closure would let a ticket nobody ever closes keep its snapshot forever. The cost is that a ticket still open on day 31 loses it while someone is working it.
+- The UPDATE skips rows already cleared (`diagnostics IS NOT NULL`), or every sweep would rewrite every old row forever.
+- **Safe to run on N replicas** — the filter is idempotent, so concurrent writers race-OK.
+
 ### `periodic_graperank_trigger.py`
 
 Triggers a periodic GrapeRank run for the *platform observer*

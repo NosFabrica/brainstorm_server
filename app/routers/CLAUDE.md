@@ -32,12 +32,14 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/shorturl` | `shorturl/` | none — POST is rate-limited 1 req/s/IP |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
+| `/user/support` | `support/` | `verify_token`. **Must be included before `public_user_router`** — otherwise `/{pubkey}` answers `GET /user/support` as a profile, 200 with the wrong body (pinned in `tests/test_support.py`). `GET ''` the state, `POST /tickets` to file, `GET /tickets/{id}` the thread (404 when absent *or* not the caller's), `POST /tickets/{id}/messages` to reply (rate-limited per pubkey; reopens a closed ticket), `POST /tickets/{id}/resolve` to close. The listing answers **304** to a matching `If-None-Match` — see the conditional-GET note below |
 | `/admin` | `admin/` | `verify_token` + `verify_admin_access` |
 | `/admin/brainstormPubkey` | `brainstorm_pubkey/` | (admin, included from `admin/router.py`) |
 | `/admin/brainstormRequest` | `brainstorm_request/` | (admin, included from `admin/router.py`) |
 | `/admin/users` | `admin/users/` | admin |
 | `/admin/activity` | `admin/activity/` | admin |
 | `/admin/stats` | `admin/stats/` | admin |
+| `/admin/support` | `admin/support/` | admin. The queue also answers **304**. The responder side: `GET /tickets` the queue (paginated, filter by status/category/pubkey), `GET /tickets/{id}` any thread **with** `actor_pubkey` — the user-facing thread never carries it — `POST /tickets/{id}/messages` to answer (reopens a closed ticket), `/close` (optional note first), `/reopen`, and `PATCH` to recategorize |
 | `/admin/graperank` | `admin/graperank/` | admin |
 | `/admin/nsec-encryption` | `admin/nsec_encryption/` | admin |
 | `/admin/trustedLists` | `admin/trusted_lists/` | admin |
@@ -60,7 +62,7 @@ Read `request.state.jwt_data` inside a handler to get the calling pubkey.
 
 Two patterns:
 
-- **`fastapi_pagination.Page[...]`** — used by `/admin/users`, `/admin/users/{pubkey}/history`, `/admin/activity`. Hooked into the app via `add_pagination(app)` (`app/api.py:177`). Repos build a SQLAlchemy `Select` and the router calls `paginate(db, stmt, transformer=...)`.
+- **`fastapi_pagination.Page[...]`** — used by `/admin/users`, `/admin/users/{pubkey}/history`, `/admin/activity`. Hooked into the app via `add_pagination(app)` (`app/api.py:177`). Repos build a SQLAlchemy `Select` and the router calls `paginate(db, stmt, transformer=...)`. A `Page` nested inside the success envelope (`GET /user/support`) is paginated in the service with explicit `params` under `set_page(Page[T])`, since the router's `response_model` isn't the `Page`.
 - **Custom cursor pagination** — used by `GET /user/{pubkey}/connections` (cursor is a `(influence, pubkey)` tuple ordered by influence DESC, pubkey ASC). Implementation lives in `app/repos/user_repo.py::get_paginated_section_connections`.
 
 Don't mix them: list endpoints over relational tables → `Page`. Graph-traversal endpoints → cursor.
@@ -171,7 +173,7 @@ trusting the write's own answer.
 
 Both subscription writes answer **409** when Flash declines the change (`FlashRefused`), which is not the 503 an unreachable Flash gets: there is nothing to wait for. A write that lands in Flash and then fails its own re-read still answers **200**, with `reason: "reread_failed"` — reporting it as a failure would be a lie about the one thing the operator most needs the truth about.
 
-Attribute and dismiss both answer `UnresolvedResolutionOutcome`. `applied` false on an *attribution* is a decision, not a failure — a blocked user, a subscription already past its period, or one already attributed to that same person — so `entitlement_reason` carries the `EntitlementReason` behind it and a caller reports "nothing changed, and here is why" rather than a silent success. A dismissal runs no grant and so carries none. Nothing in either the subscription object or the webhook payload identifies the payer (no email, no name — verified against every event held), so who a signup belongs to is knowable only from Flash's own dashboard: that is why `/unresolved/{id}/flash` and the link out are part of this surface rather than a nicety.
+Attribute and dismiss both answer `UnresolvedResolutionOutcome`. `applied` false on an *attribution* is a decision, not a failure — a blocked user, a subscription already past its period, or one already attributed to that same person — so `entitlement_reason` carries the `EntitlementReason` behind it and a caller reports "nothing changed, and here is why" rather than a silent success. A dismissal runs no grant and so carries none. Nothing in either the subscription object or the webhook payload identifies the payer (no email, no name — verified against every event held; that is a claim about Flash's data, not the database — `support_ticket.notify_email` holds addresses), so who a signup belongs to is knowable only from Flash's own dashboard: that is why `/unresolved/{id}/flash` and the link out are part of this surface rather than a nicety.
 
 ### `graperank/router.py` — GrapeRank presets
 
@@ -203,3 +205,26 @@ Attribute and dismiss both answer `UnresolvedResolutionOutcome`. `applied` false
 | Paginate a SQL list | Build a `Select`, hand to `paginate(db, stmt, transformer=...)` |
 | Paginate graph results | Follow the `get_paginated_section_connections` pattern (opaque tuple cursor) |
 | Add custom CORS / middleware | `app/api.py` (CORS is wide-open at `["*"]` for dev) |
+
+## Conditional GET on the support listings
+
+Nothing is pushed and nothing is emailed, so a slow background poll is the only
+way new activity reaches anyone. Both listings carry an `ETag` and answer a
+matching `If-None-Match` with a bodyless 304 and no row read at all — the same
+shape as `/whitelisted/{observer_pubkey}`, and like it, the 304 path is why the
+handler is annotated `-> Response | …` while `response_model` pins the
+documented shape.
+
+The tag must cover **everything that varies what the client renders**, not just
+new messages:
+
+- `max(updated_at)` and the row count, so resolving, recategorizing and a
+  message-less reopen all move it. Keyed on message activity those return
+  "unchanged" forever and the poller stalls silently.
+- `support_included` on the user listing, or a Policy being ticked stays hidden
+  behind an unchanged ticket list.
+- page, size and every filter, or page two comes back unchanged against page
+  one's tag.
+
+`Cache-Control: private, no-cache`: one caller's tickets are not a shared
+cache's business.
