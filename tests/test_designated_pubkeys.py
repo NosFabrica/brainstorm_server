@@ -68,11 +68,25 @@ def test_enqueue_without_designation_is_unchanged(monkeypatch):
     assert "designated_pubkeys" not in _enqueue(monkeypatch, [])
 
 
-def test_the_transferer_copies_designations_without_gating_the_graph_backfill():
-    from app.nostr_event_transferer.nostr_event_transferer import (
-        designation_ev_kinds,
-        ev_kinds,
-    )
+def test_reads_only_our_relay(monkeypatch):
+    from app.services import designation_service
 
-    assert {k.as_u16() for k, _ in designation_ev_kinds} == {10040}
-    assert 10040 not in {k.as_u16() for k, _ in ev_kinds}
+    asked = []
+
+    async def fake_fetch(relay, observer):
+        asked.append(relay)
+        return None
+
+    monkeypatch.setattr(designation_service, "_fetch_latest_designation", fake_fetch)
+    assert asyncio.run(designation_service.fetch_designated_pubkeys(OBSERVER)) == []
+    assert asked == [settings.nostr_transfer_to_relay]
+
+
+def test_a_relay_error_means_no_designation(monkeypatch):
+    from app.services import designation_service
+
+    async def boom(relay, observer):
+        raise ConnectionError("down")
+
+    monkeypatch.setattr(designation_service, "_fetch_latest_designation", boom)
+    assert asyncio.run(designation_service.fetch_designated_pubkeys(OBSERVER)) == []

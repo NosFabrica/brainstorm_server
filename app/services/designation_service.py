@@ -72,17 +72,18 @@ async def fetch_designated_pubkeys(observer: str) -> list[str]:
     """The pubkeys in `observer`'s latest kind-10040, or `[]` when there is none
     or it can't be read.
 
-    Reads our own relay first — the transferer and the router stream both copy
-    kind 10040 into it. Falls back to the upstream relay for an Observer our
-    relay has nothing for yet (e.g. while the initial 10040 backfill runs).
+    Reads our own relay (neofry), which neofry's `designations` router stream
+    fills (brainstorm-k8s chart). No upstream fallback: the transferer's source
+    relay holds no 10040s, and most Observers have none, so a fallback would add
+    a slow external round-trip to nearly every queued run.
     """
-    for relay in (settings.nostr_transfer_to_relay, settings.nostr_transfer_from_relay):
-        try:
-            event = await _fetch_latest_designation(relay, observer)
-        except Exception as e:
-            logger.warning(f"kind-10040 lookup on {relay} failed for {observer}: {e!r}")
-            continue
-        if event is not None:
-            tags = [tag.as_vec() for tag in event.tags().to_vec()]
-            return parse_designated_pubkeys(tags, observer)
-    return []
+    relay = settings.nostr_transfer_to_relay
+    try:
+        event = await _fetch_latest_designation(relay, observer)
+    except Exception as e:
+        logger.warning(f"kind-10040 lookup on {relay} failed for {observer}: {e!r}")
+        return []
+    if event is None:
+        return []
+    tags = [tag.as_vec() for tag in event.tags().to_vec()]
+    return parse_designated_pubkeys(tags, observer)
