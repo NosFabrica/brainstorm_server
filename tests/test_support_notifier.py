@@ -184,3 +184,24 @@ def test_nothing_is_hung_on_the_session_when_no_transport_is_registered():
 
     # No sinks: no listener, so nothing accumulates on long-lived sessions.
     sync_session.dispatch.after_commit(sync_session)
+
+
+def test_a_hung_transport_cannot_hold_shutdown_open():
+    """Drain runs in the lifespan's finally; an unbounded wait would let one
+    dead SMTP connection block the process from exiting."""
+
+    async def _run():
+        never = asyncio.Event()
+
+        async def hung(n):
+            await never.wait()
+
+        register_sink(hung)
+        notify(_notification())
+
+        assert await drain_notifications(timeout=0.01) == 1
+
+        never.set()
+        await drain_notifications(timeout=1)
+
+    asyncio.run(_run())
