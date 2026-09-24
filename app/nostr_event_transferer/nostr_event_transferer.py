@@ -12,6 +12,7 @@ from app.repos.brainstorm_nostr_transferer import (
     get_nostr_transfer_status_by_kind_from_db,
     upsert_nostr_transfer_status_on_db,
 )
+from app.services.designation_service import DESIGNATION_KIND
 from app.services.tagging_parse import TAGGING_KIND
 
 logger = loggr.get_logger(__name__)
@@ -33,6 +34,13 @@ ev_kinds: list[tuple[Kind, int]] = [
 # transfer completed. Taggings are not a graph-relationship kind.
 tagging_ev_kinds: list[tuple[Kind, int]] = [
     (Kind(TAGGING_KIND), 100000),
+]
+
+# kind-10040 designations: which provider keys each Observer trusts, read back
+# from our relay by `designation_service`. Separate from `ev_kinds` for the same
+# reason as taggings — it is not a graph-relationship kind.
+designation_ev_kinds: list[tuple[Kind, int]] = [
+    (Kind(DESIGNATION_KIND), 50000),
 ]
 
 
@@ -63,8 +71,13 @@ async def nostr_event_transferer():
     await relay_sender_client.connect()
 
     async with db_session() as db:
-        # Taggings ride the same sync loop but a separate list (ADR D10).
-        for kind, estimated_events in [*ev_kinds, *tagging_ev_kinds]:
+        # Taggings and designations ride the same sync loop but separate lists
+        # (ADR D10).
+        for kind, estimated_events in [
+            *ev_kinds,
+            *tagging_ev_kinds,
+            *designation_ev_kinds,
+        ]:
             logger.info(f"Getting events of Kind {kind.as_u16()}")
 
             started_at = time.time()
@@ -214,7 +227,7 @@ async def nostr_event_recent_transferer():
     await relay_sender_client.connect()
 
     async with db_session() as db:
-        for kind, _ in ev_kinds:
+        for kind, _ in [*ev_kinds, *designation_ev_kinds]:
             started_at = time.time()
 
             status = await get_nostr_transfer_status_by_kind_from_db(

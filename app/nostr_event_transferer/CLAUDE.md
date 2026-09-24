@@ -69,3 +69,8 @@ So taggings (kind 39999) sync via a **separate** `tagging_ev_kinds` list.
 Appending them to `ev_kinds` would silently disable that backfill until the
 taggings transfer completed. If you add a kind to `ev_kinds`, re-check that
 module. See ADR `trusted-lists/0001` D10.
+
+Kind-10040 designations sync via a third list, `designation_ev_kinds`, for the
+same reason. Unlike taggings they are also in the incremental (recent) sync, so
+a designation published during the backfill still lands in our relay;
+`services/designation_service.py` reads them back from there.

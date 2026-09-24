@@ -47,30 +47,42 @@ def parse_designated_pubkeys(tags: list[list[str]], observer: str) -> list[str]:
     return out
 
 
+async def _fetch_latest_designation(relay: str, observer: str):
+    """The latest kind-10040 `relay` holds for `observer`, or None. Raises on
+    transport errors."""
+    fetcher = Client()
+    await fetcher.add_relay(relay)
+    await fetcher.connect()
+    try:
+        flt = (
+            Filter()
+            .kinds([Kind(DESIGNATION_KIND)])
+            .authors([PublicKey.parse(observer)])
+            .limit(1)
+        )
+        events = (await fetcher.fetch_events(flt, timeout=_FETCH_TIMEOUT)).to_vec()
+    finally:
+        await fetcher.disconnect()
+    if not events:
+        return None
+    return max(events, key=lambda e: e.created_at().as_secs())
+
+
 async def fetch_designated_pubkeys(observer: str) -> list[str]:
     """The pubkeys in `observer`'s latest kind-10040, or `[]` when there is none
-    or it can't be read."""
-    try:
-        fetcher = Client()
-        await fetcher.add_relay(settings.nostr_transfer_from_relay)
-        await fetcher.connect()
+    or it can't be read.
+
+    Reads our own relay first — the transferer and the router stream both copy
+    kind 10040 into it. Falls back to the upstream relay for an Observer our
+    relay has nothing for yet (e.g. while the initial 10040 backfill runs).
+    """
+    for relay in (settings.nostr_transfer_to_relay, settings.nostr_transfer_from_relay):
         try:
-            flt = (
-                Filter()
-                .kinds([Kind(DESIGNATION_KIND)])
-                .authors([PublicKey.parse(observer)])
-                .limit(1)
-            )
-            events = (await fetcher.fetch_events(flt, timeout=_FETCH_TIMEOUT)).to_vec()
-        finally:
-            await fetcher.disconnect()
-    except Exception as e:
-        logger.warning(f"kind-10040 lookup failed for {observer}: {e!r}")
-        return []
-
-    if not events:
-        return []
-
-    latest = max(events, key=lambda e: e.created_at().as_secs())
-    tags = [tag.as_vec() for tag in latest.tags().to_vec()]
-    return parse_designated_pubkeys(tags, observer)
+            event = await _fetch_latest_designation(relay, observer)
+        except Exception as e:
+            logger.warning(f"kind-10040 lookup on {relay} failed for {observer}: {e!r}")
+            continue
+        if event is not None:
+            tags = [tag.as_vec() for tag in event.tags().to_vec()]
+            return parse_designated_pubkeys(tags, observer)
+    return []

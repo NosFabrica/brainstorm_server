@@ -39,7 +39,9 @@ def test_never_designates_the_observer():
 
 
 def test_normalises_uppercase_hex():
-    assert parse_designated_pubkeys([["30382:rank", PROVIDER.upper()]], OBSERVER) == [PROVIDER]
+    assert parse_designated_pubkeys([["30382:rank", PROVIDER.upper()]], OBSERVER) == [
+        PROVIDER
+    ]
 
 
 def _enqueue(monkeypatch, designated):
@@ -50,7 +52,9 @@ def _enqueue(monkeypatch, designated):
         model_dump=lambda mode=None: {"private_id": 7, "parameters": OBSERVER},
         model_dump_json=lambda: json.dumps({"private_id": 7, "parameters": OBSERVER}),
     )
-    asyncio.run(enqueue_calc_request(AsyncMock(), instance, OBSERVER, "manual", designated))
+    asyncio.run(
+        enqueue_calc_request(AsyncMock(), instance, OBSERVER, "manual", designated)
+    )
     return json.loads(redis.rpush.await_args.args[1])
 
 
@@ -62,3 +66,13 @@ def test_enqueue_carries_the_designated_pubkeys(monkeypatch):
 
 def test_enqueue_without_designation_is_unchanged(monkeypatch):
     assert "designated_pubkeys" not in _enqueue(monkeypatch, [])
+
+
+def test_the_transferer_copies_designations_without_gating_the_graph_backfill():
+    from app.nostr_event_transferer.nostr_event_transferer import (
+        designation_ev_kinds,
+        ev_kinds,
+    )
+
+    assert {k.as_u16() for k, _ in designation_ev_kinds} == {10040}
+    assert 10040 not in {k.as_u16() for k, _ in ev_kinds}
