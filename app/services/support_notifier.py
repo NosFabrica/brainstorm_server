@@ -87,12 +87,30 @@ def notify_after_commit(db: AsyncDBSession, notification: SupportNotification) -
         notify(notification)
 
 
-async def drain_notifications() -> int:
-    """Await the in-flight fan-outs. For tests and orderly shutdown; nothing on
-    a request path waits for this."""
+# Long enough for a transport to finish, short enough that a hung one cannot
+# hold a deploy open. A dropped content-free nudge costs a delay, not data.
+DRAIN_TIMEOUT_SECONDS = 5.0
+
+
+async def drain_notifications(timeout: float = DRAIN_TIMEOUT_SECONDS) -> int:
+    """Await the in-flight fan-outs, but never indefinitely.
+
+    Called on shutdown, so an unbounded wait would let one hung sink — an SMTP
+    connection to a dead host with no socket timeout — block the process from
+    exiting. Whatever has not finished by then is abandoned.
+    """
     pending = list(_PENDING)
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
+    if not pending:
+        return 0
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True), timeout
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            f"{sum(not t.done() for t in pending)} support notification(s) "
+            f"abandoned after {timeout}s"
+        )
     return len(pending)
 
 
