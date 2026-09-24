@@ -13,6 +13,7 @@ from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
 )
 from app.schemas.schemas import BrainstormRequestInstance, GrapeRankError
+from app.services.designation_service import fetch_designated_pubkeys
 from app.services.graperank_preset_service import (
     normalize_preset,
     resolve_preset_params,
@@ -154,6 +155,10 @@ async def create_brainstorm_request(
 
     await update_last_time_triggered_graperank_on_db(db, parameters)
 
-    await enqueue_calc_request(db, instance, parameters, trigger_source)
+    designated_pubkeys = await fetch_designated_pubkeys(parameters)
+
+    await enqueue_calc_request(
+        db, instance, parameters, trigger_source, designated_pubkeys
+    )
 
     return instance
