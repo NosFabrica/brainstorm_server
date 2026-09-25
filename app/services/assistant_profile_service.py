@@ -9,6 +9,7 @@ from nostr_sdk import (  # type: ignore
     Kind,
     NostrSigner,
     PublicKey,
+    Tag,
 )
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
@@ -31,6 +32,32 @@ KIND_0_PUBLISH_RELAYS: list[str] = [
     "wss://nos.lol",
     "wss://relay.nostr.band",
 ]
+
+# Served as static files by Brainstorm-UI (client/public/). JPEG over the WebP
+# twins because not every Nostr client renders WebP avatars.
+ASSISTANT_PICTURE_PATH = "/assistant-default.jpg"
+ASSISTANT_BANNER_PATH = "/assistant-banner.jpg"
+
+
+def _assistant_image_url(path: str) -> str | None:
+    # No frontend_url → no absolute URL to hand out; omit rather than publish a
+    # relative path no client can resolve.
+    base = (settings.frontend_url or "").rstrip("/")
+    return f"{base}{path}" if base else None
+
+
+def assistant_relay_list() -> list[str]:
+    """The Assistant's NIP-65 relays: the scores (TA) relay first — where its
+    kind-30382s live — then the relays carrying its kind 0."""
+    relays: list[str] = []
+    for relay in [
+        settings.nostr_upload_ta_events_relay_public_url,
+        settings.trusted_list_relay,
+        *KIND_0_PUBLISH_RELAYS,
+    ]:
+        if relay and relay not in relays:
+            relays.append(relay)
+    return relays
 
 
 async def _fetch_owner_name(user_pubkey: str) -> str:
@@ -87,6 +114,14 @@ async def publish_assistant_kind0_for_user(
     if nip05:
         metadata["nip05"] = nip05
 
+    for field, path in (
+        ("picture", ASSISTANT_PICTURE_PATH),
+        ("banner", ASSISTANT_BANNER_PATH),
+    ):
+        url = _assistant_image_url(path)
+        if url:
+            metadata[field] = url
+
     content = json.dumps(metadata)
 
     client = Client(signer=NostrSigner.keys(keys=keys))
@@ -111,6 +146,25 @@ async def publish_assistant_kind0_for_user(
         if not output.success:
             raise Exception(
                 f"Failed to publish kind 0 event to any relay: {output.failed}"
+            )
+
+        # NIP-65 relay list so outbox-model clients find the Assistant's TAs on
+        # the scores relay. Best-effort: the kind 0 already went out, and the
+        # kind 10040 relay hint still points clients at the TAs without it.
+        try:
+            relay_list = EventBuilder(kind=Kind(10002), content="").tags(
+                [Tag.parse(["r", relay]) for relay in assistant_relay_list()]
+            )
+            relay_list_event = await client.sign_event_builder(relay_list)
+            relay_output = await client.send_event(relay_list_event)
+            if not relay_output.success:
+                logger.warning(
+                    f"assistant kind-10002 publish failed for {assistant_pubkey}: "
+                    f"{relay_output.failed}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"assistant kind-10002 publish failed for {assistant_pubkey}: {e}"
             )
     finally:
         await client.disconnect()
