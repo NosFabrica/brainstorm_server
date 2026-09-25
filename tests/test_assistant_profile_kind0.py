@@ -78,9 +78,14 @@ def _publish(client) -> dict:
     return r.json()
 
 
+def _of_kind(sent_events: list, kind: int) -> list:
+    return [e for e in sent_events if e.kind().as_u16() == kind]
+
+
 def _content(sent_events: list) -> dict:
-    assert len(sent_events) == 1
-    return json.loads(sent_events[0].content())
+    kind0s = _of_kind(sent_events, 0)
+    assert len(kind0s) == 1
+    return json.loads(kind0s[0].content())
 
 
 def test_website_is_the_frontend_url(client, sent_events):
@@ -138,3 +143,58 @@ def test_owner_name_lookup_failure_degrades_to_the_pubkey_prefix(
 
     expected = f"{caller.pubkey[:6]}'s Brainstorm Assistant"
     assert _content(sent_events)["name"] == expected
+
+
+def test_picture_and_banner_are_the_ui_hosted_assistant_images(
+    client, sent_events, monkeypatch
+):
+    monkeypatch.setattr(settings, "frontend_url", "https://brainstorm.world/")
+
+    _publish(client)
+    content = _content(sent_events)
+    assert content["picture"] == "https://brainstorm.world/assistant-default.jpg"
+    assert content["banner"] == "https://brainstorm.world/assistant-banner.jpg"
+
+
+def test_picture_and_banner_are_omitted_without_a_frontend_url(
+    client, sent_events, monkeypatch
+):
+    monkeypatch.setattr(settings, "frontend_url", "")
+
+    _publish(client)
+    content = _content(sent_events)
+    assert "picture" not in content
+    assert "banner" not in content
+
+
+def test_relay_list_points_at_the_scores_relay(client, sent_events, assistant_keys):
+    _publish(client)
+    relay_lists = _of_kind(sent_events, 10002)
+    assert len(relay_lists) == 1
+    event = relay_lists[0]
+    assert event.author().to_hex() == assistant_keys.public_key().to_hex()
+    relays = [t.as_vec()[1] for t in event.tags().to_vec() if t.as_vec()[0] == "r"]
+    assert relays[0] == settings.nostr_upload_ta_events_relay_public_url
+    assert len(relays) == len(set(relays))
+
+
+def test_relay_list_failure_does_not_fail_the_profile_publish(
+    client, sent_events, monkeypatch
+):
+    from nostr_sdk import EventBuilder as RealEventBuilder
+
+    class _NoRelayListBuilder:
+        def __init__(self, kind, content):
+            if kind.as_u16() == 10002:
+                raise RuntimeError("boom")
+            self._inner = RealEventBuilder(kind=kind, content=content)
+
+        def sign_with_keys(self, keys):
+            return self._inner.sign_with_keys(keys)
+
+    monkeypatch.setattr(
+        "app.services.assistant_profile_service.EventBuilder", _NoRelayListBuilder
+    )
+
+    _publish(client)
+    assert len(_of_kind(sent_events, 0)) == 1
