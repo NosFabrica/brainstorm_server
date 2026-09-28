@@ -35,8 +35,15 @@ right payload. Examples:
 
 **Never return a bare dict** from a route handler. Always wrap.
 
-Error responses use `ErrorResponseSchema` (raised as `HTTPException(detail=...)`
-in services / route handlers).
+`ErrorResponseSchema` is declared in routers' `responses={}` for OpenAPI, but
+**nothing raises it** — `HTTPException(detail=...)` carries a plain string
+everywhere in this repo, and the frontend reads it as one. Don't be the first to
+raise the envelope without migrating the clients too; see
+[`app/services/CLAUDE.md`](../services/CLAUDE.md) → Errors.
+
+Prefer expressing validation as request-schema constraints, so the framework
+answers 422 with a field-level body instead of a hand-rolled 400 carrying a
+sentence. `CreateShortUrlBody` is the reference.
 
 ## Reused payloads
 
@@ -57,12 +64,12 @@ Stick to these — handler signatures are a lot easier to scan.
 
 ## camelCase vs snake_case
 
-- **Public API (request / response JSON)**: camelCase (e.g. `displayName`, `lastTriggered`, `attenuationFactor`).
+- **Public API (request / response JSON)**: new endpoints ship **snake_case** (`/admin/users`, `/admin/scheduling`, billing, support). Older ones are camelCase (e.g. `displayName`, `lastTriggered`, `attenuationFactor`) and stay that way.
 - **Python / DB columns**: snake_case (e.g. `display_name`, `last_triggered`, `attenuation_factor`).
 
 The `GrapeRankPreset` repo provides explicit `row_to_camel_dict` / `camel_dict_to_columns` converters because the JSONB column stores snake_case but the API uses camelCase — keep that conversion at the repo boundary.
 
-For new endpoints, Pydantic field aliases (`Field(..., alias="someCamelKey")`) are the cleanest way to bridge the cases.
+When extending an older camelCase shape, Pydantic field aliases (`Field(..., alias="someCamelKey")`) are the cleanest way to bridge the cases.
 
 ## Adding a new endpoint shape
 

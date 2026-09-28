@@ -88,3 +88,23 @@ The follow-path distance from the Observer to the subject in the web of trust: 0
 reachable depth, and a sentinel `≥ 999` = unreachable within the hop limit. Published in a Trusted
 Assertion's `hops` tag (omitted when the sentinel).
 _Avoid_: distance (unqualified), degree, depth
+
+### Entitlement and support
+
+**Policy**:
+A `scheduling` row — the recalculation cadence, quotas and included capabilities a user holds. What a
+`billing_plan` grants rather than the plan itself: several plans (monthly beside yearly) may grant one
+Policy, and all of them grant identically. See ADR 0003.
+_Avoid_: tier (a Tier is a GrapeRank score band — see Verified), plan (a `billing_plan` row is the
+Flash-plan-to-Policy mapping, not the Policy)
+
+**Ticket**:
+One support conversation opened by a Requester: a subject, a category, and the thread of messages and
+lifecycle events beneath it.
+_Avoid_: request (a Brainstorm request is a GrapeRank run), case, issue
+
+**Requester**:
+The user who opened a Ticket — the same person an Observer is, named for the role they hold in support
+rather than in the trust graph.
+_Avoid_: observer (nothing about a Ticket has a perspective), reporter (already means a rater in the
+trust graph), customer, client

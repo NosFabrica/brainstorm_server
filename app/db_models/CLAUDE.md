@@ -140,7 +140,33 @@ retrying after a few attempts and never replays.
 | `event_timestamp` | DateTime | when the event *happened*, from Flash's body — the ordering signal |
 | `delivery_timestamp` | int | when Flash *attempted delivery*, from the signature header. Orders nothing: a retry of an old event carries a newer value |
 | `processing_started_at` / `processed_at` / `attempts` | — | claimed/finished markers. The webhook path sets `processing_started_at` **at insert** — it is the worker — or the sweep would treat every in-flight delivery as abandoned |
-| `payload` | JSONB, **nullable** | Flash's delivery, kept whole: it carries no personal data (verified against every event held and the documented schema), so nothing in it expires. Nullable only for the row shape; nothing nulls it — a payload still waiting to be applied must stay replayable. See [`docs/flash/lifecycle.md`](../../docs/flash/lifecycle.md) |
+| `payload` | JSONB, **nullable** | Flash's delivery, kept whole: *it* carries no personal data (verified against every event held and the documented schema), so nothing in it expires. The database as a whole does — `support_ticket` holds email addresses and user-written text, and there is no erasure path — so this justification covers the payload only. Nullable only for the row shape; nothing nulls it — a payload still waiting to be applied must stay replayable. See [`docs/flash/lifecycle.md`](../../docs/flash/lifecycle.md) |
+
+
+### `ShortUrl` — `short_url`
+
+Share links: a short code standing in for a pubkey + relay-hint set. Why
+Postgres, not Redis: [ADR 0002](../../docs/adr/0002-short-links-in-postgres.md).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | int PK | autoincrement |
+| `short_code` | str(32) UNIQUE | Crockford base32, 8 chars today. **Variable-length on purpose** — the generated length may change and already-shared codes must keep resolving, so nothing may infer a width from it. The UNIQUE constraint supplies the lookup index; no separate one |
+| `pubkey` | str(64) | the profile the link points at |
+| `relays_fingerprint` | str(64) | sha256 of the normalized relay set |
+| `relays` | JSONB | the relay hints, default `[]` |
+
+UNIQUE `(pubkey, relays_fingerprint)` is what makes minting idempotent: a
+concurrent double-mint loses the race in the database rather than creating a
+second code for the same content.
+
+### `SupportTicket` — `support_ticket`
+
+A user's support ticket. `status` / `category` / `last_message_author` are open sets stored as `String`, no CHECK — `SupportTicketStatus` / `SupportAuthor` name the known values. `last_message_at` is **stored**: it is the `ORDER BY` of both ticket lists (`ix_support_ticket_pubkey_last_message_at`, `ix_support_ticket_last_message_at`, both DESC). Naive `DateTime`, like `scheduling`. **Personal data**: `notify_email` (optional) and the user-written `subject`; `diagnostics` is a flat `{label: value}` snapshot capped at the schema layer.
+
+### `SupportMessage` — `support_message` / `SupportEvent` — `support_event`
+
+A ticket's thread and its lifecycle log; both append-only (no `TimestampMixin`), `ON DELETE CASCADE` from the ticket, ordered by `id` via `(ticket_id, id)` indexes. `author` / `actor` are the coarse `"user"` / `"support"` the wire uses; `actor_pubkey` is which human, internal only. The event column is `actor`, not `by` — reserved in PostgreSQL. `SupportEventType` names the known `type`s; open set, no CHECK. `support_message.body` is user-written.
 
 ## Adding a new table
 

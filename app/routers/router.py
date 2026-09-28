@@ -20,6 +20,8 @@ from app.routers.nip50.router import router as nip50_router
 from app.routers.open_ranking.router import router as open_ranking_router
 from app.routers.search.router import router as search_router
 from app.routers.setup.router import router as setup_router
+from app.routers.shorturl.router import router as shorturl_router
+from app.routers.support.router import router as support_router
 from app.routers.user.router import public_router as public_user_router
 from app.routers.user.router import router as user_router
 from app.routers.webhooks.flash import router as flash_webhook_router
@@ -141,6 +143,14 @@ router.include_router(
     tags=["search"],
 )
 
+SHORTURL_ROUTER_PREFIX = "/shorturl"
+
+router.include_router(
+    router=shorturl_router,
+    prefix=SHORTURL_ROUTER_PREFIX,
+    tags=["shorturl"],
+)
+
 # NIP-50 search relay. Mounted at root because NIP-11 mandates the
 # information document live at the same URL clients connect to over
 # WebSocket — here that's ``/relay``.
@@ -156,6 +166,15 @@ router.include_router(
     router=user_router,
     prefix=USER_ROUTER_PREFIX,
     tags=["user"],
+)
+
+# Must precede public_user_router: its "/{pubkey}" catch-all would otherwise
+# answer GET /user/support as a profile lookup — a 200 with the wrong body.
+router.include_router(
+    dependencies=[Depends(verify_token)],
+    router=support_router,
+    prefix=f"{USER_ROUTER_PREFIX}/support",
+    tags=["support"],
 )
 
 # Public, optional-auth /user/{pubkey}* lookups. Must be included AFTER the

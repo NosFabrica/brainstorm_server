@@ -14,11 +14,17 @@ from app.schemas.schemas import (
     BillingPlansData,
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
+    CreatedShortUrl,
     FollowListIngestResult,
     OwnUserData,
     PaginatedUserConnections,
     RefreshedSubscriptionView,
+    ShortUrlContent,
     SubscriptionView,
+    SupportMessageItem,
+    SupportState,
+    SupportThread,
+    SupportTicketItem,
     TrustSignalsData,
     UserGraphData,
     UserHistoryInstance,
@@ -217,6 +223,14 @@ class SearchByTextResponse(SuccessfulResponseDataSchema):
     data: SearchResults
 
 
+class CreateShortUrlResponse(SuccessfulResponseDataSchema):
+    data: CreatedShortUrl
+
+
+class GetShortUrlResponse(SuccessfulResponseDataSchema):
+    data: ShortUrlContent
+
+
 class ShortestPathData(BaseModel):
     """Payload of GET /shortestPath (story shortest-path #1, ADR 0001).
 
@@ -289,3 +303,23 @@ class NetworkAlertsData(BaseModel):
 
 class GetNetworkAlertsResponse(SuccessfulResponseDataSchema):
     data: NetworkAlertsData
+
+
+class GetSupportStateResponse(SuccessfulResponseDataSchema):
+    data: SupportState
+
+
+class CreateSupportTicketResponse(SuccessfulResponseDataSchema):
+    data: SupportTicketItem
+
+
+class GetSupportThreadResponse(SuccessfulResponseDataSchema):
+    data: SupportThread
+
+
+class CreateSupportMessageResponse(SuccessfulResponseDataSchema):
+    data: SupportMessageItem
+
+
+class ResolveSupportTicketResponse(SuccessfulResponseDataSchema):
+    data: SupportTicketItem
