@@ -43,13 +43,15 @@ async def select_observer_whitelist_updated_at(
 
 # Filter above-threshold observees server-side so the ~99k-key scores blob is
 # never parsed into a Python dict on the event loop; only matching keys return.
-_WHITELISTED_PUBKEYS_SQL = text("""
+_WHITELISTED_PUBKEYS_SQL = text(
+    """
     SELECT e.key
     FROM observerwhitelist w,
          jsonb_each_text(w.scores) AS e(key, value)
     WHERE w.observer_pubkey = :pubkey
       AND e.value::numeric >= :threshold
-    """)
+    """
+)
 
 
 async def select_whitelisted_pubkeys_of_observer(
@@ -65,14 +67,16 @@ async def select_whitelisted_pubkeys_of_observer(
 # Same server-side filter, carrying each observee's Rank (CONTEXT.md): the
 # stored influence is already rounded to 2dp, so `× 100` on numeric is exact and
 # matches the `rank` tag of the published Trusted Assertion.
-_WHITELISTED_RANKS_SQL = text("""
+_WHITELISTED_RANKS_SQL = text(
+    """
     SELECT e.key, (e.value::numeric * 100)::int AS rank
     FROM observerwhitelist w,
          jsonb_each_text(w.scores) AS e(key, value)
     WHERE w.observer_pubkey = :pubkey
       AND e.value::numeric * 100 >= :min_rank
     ORDER BY rank DESC, e.key
-    """)
+    """
+)
 
 
 async def select_whitelisted_ranks_of_observer(
