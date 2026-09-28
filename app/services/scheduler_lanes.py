@@ -3,6 +3,8 @@ False) every source uses the single message_queue; on, requests split by source
 and, for scheduled work, the policy's priority ("priority is the lane").
 """
 
+import json
+
 from app.core.config import settings
 from app.core.redis_db import redis_client
 from app.db_models import TriggerSource
@@ -27,10 +29,26 @@ def resolve_scheduler_lane(trigger_source: str, scheduling=None) -> str:
     return DEFAULT_LANE
 
 
-async def enqueue_calc_request(db, instance, pubkey: str, trigger_source: str) -> None:
-    """Resolve the lane for this request and rpush it."""
+async def enqueue_calc_request(
+    db,
+    instance,
+    pubkey: str,
+    trigger_source: str,
+    designated_pubkeys: list[str] | None = None,
+) -> None:
+    """Resolve the lane for this request and rpush it.
+
+    `designated_pubkeys` (the Observer's kind-10040 keys) ride on the queue
+    message only — the worker scores them at a fixed 95 — not on the API schema.
+    """
     scheduling = None
     if trigger_source == TriggerSource.SCHEDULED.value:
         scheduling = await get_scheduling_for_pubkey_on_db(db, pubkey)
     lane = resolve_scheduler_lane(trigger_source, scheduling)
-    await redis_client.rpush(lane, instance.model_dump_json())  # type: ignore[misc]
+    if designated_pubkeys:
+        payload = instance.model_dump(mode="json")
+        payload["designated_pubkeys"] = designated_pubkeys
+        message = json.dumps(payload)
+    else:
+        message = instance.model_dump_json()
+    await redis_client.rpush(lane, message)  # type: ignore[misc]
