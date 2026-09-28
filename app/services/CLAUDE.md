@@ -33,6 +33,8 @@ publishing — and routers just thin-wrap them.
 | `leader_lock.py` | 30 | Redis leader lock, parameterized by key — generalizes the old `scheduler_lock` so the billing cron and the scheduler each hold their own. |
 | `designation_service.py` | 75 | Reads the Observer's latest kind-10040 at enqueue time from our relay (`nostr_transfer_to_relay`; neofry's `designations` router stream in brainstorm-k8s fills it — the transferer does not sync 10040) and returns the provider pubkeys in its public designation rows. They ride on the calc message as `designated_pubkeys`; the GrapeRank worker pins them at Influence 0.95 (rank 95). Best-effort: any failure yields `[]` and the run proceeds unpinned. |
 | `report_relay_service.py` | 90 | Reads an author's surviving kind-1984 back from the internal relay (REQ over websocket). Returns `None` for *unknown* vs `[]` for *no reports* — see `../message_queue_tasks/CLAUDE.md`. |
+| `rank_file.py` | 120 | **Pure, no I/O.** Builder and reference reader (`RankFile`) for the BSRK observer → Rank file — a flattened trie over pubkey bits, 10 bytes of key + 1 of Rank per record. The round-trip tests are the contract; spec in [`docs/rank-file-format.md`](../../docs/rank-file-format.md). |
+| `rank_file_service.py` | 52 | Serves it: builds once per (observer, `minRank`, whitelist `updated_at`) in a worker thread under one lock, then a per-process LRU. Never build per request (~0.6 s at 300k keys). |
 
 ## Conventions
 

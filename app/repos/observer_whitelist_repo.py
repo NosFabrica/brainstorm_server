@@ -87,11 +87,20 @@ async def select_whitelisted_ranks_of_observer(
     Bucketed rather than `{pubkey: rank}`: the rank is written once per bucket
     instead of once per key, and a consumer filters by taking whole buckets.
     """
+    buckets: dict[int, list[str]] = {}
+    for pubkey, rank in await select_whitelisted_rank_rows_of_observer(
+        db, observer_pubkey, min_rank
+    ):
+        buckets.setdefault(rank, []).append(pubkey)
+    return buckets
+
+
+async def select_whitelisted_rank_rows_of_observer(
+    db: AsyncDBSession, observer_pubkey: str, min_rank: int
+) -> list[tuple[str, int]]:
+    """`(observee pubkey, Rank)` rows at or above `min_rank`, highest Rank first."""
     result = await db.execute(
         _WHITELISTED_RANKS_SQL,
         {"pubkey": observer_pubkey, "min_rank": min_rank},
     )
-    buckets: dict[int, list[str]] = {}
-    for pubkey, rank in result:
-        buckets.setdefault(rank, []).append(pubkey)
-    return buckets
+    return [(row[0], row[1]) for row in result]

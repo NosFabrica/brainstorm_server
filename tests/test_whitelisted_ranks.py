@@ -11,6 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.database import get_db
+from app.services import rank_file_service
+from app.services.rank_file import RankFile
 
 OBSERVER = "a" * 64
 UPDATED_AT = datetime(2026, 9, 28, 12, 0, 0)
@@ -46,6 +48,13 @@ def session():
     return _WhitelistSession(
         rows=[("c" * 64, 57), ("b" * 64, 3), ("d" * 64, 3), ("e" * 64, 2)]
     )
+
+
+@pytest.fixture(autouse=True)
+def fresh_rank_file_cache():
+    rank_file_service._cache.clear()
+    yield
+    rank_file_service._cache.clear()
 
 
 def _client(client, session):
@@ -138,3 +147,92 @@ def test_ranks_are_public(session):
         assert TestClient(app).get(PATH).status_code == 200
     finally:
         app.dependency_overrides.clear()
+
+
+# --- The binary file (/ranks.bin) ---------------------------------------------
+
+BIN = f"/whitelisted/{OBSERVER}/ranks.bin"
+
+
+def test_bin_is_a_queryable_rank_file(client, session):
+    response = _client(client, session).get(BIN)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert "attachment" in response.headers["content-disposition"]
+    f = RankFile(response.content)
+    assert f.count == 4
+    assert f.min_rank == 2
+    assert f.rank("c" * 64) == 57
+    assert f.rank("d" * 64) == 3
+    assert f.rank("f" * 64) is None
+
+
+def test_bin_min_rank_is_applied_server_side_and_recorded(client, session):
+    response = _client(client, session).get(BIN, params={"minRank": 40})
+
+    assert session.params == [{"pubkey": OBSERVER, "min_rank": 40}]
+    assert RankFile(response.content).min_rank == 40
+
+
+@pytest.mark.parametrize("min_rank", [0, 1, 101])
+def test_bin_min_rank_outside_the_stored_range_is_rejected(
+    client, session, min_rank
+):
+    response = _client(client, session).get(BIN, params={"minRank": min_rank})
+
+    assert response.status_code == 422
+
+
+def test_bin_unknown_observer_is_a_valid_empty_file(client):
+    session = _WhitelistSession(updated_at=None)
+
+    response = _client(client, session).get(BIN, params={"minRank": 30})
+
+    f = RankFile(response.content)
+    assert (f.count, f.min_rank) == (0, 30)
+    assert session.params == []
+
+
+def test_bin_unchanged_snapshot_answers_304(client, session):
+    c = _client(client, session)
+    etag = c.get(BIN).headers["etag"]
+
+    response = c.get(BIN, headers={"If-None-Match": etag})
+
+    assert response.status_code == 304
+    assert response.content == b""
+
+
+def test_bin_etag_differs_per_min_rank_and_from_the_json(client, session):
+    c = _client(client, session)
+
+    tags = {
+        c.get(BIN).headers["etag"],
+        c.get(BIN, params={"minRank": 40}).headers["etag"],
+        c.get(PATH).headers["etag"],
+    }
+
+    assert len(tags) == 3
+
+
+def test_bin_is_built_once_per_snapshot(client, session):
+    c = _client(client, session)
+
+    first = c.get(BIN).content
+    second = c.get(BIN).content
+
+    assert first == second
+    assert len(session.params) == 1
+
+
+def test_bin_a_new_snapshot_rebuilds(client, session):
+    c = _client(client, session)
+    c.get(BIN)
+
+    session.updated_at = datetime(2026, 9, 29, 12, 0, 0)
+    session.rows = [("c" * 64, 60)]
+    f = RankFile(c.get(BIN).content)
+
+    assert len(session.params) == 2
+    assert (f.count, f.rank("c" * 64)) == (1, 60)

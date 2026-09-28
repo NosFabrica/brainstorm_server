@@ -31,6 +31,8 @@ from app.schemas.request_response_schemas import (
     WhitelistedPubkeys,
     WhitelistedRanks,
 )
+from app.services.rank_file import VERSION as RANK_FILE_VERSION
+from app.services.rank_file_service import empty_rank_file, get_rank_file_of_observer
 from app.services.user_service import (
     get_whitelisted_pubkeys_of_observer,
     get_whitelisted_ranks_of_observer,
@@ -291,6 +293,55 @@ async def get_whitelisted_ranks_of_observer_endpoint(
             numPubkeys=sum(len(keys) for keys in ranks.values()),
             ranks=ranks,
         )
+    )
+
+
+@router.get(
+    path="/whitelisted/{observer_pubkey}/ranks.bin",
+    tags=[],
+    dependencies=[],
+    summary="The observer's trusted pubkeys and their Rank as a compact, queryable "
+    "binary file (BSRK — docs/rank-file-format.md)",
+    response_class=Response,
+    responses={200: {"content": {"application/octet-stream": {}}}},
+)
+async def get_whitelisted_rank_file_of_observer_endpoint(
+    request: Request,
+    observer_pubkey: str,
+    # Rank units, as on /ranks. Only keys at or above it are in the file, and
+    # the header records it, so a miss reads "below minRank or not trusted".
+    min_rank: int = Query(default=2, ge=2, le=100, alias="minRank"),
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> Response:
+    headers = {
+        "Cache-Control": "private, no-cache",
+        # Not built from the (unvalidated) path param: nothing to escape.
+        "Content-Disposition": f'attachment; filename="ranks-min{min_rank}.bin"',
+    }
+    updated_at = await select_observer_whitelist_updated_at(db, observer_pubkey)
+    if updated_at is None:
+        return Response(
+            content=empty_rank_file(min_rank),
+            media_type="application/octet-stream",
+            headers=headers,
+        )
+
+    etag = _whitelist_etag(
+        observer_pubkey,
+        f"bin{RANK_FILE_VERSION}:{min_rank}",
+        updated_at.isoformat(),
+    )
+    if request.headers.get("if-none-match") == etag:
+        return Response(
+            status_code=304,
+            headers={"ETag": etag, "Cache-Control": "private, no-cache"},
+        )
+
+    data = await get_rank_file_of_observer(db, observer_pubkey, min_rank, updated_at)
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={**headers, "ETag": etag},
     )
 
 
