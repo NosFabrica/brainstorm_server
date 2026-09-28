@@ -33,7 +33,10 @@ from app.repos.brainstorm_request_repo import (
     count_brainstorm_requests_with_priority_over_one_on_db,
     select_latest_brainstorm_request_on_db,
 )
-from app.repos.observer_whitelist_repo import select_whitelisted_pubkeys_of_observer
+from app.repos.observer_whitelist_repo import (
+    select_whitelisted_pubkeys_of_observer,
+    select_whitelisted_ranks_of_observer,
+)
 from app.repos.user_repo import (
     OutboundCounts,
     OutboundOverview,
@@ -408,3 +411,9 @@ async def get_whitelisted_pubkeys_of_observer(
     db: AsyncDBSession, pubkey: str, threshold: float = 0.02
 ) -> list[str]:
     return await select_whitelisted_pubkeys_of_observer(db, pubkey, threshold)
+
+
+async def get_whitelisted_ranks_of_observer(
+    db: AsyncDBSession, pubkey: str, min_rank: int = 2
+) -> dict[int, list[str]]:
+    return await select_whitelisted_ranks_of_observer(db, pubkey, min_rank)

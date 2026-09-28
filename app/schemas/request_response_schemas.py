@@ -138,6 +138,18 @@ class GetWhitelistedPubkeysOfObserverResponse(SuccessfulResponseDataSchema):
     data: WhitelistedPubkeys
 
 
+class WhitelistedRanks(BaseModel):
+    observerPubkey: str
+    numPubkeys: int
+    # Rank (0-100) -> the observee pubkeys holding it, highest Rank first.
+    # Serialized with string keys ({"100": [...], "99": [...]}), as JSON requires.
+    ranks: dict[int, list[str]]
+
+
+class GetWhitelistedRanksOfObserverResponse(SuccessfulResponseDataSchema):
+    data: WhitelistedRanks
+
+
 class PublishAssistantProfileData(BaseModel):
     event_id: str
     assistant_pubkey: str

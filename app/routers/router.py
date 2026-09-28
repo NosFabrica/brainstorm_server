@@ -27,9 +27,14 @@ from app.routers.user.router import router as user_router
 from app.routers.webhooks.flash import router as flash_webhook_router
 from app.schemas.request_response_schemas import (
     GetWhitelistedPubkeysOfObserverResponse,
+    GetWhitelistedRanksOfObserverResponse,
     WhitelistedPubkeys,
+    WhitelistedRanks,
 )
-from app.services.user_service import get_whitelisted_pubkeys_of_observer
+from app.services.user_service import (
+    get_whitelisted_pubkeys_of_observer,
+    get_whitelisted_ranks_of_observer,
+)
 from app.utils.api_validators import verify_token
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
 
@@ -243,7 +248,55 @@ async def get_whitelisted_pubkeys_of_observer_endpoint(
     return GetWhitelistedPubkeysOfObserverResponse(data=result_formated)
 
 
-def _whitelist_etag(observer_pubkey: str, threshold: float, updated_at: str) -> str:
+@router.get(
+    path="/whitelisted/{observer_pubkey}/ranks",
+    tags=[],
+    dependencies=[],
+    summary="Get all the trusted pubkeys and their Rank given the view of an observer",
+    response_model=GetWhitelistedRanksOfObserverResponse,
+)
+async def get_whitelisted_ranks_of_observer_endpoint(
+    request: Request,
+    observer_pubkey: str,
+    response: Response,
+    # Rank units (0-100). Lower bound == the graperank cutoff, as on
+    # /whitelisted: nothing below it is stored.
+    min_rank: int = Query(default=2, ge=2, le=100, alias="minRank"),
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> GetWhitelistedRanksOfObserverResponse | Response:
+    updated_at = await select_observer_whitelist_updated_at(db, observer_pubkey)
+    if updated_at is None:
+        return GetWhitelistedRanksOfObserverResponse(
+            data=WhitelistedRanks(
+                observerPubkey=observer_pubkey, numPubkeys=0, ranks={}
+            )
+        )
+
+    etag = _whitelist_etag(observer_pubkey, f"ranks:{min_rank}", updated_at.isoformat())
+    if request.headers.get("if-none-match") == etag:
+        return Response(
+            status_code=304,
+            headers={"ETag": etag, "Cache-Control": "private, no-cache"},
+        )
+
+    # ~300k keys at full size: bucketed by rank, and GZipMiddleware brings the
+    # hex down to within ~17% of raw 32-byte keys, so JSON costs little here.
+    ranks = await get_whitelisted_ranks_of_observer(db, observer_pubkey, min_rank)
+
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "private, no-cache"
+    return GetWhitelistedRanksOfObserverResponse(
+        data=WhitelistedRanks(
+            observerPubkey=observer_pubkey,
+            numPubkeys=sum(len(keys) for keys in ranks.values()),
+            ranks=ranks,
+        )
+    )
+
+
+def _whitelist_etag(
+    observer_pubkey: str, threshold: float | str, updated_at: str
+) -> str:
     digest = hashlib.sha1(
         f"{observer_pubkey}:{threshold}:{updated_at}".encode()
     ).hexdigest()

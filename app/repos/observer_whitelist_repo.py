@@ -43,15 +43,13 @@ async def select_observer_whitelist_updated_at(
 
 # Filter above-threshold observees server-side so the ~99k-key scores blob is
 # never parsed into a Python dict on the event loop; only matching keys return.
-_WHITELISTED_PUBKEYS_SQL = text(
-    """
+_WHITELISTED_PUBKEYS_SQL = text("""
     SELECT e.key
     FROM observerwhitelist w,
          jsonb_each_text(w.scores) AS e(key, value)
     WHERE w.observer_pubkey = :pubkey
       AND e.value::numeric >= :threshold
-    """
-)
+    """)
 
 
 async def select_whitelisted_pubkeys_of_observer(
@@ -62,3 +60,34 @@ async def select_whitelisted_pubkeys_of_observer(
         {"pubkey": observer_pubkey, "threshold": threshold},
     )
     return [row[0] for row in result]
+
+
+# Same server-side filter, carrying each observee's Rank (CONTEXT.md): the
+# stored influence is already rounded to 2dp, so `× 100` on numeric is exact and
+# matches the `rank` tag of the published Trusted Assertion.
+_WHITELISTED_RANKS_SQL = text("""
+    SELECT e.key, (e.value::numeric * 100)::int AS rank
+    FROM observerwhitelist w,
+         jsonb_each_text(w.scores) AS e(key, value)
+    WHERE w.observer_pubkey = :pubkey
+      AND e.value::numeric * 100 >= :min_rank
+    ORDER BY rank DESC, e.key
+    """)
+
+
+async def select_whitelisted_ranks_of_observer(
+    db: AsyncDBSession, observer_pubkey: str, min_rank: int
+) -> dict[int, list[str]]:
+    """Observee pubkeys bucketed by Rank, highest Rank first.
+
+    Bucketed rather than `{pubkey: rank}`: the rank is written once per bucket
+    instead of once per key, and a consumer filters by taking whole buckets.
+    """
+    result = await db.execute(
+        _WHITELISTED_RANKS_SQL,
+        {"pubkey": observer_pubkey, "min_rank": min_rank},
+    )
+    buckets: dict[int, list[str]] = {}
+    for pubkey, rank in result:
+        buckets.setdefault(rank, []).append(pubkey)
+    return buckets

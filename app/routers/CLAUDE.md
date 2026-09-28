@@ -14,6 +14,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 |---|---|---|
 | `/health` | `app/api.py:164` | Liveness (returns `1`) |
 | `/whitelisted/{observer_pubkey}` | `router.py:75-94` | Trusted-pubkey list for an observer; `threshold` query param (default 0.02) |
+| `/whitelisted/{observer_pubkey}/ranks` | `router.py` | Same list with each observee's Rank, bucketed `{"<rank>": [pubkeys]}` highest first, for other apps to download and filter; `minRank` (default 2). Public, ETag/304 like its sibling. Hex JSON gzips to within ~17% of raw 32-byte keys (~11 MB at 300k keys), so it stays JSON |
 | `/shortestPath` | `graph/router.py` | Shortest directed FOLLOWS path(s) between two pubkeys |
 | `/networkAlerts` | `network_alerts/router.py` | Pubkeys carrying more verified reports than their reach justifies, split into direct-follows / extended-network |
 | `/.well-known/nostr.json` | `nip05/well_known.py` | NIP-05 verification for Assistant pubkeys; resolution in `services/nip05_service.py` |
