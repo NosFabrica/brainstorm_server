@@ -17,6 +17,7 @@ from app.message_queue_tasks.ta_signing import (
     TaInput,
     build_ta_event_builder,
     sign_ta_events_parallel,
+    sign_ta_json,
     sign_ta_shard,
 )
 from app.message_queue_tasks.upload_nostr_events import (
@@ -104,6 +105,26 @@ def test_ta_omits_hops_at_the_unreachable_sentinel():
     assert "hops" not in _tags(unreachable.sign_with_keys(keys))
 
 
+def test_sign_ta_json_matches_the_sdk_builder_and_serializes_per_nip01():
+    # The id is hashed in Python, so it must match nostr-sdk's own NIP-01
+    # serialization byte for byte — including the escapes a d-tag could carry.
+    keys = Keys.generate()
+    pubkey = keys.public_key().to_hex()
+    for observee in ["a" * 64, 'é "q" \\ \n\t\r\b\f \x01 \u2028 😀']:
+        for hops in (2, UNREACHABLE_HOPS):
+            ta_input = TaInput(observee, 73, 12, 3, 5, hops)
+            ours = Event.from_json(sign_ta_json(ta_input, keys, pubkey))
+            sdks = build_ta_event_builder(ta_input).sign_with_keys(keys)
+
+            assert ours.verify()  # id recomputed by nostr-sdk, then the signature
+            assert ours.kind().as_u16() == 30382
+            assert ours.author().to_hex() == pubkey
+            assert ours.content() == ""
+            assert [t.as_vec() for t in ours.tags().to_vec()] == [
+                t.as_vec() for t in sdks.tags().to_vec()
+            ]
+
+
 def test_zero_score_events_carry_zero_counts_and_no_hops():
     keys = Keys.generate()
 
@@ -176,29 +197,26 @@ def _fake_client(keys: Keys) -> MagicMock:
     return client
 
 
-def test_small_run_uses_sequential_client_path_without_spawning_a_pool(monkeypatch):
-    keys = Keys.generate()
-    nsec = keys.secret_key().to_bech32()
+def test_small_run_signs_in_process_without_spawning_a_pool(monkeypatch):
+    nsec, pubkey = _nsec()
     result = _result([_sc(f"o{i}", 0.5, i) for i in range(3)])
-    client = _fake_client(keys)
     monkeypatch.setattr(settings, "sign_parallel_threshold", 10)
     monkeypatch.setattr(settings, "relay_full_sync", True)
     monkeypatch.setattr(settings, "cutoff_of_valid_graperank_scores", 0.05)
     parallel_spy = AsyncMock()
     monkeypatch.setattr(upload_nostr_events, "sign_ta_events_parallel", parallel_spy)
 
-    events = asyncio.run(get_events_from_graperank_result(result, client, nsec))
+    events = asyncio.run(get_events_from_graperank_result(result, nsec))
 
     assert len(events) == 3
-    assert client.sign_event_builder.await_count == 3  # signed via the client
+    assert all(ev.verify() and ev.author().to_hex() == pubkey for ev in events)
     parallel_spy.assert_not_called()  # no pool for a small run
 
 
-def test_large_run_in_pool_mode_signs_in_the_pool_not_the_client(monkeypatch):
+def test_large_run_signs_in_the_pool(monkeypatch):
     keys = Keys.generate()
     nsec = keys.secret_key().to_bech32()
     result = _result([_sc(f"o{i}", 0.5, i) for i in range(3)])
-    client = _fake_client(keys)
     monkeypatch.setattr(settings, "sign_parallel_threshold", 2)  # 3 inputs > 2
     monkeypatch.setattr(settings, "relay_full_sync", True)
     monkeypatch.setattr(settings, "cutoff_of_valid_graperank_scores", 0.05)
@@ -209,11 +227,10 @@ def test_large_run_in_pool_mode_signs_in_the_pool_not_the_client(monkeypatch):
     parallel_spy = AsyncMock(return_value=pool_events)
     monkeypatch.setattr(upload_nostr_events, "sign_ta_events_parallel", parallel_spy)
 
-    events = asyncio.run(get_events_from_graperank_result(result, client, nsec))
+    events = asyncio.run(get_events_from_graperank_result(result, nsec))
 
     assert len(events) == 3
     parallel_spy.assert_awaited_once()  # routed to the pool
-    assert client.sign_event_builder.await_count == 0  # client untouched
     # nsec handed to the pool worker (local signing), not a relay client.
     assert parallel_spy.await_args.args[1] == nsec
 
@@ -233,8 +250,7 @@ def _content(event: Event) -> tuple:
 
 
 def test_sequential_and_pool_paths_produce_content_equivalent_tas(monkeypatch):
-    keys = Keys.generate()
-    nsec = keys.secret_key().to_bech32()
+    nsec, _ = _nsec()
     # A mix of reachable and unreachable Observees, so both branches must agree on
     # the hops omission too.
     result = _result(
@@ -253,18 +269,14 @@ def test_sequential_and_pool_paths_produce_content_equivalent_tas(monkeypatch):
     monkeypatch.setattr(settings, "relay_full_sync", True)
     monkeypatch.setattr(settings, "cutoff_of_valid_graperank_scores", 0.05)
 
-    # Sequential branch (threshold above count, client signs).
+    # Sequential branch (threshold above count, signed in-process).
     monkeypatch.setattr(settings, "sign_parallel_threshold", 100)
-    seq = asyncio.run(
-        get_events_from_graperank_result(result, _fake_client(keys), nsec)
-    )
+    seq = asyncio.run(get_events_from_graperank_result(result, nsec))
 
     # Parallel branch (threshold below count, real process pool signs).
     monkeypatch.setattr(settings, "sign_parallel_threshold", 1)
     monkeypatch.setattr(settings, "sign_parallel_max_workers", 2)
-    par = asyncio.run(
-        get_events_from_graperank_result(result, _fake_client(keys), nsec)
-    )
+    par = asyncio.run(get_events_from_graperank_result(result, nsec))
 
     # Same kind / signing pubkey / d / rank / counts / hops per observee, across
     # both branches — only the signature and id (non-deterministic) may differ.
