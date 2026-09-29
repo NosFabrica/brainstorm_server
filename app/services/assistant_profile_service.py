@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.core.loggr import loggr
 from app.repos.brainstorm_nsec import select_brainstorm_nsec_by_pubkey_on_db
 from app.utils.assistant_nip05 import compute_assistant_nip05
+from app.utils.client_tag import client_tag
 
 logger = loggr.get_logger(__name__)
 
@@ -140,7 +141,7 @@ async def publish_assistant_kind0_for_user(
     await client.connect()
 
     try:
-        builder = EventBuilder(kind=Kind(0), content=content)
+        builder = EventBuilder(kind=Kind(0), content=content).tags([client_tag()])
         event = await client.sign_event_builder(builder)
         output = await client.send_event(event)
         if not output.success:
@@ -154,6 +155,7 @@ async def publish_assistant_kind0_for_user(
         try:
             relay_list = EventBuilder(kind=Kind(10002), content="").tags(
                 [Tag.parse(["r", relay]) for relay in assistant_relay_list()]
+                + [client_tag()]
             )
             relay_list_event = await client.sign_event_builder(relay_list)
             relay_output = await client.send_event(relay_list_event)

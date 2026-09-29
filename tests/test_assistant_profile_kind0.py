@@ -189,6 +189,10 @@ def test_relay_list_failure_does_not_fail_the_profile_publish(
                 raise RuntimeError("boom")
             self._inner = RealEventBuilder(kind=kind, content=content)
 
+        def tags(self, tags):
+            self._inner = self._inner.tags(tags)
+            return self
+
         def sign_with_keys(self, keys):
             return self._inner.sign_with_keys(keys)
 
