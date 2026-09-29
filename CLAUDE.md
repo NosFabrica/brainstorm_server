@@ -72,6 +72,7 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 - **Settings via Pydantic** in `app/core/config.py`. Add a `Field(...)` for required vars, `Field(default=...)` for optional. Mirror in `env.example`.
 - **Background tasks are spawned in the FastAPI lifespan** (`app/api.py`) with `asyncio.create_task` and cancelled in the `finally` block. Add new long-running consumers there.
 - **Loggers**: `from app.core.loggr import loggr; logger = loggr.get_logger(__name__)`. Don't use `print` or stdlib `logging` directly.
+- **Client tag**: every event we sign carries `client_tag()` ([`app/utils/client_tag.py`](app/utils/client_tag.py)) — add it to any new `EventBuilder`.
 - **Vespa is best-effort**: writes are mirrored from Nostr/PostgreSQL/Neo4j — failures get logged, don't get raised. The reverse isn't true: the *graph* and *Postgres* are source-of-truth and their writes must succeed.
 
 ## Vespa specifics
