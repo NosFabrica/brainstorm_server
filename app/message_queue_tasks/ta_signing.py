@@ -32,6 +32,9 @@ DELETION_COORDS_PER_EVENT = 200
 # The algorithm's "no path from the Observer" hops value. Keyed on here rather
 # than on the current hop limit (8) so raising that limit needs no edit.
 UNREACHABLE_HOPS = 999
+# Signed TAs turned back into `Event`s between event-loop yields: Event.from_json
+# costs ~90µs, so ~10ms of work per chunk.
+PARSE_CHUNK = 100
 
 
 class TaInput(NamedTuple):
@@ -58,7 +61,7 @@ def ta_tags(ta_input: TaInput) -> list[list[str]]:
         ["followers", str(ta_input.followers)],
         ["reporters", str(ta_input.reporters)],
         ["muters", str(ta_input.muters)],
-        CLIENT_TAG,
+        [*CLIENT_TAG],  # a copy: callers own the returned lists
     ]
     if ta_input.hops < UNREACHABLE_HOPS:
         tags.append(["hops", str(ta_input.hops)])
@@ -171,4 +174,11 @@ async def sign_ta_events_parallel(
                 for shard in shards
             )
         )
-    return [Event.from_json(j) for shard in signed_per_shard for j in shard]
+    # Parsing is now the bulk of a large run's parent-side time (100k TAs ≈ 9s),
+    # so yield between chunks rather than hold the loop for all of it.
+    signed = [j for shard in signed_per_shard for j in shard]
+    events: list[Event] = []
+    for start in range(0, len(signed), PARSE_CHUNK):
+        events.extend(Event.from_json(j) for j in signed[start : start + PARSE_CHUNK])
+        await asyncio.sleep(0)
+    return events
