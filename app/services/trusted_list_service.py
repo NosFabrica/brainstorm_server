@@ -62,6 +62,7 @@ from app.services.trusted_list_build import (
     compute_d_tag,
     compute_members,
 )
+from app.utils.client_tag import client_tag
 
 logger = loggr.get_logger(__name__)
 
@@ -116,7 +117,7 @@ async def _connect(nsec: str) -> Client:
 
 async def _publish(client: Client, tags: list[list[str]], content: str) -> None:
     builder = EventBuilder(kind=Kind(TRUSTED_LIST_KIND), content=content).tags(
-        [Tag.parse(t) for t in tags]
+        [Tag.parse(t) for t in tags if t[0] != "client"] + [client_tag()]
     )
     event = await client.sign_event_builder(builder)
     output = await client.send_event(event)

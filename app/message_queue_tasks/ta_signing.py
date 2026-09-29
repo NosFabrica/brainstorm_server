@@ -18,6 +18,8 @@ from typing import NamedTuple
 
 from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag  # type: ignore
 
+from app.utils.client_tag import client_tag
+
 # Trusted Assertions are kind-30382 parameterized-replaceable events, keyed by
 # the Observee in the `d` tag.
 TA_KIND = 30382
@@ -53,6 +55,7 @@ def build_ta_event_builder(ta_input: TaInput) -> EventBuilder:
         Tag.parse(["followers", str(ta_input.followers)]),
         Tag.parse(["reporters", str(ta_input.reporters)]),
         Tag.parse(["muters", str(ta_input.muters)]),
+        client_tag(),
     ]
     if ta_input.hops < UNREACHABLE_HOPS:
         tags.append(Tag.parse(["hops", str(ta_input.hops)]))
@@ -76,6 +79,7 @@ def build_atag_deletion_builders(
             Tag.parse(["a", f"{TA_KIND}:{signing_pubkey}:{observee}"])
             for observee in observees[i : i + chunk_size]
         ]
+        tags.append(client_tag())
         builders.append(
             EventBuilder(kind=Kind(5), content="dropped below cutoff").tags(tags)
         )

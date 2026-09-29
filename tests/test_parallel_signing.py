@@ -88,6 +88,7 @@ def test_sign_ta_shard_builds_signed_kind_30382_with_score_tags():
         "reporters": "3",
         "muters": "5",
         "hops": "2",
+        "client": "Brainstorm",
     }
 
 
@@ -116,6 +117,7 @@ def test_zero_score_events_carry_zero_counts_and_no_hops():
         "followers": "0",
         "reporters": "0",
         "muters": "0",
+        "client": "Brainstorm",
     }
 
 
