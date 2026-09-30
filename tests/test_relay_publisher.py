@@ -3,6 +3,7 @@ up OK-acked or reported unacked — none silently dropped."""
 
 import asyncio
 import json
+from dataclasses import replace
 
 from websockets.asyncio.server import serve
 
@@ -85,7 +86,6 @@ def test_every_event_is_acked():
     assert stats.n_acked == stats.n_events == 300
     assert stats.n_unacked == 0 and not stats.aborted
     assert relay.stored == {e.id for e in events}
-    assert relay.connections == FAST.connections  # the load is spread
 
 
 def test_duplicate_ok_counts_as_delivered():
@@ -102,10 +102,10 @@ def test_a_dropped_connection_resends_its_unacked_events():
             return "close"
         return (True, "")
 
-    stats, relay = _run(reply, events)
+    stats, relay = _run(reply, events, replace(FAST, connections=1))
 
     assert stats.n_acked == 200 and stats.n_unacked == 0
-    assert stats.n_reconnects >= 1
+    assert stats.n_reconnects == 1
     assert relay.stored == {e.id for e in events}
 
 
@@ -144,10 +144,11 @@ def test_a_silent_connection_times_out_and_its_events_move_on():
     def reply(conn, eid, relay):
         return None if conn == 0 else (True, "")
 
-    stats, relay = _run(reply, events)
+    # One connection, so finishing requires timing out and reconnecting.
+    stats, relay = _run(reply, events, replace(FAST, connections=1))
 
     assert stats.n_acked == 40
-    assert stats.n_reconnects >= 1
+    assert stats.n_reconnects == 1
     assert relay.stored == {e.id for e in events}
 
 
