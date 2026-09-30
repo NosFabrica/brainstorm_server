@@ -1,23 +1,29 @@
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
-from nostr_sdk import Client, ClientMessage, Event, Keys, NostrSigner  # type: ignore
+from nostr_sdk import Client, Event, Keys, NostrSigner  # type: ignore
 
 from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.vespa import batch_upsert_scores
 from app.db_models import BrainstormRequestStatus
+from app.message_queue_tasks.loop_probe import LoopProbe
+from app.message_queue_tasks.relay_publisher import PublishStats, publish_events
 from app.message_queue_tasks.ta_signing import (
+    DELETION_COORDS_PER_EVENT,
     UNREACHABLE_HOPS,
+    SignedEvent,
     TaInput,
+    atag_deletion_tags,
     build_atag_deletion_builders,
     build_ta_event_builder,
-    sign_ta_events_parallel,
-    sign_ta_shard,
+    sign_deletion_json,
+    sign_ta_json,
 )
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
@@ -194,13 +200,8 @@ RELAYS: list[str] = [
     if x
 ]
 
-# `relay.send_msg` only *enqueues* onto nostr-sdk's bounded per-relay channel; it
-# raises ("can't send message to the ... channel") when that channel is transiently
-# full while the SDK's writer drains the socket. Under a flood (~24k events in <1s)
-# this surfaces as short bursts of failures. Retry with a small backoff so the
-# writer can catch up; `await asyncio.sleep` yields the loop so the channel drains.
-SEND_MSG_MAX_ATTEMPTS = 5
-SEND_MSG_RETRY_BASE_DELAY_S = 0.01
+# TAs signed between event-loop yields (~1.6ms of signing per chunk).
+SIGN_CHUNK = 50
 
 
 @contextmanager
@@ -218,7 +219,7 @@ def _log_publish_timing(
     run_id,
     observer: str,
     timings: dict[str, float],
-    counts: dict[str, int],
+    counts: dict[str, int | float],
     run_start: float,
     error: str | None = None,
 ) -> None:
@@ -274,26 +275,10 @@ async def init_nostr_client(secret_key_nsec: str) -> Client:
     return client
 
 
-# TAs signed between event-loop yields on the sequential path: ~20ms of work,
-# so HTTP requests sharing the loop are never held up longer than that.
-SEQUENTIAL_SIGN_CHUNK = 100
-
-
-async def _sign_ta_events_sequential(inputs: list[TaInput], nsec: str) -> list[Event]:
-    """Sign each TA locally, in-process — the pool's worker body without the pool."""
-    events: list[Event] = []
-    for start in range(0, len(inputs), SEQUENTIAL_SIGN_CHUNK):
-        shard = inputs[start : start + SEQUENTIAL_SIGN_CHUNK]
-        events.extend(Event.from_json(j) for j in sign_ta_shard(shard, nsec))
-        await asyncio.sleep(0)
-    return events
-
-
-async def get_events_from_graperank_result(
+def get_ta_inputs(
     grape_rank_result: GrapeRankResult,
-    nsec: str,
     relay_full_sync: bool | None = None,
-) -> list[Event]:
+) -> list[TaInput]:
     assert grape_rank_result.scorecards is not None
     # Resolved per-run mode (settings default OR a per-run force_full override);
     # callers without an override pass None and get the env default.
@@ -307,29 +292,46 @@ async def get_events_from_graperank_result(
         f"{'all above-cutoff' if relay_full_sync else f'{len(changed_pubkeys)} changed-score'} "
         f"pubkeys out of {len(grape_rank_result.scorecards)} scorecards"
     )
-    start_time_sort = time.time()
-    logger.info("sorting scorecards...")
-    inputs = prepare_ta_inputs(
+    return prepare_ta_inputs(
         grape_rank_result,
         cutoff=settings.cutoff_of_valid_graperank_scores,
         full_sync=relay_full_sync,
     )
-    logger.info(f"sorted scorecards! took {round(time.time() - start_time_sort, 2)}s")
 
-    # Count-gated signing: small (common) runs sign in-process on the event loop,
-    # yielding between chunks; only a large burst pays for the process pool.
-    # Offloading the large sign to child processes both speeds it up and keeps
-    # the GIL-holding signing off the event loop so concurrent requests aren't
-    # starved.
-    if len(inputs) <= settings.sign_parallel_threshold:
-        events = await _sign_ta_events_sequential(inputs, nsec)
-    else:
-        logger.info(f"large sign ({len(inputs)} events): parallel process pool")
-        events = await sign_ta_events_parallel(
-            inputs, nsec, max_workers=settings.sign_parallel_max_workers
-        )
-    logger.info(f"publishing change results. total number: {len(events)} ")
-    return events
+
+async def sign_publish_events(
+    inputs: list[TaInput],
+    deletion_observees: list[str],
+    keys: Keys,
+    sign_timing: dict[str, float],
+) -> AsyncIterator[SignedEvent]:
+    """The run's TAs, then its kind-5 deletions, signed lazily in chunks so only
+    the events the publisher hasn't confirmed yet are ever held in memory."""
+    pubkey_hex = keys.public_key().to_hex()
+    sign_timing.setdefault("sign_cpu", 0.0)
+    for start in range(0, len(inputs), SIGN_CHUNK):
+        t = time.perf_counter()
+        batch = [
+            sign_ta_json(i, keys, pubkey_hex)
+            for i in inputs[start : start + SIGN_CHUNK]
+        ]
+        sign_timing["sign_cpu"] += time.perf_counter() - t
+        for event in batch:
+            yield event
+        await asyncio.sleep(0)
+    for tags in atag_deletion_tags(deletion_observees, pubkey_hex):
+        yield sign_deletion_json(tags, keys, pubkey_hex)
+
+
+def _publish_counts(stats: PublishStats) -> dict[str, int]:
+    return {
+        "n_published": stats.n_events,
+        "n_acked": stats.n_acked,
+        "n_failed": stats.n_failed,
+        "n_retried": stats.n_retried,
+        "n_reconnects": stats.n_reconnects,
+        **{f"n_rejected_{reason}": n for reason, n in stats.rejected.items()},
+    }
 
 
 async def get_zero_score_events_for_pubkeys(
@@ -455,7 +457,7 @@ async def process_nostr_upload_message(message: dict):
     observer = next(iter(grape_rank_result.scorecards.values())).observer
     run_id = message["private_id"]
     timings: dict[str, float] = {}
-    counts: dict[str, int] = {"n_scorecards": len(grape_rank_result.scorecards)}
+    counts: dict[str, int | float] = {"n_scorecards": len(grape_rank_result.scorecards)}
     run_start = time.perf_counter()
 
     # TODO: generate a new nsec for the observer of the observer
@@ -495,21 +497,17 @@ async def process_nostr_upload_message(message: dict):
                 await db.commit()
 
     try:
-        with _timed(timings, "connect"):
-            nostr_client: Client = await init_nostr_client(nsec_db_obj.nsec)
-        signing_pubkey = Keys.parse(secret_key=nsec_db_obj.nsec).public_key().to_hex()
+        keys = Keys.parse(secret_key=nsec_db_obj.nsec)
 
         await ensure_assistant_kind0_published(
             observer, assistant_kind0_published_at, timings
         )
 
-        with _timed(timings, "sign"):
-            nostr_events = await get_events_from_graperank_result(
-                grape_rank_result,
-                nsec_db_obj.nsec,
-                relay_full_sync=relay_full_sync,
+        with _timed(timings, "prepare"):
+            ta_inputs = get_ta_inputs(
+                grape_rank_result, relay_full_sync=relay_full_sync
             )
-        counts["n_signed"] = len(nostr_events)
+        counts["n_signed"] = len(ta_inputs)
 
         with _timed(timings, "last_published"):
             async with db_session() as db:
@@ -548,53 +546,31 @@ async def process_nostr_upload_message(message: dict):
         counts["n_above_cutoff"] = len(currently_published_pubkeys)
         counts["n_relay_deletes"] = len(relay_pubkeys_to_delete)
         counts["n_vespa_deletes"] = len(vespa_pubkeys_to_delete)
+        counts["n_deletion_events"] = -(
+            -len(relay_pubkeys_to_delete) // DELETION_COORDS_PER_EVENT
+        )
 
-        # zero_score_events = await get_zero_score_events_for_pubkeys(
-        #     pubkeys=pubkeys_to_delete,
-        #     nostr_client=nostr_client,
-        # )
-        # nostr_events.extend(zero_score_events)
-
-        with _timed(timings, "deletion_build"):
-            deletion_events = await get_deletion_events_for_dropped_pubkeys(
-                observees=relay_pubkeys_to_delete,
-                signing_pubkey=signing_pubkey,
-                nostr_client=nostr_client,
-            )
-        counts["n_deletion_events"] = len(deletion_events)
-
-        nostr_events.extend(deletion_events)
-
-        with _timed(timings, "send"):
-            write_relays = list((await nostr_client.relays()).values())
-            send_failures = 0
-            for index, nostr_event in enumerate(nostr_events):
-                if index == 0 or index % 200 == 0:
-                    logger.info(
-                        f"still sending nostr events for observer {observer}, progress: {index}"
-                    )
-                msg = ClientMessage.event(nostr_event)
-                for relay in write_relays:
-                    for attempt in range(SEND_MSG_MAX_ATTEMPTS):
-                        try:
-                            relay.send_msg(msg)
-                            break
-                        except Exception as e:
-                            if attempt + 1 >= SEND_MSG_MAX_ATTEMPTS:
-                                send_failures += 1
-                                logger.error(
-                                    f"Failed to enqueue event {index} on {relay.url()} "
-                                    f"after {SEND_MSG_MAX_ATTEMPTS} attempts: {e}"
-                                )
-                            else:
-                                await asyncio.sleep(
-                                    SEND_MSG_RETRY_BASE_DELAY_S * (2**attempt)
-                                )
-            if send_failures:
-                logger.error(
-                    f"TA publish: {send_failures} events failed to enqueue after "
-                    f"{SEND_MSG_MAX_ATTEMPTS} attempts (run={run_id} observer={observer})"
+        # Signed and sent as one stream; the run fails unless the relay OKs every
+        # event, so last_published_pubkeys never records an unconfirmed TA.
+        sign_timing: dict[str, float] = {}
+        with _timed(timings, "publish"):
+            async with LoopProbe() as probe:
+                publish_stats = await publish_events(
+                    settings.nostr_upload_ta_events_relay,
+                    sign_publish_events(
+                        ta_inputs, relay_pubkeys_to_delete, keys, sign_timing
+                    ),
                 )
+        timings["acked"] = publish_stats.t_acked
+        timings["sign_cpu"] = round(sign_timing.get("sign_cpu", 0.0), 3)
+        counts.update(_publish_counts(publish_stats))
+        counts.update(probe.summary())
+        if publish_stats.aborted or publish_stats.n_unacked:
+            raise RuntimeError(
+                f"relay publish incomplete: {publish_stats.n_acked}/"
+                f"{publish_stats.n_events} events acked (aborted="
+                f"{publish_stats.aborted}, samples={publish_stats.failure_samples})"
+            )
 
         vespa_search_available = False
         vespa_n_failed = 0
@@ -622,16 +598,12 @@ async def process_nostr_upload_message(message: dict):
                     status=BrainstormRequestStatus.SUCCESS,
                 )
 
-                # Keep the baseline honest: if any sink write may have failed
-                # (a total Vespa error, a partial Vespa remove failure, or a
-                # relay enqueue failure), a delete may not have landed — don't
-                # prune those pubkeys out of the baseline or they orphan in the
-                # sink forever. Retain prev ∪ current so the delete is retried.
-                sink_write_failed = (
-                    send_failures > 0
-                    or vespa_n_failed > 0
-                    or not vespa_search_available
-                )
+                # Keep the baseline honest: if a Vespa write may have failed (a
+                # total error or a partial remove failure), a delete may not have
+                # landed — don't prune those pubkeys out of the baseline or they
+                # orphan in the sink forever. Retain prev ∪ current so the delete
+                # is retried. (The relay can't be dirty here: unacked → raised.)
+                sink_write_failed = vespa_n_failed > 0 or not vespa_search_available
                 await update_last_published_pubkeys_by_pubkey_on_db(
                     db,
                     pubkey=observer,
@@ -665,8 +637,6 @@ async def process_nostr_upload_message(message: dict):
                 await db.commit()
 
         _log_publish_timing(run_id, observer, timings, counts, run_start)
-        if nostr_events:
-            logger.info(f"Check Nostr Event {nostr_events[0].as_json()}")
     except Exception as e:
         logger.error(f"Error on request {run_id} , {e}")
         _log_publish_timing(run_id, observer, timings, counts, run_start, error=str(e))

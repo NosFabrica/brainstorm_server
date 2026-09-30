@@ -1,27 +1,17 @@
-"""Pure, process-safe Trusted-Assertion signing.
+"""Pure Trusted-Assertion and deletion signing (nostr-sdk only, no settings/db).
 
-Deliberately depends on **nostr-sdk only** (no settings/db/vespa/redis): the
-functions here are the worker bodies for a `ProcessPoolExecutor`, so on a
-`spawn` platform the child re-imports this module and we want that import to be
-cheap and side-effect-free. The orchestration that *reads settings* and decides
-whether to parallelise lives in `upload_nostr_events.py`.
-
-`sign_ta_shard` signs locally from a `Keys` parsed from the Observer's nsec, so
-no relay-connected client is involved and the nsec never leaves the process
-tree.
+Events are signed locally from the Observer's `Keys` and returned as signed
+JSON, ready to send as-is: no relay client, and no nostr-sdk `Event` objects.
 """
 
-import asyncio
 import hashlib
 import json
-import os
 import time
-from concurrent.futures import ProcessPoolExecutor
 from typing import NamedTuple
 
-from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag  # type: ignore
+from nostr_sdk import EventBuilder, Keys, Kind, Tag  # type: ignore
 
-from app.utils.client_tag import CLIENT_TAG, client_tag
+from app.utils.client_tag import CLIENT_TAG
 
 # Trusted Assertions are kind-30382 parameterized-replaceable events, keyed by
 # the Observee in the `d` tag.
@@ -32,14 +22,12 @@ DELETION_COORDS_PER_EVENT = 200
 # The algorithm's "no path from the Observer" hops value. Keyed on here rather
 # than on the current hop limit (8) so raising that limit needs no edit.
 UNREACHABLE_HOPS = 999
-# Signed TAs turned back into `Event`s between event-loop yields: Event.from_json
-# costs ~90µs, so ~10ms of work per chunk.
-PARSE_CHUNK = 100
+DELETION_KIND = 5
+DELETION_CONTENT = "dropped below cutoff"
 
 
 class TaInput(NamedTuple):
-    """The per-event publish inputs — a plain picklable tuple so a shard ships
-    cheaply across the process boundary."""
+    """The per-event publish inputs."""
 
     observee: str  # the `d` tag
     rank: int
@@ -82,28 +70,65 @@ def _compact_json(value: object) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
-def sign_ta_json(ta_input: TaInput, keys: Keys, pubkey_hex: str) -> str:
-    """Build and sign one TA, returning the signed event's JSON.
+class SignedEvent(NamedTuple):
+    id: str
+    json: str
 
-    Hashes and serializes in Python and calls nostr-sdk once, for the Schnorr
-    signature: an `EventBuilder` costs a Python→Rust crossing per tag, which
-    made it ~4x slower per TA."""
+
+def sign_event_json(
+    kind: int, tags: list[list[str]], content: str, keys: Keys, pubkey_hex: str
+) -> SignedEvent:
+    """Hash and serialize in Python, calling nostr-sdk once for the Schnorr
+    signature: an `EventBuilder` costs a Python→Rust crossing per tag."""
     created_at = int(time.time())
-    tags = ta_tags(ta_input)
     event_id = hashlib.sha256(
-        _compact_json([0, pubkey_hex, created_at, TA_KIND, tags, ""]).encode()
+        _compact_json([0, pubkey_hex, created_at, kind, tags, content]).encode()
     ).hexdigest()
-    return _compact_json(
+    signed = _compact_json(
         {
             "id": event_id,
             "pubkey": pubkey_hex,
             "created_at": created_at,
-            "kind": TA_KIND,
+            "kind": kind,
             "tags": tags,
-            "content": "",
+            "content": content,
             "sig": keys.sign_schnorr(bytes.fromhex(event_id)),
         }
     )
+    return SignedEvent(event_id, signed)
+
+
+def sign_ta_json(ta_input: TaInput, keys: Keys, pubkey_hex: str) -> SignedEvent:
+    return sign_event_json(TA_KIND, ta_tags(ta_input), "", keys, pubkey_hex)
+
+
+def atag_deletion_tags(
+    observees: list[str],
+    signing_pubkey: str,
+    chunk_size: int = DELETION_COORDS_PER_EVENT,
+) -> list[list[list[str]]]:
+    """Tags for kind-5 deletions that remove each Observee's TA by `a`-tag
+    coordinate `30382:<signing_pubkey>:<observee>` — no relay fetch for event ids.
+
+    `signing_pubkey` MUST be the pubkey the deletion is signed with: strfry only
+    honours an `a`-tag delete when the coordinate's pubkey equals the deletion
+    event's author. One tag list per `chunk_size` coordinates."""
+    return [
+        [
+            *(
+                ["a", f"{TA_KIND}:{signing_pubkey}:{observee}"]
+                for observee in observees[i : i + chunk_size]
+            ),
+            [*CLIENT_TAG],
+        ]
+        for i in range(0, len(observees), chunk_size)
+    ]
+
+
+def sign_deletion_json(
+    tags: list[list[str]], keys: Keys, pubkey_hex: str
+) -> SignedEvent:
+    return sign_event_json(DELETION_KIND, tags, DELETION_CONTENT, keys, pubkey_hex)
 
 
 def build_atag_deletion_builders(
@@ -111,74 +136,11 @@ def build_atag_deletion_builders(
     signing_pubkey: str,
     chunk_size: int = DELETION_COORDS_PER_EVENT,
 ) -> list[EventBuilder]:
-    """Kind-5 deletion events that remove each Observee's TA by `a`-tag
-    coordinate `30382:<signing_pubkey>:<observee>` — no relay fetch for event ids.
-
-    `signing_pubkey` MUST be the pubkey the deletion is signed with: strfry only
-    honours an `a`-tag delete when the coordinate's pubkey equals the deletion
-    event's author. One builder per `chunk_size` coordinates."""
-    builders: list[EventBuilder] = []
-    for i in range(0, len(observees), chunk_size):
-        tags = [
-            Tag.parse(["a", f"{TA_KIND}:{signing_pubkey}:{observee}"])
-            for observee in observees[i : i + chunk_size]
-        ]
-        tags.append(client_tag())
-        builders.append(
-            EventBuilder(kind=Kind(5), content="dropped below cutoff").tags(tags)
+    """`atag_deletion_tags` as nostr-sdk builders, for callers that sign through a
+    relay client."""
+    return [
+        EventBuilder(kind=Kind(DELETION_KIND), content=DELETION_CONTENT).tags(
+            [Tag.parse(t) for t in tags]
         )
-    return builders
-
-
-def sign_ta_shard(inputs: list[TaInput], nsec: str) -> list[str]:
-    """Build + locally sign a shard of TAs. Returns signed-event JSON strings
-    (JSON, not `Event`, so results pickle back from a worker process)."""
-    keys = Keys.parse(secret_key=nsec)
-    pubkey_hex = keys.public_key().to_hex()
-    return [sign_ta_json(ta_input, keys, pubkey_hex) for ta_input in inputs]
-
-
-def _shard(inputs: list[TaInput], n_shards: int) -> list[list[TaInput]]:
-    """Split into at most `n_shards` contiguous, near-equal chunks (no empties)."""
-    n_shards = max(1, min(n_shards, len(inputs)))
-    size, extra = divmod(len(inputs), n_shards)
-    shards: list[list[TaInput]] = []
-    start = 0
-    for i in range(n_shards):
-        end = start + size + (1 if i < extra else 0)
-        shards.append(inputs[start:end])
-        start = end
-    return shards
-
-
-async def sign_ta_events_parallel(
-    inputs: list[TaInput],
-    nsec: str,
-    max_workers: int | None = None,
-) -> list[Event]:
-    """Sign a large batch by sharding across a `ProcessPoolExecutor`.
-
-    Each worker locally signs its shard (nsec stays inside the server's child
-    processes — no secret over the network). Offloading to processes keeps the
-    GIL-holding nostr-sdk signing off the event loop, so concurrent requests are
-    not starved during a big sign."""
-    if not inputs:
-        return []
-    workers = max(1, max_workers or os.cpu_count() or 1)
-    shards = _shard(inputs, workers)
-    loop = asyncio.get_running_loop()
-    with ProcessPoolExecutor(max_workers=len(shards)) as pool:
-        signed_per_shard = await asyncio.gather(
-            *(
-                loop.run_in_executor(pool, sign_ta_shard, shard, nsec)
-                for shard in shards
-            )
-        )
-    # Parsing is now the bulk of a large run's parent-side time (100k TAs ≈ 9s),
-    # so yield between chunks rather than hold the loop for all of it.
-    signed = [j for shard in signed_per_shard for j in shard]
-    events: list[Event] = []
-    for start in range(0, len(signed), PARSE_CHUNK):
-        events.extend(Event.from_json(j) for j in signed[start : start + PARSE_CHUNK])
-        await asyncio.sleep(0)
-    return events
+        for tags in atag_deletion_tags(observees, signing_pubkey, chunk_size)
+    ]

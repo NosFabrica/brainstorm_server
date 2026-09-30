@@ -1,8 +1,6 @@
-"""Count-gated parallel signing of Trusted Assertions.
-
-These exercise the pure, process-safe signing seam (`app.message_queue_tasks.
-ta_signing`) and the count-gated branch selection in
-`get_events_from_graperank_result` — no relay, no DB.
+"""Trusted Assertion and deletion signing — the pure signing seam
+(`app.message_queue_tasks.ta_signing`) and the streaming producer the publisher
+consumes. No relay, no DB.
 """
 
 import asyncio
@@ -10,20 +8,20 @@ from unittest.mock import AsyncMock, MagicMock
 
 from nostr_sdk import Event, Keys
 
-from app.core.config import settings
-from app.message_queue_tasks import upload_nostr_events
 from app.message_queue_tasks.ta_signing import (
     UNREACHABLE_HOPS,
     TaInput,
+    atag_deletion_tags,
+    build_atag_deletion_builders,
     build_ta_event_builder,
-    sign_ta_events_parallel,
+    sign_deletion_json,
     sign_ta_json,
-    sign_ta_shard,
 )
 from app.message_queue_tasks.upload_nostr_events import (
-    get_events_from_graperank_result,
+    SIGN_CHUNK,
     get_zero_score_events_for_pubkeys,
     prepare_ta_inputs,
+    sign_publish_events,
 )
 from app.models.grapeRankResult import GrapeRankResult, ScoreCard
 
@@ -55,12 +53,6 @@ def _sc(
     )
 
 
-def _nsec() -> tuple[str, str]:
-    """A fresh (nsec, signing-pubkey-hex) pair."""
-    keys = Keys.generate()
-    return keys.secret_key().to_bech32(), keys.public_key().to_hex()
-
-
 def _tags(event: Event) -> dict[str, str]:
     """First value of each tag, keyed by tag name (d/rank/followers/…)."""
     out: dict[str, str] = {}
@@ -71,14 +63,14 @@ def _tags(event: Event) -> dict[str, str]:
     return out
 
 
-def test_sign_ta_shard_builds_signed_kind_30382_with_score_tags():
-    nsec, pubkey = _nsec()
-    inputs = [TaInput("observee-aaa", 73, 12, 3, 5, 2)]
+def test_sign_ta_json_builds_signed_kind_30382_with_score_tags():
+    keys = Keys.generate()
+    pubkey = keys.public_key().to_hex()
 
-    signed_json = sign_ta_shard(inputs, nsec)
+    signed = sign_ta_json(TaInput("observee-aaa", 73, 12, 3, 5, 2), keys, pubkey)
 
-    assert len(signed_json) == 1
-    event = Event.from_json(signed_json[0])
+    event = Event.from_json(signed.json)
+    assert signed.id == event.id().to_hex()
     assert event.verify()  # valid schnorr signature
     assert event.kind().as_u16() == 30382
     assert event.author().to_hex() == pubkey
@@ -113,7 +105,7 @@ def test_sign_ta_json_matches_the_sdk_builder_and_serializes_per_nip01():
     for observee in ["a" * 64, 'é "q" \\ \n\t\r\b\f \x01 \u2028 😀']:
         for hops in (2, UNREACHABLE_HOPS):
             ta_input = TaInput(observee, 73, 12, 3, 5, hops)
-            ours = Event.from_json(sign_ta_json(ta_input, keys, pubkey))
+            ours = Event.from_json(sign_ta_json(ta_input, keys, pubkey).json)
             sdks = build_ta_event_builder(ta_input).sign_with_keys(keys)
 
             assert ours.verify()  # id recomputed by nostr-sdk, then the signature
@@ -168,23 +160,6 @@ def test_prepare_ta_inputs_incremental_keeps_only_changed_pubkeys():
     assert [inp.observee for inp in inputs] == ["b"]
 
 
-def test_sign_ta_events_parallel_signs_all_across_a_real_pool():
-    nsec, pubkey = _nsec()
-    # More inputs than workers so at least one worker handles multiple shards'
-    # worth of events, exercising real sharding + reassembly.
-    inputs = [TaInput(f"observee-{i:03d}", i % 100, i, 0, 0, 1) for i in range(7)]
-
-    events = asyncio.run(sign_ta_events_parallel(inputs, nsec, max_workers=2))
-
-    assert len(events) == len(inputs)
-    assert all(isinstance(ev, Event) for ev in events)
-    assert all(ev.verify() and ev.author().to_hex() == pubkey for ev in events)
-    # Every requested d-tag is present exactly once (order-independent).
-    assert sorted(_tags(ev)["d"] for ev in events) == sorted(
-        inp.observee for inp in inputs
-    )
-
-
 def _fake_client(keys: Keys) -> MagicMock:
     """A relay client stub whose `sign_event_builder` signs locally and counts
     its awaits, so a test can tell whether the sequential path was taken."""
@@ -197,88 +172,62 @@ def _fake_client(keys: Keys) -> MagicMock:
     return client
 
 
-def test_small_run_signs_in_process_without_spawning_a_pool(monkeypatch):
-    nsec, pubkey = _nsec()
-    result = _result([_sc(f"o{i}", 0.5, i) for i in range(3)])
-    monkeypatch.setattr(settings, "sign_parallel_threshold", 10)
-    monkeypatch.setattr(settings, "relay_full_sync", True)
-    monkeypatch.setattr(settings, "cutoff_of_valid_graperank_scores", 0.05)
-    parallel_spy = AsyncMock()
-    monkeypatch.setattr(upload_nostr_events, "sign_ta_events_parallel", parallel_spy)
-
-    events = asyncio.run(get_events_from_graperank_result(result, nsec))
-
-    assert len(events) == 3
-    assert all(ev.verify() and ev.author().to_hex() == pubkey for ev in events)
-    parallel_spy.assert_not_called()  # no pool for a small run
-
-
-def test_large_run_signs_in_the_pool(monkeypatch):
+def test_json_deletions_match_the_sdk_builders():
     keys = Keys.generate()
-    nsec = keys.secret_key().to_bech32()
-    result = _result([_sc(f"o{i}", 0.5, i) for i in range(3)])
-    monkeypatch.setattr(settings, "sign_parallel_threshold", 2)  # 3 inputs > 2
-    monkeypatch.setattr(settings, "relay_full_sync", True)
-    monkeypatch.setattr(settings, "cutoff_of_valid_graperank_scores", 0.05)
-    pool_events = [
-        build_ta_event_builder(inp).sign_with_keys(keys)
-        for inp in prepare_ta_inputs(result, 0.05, True)
+    pubkey = keys.public_key().to_hex()
+    observees = ["observee-a", "observee-b", "observee-c"]
+
+    ours = [
+        Event.from_json(sign_deletion_json(tags, keys, pubkey).json)
+        for tags in atag_deletion_tags(observees, pubkey, chunk_size=2)
     ]
-    parallel_spy = AsyncMock(return_value=pool_events)
-    monkeypatch.setattr(upload_nostr_events, "sign_ta_events_parallel", parallel_spy)
+    sdks = [
+        b.sign_with_keys(keys)
+        for b in build_atag_deletion_builders(observees, pubkey, chunk_size=2)
+    ]
 
-    events = asyncio.run(get_events_from_graperank_result(result, nsec))
-
-    assert len(events) == 3
-    parallel_spy.assert_awaited_once()  # routed to the pool
-    # nsec handed to the pool worker (local signing), not a relay client.
-    assert parallel_spy.await_args.args[1] == nsec
-
-
-def _content(event: Event) -> tuple:
-    tags = _tags(event)
-    return (
-        event.kind().as_u16(),
-        event.author().to_hex(),
-        tags["d"],
-        tags["rank"],
-        tags["followers"],
-        tags["reporters"],
-        tags["muters"],
-        tags.get("hops"),
-    )
-
-
-def test_sequential_and_pool_paths_produce_content_equivalent_tas(monkeypatch):
-    nsec, _ = _nsec()
-    # A mix of reachable and unreachable Observees, so both branches must agree on
-    # the hops omission too.
-    result = _result(
-        [
-            _sc(
-                f"o{i}",
-                0.10 + i / 100,
-                followers=i,
-                reporters=i % 3,
-                muters=i % 2,
-                hops=UNREACHABLE_HOPS if i % 2 else i + 1,
-            )
-            for i in range(6)
+    assert len(ours) == 2
+    for mine, theirs in zip(ours, sdks, strict=True):
+        assert mine.verify()
+        assert mine.kind().as_u16() == 5
+        assert mine.content() == theirs.content()
+        assert [t.as_vec() for t in mine.tags().to_vec()] == [
+            t.as_vec() for t in theirs.tags().to_vec()
         ]
+
+
+async def _collect(gen):
+    return [e async for e in gen]
+
+
+def test_sign_publish_events_streams_tas_then_deletions():
+    keys = Keys.generate()
+    pubkey = keys.public_key().to_hex()
+    # More than one chunk, so the chunk boundary is crossed.
+    inputs = [TaInput(f"o{i}", i, i, 0, 0, 1) for i in range(SIGN_CHUNK + 3)]
+    timing: dict[str, float] = {}
+
+    events = asyncio.run(
+        _collect(sign_publish_events(inputs, ["gone-1", "gone-2"], keys, timing))
     )
-    monkeypatch.setattr(settings, "relay_full_sync", True)
-    monkeypatch.setattr(settings, "cutoff_of_valid_graperank_scores", 0.05)
 
-    # Sequential branch (threshold above count, signed in-process).
-    monkeypatch.setattr(settings, "sign_parallel_threshold", 100)
-    seq = asyncio.run(get_events_from_graperank_result(result, nsec))
+    parsed = [Event.from_json(e.json) for e in events]
+    assert len(parsed) == len(inputs) + 1  # one kind-5 carries both coordinates
+    assert all(e.verify() and e.author().to_hex() == pubkey for e in parsed)
+    assert [e.id for e in events] == [p.id().to_hex() for p in parsed]
+    assert [_tags(p)["d"] for p in parsed[:-1]] == [i.observee for i in inputs]
+    deletion = parsed[-1]
+    assert deletion.kind().as_u16() == 5
+    assert [t.as_vec()[1] for t in deletion.tags().to_vec() if t.as_vec()[0] == "a"] == [
+        f"30382:{pubkey}:gone-1",
+        f"30382:{pubkey}:gone-2",
+    ]
+    assert timing["sign_cpu"] > 0
 
-    # Parallel branch (threshold below count, real process pool signs).
-    monkeypatch.setattr(settings, "sign_parallel_threshold", 1)
-    monkeypatch.setattr(settings, "sign_parallel_max_workers", 2)
-    par = asyncio.run(get_events_from_graperank_result(result, nsec))
 
-    # Same kind / signing pubkey / d / rank / counts / hops per observee, across
-    # both branches — only the signature and id (non-deterministic) may differ.
-    assert {_content(e) for e in seq} == {_content(e) for e in par}
-    assert all(e.verify() for e in par)
+def test_sign_publish_events_with_nothing_to_publish_yields_nothing():
+    events = asyncio.run(
+        _collect(sign_publish_events([], [], Keys.generate(), {}))
+    )
+
+    assert events == []

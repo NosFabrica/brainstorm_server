@@ -108,14 +108,6 @@ class Settings(BaseSettings):
     # pre-cutoff backlog, then off. Not in env.example
     relay_sweep_below_cutoff: bool = Field(default=False)
     vespa_sweep_below_cutoff: bool = Field(default=False)
-    # Count-gated parallel signing. At/below the threshold a publish run signs
-    # via the simple sequential client loop (zero pool overhead — the common,
-    # steady-state case). Above it, a *large* burst (first publish for an
-    # Observer, big graph shift) shards signing across a ProcessPoolExecutor,
-    # which both ~10×-speeds the sign and keeps the GIL-holding nostr-sdk signing
-    # off the event loop so concurrent requests aren't starved.
-    sign_parallel_threshold: int = Field(default=10_000)
-    sign_parallel_max_workers: int | None = Field(default=None)
     # --- Trusted Lists (kind-30392 from kind-39999 taggings) ---------------
     # Inclusive floor on the asserter's Rank (0-100) in the Observer's own web
     # of trust. Default 3 is exactly issue #73's "rank > 2" — stated as an

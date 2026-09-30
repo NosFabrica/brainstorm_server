@@ -33,8 +33,8 @@ The longest module here. The main entry point is `process_nostr_upload_message(m
 
 1. Validate the inbound `GrapeRankResult`. Bail if no scorecards.
 2. Resolve the observer's nsec via `get_or_create_brainstorm_observer_nsec_by_pubkey_on_db`.
-3. Build the Nostr events to publish: TA assertions (above-cutoff scorecards) + deletion events for dropped pubkeys.
-4. Publish all events to the configured relays (best-effort per relay).
+3. Plan the run: TA inputs (above-cutoff scorecards) + the relay delete set for dropped pubkeys.
+4. Sign and publish as one stream (`sign_publish_events` → `relay_publisher.publish_events`): TAs, then kind-5 deletions, signed locally as JSON and sent over raw websockets to `nostr_upload_ta_events_relay`. Every event must get a `true` OK — rejections and dropped connections are retried — or the run fails without advancing `last_published_pubkeys`.
 5. Mirror scores to Vespa via `upsert_scores_to_vespa(...)` → `batch_upsert_scores`, keyed by this observer's pubkey in the `quality_scores` tensor (runs for every observer, not just `settings.periodic_graperank_pubkey`). Vespa failures are logged but don't fail the request.
 6. Mark the brainstorm request as `SUCCESS` and persist the published-pubkey list.
 
@@ -45,6 +45,18 @@ The longest module here. The main entry point is `process_nostr_upload_message(m
 - Delete sets are computed **per sink** by `plan_publish` from a local diff (no relay/Vespa read): `fell_off = previously_published − currently_above_cutoff`. Shared as one list when both sweep modes match.
 - The **sweep** (`*_sweep_below_cutoff`, default off) adds every below-cutoff Observee to the delete set, reaping orphans the diff can't see. Backwards-compat drain: on to clear the legacy backlog, then off — it's mostly no-op deletes that each cost a tombstone/remove op. Not implied by full-sync, the backstop, or `resync`.
 - All ops are fanned out concurrently — see `batch_upsert_scores` in `app/core/vespa.py`.
+
+### Relay publishing (`relay_publisher.py`)
+
+Raw websockets, not nostr-sdk. nostr-sdk's `send_event` does wait for the OK,
+but one event per await, which was too slow; the publish had moved to
+`relay.send_msg`, which only enqueues (no OK, drops on a full channel). Here
+many events are in flight per connection and each OK is still tracked, and
+there is no turning signed JSON back into `Event`s (costs more than signing). `PublishConfig` holds the knobs (4 connections, ≤2k
+in flight per connection, ≤10k unresolved events in memory, 30s ack timeout,
+retry/backoff caps). The per-run `TA publish timing` log carries `t_acked`,
+`t_sign_cpu`, `n_acked`/`n_failed`/`n_retried`/`n_reconnects`/`n_rejected_*`,
+`loop_lag_max_ms`/`loop_lag_p99_ms` and `rss_peak_mb` (`loop_probe.py`).
 
 ### Order of operations matters
 
