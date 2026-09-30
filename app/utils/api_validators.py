@@ -13,6 +13,7 @@ from app.repos.brainstorm_nsec import brainstorm_nsec_exists_by_pubkey_on_db
 from app.utils.auth.auth_models import JWTData
 from app.utils.auth.auth_util import decrypt_jwt_token
 from app.utils.auth.nip98 import validate_nip98_event
+from app.utils.datetimes import utc_now
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -85,7 +86,7 @@ async def verify_token(
             detail="Bad token",
         )
 
-    if datetime.now() > jwt_data.expires_date:
+    if utc_now() > jwt_data.expires_date:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Your token has expired",

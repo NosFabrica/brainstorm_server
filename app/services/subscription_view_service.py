@@ -42,7 +42,8 @@ from app.schemas.schemas import (
     SubscriptionVerification,
     SubscriptionView,
 )
-from app.services.billing_service import EntitlementOutcome, EntitlementReason, utc_now
+from app.services.billing_service import EntitlementOutcome, EntitlementReason
+from app.utils.datetimes import utc_now
 
 logger = loggr.get_logger(__name__)
 

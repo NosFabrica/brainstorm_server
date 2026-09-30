@@ -9,7 +9,7 @@ an unrecognised status or an unmapped plan all leave the policy alone.
 
 import enum
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Awaitable, Callable, cast
 
 from fastapi import HTTPException, status
@@ -60,6 +60,7 @@ from app.repos.user_subscription_repo import (
     update_flash_status_on_db,
     upsert_user_subscription_on_db,
 )
+from app.utils.datetimes import utc_now
 
 logger = loggr.get_logger(__name__)
 
@@ -276,11 +277,6 @@ def _decide_cancelled(
     if ends_at is not None and now < ends_at:
         return EntitlementDecision.HOLD
     return EntitlementDecision.REVOKE
-
-
-def utc_now() -> datetime:
-    """Naive UTC — the epoch every Flash timestamp is normalized to on the way in."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def apply_entitlement(

@@ -17,6 +17,7 @@ from sqlalchemy.dialects import postgresql
 from app.core.database import get_db
 from app.db_models import SupportEvent, SupportMessage, SupportTicket
 from app.repos.support_repo import build_user_support_tickets_stmt
+from app.utils.datetimes import utc_now
 
 
 def _policy(support_included: bool) -> SimpleNamespace:
@@ -846,13 +847,11 @@ def test_a_lapsed_user_can_still_resolve_their_own_ticket(client, caller):
 
 
 def test_closed_at_is_utc_not_the_hosts_local_clock(client, caller):
-    from datetime import datetime, timezone
-
     session = _WriteSession(_ticket_row(caller.pubkey, status="answered"))
 
-    before = datetime.now(timezone.utc).replace(tzinfo=None)
+    before = utc_now()
     _write_client(client, session).post("/user/support/tickets/7/resolve")
-    after = datetime.now(timezone.utc).replace(tzinfo=None)
+    after = utc_now()
 
     # A local-clock `datetime.now()` fails this wherever TZ isn't UTC, and can
     # order `closed_at` before the `created_at` the database wrote.

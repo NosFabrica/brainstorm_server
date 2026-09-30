@@ -16,6 +16,7 @@ from app.services.manual_quota import (
     manual_quota_decision,
     quota_exceeded_message,
 )
+from app.utils.datetimes import utc_now
 
 NOW = datetime(2026, 1, 8, 12, 0, 0)
 WEEK = 7 * 86400
@@ -74,7 +75,7 @@ def test_message_states_tier_limit_window_and_reset():
 
 
 def test_manual_trigger_over_quota_returns_429(client, monkeypatch):
-    _mock_quota(monkeypatch, _policy(), count=20, oldest=datetime.now() - timedelta(days=6))
+    _mock_quota(monkeypatch, _policy(), count=20, oldest=utc_now() - timedelta(days=6))
     create = AsyncMock()
     monkeypatch.setattr("app.routers.user.router.create_brainstorm_request", create)
     _fake_db(client)

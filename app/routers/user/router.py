@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -61,6 +61,7 @@ from app.services.user_service import (
 from app.services.verified_cutoffs import VerifiedCutoffs
 from app.utils.api_validators import verify_token_optional
 from app.utils.auth.auth_models import JWTData
+from app.utils.datetimes import as_naive_utc, utc_now
 from app.utils.rate_limiting.rate_limiting import (
     GRAPERANK_POLICY,
     rate_limit,
@@ -117,9 +118,7 @@ async def create_graperank_calc_endpoint(
     if settings.block_frequent_graperank_requests:
         latest = await get_own_latest_graperank(db, user_pubkey)
 
-        if latest and latest.created_at.replace(
-            tzinfo=None
-        ) > datetime.now() - timedelta(
+        if latest and as_naive_utc(latest.created_at) > utc_now() - timedelta(
             minutes=settings.block_frequent_graperank_requests_minutes
         ):
             raise HTTPException(

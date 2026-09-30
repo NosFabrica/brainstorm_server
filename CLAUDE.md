@@ -115,7 +115,7 @@ or start a new cycle — is documented in
 
 ## Things to know (gotchas)
 
-- **Prod timestamptz drift.** A few **production** timestamp columns are `timestamp WITH time zone` while migrations/staging/local are naive (`brainstorm_request.*`, most of `brainstorm_nsec.*`, `brainstorm_nostr_relay_transfer.*` — but NOT `last_time_published_graperank`, `scheduling`, `graperank_preset*`, `observerwhitelist`). asyncpg returns tz-aware datetimes from those, so Python-side subtraction against naive `datetime.now()` throws `can't subtract offset-naive and offset-aware datetimes` **on prod only**. Normalize aware→naive at any such boundary.
+- **Prod timestamptz drift.** A few **production** timestamp columns are `timestamp WITH time zone` while migrations/staging/local are naive (`brainstorm_request.*`, most of `brainstorm_nsec.*`, `brainstorm_nostr_relay_transfer.*` — but NOT `last_time_published_graperank`, `scheduling`, `graperank_preset*`, `observerwhitelist`). asyncpg returns tz-aware datetimes from those, so comparing them against naive `utc_now()` throws `can't subtract offset-naive and offset-aware datetimes` **on prod only**. Pass DB values through `as_naive_utc()` (`app/utils/datetimes.py`) at any such boundary.
 
 - **`periodic_graperank_pubkey`** is the default observer perspective for `/search/byText` when no `observerPubkey` is passed. Score mirroring to Vespa is **not** gated on it — `upsert_scores_to_vespa` runs for every observer. If `periodic_graperank_pubkey` is empty, search still works using the hardcoded default in the search router.
 - **`MAX_QUERY_WORDS = 6`** in `vespa.py` caps how many words of the search query get treated as separate match groups. Longer queries are truncated.

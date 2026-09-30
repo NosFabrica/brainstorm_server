@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.repos.support_repo import build_expired_diagnostics_stmt
+from app.utils.datetimes import utc_now
 
 
 def _sql(stmt) -> str:
@@ -53,11 +54,11 @@ def test_a_snapshot_that_is_already_gone_is_not_rewritten():
 
 @pytest.mark.parametrize("days", [1, 30, 365])
 def test_the_window_is_what_it_is_given(days):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    before = datetime.now(timezone.utc).replace(tzinfo=None)
+    before = utc_now()
     sql = _sql(build_expired_diagnostics_stmt(timedelta(days=days)))
-    after = datetime.now(timezone.utc).replace(tzinfo=None)
+    after = utc_now()
 
     cutoff_text = sql.split("support_ticket.created_at < '")[1].split("'")[0]
     cutoff = datetime.fromisoformat(cutoff_text)

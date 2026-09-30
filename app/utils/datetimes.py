@@ -11,3 +11,10 @@ def utc_now() -> datetime:
     before the `created_at` beside it.
     """
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def as_naive_utc(dt: datetime | None) -> datetime | None:
+    """Aware -> naive UTC; naive passes through (already UTC by convention)."""
+    if dt is not None and dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt

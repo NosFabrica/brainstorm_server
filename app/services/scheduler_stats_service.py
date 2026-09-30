@@ -22,12 +22,13 @@ from app.services.scheduler_lanes import (
     LANE_SCHEDULED_TEMPLATE,
 )
 from app.services.scheduler_metrics import demand_per_day, throughput_per_day, tier_slip
+from app.utils.datetimes import utc_now
 
 _METRICS_WINDOW_SECONDS = 86400  # 24h
 
 
 async def get_scheduler_stats(db: AsyncDBSession) -> SchedulerStats:
-    now = datetime.now()
+    now = utc_now()
     since = now - timedelta(seconds=_METRICS_WINDOW_SECONDS)
 
     successes = await count_published_successes_since_on_db(db, since)

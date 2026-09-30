@@ -8,6 +8,7 @@ import jwt
 
 from app.core.config import settings
 from app.utils.auth.auth_models import JWTData, JWTSQLAdminData
+from app.utils.datetimes import utc_now
 
 
 def create_jwt_token(
@@ -54,7 +55,7 @@ def encrypt_password(password: str) -> str:
 
 def sql_admin_create_jwt_token() -> str:
     jwt_data = JWTSQLAdminData(
-        expires_date=datetime.now() + timedelta(minutes=15),
+        expires_date=utc_now() + timedelta(minutes=15),
     )
 
     jwt_token = jwt.encode(

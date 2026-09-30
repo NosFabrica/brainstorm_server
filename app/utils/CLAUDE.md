@@ -131,8 +131,8 @@ Use it for any Python-side write into one. Bare `datetime.now()` is the app
 host's local clock and skews against the columns the database fills with
 `now()`, which can order a `closed_at` before the `created_at` beside it.
 
-`billing_service.utc_now` predates this and is the same function; it should move
-here when someone is next in that file.
+`as_naive_utc(dt)` — normalizes a DB value that may come back tz-aware (prod
+timestamptz drift) to naive UTC before comparing against `utc_now()`.
 
 ## constants.py
 

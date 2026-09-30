@@ -14,6 +14,7 @@ from app.repos.brainstorm_request_repo import (
 )
 from app.services.brainstorm_request_service import create_brainstorm_request
 from app.services.publish_drift import backstop_due
+from app.utils.datetimes import as_naive_utc, utc_now
 
 logger = loggr.get_logger(__name__)
 
@@ -88,17 +89,13 @@ async def periodic_graperank_trigger_cronjob() -> None:
     # Startup catch-up: if the latest non-waiting graperank was triggered before
     # the most recent aligned mark, trigger now so we don't skip a window.
     try:
-        now = datetime.now()
+        now = utc_now()
         previous_mark = _previous_aligned_mark(now)
         async with db_session() as db:
             latest = await select_latest_non_waiting_brainstorm_request_on_db(
                 db, pubkey=pubkey
             )
-        latest_created = latest.created_at if latest else None
-        # created_at may come back tz-aware depending on the driver/column;
-        # normalize to local naive so it's comparable with datetime.now().
-        if latest_created is not None and latest_created.tzinfo is not None:
-            latest_created = latest_created.astimezone().replace(tzinfo=None)
+        latest_created = as_naive_utc(latest.created_at) if latest else None
         latest_str = latest_created.isoformat() if latest_created else "none"
         if latest_created is None or latest_created < previous_mark:
             logger.info(
@@ -118,7 +115,7 @@ async def periodic_graperank_trigger_cronjob() -> None:
 
     while True:
         try:
-            now = datetime.now()
+            now = utc_now()
             next_mark = _next_aligned_mark(now)
             sleep_seconds = max(0.0, (next_mark - now).total_seconds())
             logger.info(
@@ -128,7 +125,7 @@ async def periodic_graperank_trigger_cronjob() -> None:
             await asyncio.sleep(sleep_seconds)
             logger.info(
                 f"Periodic graperank cronjob: woke at "
-                f"{datetime.now().isoformat()} (scheduled {next_mark.isoformat()})"
+                f"{utc_now().isoformat()} (scheduled {next_mark.isoformat()})"
             )
             await _trigger_graperank(pubkey, reason="scheduled_mark")
         except Exception as e:
