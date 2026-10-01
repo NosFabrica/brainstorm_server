@@ -233,3 +233,14 @@ def mock_kind3_write(monkeypatch) -> AsyncMock:
     monkeypatch.setattr("app.services.onboarding_service.neo4j_driver", fake_driver)
 
     return process_mock
+
+
+def count_walks(network: dict) -> int:
+    """Paths counted from a /shortestPath Path network alone: every left-to-right walk."""
+    layers, links = network["layers"], network["links"]
+    if not layers:
+        return 1 if network["reachable"] else 0
+    counts = [1] * len(layers[-1])
+    for i in range(len(layers) - 2, -1, -1):
+        counts = [sum(counts[k] for k in links[i][j]) for j in range(len(layers[i]))]
+    return sum(counts)

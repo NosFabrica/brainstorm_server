@@ -18,7 +18,15 @@ router = APIRouter()
 
 @router.get(
     path="/shortestPath",
-    summary="Shortest directed FOLLOWS path(s) between two pubkeys",
+    summary="Path network: every shortest directed FOLLOWS path between two pubkeys",
+    description=(
+        "Returns the exact `pathCount` and every Connector on any shortest path, "
+        "as `layers` (one per intermediate hop, sorted by pubkey; the two ends are "
+        "left out) and `links` (`links[i][j]` = indexes into `layers[i+1]` that "
+        "`layers[i][j]` follows; `from` follows all of the first layer and all of "
+        "the last layer follows `to`). Deterministic and uncapped. 504 when the "
+        "graph query exceeds its time limit — never a partial network."
+    ),
 )
 async def get_shortest_path_endpoint(
     from_: str = Query(
@@ -36,12 +44,6 @@ async def get_shortest_path_endpoint(
         le=50,
         description="Traversal depth cap. Unreachable within this bound → reachable=false.",
     ),
-    maxPaths: int = Query(
-        default=1000,
-        ge=1,
-        le=1000,
-        description="Cap on shortest paths materialized for counting / random selection.",
-    ),
 ) -> GetShortestPathResponse:
-    data = await graph_service.get_shortest_follow_path(from_, to, maxHops, maxPaths)
+    data = await graph_service.get_shortest_follow_path(from_, to, maxHops)
     return GetShortestPathResponse(data=data)
