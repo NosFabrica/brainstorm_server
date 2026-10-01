@@ -3,6 +3,7 @@ from nostr_sdk import Keys
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.loggr import loggr
+from app.db_models import TriggerSource
 from app.repos.brainstorm_nsec import (
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
 )
@@ -13,7 +14,9 @@ logger = loggr.get_logger(__name__)
 
 
 async def get_or_create_brainstorm_pubkey(
-    db: AsyncDBSession, nostr_pubkey: str
+    db: AsyncDBSession,
+    nostr_pubkey: str,
+    trigger_source: str = TriggerSource.MANUAL.value,
 ) -> BrainstormPubkeyInstance:
     (
         result,
@@ -37,6 +40,7 @@ async def get_or_create_brainstorm_pubkey(
                 parameters=nostr_pubkey,
                 pubkey=nostr_pubkey,
                 nsec_exists=True,
+                trigger_source=trigger_source,
             )
         except HTTPException:
             raise  # preserve downstream HTTP status
