@@ -167,13 +167,13 @@ async def clear_user_scheduling_override_endpoint(
 @router.get(
     path="/{pubkey}/history",
     response_model=Page[BrainstormRequestInstance],
-    summary="Admin: graperank request history for a pubkey (last N days)",
+    summary="Admin: graperank request history for a pubkey (all time unless days set)",
 )
 async def get_user_history_endpoint(
     pubkey: str,
     status: Optional[str] = None,
     algorithm: Optional[str] = None,
-    days: int = Query(30, ge=1, le=365),
+    days: Optional[int] = Query(None, ge=1),
     db: AsyncDBSession = Depends(dependency=get_db),
 ):
     stmt = build_recent_brainstorm_requests_stmt(
