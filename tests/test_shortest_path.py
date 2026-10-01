@@ -12,7 +12,11 @@ import pytest
 from neo4j.exceptions import ClientError, Neo4jError
 from nostr_sdk import Keys
 
-from app.repos.user_repo import ShortestPathTimeout, get_all_shortest_follow_paths
+from app.repos.user_repo import (
+    ShortestPathTimeout,
+    get_all_shortest_follow_paths,
+    get_shortest_follow_hops,
+)
 from tests.conftest import count_walks
 
 
@@ -257,3 +261,74 @@ def test_repo_lets_other_neo4j_client_errors_through():
 
     with pytest.raises(ClientError):
         asyncio.run(get_all_shortest_follow_paths(session, _pk(), _pk(), 30))
+
+
+# ---------------------------------------------------------------------------
+# only=hops — one shortest path, no network
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def hops_repo(monkeypatch, paths_repo):
+    """Fakes the single-shortest-path query; `.return_value` is the hop count or None."""
+    repo = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.services.graph_service.get_shortest_follow_hops", repo)
+    return repo
+
+
+def test_only_hops_answers_hops_without_listing_paths(client, paths_repo, hops_repo):
+    hops_repo.return_value = 3
+
+    resp = _get(client, {"from": _pk(), "to": _pk(), "only": "hops"})
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["reachable"] is True
+    assert data["hops"] == 3
+    assert data["pathCount"] is None
+    assert data["layers"] == []
+    assert data["links"] == []
+    paths_repo.assert_not_called()
+
+
+def test_only_hops_unreachable(client, hops_repo):
+    hops_repo.return_value = None
+
+    data = _get(client, {"from": _pk(), "to": _pk(), "only": "hops"}).json()["data"]
+
+    assert data["reachable"] is False
+    assert data["hops"] is None
+    assert data["pathCount"] is None
+
+
+def test_only_hops_self_path_skips_the_graph(client):
+    pk = _pk()
+
+    data = _get(client, {"from": pk, "to": pk, "only": "hops"}).json()["data"]
+
+    assert data["reachable"] is True
+    assert data["hops"] == 0
+    assert data["pathCount"] is None
+    assert data["layers"] == []
+
+
+def test_only_hops_timeout_is_504(client, hops_repo):
+    hops_repo.side_effect = ShortestPathTimeout()
+
+    resp = _get(client, {"from": _pk(), "to": _pk(), "only": "hops"})
+
+    assert resp.status_code == 504
+
+
+def test_unknown_only_value_is_422(client):
+    resp = _get(client, {"from": _pk(), "to": _pk(), "only": "paths"})
+
+    assert resp.status_code == 422
+
+
+def test_repo_hops_query_maps_neo4j_timeout():
+    session = AsyncMock()
+    session.run.side_effect = _neo4j_error(
+        "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
+    )
+
+    with pytest.raises(ShortestPathTimeout):
+        asyncio.run(get_shortest_follow_hops(session, _pk(), _pk(), 30))

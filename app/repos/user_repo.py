@@ -1023,36 +1023,65 @@ class ShortestPathTimeout(Exception):
     """Neo4j killed the shortest-paths query at SHORTEST_PATHS_TIMEOUT_SECONDS."""
 
 
-async def get_all_shortest_follow_paths(
-    session: AsyncNeoSession,
-    from_pubkey: str,
-    to_pubkey: str,
-    max_hops: int,
-) -> list[list[str]]:
-    """Every shortest FOLLOWS path as a pubkey chain, ends included; [] when
-    unreachable. Uncapped (ADR 0004); raises ShortestPathTimeout, never a
-    partial set. `max_hops` is interpolated (Cypher can't parametrize the
-    bound), so it's guarded here. Callers must not pass from == to.
-    """
+def _guard_max_hops(max_hops: int) -> None:
+    # Interpolated into the pattern (Cypher can't parametrize the bound).
     if type(max_hops) is not int or not 1 <= max_hops <= 50:
         raise ValueError(f"max_hops must be an int in [1, 50], got {max_hops!r}")
 
-    query = f"""
-    MATCH (a:NostrUser {{pubkey: $from_pubkey}}), (b:NostrUser {{pubkey: $to_pubkey}})
-    MATCH p = allShortestPaths((a)-[:FOLLOWS*..{max_hops}]->(b))
-    RETURN [n IN nodes(p) | n.pubkey] AS chain
-    """
+
+async def _shortest_path_records(
+    session: AsyncNeoSession, query: str, from_pubkey: str, to_pubkey: str
+) -> list[Any]:
     try:
         result = await session.run(
             Query(query, timeout=SHORTEST_PATHS_TIMEOUT_SECONDS),
             from_pubkey=from_pubkey,
             to_pubkey=to_pubkey,
         )
-        return [record["chain"] async for record in result]
+        return [record async for record in result]
     except ClientError as e:
         if "TransactionTimedOut" in (e.code or ""):
             raise ShortestPathTimeout from e
         raise
+
+
+async def get_all_shortest_follow_paths(
+    session: AsyncNeoSession,
+    from_pubkey: str,
+    to_pubkey: str,
+    max_hops: int,
+) -> list[list[str]]:
+    """Every shortest FOLLOWS Path as a list of pubkeys, ends included; [] when
+    unreachable. Uncapped (ADR 0004); raises ShortestPathTimeout, never a
+    partial set. Callers must not pass from == to.
+    """
+    _guard_max_hops(max_hops)
+    query = f"""
+    MATCH (a:NostrUser {{pubkey: $from_pubkey}}), (b:NostrUser {{pubkey: $to_pubkey}})
+    MATCH p = allShortestPaths((a)-[:FOLLOWS*..{max_hops}]->(b))
+    RETURN [n IN nodes(p) | n.pubkey] AS path
+    """
+    records = await _shortest_path_records(session, query, from_pubkey, to_pubkey)
+    return [record["path"] for record in records]
+
+
+async def get_shortest_follow_hops(
+    session: AsyncNeoSession,
+    from_pubkey: str,
+    to_pubkey: str,
+    max_hops: int,
+) -> int | None:
+    """Hops along one shortest FOLLOWS path, or None when unreachable. Stops at
+    the first path found. Callers must not pass from == to.
+    """
+    _guard_max_hops(max_hops)
+    query = f"""
+    MATCH (a:NostrUser {{pubkey: $from_pubkey}}), (b:NostrUser {{pubkey: $to_pubkey}})
+    MATCH p = shortestPath((a)-[:FOLLOWS*..{max_hops}]->(b))
+    RETURN length(p) AS hops
+    """
+    records = await _shortest_path_records(session, query, from_pubkey, to_pubkey)
+    return records[0]["hops"] if records else None
 
 
 # ------------------------------ network alerts ------------------------------

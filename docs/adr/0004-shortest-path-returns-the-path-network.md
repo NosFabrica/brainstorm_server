@@ -33,10 +33,10 @@ accepted
 
 - No size cap. The only guard is a 5 s query timeout, which returns **504**,
   never a partial network. The UI falls back to hops only.
-- A follow-up adds `only=hops`, which answers Hops alone from a single
-  shortest-path lookup. It's meant for the profile degree chip, which needs only
-  Hops on every profile view, and it reads live follows, so it agrees with the
-  Connection page. The stored per-Observer Hops snapshot was
+- `only=hops` answers Hops alone from a single shortest-path lookup
+  (`pathCount` null, empty `layers`/`links`). It's for the profile degree chip,
+  which needs only Hops on every profile view, and it reads live follows, so it
+  agrees with the Connection page. The stored per-Observer Hops snapshot was
   rejected for this because it is only as fresh as the last GrapeRank run.
 - Each layer is sorted by pubkey, so the same input gives the same bytes. Display
   order (safest Path first) is the UI's job.

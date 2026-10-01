@@ -280,3 +280,31 @@ def test_three_hop_network_shares_a_connector(graph):
             assert count_walks(data) == data["pathCount"]
 
     asyncio.run(body())
+
+
+# ---------------------------------------------------------------------------
+# only=hops — agrees with the full Path network
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "src,dst,max_hops",
+    [
+        ("alice", "carol", 30),
+        ("alice", "dave", 30),
+        ("alice", "dave", 2),  # cut off below the true distance of 3
+        ("loner", "alice", 30),
+        ("alice", "ghost", 30),
+    ],
+)
+def test_only_hops_matches_full_mode(graph, src, dst, max_hops):
+    async def body():
+        params = {"from": graph[src], "to": graph[dst], "maxHops": max_hops}
+        async with _api() as client:
+            full = (await client.get("/shortestPath", params=params)).json()["data"]
+            lean = (
+                await client.get("/shortestPath", params={**params, "only": "hops"})
+            ).json()["data"]
+
+        assert (lean["reachable"], lean["hops"]) == (full["reachable"], full["hops"])
+        assert lean["pathCount"] is None
+
+    asyncio.run(body())

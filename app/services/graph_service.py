@@ -1,19 +1,26 @@
 """Follow-graph queries that aren't tied to the /user resource domain.
 
-The single-pair Path network lookup behind GET /shortestPath (ADR 0004).
+GET /shortestPath: the single-pair Path network, or Hops alone (ADR 0004).
 """
 
-from typing import NamedTuple
+from typing import Awaitable, Callable, NamedTuple, TypeVar
 
 from fastapi import HTTPException, status
+from neo4j import AsyncSession as AsyncNeoSession
 
 from app.core.loggr import loggr
 from app.neo4j_db.driver import driver as neo4j_driver
-from app.repos.user_repo import ShortestPathTimeout, get_all_shortest_follow_paths
+from app.repos.user_repo import (
+    ShortestPathTimeout,
+    get_all_shortest_follow_paths,
+    get_shortest_follow_hops,
+)
 from app.schemas.request_response_schemas import ShortestPathData
 from app.utils.nostr import resolve_pubkey_or_400
 
 logger = loggr.get_logger(__name__)
+
+T = TypeVar("T")
 
 
 class PathNetwork(NamedTuple):
@@ -33,33 +40,30 @@ def _path_network(paths: list[list[str]], hops: int) -> PathNetwork:
     return PathNetwork(layers, links)
 
 
-async def get_shortest_follow_path(
-    from_raw: str,
-    to_raw: str,
-    max_hops: int,
+def _no_network(
+    from_hex: str, to_hex: str, max_hops: int, hops: int | None, path_count: int | None
 ) -> ShortestPathData:
-    from_hex = resolve_pubkey_or_400(from_raw, "from")
-    to_hex = resolve_pubkey_or_400(to_raw, "to")
+    return ShortestPathData(
+        from_pubkey=from_hex,
+        to_pubkey=to_hex,
+        reachable=hops is not None,
+        hops=hops,
+        path_count=path_count,
+        layers=[],
+        links=[],
+        max_hops=max_hops,
+    )
 
-    # Anyone is zero hops from themselves — answered without touching the
-    # graph. Also mandatory: Neo4j rejects same-node shortest-path queries.
-    if from_hex == to_hex:
-        return ShortestPathData(
-            from_pubkey=from_hex,
-            to_pubkey=to_hex,
-            reachable=True,
-            hops=0,
-            path_count=1,
-            layers=[],
-            links=[],
-            max_hops=max_hops,
-        )
 
+async def _query(
+    from_hex: str,
+    to_hex: str,
+    max_hops: int,
+    repo: Callable[[AsyncNeoSession, str, str, int], Awaitable[T]],
+) -> T:
     try:
         async with neo4j_driver.session() as session:
-            paths = await get_all_shortest_follow_paths(
-                session, from_hex, to_hex, max_hops
-            )
+            return await repo(session, from_hex, to_hex, max_hops)
     except ShortestPathTimeout:
         logger.warning("shortestPath timeout from=%s to=%s", from_hex, to_hex)
         raise HTTPException(
@@ -67,18 +71,24 @@ async def get_shortest_follow_path(
             detail="This path network is too large to compute right now.",
         )
 
+
+def _resolve(from_raw: str, to_raw: str) -> tuple[str, str]:
+    return resolve_pubkey_or_400(from_raw, "from"), resolve_pubkey_or_400(to_raw, "to")
+
+
+async def get_shortest_follow_path(
+    from_raw: str, to_raw: str, max_hops: int
+) -> ShortestPathData:
+    from_hex, to_hex = _resolve(from_raw, to_raw)
+    # Zero hops from yourself, answered without the graph — Neo4j rejects
+    # same-node shortest-path queries anyway.
+    if from_hex == to_hex:
+        return _no_network(from_hex, to_hex, max_hops, hops=0, path_count=1)
+
+    paths = await _query(from_hex, to_hex, max_hops, get_all_shortest_follow_paths)
     if not paths:
         logger.info("shortestPath unreachable max_hops=%d", max_hops)
-        return ShortestPathData(
-            from_pubkey=from_hex,
-            to_pubkey=to_hex,
-            reachable=False,
-            hops=None,
-            path_count=0,
-            layers=[],
-            links=[],
-            max_hops=max_hops,
-        )
+        return _no_network(from_hex, to_hex, max_hops, hops=None, path_count=0)
 
     hops = len(paths[0]) - 1
     network = _path_network(paths, hops)
@@ -99,3 +109,14 @@ async def get_shortest_follow_path(
         links=network.links,
         max_hops=max_hops,
     )
+
+
+async def get_follow_hops(
+    from_raw: str, to_raw: str, max_hops: int
+) -> ShortestPathData:
+    """Hops alone from one shortest path: `pathCount` null, no network."""
+    from_hex, to_hex = _resolve(from_raw, to_raw)
+    if from_hex == to_hex:
+        return _no_network(from_hex, to_hex, max_hops, hops=0, path_count=None)
+    hops = await _query(from_hex, to_hex, max_hops, get_shortest_follow_hops)
+    return _no_network(from_hex, to_hex, max_hops, hops=hops, path_count=None)

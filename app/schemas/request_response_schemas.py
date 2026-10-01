@@ -232,7 +232,8 @@ class GetShortUrlResponse(SuccessfulResponseDataSchema):
 
 
 class ShortestPathData(BaseModel):
-    """Payload of GET /shortestPath: the Path network from `from` to `to` (ADR 0004).
+    """Payload of GET /shortestPath: the Path network from `from` to `to`, or with
+    `only=hops` just `reachable`/`hops` (ADR 0004).
 
     `from`/`to` are echoed as canonical hex (npub inputs are resolved).
     """
@@ -243,7 +244,9 @@ class ShortestPathData(BaseModel):
     to_pubkey: str = Field(serialization_alias="to")
     reachable: bool
     hops: int | None
-    path_count: int = Field(serialization_alias="pathCount")
+    path_count: int | None = Field(
+        serialization_alias="pathCount", description="Null with `only=hops`."
+    )
     layers: list[list[str]]
     links: list[list[list[int]]]
     max_hops: int = Field(serialization_alias="maxHops")
