@@ -195,9 +195,7 @@ def build_recent_brainstorm_requests_stmt(
 ) -> Select:
     filters = []
     if days is not None:
-        filters.append(
-            BrainstormRequest.created_at >= utc_now() - timedelta(days=days)
-        )
+        filters.append(BrainstormRequest.created_at >= utc_now() - timedelta(days=days))
     if pubkey is not None:
         filters.append(BrainstormRequest.pubkey == pubkey)
     if status is not None:
