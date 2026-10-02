@@ -31,7 +31,7 @@ router = APIRouter()
 
 
 DEFAULT_LIMIT = 100  # provider default per ORE-05 §"limit"
-MAX_LIMIT = 400  # mirrors the existing /search/byText cap
+MAX_LIMIT = 400
 
 # Strip control characters; keep printable text only.
 _SANITIZE_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -87,8 +87,7 @@ async def search_pubkeys(
     # (clients get that from /rank/pubkeys). Vespa already returns hits in
     # relevance-descending order, so the response is sorted by construction.
     #
-    # The explicit arguments mirror /search/byText's defaults so ORE-05 and
-    # the main search page return the same results in the same order:
+    # The explicit arguments keep ordering trust-aware:
     # min_rank=DEFAULT_MIN_RANK drops profiles below the observer-rank floor
     # (influence*100 < 2) and include_zero_score_results=False drops unranked
     # profiles. Without both filters, zero-trust exact-name matches enter at

@@ -24,7 +24,6 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 |---|---|---|
 | `/authChallenge` | `auth_challenge/` | none (this IS auth) |
 | `/setup` | `setup/` | none |
-| `/search` | `search/` | none — see [search/CLAUDE.md → vespa](../core/CLAUDE.md) |
 | `/admin/billing` | `admin/billing/` | `verify_token` + **`verify_billing_access`** — its own list, NOT `verify_admin_access`. Mounted outside `admin_router` on purpose: being on the billing list must not confer general administration, and turning admin routes off must not blind whoever handles payments. Also only mounted when `flash_enabled` |
 | `/webhooks` | `webhooks/` | none — HMAC-signed by the sender. **Only mounted when `flash_enabled`** (see `include_billing_routers` in `router.py`), so it does not exist on deployments without payments |
 | `/billing` | `billing/` | none — public plans list. **Always mounted**: an empty `plans` array is the "no billing here" signal the UI hides on. A mapping naming a service Flash does not hold drops that service's plans and logs an error, so one mistyped id degrades the page rather than refusing it |
@@ -82,7 +81,7 @@ PRD's admin convention — raw `response_model`, no success wrapper (`Page[...]`
 `/admin/billing`'s divergence/resync/plans/block bodies). The wrapper exists for
 the app client's response handling; the admin UI reads models directly.
 
-**Exception: routes whose shape a third-party spec dictates.** Where an external protocol fixes the response body, the endpoint returns it unwrapped — the `.well-known` documents (`open_ranking/well_known.py` for ORE-01, `nip05/well_known.py` for NIP-05) via an explicit `JSONResponse`, and likewise the Open Ranking payloads and `nip50`'s NIP-11 document. Wrapping any of them would break the spec.
+**Exception: routes whose shape a third-party spec dictates.** Where an external protocol fixes the response body, the endpoint returns it unwrapped — the `.well-known` documents (`open_ranking/well_known.py` for ORE-01, `nip05/well_known.py` for NIP-05) via an explicit `JSONResponse`, and likewise the Open Ranking payloads. Wrapping any of them would break the spec.
 
 ## Per-router summary
 

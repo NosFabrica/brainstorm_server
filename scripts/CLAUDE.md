@@ -49,23 +49,12 @@ one. Used at step 4 of a rotation — see
 [`../docs/flash/credential-rotation.md`](../docs/flash/credential-rotation.md).
 Exit code is 0 only if everything checked passed. Also stdlib-only.
 
-### Search testing helpers (`search_*.sh`, `search_open_ranking.py`)
+### ORE-05 search helpers (`search_open_ranking.*`)
 
-Ad-hoc tools for poking the three search surfaces against a **deployed** host
-(default: staging). The `.sh` ones are stdlib-only (curl/websocat/python3) and
-need **no `.env`**; override the target via `BRAINSTORM_HTTP` / `BRAINSTORM_WS`.
+Ad-hoc tools for poking ORE-05 search against a **deployed** host
+(default: staging). They need **no `.env`**; override the target via
+`BRAINSTORM_HTTP`. Output is `{pubkey, rank}` only (no names).
 
-- **`search_http.sh "<query>" [maxHits] [--all] [--tsv]`** — `GET /search/byText`
-  (the default-observer path the UI uses logged-out). Prints rank order with
-  `_relevance` + `_quality_score` so you can see *why* it ordered that way.
-- **`search_nip50.sh "<search string>" [limit] [--tsv]`** — drives the NIP-50
-  relay over a websocket. Put NIP-50 tokens in the search string to test them:
-  `observer:<hex>` (rank POV), `sort:rank:desc|asc`, `filter:rank:gte:N`.
-- **`search_compare.sh "<query>" [limit]`** — runs the HTTP + NIP-50 paths for
-  the same query and prints them side by side, flagging divergence. Both share
-  `app.core.vespa.search`, so a plain query matches; divergence means the NIP-50
-  side resolved a different observer or a sort/filter profile. See
-  `docs/search-trust-vs-exact-match.md`.
 - **`search_open_ranking.sh "<query>" [limit] [--pov <hex>] [--algo <id>]`** —
   ORE-05 `POST /search/pubkeys`, **unsigned** (ORE-05 auth is optional and
   currently off). Stdlib-only. `--pov` only matters with a *personalized*

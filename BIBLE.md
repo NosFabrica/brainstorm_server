@@ -66,7 +66,7 @@ The assistant is also given a public face: a kind-0 profile published on request
 
 **Ingestion** is the strfry-plugin path: events land on the `strfry:events` queue and dispatch by kind — 0 → Vespa profile upsert (partial, score-preserving), 3/10000/1984 → Neo4j relationship upserts + Redis reverse-sets (user-level reports only, per NIP-56), 5 → reconcile the deleting author's report edges. Details: [`app/message_queue_tasks/CLAUDE.md`](app/message_queue_tasks/CLAUDE.md).
 
-**Search** is Vespa: each profile doc carries a sparse `quality_scores` tensor keyed by observer pubkey; `GET /search/byText` resolves the observer perspective (query param → authenticated caller → house default) and ranks with that observer's cell. The deployed application package lives in the kube chart (see CLAUDE.md § Vespa specifics — the one-click copy is stale). The search engineering essays in [`docs/`](docs/) are the deep dives, including the standing comparison against tapestry's Meilisearch implementation.
+**Search** is served by the shared search relay (vespa-relay at `wss://search.brainstorm.world`), which mirrors the kind-30382 assertions we publish. The server still mirrors profiles and scores into its internal Vespa, which now only backs ORE-05 `POST /search/pubkeys`. The search engineering essays in [`docs/`](docs/) are the deep dives into the old Vespa search.
 
 ## 6. API surface
 

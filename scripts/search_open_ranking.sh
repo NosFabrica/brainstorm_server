@@ -10,9 +10,6 @@
 # (To rank AS a signed observer you need the Python version,
 # search_open_ranking.py, which signs the NWT.)
 #
-# The ORE-05 response is just {pubkey, rank}; this best-effort annotates each
-# pubkey with its profile name via GET /search/byText so the output is readable.
-#
 # Usage:   ./search_open_ranking.sh "<query>" [limit] [--pov <hex>] [--algo <id>] [--tsv]
 # Env:     BRAINSTORM_HTTP  (default: staging server)
 #
@@ -59,12 +56,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 printf '%s' "$results_json" > "$tmp/results.json"
 
-# Best-effort name lookup (public, no auth).
-curl -s -G "$HTTP_BASE/search/byText" \
-  --data-urlencode "text=$QUERY" --data-urlencode "maxHits=400" \
-  --data-urlencode "onlyRanked=false" > "$tmp/names.json" 2>/dev/null || echo '{}' > "$tmp/names.json"
-
-CODE="$code" RESULTS_FILE="$tmp/results.json" NAMES_FILE="$tmp/names.json" TSV="$TSV" python3 <<'PY'
+CODE="$code" RESULTS_FILE="$tmp/results.json" TSV="$TSV" python3 <<'PY'
 import os, json, sys
 
 tsv = os.environ.get("TSV") == "1"
@@ -75,36 +67,14 @@ if not code.startswith("2"):
     print(results_text[:800], file=sys.stderr)
     sys.exit(1)
 
-def find_list(o):
-    if isinstance(o, list) and o and isinstance(o[0], dict):
-        return o
-    if isinstance(o, dict):
-        for v in o.values():
-            got = find_list(v)
-            if got:
-                return got
-    return None
-
-# Build pubkey -> name from the byText response.
-names = {}
-try:
-    with open(os.environ["NAMES_FILE"]) as fh:
-        for r in find_list(json.load(fh)) or []:
-            pk = r.get("pubkey")
-            if isinstance(pk, str):
-                names[pk] = r.get("display_name") or r.get("name") or "?"
-except Exception:
-    pass
-
 results = json.loads(results_text).get("results", [])
 for i, r in enumerate(results):
     pk = r.get("pubkey", "")
     rank = r.get("rank")
-    nm = names.get(pk, "?")
     if tsv:
-        print(f"{i}\t{pk}\t{nm}\t{rank}")
+        print(f"{i}\t{pk}\t{rank}")
     else:
-        print(f"{i:2}  {str(nm)[:28]:28}  rank={rank}  {pk[:16]}")
+        print(f"{i:2}  rank={rank}  {pk}")
 if not results and not tsv:
     print("(no results)", file=sys.stderr)
 PY

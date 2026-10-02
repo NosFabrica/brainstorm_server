@@ -35,7 +35,7 @@ The map of the estate's repos and deployments is
 Failure policy: Vespa is a search mirror. The Nostr publish is the source of truth — Vespa failures are logged but never propagate.
 
 ### 3. Profile search
-`GET /search/byText?text=...&onlyRanked=...&observerPubkey=...` → [`router.search_by_text_endpoint`](app/routers/search/router.py) → if input is hex pubkey or npub, direct `vespa.get_document(pubkey)`; otherwise `vespa.search(...)` against the `name_and_quality_score_only` rank profile. Observer perspective = the optional `observerPubkey` query param (hex or npub; unresolvable values fall back silently), else `settings.periodic_graperank_pubkey` (which itself falls back to a hardcoded default in the router if unset).
+Profile search is served by the shared search relay (`wss://search.brainstorm.world`, vespa-relay), not this server. The only search endpoint left here is ORE-05 `POST /search/pubkeys` ([`open_ranking/search.py`](app/routers/open_ranking/search.py)), still on the internal Vespa.
 
 ## Directory map
 
@@ -117,7 +117,6 @@ or start a new cycle — is documented in
 
 - **Prod timestamptz drift.** A few **production** timestamp columns are `timestamp WITH time zone` while migrations/staging/local are naive (`brainstorm_request.*`, most of `brainstorm_nsec.*`, `brainstorm_nostr_relay_transfer.*` — but NOT `last_time_published_graperank`, `scheduling`, `graperank_preset*`, `observerwhitelist`). asyncpg returns tz-aware datetimes from those, so comparing them against naive `utc_now()` throws `can't subtract offset-naive and offset-aware datetimes` **on prod only**. Pass DB values through `as_naive_utc()` (`app/utils/datetimes.py`) at any such boundary.
 
-- **`periodic_graperank_pubkey`** is the default observer perspective for `/search/byText` when no `observerPubkey` is passed. Score mirroring to Vespa is **not** gated on it — `upsert_scores_to_vespa` runs for every observer. If `periodic_graperank_pubkey` is empty, search still works using the hardcoded default in the search router.
 - **`MAX_QUERY_WORDS = 6`** in `vespa.py` caps how many words of the search query get treated as separate match groups. Longer queries are truncated.
 - **`VESPA_FULL_SYNC` / `RELAY_FULL_SYNC`** (in `app/core/config.py`, both default `False`) re-push every above-cutoff scorecard on each graperank run when `True`. Delta is the steady state; drift is repaired by `FULL_SYNC_EVERY_N_RUNS` + the admin resync.
 - **Vespa needs `about_gram` to exist in the schema** for partial bio matches ("nosfab" → "nosfabrica") to work. If you wipe the volume and re-deploy, you also need to refeed (or `vespa reindex`) so the derived `about_gram` field gets populated.

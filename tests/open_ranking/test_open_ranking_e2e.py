@@ -322,7 +322,7 @@ class TestSearchPubkeys:
         assert ranks == pytest.approx([11988.6, 3018.9])
         # ORE-05: "sorted by rank in descending order"
         assert ranks == sorted(ranks, reverse=True)
-        # These arguments must mirror /search/byText's defaults (UI parity):
+        # These arguments keep ordering trust-aware:
         # min_rank omitted degrades ordering to pure text (schema default
         # -1e9), and min_rank=0 / include_zero=True floods results with
         # zero-trust exact-name matches at multiplier 1.0.

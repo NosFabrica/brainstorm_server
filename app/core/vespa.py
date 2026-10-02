@@ -10,7 +10,6 @@ is not blended in; see docs/search-vs-tapestry.md §6):
 - name + display_name + about are searched
 - about partial matches via `about_gram` (trigrams)
 - single combined query + Vespa over-fetch for WAND-resistance
-The NIP-50 relay adds trust via the rank_* profiles (defaulting to rank_desc).
 """
 import asyncio
 import json
@@ -53,23 +52,11 @@ _MATCH_TIERS = {4: "exact", 3: "prefix", 2: "1-typo", 1: "2-typo"}
 
 # Rank-profile names defined in the Vespa schema (doc.sd). The DEFAULT is
 # `sort_followers`: text match, filter rank >= query(min_rank), sort by the
-# observer's verified-follower count (popular-first). The other profiles are
-# the configurable sort alternates (rank / text). All gate on query(min_rank)
-# except text_relevance. See docs/search-vs-tapestry.md §8.
+# observer's verified-follower count (popular-first). Gates on query(min_rank);
+# text_relevance doesn't. See docs/search-vs-tapestry.md §8.
 DEFAULT_RANK_PROFILE = "sort_followers"
 RANK_PROFILE_SORT_FOLLOWERS = "sort_followers"
-RANK_PROFILE_FILTERED = "rank_filtered"
-RANK_PROFILE_SORT_DESC = "rank_desc"
-RANK_PROFILE_SORT_ASC = "rank_asc"
 RANK_PROFILE_TEXT = "text_relevance"
-
-# Maps a public `sort=` value (byText) / NIP-50 sort metric to a rank profile.
-# `followers` is the default; `rank` orders by trust; `text` is pure relevance.
-SORT_PROFILES = {
-    "followers": RANK_PROFILE_SORT_FOLLOWERS,
-    "rank": RANK_PROFILE_SORT_DESC,
-    "text": RANK_PROFILE_FILTERED,
-}
 
 # Default query-time trust filter: exclude rank < this (rank = influence*100).
 # Product default is "exclude based on rank 2" (docs/search-vs-tapestry.md §8.1);
@@ -219,15 +206,6 @@ async def _put_with_retry(
 # ---------------------------------------------------------------------------
 # document CRUD
 # ---------------------------------------------------------------------------
-async def get_document(pubkey: str) -> dict | None:
-    """Fetch a document's fields by pubkey; None if not present."""
-    r = await _get_client().get(_doc_url(pubkey))
-    if r.status_code == 404:
-        return None
-    r.raise_for_status()
-    return r.json().get("fields")
-
-
 # Vespa string fields reject control characters — a kind-0 whose name is a
 # literal NUL (\x00) gets a 400 ("illegal code point 0x0"). Strip the C0 control set
 # (and DEL) except tab/newline/CR so the profile indexes cleaned instead of

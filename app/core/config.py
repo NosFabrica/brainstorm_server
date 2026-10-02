@@ -135,11 +135,8 @@ class Settings(BaseSettings):
     # forces a full re-assert on both sinks.
     # <= 0 disables the backstop.
     full_sync_every_n_runs: int = Field(default=84)
-    # Internal strfry relay used as the source of original signed kind-0 events
-    # for the NIP-50 /relay endpoint. Not exposed externally — the FastAPI
-    # /relay handler proxies search results out, never raw client traffic.
+    # Internal relay holding the original signed kind-0 events (read by the Vespa refeed).
     nip50_backing_relay_url: str = Field(default="ws://localhost:7777")
-    nip50_strfry_timeout_seconds: float = Field(default=3.0)
     # --- Priority support ----------------------------------------------------
     # Unclosed tickets a user may hold at once; `answered` still counts.
     support_max_open_tickets: int = Field(default=5)

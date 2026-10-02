@@ -213,16 +213,6 @@ class AdminPresetHistoryResponse(SuccessfulResponseDataSchema):
     data: AdminPresetHistoryData
 
 
-class SearchResults(BaseModel):
-    query: str
-    numResults: int
-    results: list[dict]
-
-
-class SearchByTextResponse(SuccessfulResponseDataSchema):
-    data: SearchResults
-
-
 class CreateShortUrlResponse(SuccessfulResponseDataSchema):
     data: CreatedShortUrl
 

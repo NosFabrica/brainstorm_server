@@ -15,7 +15,7 @@ runs WITHOUT a populated .env — point it at a port-forwarded Vespa:
     VESPA_URL=http://localhost:8080 python -m scripts.analyze_pubkey <pubkey|npub> "<query>"
 
 Flags:
-    --profile P    rank profile (default sort_followers — the byText default)
+    --profile P    rank profile (default sort_followers)
     --observer HEX pass observer for user_q so _quality_score/_followers are real
     --vespa URL    overrides $VESPA_URL (default http://localhost:8080)
 """
