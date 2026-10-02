@@ -14,6 +14,7 @@ from app.db_models import (
     TriggerSource,
 )
 from app.schemas.admin_sort import SortOrder, UsersSort
+from app.utils.datetimes import utc_now
 
 logger = loggr.get_logger(__name__)
 
@@ -134,7 +135,7 @@ def build_recent_active_pubkeys_stmt(
     sort: UsersSort = UsersSort.last_triggered,
     order: SortOrder = SortOrder.desc,
 ) -> Select:
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = utc_now() - timedelta(days=days)
 
     latest_subq_q = select(
         BrainstormRequest.pubkey.label("pubkey"),
@@ -190,10 +191,11 @@ def build_recent_brainstorm_requests_stmt(
     pubkey: str | None = None,
     status: str | None = None,
     algorithm: str | None = None,
-    days: int = 30,
+    days: int | None = 30,
 ) -> Select:
-    cutoff = datetime.now() - timedelta(days=days)
-    filters = [BrainstormRequest.created_at >= cutoff]
+    filters = []
+    if days is not None:
+        filters.append(BrainstormRequest.created_at >= utc_now() - timedelta(days=days))
     if pubkey is not None:
         filters.append(BrainstormRequest.pubkey == pubkey)
     if status is not None:
@@ -305,7 +307,7 @@ async def update_brainstorm_request_result_by_id_on_db(
 async def fail_stale_ongoing_brainstorm_requests_on_db(
     db: AsyncDBSession, stale_threshold: timedelta
 ) -> int:
-    cutoff = datetime.now() - stale_threshold
+    cutoff = utc_now() - stale_threshold
     statement = (
         update(BrainstormRequest)
         .where(
@@ -404,7 +406,7 @@ async def fail_stale_publishing_brainstorm_requests_on_db(
 ) -> int:
     """Fail hung publishes (ta_publication non-terminal past the cutoff) so a
     stuck job can't permanently block scheduler admission."""
-    cutoff = datetime.now() - stale_threshold
+    cutoff = utc_now() - stale_threshold
     statement = (
         update(BrainstormRequest)
         .where(

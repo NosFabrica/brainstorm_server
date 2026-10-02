@@ -3,6 +3,7 @@ from nostr_sdk import Keys
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
+from app.db_models import TriggerSource
 from app.repos.brainstorm_nsec import select_brainstorm_nsec_by_pubkey_on_db
 from app.schemas.request_response_schemas import BrainstormPubkeyResponse
 from app.schemas.schemas import BrainstormPubkeyInstance, BrainstormRequestInstance
@@ -26,7 +27,9 @@ async def get_brainstorm_pubkey_endpoint(
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> BrainstormPubkeyResponse:
     nostr_pubkey = validate_nostr_pubkey(nostr_pubkey)
-    result = await get_or_create_brainstorm_pubkey(db, nostr_pubkey)
+    result = await get_or_create_brainstorm_pubkey(
+        db, nostr_pubkey, trigger_source=TriggerSource.ADMIN.value
+    )
     return BrainstormPubkeyResponse(data=result)
 
 
@@ -53,6 +56,7 @@ async def trigger_brainstorm_pubkey_graperank_endpoint(
         parameters=nostr_pubkey,
         pubkey=nostr_pubkey,
         nsec_exists=True,
+        trigger_source=TriggerSource.ADMIN.value,
     )
 
     return BrainstormPubkeyResponse(

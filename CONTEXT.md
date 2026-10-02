@@ -84,10 +84,22 @@ own Influence, in that Observer's web of trust, clears the Observer's preset cut
 _Avoid_: trusted follower (ambiguous with the tier bands), confirmed, real
 
 **Hops**:
-The follow-path distance from the Observer to the subject in the web of trust: 0 = the Observer, 1–8 =
-reachable depth, and a sentinel `≥ 999` = unreachable within the hop limit. Published in a Trusted
-Assertion's `hops` tag (omitted when the sentinel).
-_Avoid_: distance (unqualified), degree, depth
+The follow-path distance from one account to another: the number of follows on the shortest chain
+between them (0 = the same account). A Trusted Assertion carries a snapshot from its Observer's last run.
+_Avoid_: distance (unqualified), degree (UI copy only), depth, separation
+
+**Path network**:
+Everything that links one account to another at the shortest Hops: every Path between them, together,
+with its Connectors grouped by hop. Directed — the Path network from A to B is not the one from B to A.
+_Avoid_: connection (UI page copy only; the server's "connections" are follower/following lists), layered network
+
+**Path**:
+One shortest chain of follows from one account to another, ends included. A Path network holds one or many.
+_Avoid_: route, chain
+
+**Connector**:
+An account on a Path other than its two ends.
+_Avoid_: intermediary, hop (a hop is a step, not an account), middleman
 
 ### Entitlement and support
 

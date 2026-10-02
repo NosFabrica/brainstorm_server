@@ -58,16 +58,11 @@ from app.db_models import (  # noqa: E402
 from app.services.brainstorm_request_service import (  # noqa: E402
     create_brainstorm_request,
 )
+from app.utils.datetimes import utc_now  # noqa: E402
 
 _GRAPERANK = "graperank"
 _SUCCESS = BrainstormRequestStatus.SUCCESS.value
 _DEFAULT_STATE = "graperank_backfill_state.json"
-
-
-def _now() -> datetime:
-    # Naive UTC to match the `DateTime` (tz-naive) created_at columns and avoid
-    # aware-vs-naive comparison errors in the WHERE clause.
-    return datetime.utcnow()
 
 
 def _resolve_cutoff(args) -> datetime:
@@ -81,7 +76,7 @@ def _resolve_cutoff(args) -> datetime:
         data = json.loads(state_path.read_text())
         return datetime.fromisoformat(data["campaign_started_at"])
 
-    started = _now()
+    started = utc_now()
     if not args.status and not args.dry_run:
         state_path.write_text(
             json.dumps({"campaign_started_at": started.isoformat()}, indent=2)

@@ -4,10 +4,11 @@ from app.core.admin_whitelist import get_whitelisted_pubkeys
 from app.core.config import settings
 from app.schemas.schemas import AuthSuccessfulToken
 from app.utils.auth.auth_util import create_jwt_token
+from app.utils.datetimes import utc_now
 
 
 def generate_authentication_token(nostr_pubkey: str) -> AuthSuccessfulToken:
-    token_expiration_datetime: datetime = datetime.now() + timedelta(
+    token_expiration_datetime: datetime = utc_now() + timedelta(
         minutes=settings.auth_access_token_expire_minutes
     )
     is_admin = settings.admin_enabled and nostr_pubkey in get_whitelisted_pubkeys()

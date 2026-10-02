@@ -2,7 +2,7 @@
 divergence reads that compare it against the live scheduling assignment."""
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy import Select, and_, case, func, not_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -18,6 +18,7 @@ from app.db_models import (
     SchedulingSource,
     UserSubscription,
 )
+from app.utils.datetimes import utc_now
 
 
 @dataclass(frozen=True)
@@ -150,7 +151,7 @@ async def upsert_user_subscription_on_db(
         "pricing_amount_minor": pricing.amount_minor if pricing else None,
         "pricing_currency": pricing.currency if pricing else None,
         "pricing_billing_interval": pricing.billing_interval if pricing else None,
-        "last_synced_at": datetime.now(timezone.utc).replace(tzinfo=None),
+        "last_synced_at": utc_now(),
         "last_sync_error": None,
         "sync_error_since": None,
     }
@@ -326,7 +327,7 @@ async def record_sync_failure_on_db(
     them. They come back on the normal staleness cadence instead, and
     `last_sync_error` is what says the last attempt failed.
     """
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = utc_now()
     statement = (
         update(UserSubscription)
         .where(UserSubscription.pubkey == pubkey)

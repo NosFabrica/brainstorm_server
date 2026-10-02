@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from sqladmin import Admin, ModelView
@@ -16,6 +14,7 @@ from app.utils.auth.auth_util import (
     sql_admin_create_jwt_token,
     sql_admin_decrypt_jwt_token,
 )
+from app.utils.datetimes import utc_now
 
 
 class AdminAuth(AuthenticationBackend):
@@ -43,7 +42,7 @@ class AdminAuth(AuthenticationBackend):
 
         if (
             not sqladmin_token
-            or datetime.now() > sql_admin_decrypt_jwt_token(sqladmin_token).expires_date
+            or utc_now() > sql_admin_decrypt_jwt_token(sqladmin_token).expires_date
         ):
             return RedirectResponse(request.url_for("admin:login"), status_code=302)
 

@@ -1,6 +1,8 @@
 from typing import Any, NamedTuple
 
 from neo4j import AsyncSession as AsyncNeoSession
+from neo4j import Query
+from neo4j.exceptions import ClientError
 
 from app.core.tier_thresholds import (
     FLAGGED_TIER,
@@ -1014,47 +1016,72 @@ async def get_top_inbound_by_influence(
 # Shortest paths
 
 
+SHORTEST_PATHS_TIMEOUT_SECONDS = 5.0
+
+
+class ShortestPathTimeout(Exception):
+    """Neo4j killed the shortest-paths query at SHORTEST_PATHS_TIMEOUT_SECONDS."""
+
+
+def _guard_max_hops(max_hops: int) -> None:
+    # Interpolated into the pattern (Cypher can't parametrize the bound).
+    if type(max_hops) is not int or not 1 <= max_hops <= 50:
+        raise ValueError(f"max_hops must be an int in [1, 50], got {max_hops!r}")
+
+
+async def _shortest_path_records(
+    session: AsyncNeoSession, query: str, from_pubkey: str, to_pubkey: str
+) -> list[Any]:
+    try:
+        result = await session.run(
+            Query(query, timeout=SHORTEST_PATHS_TIMEOUT_SECONDS),
+            from_pubkey=from_pubkey,
+            to_pubkey=to_pubkey,
+        )
+        return [record async for record in result]
+    except ClientError as e:
+        if "TransactionTimedOut" in (e.code or ""):
+            raise ShortestPathTimeout from e
+        raise
+
+
 async def get_all_shortest_follow_paths(
     session: AsyncNeoSession,
     from_pubkey: str,
     to_pubkey: str,
     max_hops: int,
-    max_paths: int,
-) -> tuple[list[list[str]], int]:
-    """All shortest directed FOLLOWS paths from `from_pubkey` to `to_pubkey`.
-
-    Returns (paths, true_path_count): up to `max_paths` materialized pubkey
-    chains (each inclusive of both endpoints) plus the TRUE number of shortest
-    paths found, so the caller can surface an exact capped/uncapped flag.
-    ([], 0) when either pubkey is absent from the graph or no directed path
-    exists within `max_hops`.
-
-    Cypher forbids parameters in variable-length bounds (`*..$maxHops` is
-    illegal), so `max_hops` is interpolated — guarded here, at the
-    interpolation site, independently of any caller-side validation. Both
-    pubkeys and `max_paths` are real query parameters. Callers must NOT pass
-    from_pubkey == to_pubkey: Neo4j rejects same-node shortest paths (the
-    service short-circuits that case; see ADR 0001).
+) -> list[list[str]]:
+    """Every shortest FOLLOWS Path as a list of pubkeys, ends included; [] when
+    unreachable. Uncapped (ADR 0004); raises ShortestPathTimeout, never a
+    partial set. Callers must not pass from == to.
     """
-    if type(max_hops) is not int or not 1 <= max_hops <= 50:
-        raise ValueError(f"max_hops must be an int in [1, 50], got {max_hops!r}")
-
+    _guard_max_hops(max_hops)
     query = f"""
     MATCH (a:NostrUser {{pubkey: $from_pubkey}}), (b:NostrUser {{pubkey: $to_pubkey}})
     MATCH p = allShortestPaths((a)-[:FOLLOWS*..{max_hops}]->(b))
-    WITH [n IN nodes(p) | n.pubkey] AS chain
-    RETURN collect(chain)[..$max_paths] AS paths, count(*) AS path_count
+    RETURN [n IN nodes(p) | n.pubkey] AS path
     """
-    result = await session.run(
-        query,
-        from_pubkey=from_pubkey,
-        to_pubkey=to_pubkey,
-        max_paths=int(max_paths),
-    )
-    record = await result.single()
-    if record is None:
-        return [], 0
-    return record["paths"], record["path_count"]
+    records = await _shortest_path_records(session, query, from_pubkey, to_pubkey)
+    return [record["path"] for record in records]
+
+
+async def get_shortest_follow_hops(
+    session: AsyncNeoSession,
+    from_pubkey: str,
+    to_pubkey: str,
+    max_hops: int,
+) -> int | None:
+    """Hops along one shortest FOLLOWS path, or None when unreachable. Stops at
+    the first path found. Callers must not pass from == to.
+    """
+    _guard_max_hops(max_hops)
+    query = f"""
+    MATCH (a:NostrUser {{pubkey: $from_pubkey}}), (b:NostrUser {{pubkey: $to_pubkey}})
+    MATCH p = shortestPath((a)-[:FOLLOWS*..{max_hops}]->(b))
+    RETURN length(p) AS hops
+    """
+    records = await _shortest_path_records(session, query, from_pubkey, to_pubkey)
+    return records[0]["hops"] if records else None
 
 
 # ------------------------------ network alerts ------------------------------

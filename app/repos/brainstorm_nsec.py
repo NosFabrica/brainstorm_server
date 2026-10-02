@@ -11,6 +11,7 @@ from app.core.database import execute_db_statement, handle_no_data
 from app.core.loggr import loggr
 from app.db_models import BrainstormNsec, Scheduling, SchedulingSource
 from app.repos.scheduling_repo import get_default_scheduling_on_db, get_scheduling_on_db
+from app.utils.datetimes import utc_now
 from app.utils.encryption import decrypt_nsec, encrypt_nsec
 from app.utils.nostr import generate_random_nsec
 
@@ -71,7 +72,7 @@ async def update_last_time_triggered_graperank_on_db(
     pubkey: str,
     when: datetime | None = None,
 ) -> None:
-    when = when or datetime.now()
+    when = when or utc_now()
 
     statement = (
         update(BrainstormNsec)
@@ -87,7 +88,7 @@ async def update_last_time_calculated_graperank_on_db(
     pubkey: str,
     when: datetime | None = None,
 ) -> None:
-    when = when or datetime.now()
+    when = when or utc_now()
 
     statement = (
         update(BrainstormNsec)
@@ -103,7 +104,7 @@ async def update_last_time_published_graperank_on_db(
     pubkey: str,
     when: datetime | None = None,
 ) -> None:
-    when = when or datetime.now()
+    when = when or utc_now()
     statement = (
         update(BrainstormNsec)
         .where(BrainstormNsec.pubkey == pubkey)
@@ -117,7 +118,7 @@ async def update_assistant_kind0_published_at_on_db(
     pubkey: str,
     when: datetime | None = None,
 ) -> None:
-    when = when or datetime.now()
+    when = when or utc_now()
     statement = (
         update(BrainstormNsec)
         .where(BrainstormNsec.pubkey == pubkey)

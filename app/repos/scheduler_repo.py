@@ -6,8 +6,6 @@ platform observer and anyone with a run in flight. The pure ranking/eligibility
 decisions live in app/services/scheduler.py.
 """
 
-from datetime import datetime
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
@@ -20,15 +18,7 @@ from app.db_models import (
 )
 from app.repos.brainstorm_request_repo import in_pipeline_condition
 from app.services.scheduler import SchedulerCandidate
-
-
-def _as_naive_local(dt: datetime | None) -> datetime | None:
-    """DB timestamps may come back tz-aware depending on driver/column; the
-    scheduler compares against naive `datetime.now()`, so normalize to naive
-    local (same convention as periodic_graperank_trigger)."""
-    if dt is not None and dt.tzinfo is not None:
-        return dt.astimezone().replace(tzinfo=None)
-    return dt
+from app.utils.datetimes import as_naive_utc
 
 
 async def load_scheduler_candidates_on_db(
@@ -77,8 +67,8 @@ async def load_scheduler_candidates_on_db(
             priority=int(row.priority),
             interval_seconds=int(row.interval_seconds),
             enabled=bool(row.enabled),
-            last_published=_as_naive_local(row.last_published),
-            last_failed_at=_as_naive_local(row.last_failed_at),
+            last_published=as_naive_utc(row.last_published),
+            last_failed_at=as_naive_utc(row.last_failed_at),
         )
         for row in result.all()
     ]

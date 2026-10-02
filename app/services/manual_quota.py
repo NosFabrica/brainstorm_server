@@ -14,6 +14,7 @@ from app.repos.brainstorm_nsec import get_scheduling_for_pubkey_on_db
 from app.repos.brainstorm_request_repo import (
     count_successful_manual_runs_in_window_on_db,
 )
+from app.utils.datetimes import utc_now
 
 
 @dataclass
@@ -53,7 +54,7 @@ async def enforce_manual_quota(db: AsyncDBSession, pubkey: str) -> None:
         return
     limit = policy.manual_quota_limit
     window = policy.manual_quota_window_seconds
-    now = datetime.now()
+    now = utc_now()
     window_start = now - timedelta(seconds=window)
     count, oldest = await count_successful_manual_runs_in_window_on_db(
         db, pubkey, window_start

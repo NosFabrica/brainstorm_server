@@ -48,7 +48,8 @@ from app.schemas.schemas import (
     UnrecognisedStatusRow,
     UnresolvedSignupRow,
 )
-from app.services.billing_service import EntitlementReason, utc_now
+from app.services.billing_service import EntitlementReason
+from app.utils.datetimes import utc_now
 
 # Everything decide_entitlement knows how to act on. Anything else is a status
 # Flash has started sending that we hold subscribers on indefinitely.

@@ -17,6 +17,7 @@ from app.message_queue_tasks.ta_signing import (
     build_atag_deletion_builders,
     build_ta_event_builder,
     sign_ta_events_parallel,
+    sign_ta_shard,
 )
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
@@ -273,21 +274,23 @@ async def init_nostr_client(secret_key_nsec: str) -> Client:
     return client
 
 
-async def _sign_ta_events_sequential(
-    inputs: list[TaInput],
-    nostr_client: Client,
-) -> list[Event]:
-    """Sign each TA via the relay-connected client, one await at a time."""
+# TAs signed between event-loop yields on the sequential path: ~20ms of work,
+# so HTTP requests sharing the loop are never held up longer than that.
+SEQUENTIAL_SIGN_CHUNK = 100
+
+
+async def _sign_ta_events_sequential(inputs: list[TaInput], nsec: str) -> list[Event]:
+    """Sign each TA locally, in-process — the pool's worker body without the pool."""
     events: list[Event] = []
-    for ta_input in inputs:
-        builder = build_ta_event_builder(ta_input)
-        events.append(await nostr_client.sign_event_builder(builder))
+    for start in range(0, len(inputs), SEQUENTIAL_SIGN_CHUNK):
+        shard = inputs[start : start + SEQUENTIAL_SIGN_CHUNK]
+        events.extend(Event.from_json(j) for j in sign_ta_shard(shard, nsec))
+        await asyncio.sleep(0)
     return events
 
 
 async def get_events_from_graperank_result(
     grape_rank_result: GrapeRankResult,
-    nostr_client: Client,
     nsec: str,
     relay_full_sync: bool | None = None,
 ) -> list[Event]:
@@ -313,12 +316,13 @@ async def get_events_from_graperank_result(
     )
     logger.info(f"sorted scorecards! took {round(time.time() - start_time_sort, 2)}s")
 
-    # Count-gated signing: small (common) runs keep the simple sequential client
-    # loop; only a large burst pays for the process pool. Offloading the large
-    # sign to child processes both ~10×-speeds it and keeps the GIL-holding
-    # nostr-sdk signing off the event loop so concurrent requests aren't starved.
+    # Count-gated signing: small (common) runs sign in-process on the event loop,
+    # yielding between chunks; only a large burst pays for the process pool.
+    # Offloading the large sign to child processes both speeds it up and keeps
+    # the GIL-holding signing off the event loop so concurrent requests aren't
+    # starved.
     if len(inputs) <= settings.sign_parallel_threshold:
-        events = await _sign_ta_events_sequential(inputs, nostr_client)
+        events = await _sign_ta_events_sequential(inputs, nsec)
     else:
         logger.info(f"large sign ({len(inputs)} events): parallel process pool")
         events = await sign_ta_events_parallel(
@@ -502,7 +506,6 @@ async def process_nostr_upload_message(message: dict):
         with _timed(timings, "sign"):
             nostr_events = await get_events_from_graperank_result(
                 grape_rank_result,
-                nostr_client,
                 nsec_db_obj.nsec,
                 relay_full_sync=relay_full_sync,
             )

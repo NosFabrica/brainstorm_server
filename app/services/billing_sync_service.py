@@ -46,9 +46,9 @@ from app.services.billing_service import (
     decide_entitlement,
     is_admin_held,
     resolve_entitlement,
-    utc_now,
 )
 from app.services.flash_webhook_service import RECOGNISED_EVENTS, delivery_target
+from app.utils.datetimes import utc_now
 
 logger = loggr.get_logger(__name__)
 

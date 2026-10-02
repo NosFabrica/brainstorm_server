@@ -8,7 +8,6 @@ in-flight target, skipping any with no follows or a run in flight.
 import asyncio
 import socket
 import uuid
-from datetime import datetime
 
 from app.core.config import settings
 from app.core.database import db_session
@@ -30,6 +29,7 @@ from app.services.scheduler import (
     choose_admission_lane,
     rank_overdue_candidates,
 )
+from app.utils.datetimes import utc_now
 
 logger = loggr.get_logger(__name__)
 
@@ -64,7 +64,7 @@ async def _run_cycle(db) -> None:
         default_interval_seconds=default.schedule_interval_seconds,
         default_enabled=default.enabled,
     )
-    ranked = rank_overdue_candidates(candidates, datetime.now())
+    ranked = rank_overdue_candidates(candidates, utc_now())
 
     # Bucket into priority lanes (most-overdue first within each, from `ranked`).
     lanes: dict[int, list] = {}

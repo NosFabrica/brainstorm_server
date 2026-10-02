@@ -33,9 +33,9 @@ from app.services.billing_service import (
     SETTLED_REASONS,
     apply_entitlement,
     apply_payload_fallback,
-    utc_now,
 )
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
+from app.utils.datetimes import utc_now
 
 logger = loggr.get_logger(__name__)
 
