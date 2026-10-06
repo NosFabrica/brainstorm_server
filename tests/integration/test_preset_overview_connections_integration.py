@@ -36,14 +36,15 @@ from tests.integration.preset_graph import (
 
 pytestmark = pytest.mark.integration
 
-# node name -> (influence, trusted_reporters). influence None = property absent.
+# node name -> (influence, verified reporters). influence None = property absent.
 #
 # Tuned so that moving DEFAULT (follower 0.02 / muter 0.01 / reporter 0.1) →
 # RESTRICTIVE (all 0.5) changes every surface under test: the verified-only
 # list shrinks, tier buckets fall through, `f_medium_low` crosses into flagged,
 # and the subject itself becomes flagged from the observer's perspective.
 _NODES: dict[str, tuple[float | None, int]] = {
-    # 2 trusted reporters, so the subject is flagged once the line passes 0.4.
+    # 2 verified reporters (also in its reported_by), so the subject is flagged
+    # once the line passes 0.4.
     "subject": (0.4, 2),
     # followed_by — one per tier band, plus the strict-`>` edge case, a node
     # that only flags under a strict preset, an always-flagged one, and one
@@ -195,8 +196,8 @@ def test_lean_counts_query_agrees_with_the_full_overview_query(graph):
                     session,
                     graph["subject"],
                     f"influence_{observer}",
-                    f"trusted_reporters_{observer}",
                     verified_line=DEFAULT_CUTOFFS.verified_line,
+                    reporter_cutoff=DEFAULT_CUTOFFS.reporter,
                 )
         finally:
             await driver.close()
@@ -239,8 +240,9 @@ def test_verified_only_inbound_uses_the_sections_own_cutoff(graph):
             assert await _verified_total(client, subject, "followed_by") == 5
             # muter cutoff 0.01 → 0.05 and 0.015. The follower cutoff says 1.
             assert await _verified_total(client, subject, "muted_by") == 2
-            # reporter cutoff 0.1 → only 0.3. The follower cutoff says 2.
-            assert await _verified_total(client, subject, "reported_by") == 1
+            # reporter cutoff 0.1 → 0.3 and the two 0.9 pool reporters. The
+            # follower cutoff says 4.
+            assert await _verified_total(client, subject, "reported_by") == 3
 
     asyncio.run(body())
 

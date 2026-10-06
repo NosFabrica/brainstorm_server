@@ -328,6 +328,7 @@ async def get_trust_signals_endpoint(
         pubkeys=pubkeys,
         observer=resolve_observer(jwt_data),
         verified_line=cutoffs.verified_line,
+        reporter_cutoff=cutoffs.reporter,
     )
     return GetTrustSignalsResponse(data=TrustSignalsData(results=results))
 
@@ -345,6 +346,7 @@ async def get_user_overview_endpoint(
         pubkey=pubkey,
         observer=resolve_observer(jwt_data),
         verified_line=cutoffs.verified_line,
+        reporter_cutoff=cutoffs.reporter,
     )
     return GetUserOverviewResponse(data=result)
 

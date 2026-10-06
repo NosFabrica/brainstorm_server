@@ -347,8 +347,9 @@ async def get_outbound_counts_and_influence(
     session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
+    *,
     verified_line: float,
+    reporter_cutoff: float,
 ) -> OutboundOverview:
     """One round-trip: the user's own influence and tier, plus outbound counts,
     flagged_by_observer and a DISTINCT flagged_count across all relationships.
@@ -358,7 +359,8 @@ async def get_outbound_counts_and_influence(
     subject isn't rating anyone here.
 
     "Flagged" is *not verified* (influence `<= verified_line`, the complement of
-    the strict `>` used everywhere else) AND reported by 2+ trusted accounts."""
+    the strict `>` used everywhere else) AND reported by 2+ accounts above
+    `reporter_cutoff`, counted live."""
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
     CALL (user) {{
@@ -379,8 +381,8 @@ async def get_outbound_counts_and_influence(
         query,
         pubkey=pubkey,
         influence_key=influence_key,
-        trusted_reporters_key=trusted_reporters_key,
         verified_line=verified_line,
+        reporter_cutoff=reporter_cutoff,
         **_tier_band_params(),
     )
     record = await result.single()
@@ -407,8 +409,9 @@ async def get_trust_signals_for_pubkeys(
     session: AsyncNeoSession,
     pubkeys: list[str],
     influence_key: str,
-    trusted_reporters_key: str,
+    *,
     verified_line: float,
+    reporter_cutoff: float,
 ) -> dict[str, TrustSignalRow]:
     """`/overview`'s verdicts for many subjects in one UNWIND; unknown pubkeys unrated."""
     if not pubkeys:
@@ -426,8 +429,8 @@ async def get_trust_signals_for_pubkeys(
         query,
         pubkeys=pubkeys,
         influence_key=influence_key,
-        trusted_reporters_key=trusted_reporters_key,
         verified_line=verified_line,
+        reporter_cutoff=reporter_cutoff,
     )
     out = {pk: TrustSignalRow(None, False, False) for pk in pubkeys}
     async for record in result:
@@ -457,7 +460,7 @@ _TIER_PREDICATES: dict[str, str] = {
     # Bucket names match the GR result writer's count_values keys (see
     # message_queue_consumer.py). Placeholders:
     #   __INF__ → other[$influence_key]
-    #   __TR__  → coalesce(other[$trusted_reporters_key], 0)
+    #   __TR__  → the live verified-reporter count of `other`
     # Parameter names $tier_high/$tier_medium_high/$tier_medium are the upper
     # bounds of high/medium_high/medium respectively — kept stable as API
     # surface, the semantic boundary value doesn't change with renaming.
@@ -480,12 +483,20 @@ _TIER_PREDICATES: dict[str, str] = {
 }
 
 
+def _live_reporters(node: str = "other") -> str:
+    """Reporters of `node` strictly above the observer's preset reporter cutoff."""
+    return (
+        f"COUNT {{ (rr:NostrUser)-[:REPORTS]->({node}) "
+        "WHERE rr[$influence_key] > $reporter_cutoff }"
+    )
+
+
 def _expand(predicate: str, node: str = "other") -> str:
     """Bind the __INF__ / __TR__ placeholders to a node."""
     return (
         "("
         + predicate.replace("__INF__", f"{node}[$influence_key]").replace(
-            "__TR__", f"coalesce({node}[$trusted_reporters_key], 0)"
+            "__TR__", _live_reporters(node)
         )
         + ")"
     )
@@ -540,7 +551,6 @@ async def get_paginated_section_connections(
     session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
     rel_type: str,
     direction: str,
     limit: int,
@@ -552,6 +562,7 @@ async def get_paginated_section_connections(
     *,
     verified_cutoff: float,
     verified_line: float,
+    reporter_cutoff: float,
     order: str = "desc",
     tier: str | None = None,
     verified_only: bool = False,
@@ -585,10 +596,10 @@ async def get_paginated_section_connections(
     params: dict = {
         "pubkey": pubkey,
         "influence_key": influence_key,
-        "trusted_reporters_key": trusted_reporters_key,
         "limit": limit,
         "verified_cutoff": verified_cutoff,
         "verified_line": verified_line,
+        "reporter_cutoff": reporter_cutoff,
         **_tier_band_params(),
     }
     verified_pred = _expand(_verified("verified_cutoff"))
@@ -640,7 +651,7 @@ async def get_paginated_section_connections(
         RETURN collect({{
             pubkey: other.pubkey,
             influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key],
+            trusted_reporters: {_live_reporters()},
             tier: {_tier_case()},
             sort_inf: sort_inf
         }}) AS rows
@@ -671,18 +682,20 @@ async def get_paginated_flagged_connections(
     session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
-    verified_line: float,
     limit: int,
     cursor_inf: float | None,
     cursor_pk: str | None,
+    *,
+    verified_line: float,
+    reporter_cutoff: float,
     order: str = "desc",
     with_total: bool = False,
 ) -> tuple[list[UserConnectionItem], tuple[float, str] | None, int | None]:
     """DISTINCT flagged users across any relationship to `pubkey`. A user is
     flagged when (from `pubkey`'s perspective) they are not verified — influence
     at or below `verified_line`, the complement of the strict `>` used
-    everywhere else — AND at least 2 trusted reporters have reported them.
+    everywhere else — AND at least 2 reporters above `reporter_cutoff` report
+    them, counted live.
     Cursor-paginated by (influence <order>, pubkey ASC). Same shape as
     get_paginated_section_connections so the client can reuse one item type.
     When `with_total` is set, the DISTINCT flagged count is computed in the same
@@ -693,8 +706,8 @@ async def get_paginated_flagged_connections(
     params: dict = {
         "pubkey": pubkey,
         "influence_key": influence_key,
-        "trusted_reporters_key": trusted_reporters_key,
         "verified_line": verified_line,
+        "reporter_cutoff": reporter_cutoff,
         "limit": limit,
     }
     cursor_clause = ""
@@ -709,14 +722,13 @@ async def get_paginated_flagged_connections(
     # Both subqueries end in an aggregation (collect / count) so each always
     # yields exactly one row, even on an empty/last page.
     count_block = (
-        """
-    CALL (user) {
+        f"""
+    CALL (user) {{
         MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
-        WHERE other[$influence_key] IS NOT NULL
-          AND other[$influence_key] <= $verified_line
-          AND coalesce(other[$trusted_reporters_key], 0) >= 2
-        RETURN count(DISTINCT other) AS total
-    }"""
+        WITH DISTINCT other
+        WHERE {_expand(_TIER_PREDICATES[FLAGGED_TIER])}
+        RETURN count(other) AS total
+    }}"""
         if with_total
         else ""
     )
@@ -728,9 +740,7 @@ async def get_paginated_flagged_connections(
         MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
         WITH DISTINCT other,
              coalesce(other[$influence_key], -1.0) AS sort_inf
-        WHERE other[$influence_key] IS NOT NULL
-          AND other[$influence_key] <= $verified_line
-          AND coalesce(other[$trusted_reporters_key], 0) >= 2
+        WHERE {_expand(_TIER_PREDICATES[FLAGGED_TIER])}
           {cursor_clause}
         WITH other, sort_inf
         ORDER BY sort_inf {inf_order}, other.pubkey ASC
@@ -738,7 +748,7 @@ async def get_paginated_flagged_connections(
         RETURN collect({{
             pubkey: other.pubkey,
             influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key],
+            trusted_reporters: {_live_reporters()},
             sort_inf: sort_inf
         }}) AS rows
     }}{count_block}
@@ -777,9 +787,10 @@ async def get_all_section_stats(
     session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
     verified_cutoff_by_kind: dict[str, float],
+    *,
     verified_line: float,
+    reporter_cutoff: float,
 ) -> dict[str, ConnectionStats]:
     """Single-query version of get_section_stats covering all 6 relationships.
     ~20% faster than 6 parallel sessions on heavy accounts (1 round-trip).
@@ -793,8 +804,8 @@ async def get_all_section_stats(
     params: dict = {
         "pubkey": pubkey,
         "influence_key": influence_key,
-        "trusted_reporters_key": trusted_reporters_key,
         "verified_line": verified_line,
+        "reporter_cutoff": reporter_cutoff,
         **_tier_band_params(),
     }
     for name, rel_type, direction in _STATS_KINDS:
