@@ -1096,7 +1096,8 @@ async def get_shortest_follow_hops(
 # The work is split across three bounded queries rather than one big one,
 # because the only expensive input is the verified follower count:
 #
-#   1. get_network_alert_candidates    — property reads only, no edge walks
+#   1. get_network_alert_candidates    — live reporter count, follower count
+#                                        read off the node
 #   2. count_above_cutoff_followers_capped — counts followers, capped; used for
 #                                        any candidate with no stored count
 #   3. count_verified_muters           — display-only, over final rows only
@@ -1122,10 +1123,8 @@ async def get_shortest_follow_hops(
 #   `verified_reporter_count >= 3` is a superset of every possible alert. It
 #   applies before any arithmetic without dropping a qualifying row.
 #
-# Retraction is only partly live: the anchor is any live REPORTS edge, so
-# dropping the LAST one stops the alert at once, but the count itself is the
-# run-written `trusted_reporters_<observer>`. Retract 8 of 9 and it still
-# alerts at 9 until the next GrapeRank run.
+# Retraction is fully live: the reporter count is counted off live REPORTS
+# edges under the observer's reporter cutoff, not read from a stored property.
 #
 # Section membership uses the live (observer)-[:FOLLOWS]->(bob) edge, NOT
 # `hops_<observer> = 1`. The edge is maintained by kind-3 ingest (seconds
@@ -1163,10 +1162,14 @@ MATCH (observer:NostrUser {pubkey: $observer_pubkey})
 CALL (observer) {
     MATCH (:NostrUser)-[:REPORTS]->(bob:NostrUser)
     WITH DISTINCT observer, bob
-    WHERE coalesce(bob[$trusted_reporters_key], 0) >= $min_reporters
-      AND bob.pubkey <> observer.pubkey
-    WITH bob,
-         toInteger(coalesce(bob[$trusted_reporters_key], 0)) AS verified_reporters,
+    WHERE bob.pubkey <> observer.pubkey
+    WITH observer, bob,
+         COUNT {
+             (rr:NostrUser)-[:REPORTS]->(bob)
+             WHERE rr[$influence_key] > $reporter_cutoff
+         } AS verified_reporters
+    WHERE verified_reporters >= $min_reporters
+    WITH bob, verified_reporters,
          bob[$trusted_followers_key] AS stored_followers,
          bob[$influence_key] AS influence,
          bob[$hops_key] AS hops,
@@ -1186,8 +1189,9 @@ async def get_network_alert_candidates(
     influence_key: str,
     hops_key: str,
     trusted_followers_key: str,
-    trusted_reporters_key: str,
     cutoff: float,
+    *,
+    reporter_cutoff: float,
     max_candidates: int = MAX_ALERT_CANDIDATES,
 ) -> list[dict]:
     """Pubkeys that could be network alerts, before the report threshold applies.
@@ -1197,8 +1201,8 @@ async def get_network_alert_candidates(
     `stored_followers` comes back None when this observer has no GrapeRank run
     carrying `trusted_followers_<observer>` yet. The caller resolves those.
 
-    Touches no follower or muter edges: every value is a property read on the
-    candidate node itself.
+    Touches no follower or muter edges; the reporter count is live, over
+    REPORTS edges from raters above `reporter_cutoff`.
     """
     result = await session.run(
         _ALERT_CANDIDATES_QUERY,
@@ -1206,8 +1210,8 @@ async def get_network_alert_candidates(
         influence_key=influence_key,
         hops_key=hops_key,
         trusted_followers_key=trusted_followers_key,
-        trusted_reporters_key=trusted_reporters_key,
         cutoff=cutoff,
+        reporter_cutoff=reporter_cutoff,
         min_reporters=MIN_ALERT_REPORTERS,
         max_candidates=int(max_candidates),
     )
