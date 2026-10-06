@@ -534,6 +534,39 @@ def _tier_case(node: str = "other") -> str:
     return f"CASE {arms} ELSE null END"
 
 
+def _flagged_single_pass_query(
+    scan: str, where: str, row: str, order: str, has_cursor: bool
+) -> str:
+    """Flagged sets are small (>= 2 verified reports), so collect them once in
+    sort order and take both the cursor page and the total from that list."""
+    inf_order = "ASC" if order == "asc" else "DESC"
+    inf_cmp = ">" if order == "asc" else "<"
+    cursor = (
+        f" WHERE r.sort_inf {inf_cmp} $cursor_inf "
+        "OR (r.sort_inf = $cursor_inf AND r.pubkey > $cursor_pk)"
+        if has_cursor
+        else ""
+    )
+    return f"""
+    MATCH (user:NostrUser {{pubkey: $pubkey}})
+    CALL (user) {{
+        {scan}
+        WITH other, coalesce(other[$influence_key], -1.0) AS sort_inf
+        WHERE {where}
+        WITH other, sort_inf
+        ORDER BY sort_inf {inf_order}, other.pubkey ASC
+        RETURN collect({{other: other, pubkey: other.pubkey, sort_inf: sort_inf}}) AS flagged
+    }}
+    WITH [r IN flagged{cursor}][..$limit] AS page, size(flagged) AS total
+    CALL (page) {{
+        UNWIND page AS r
+        WITH r.other AS other, r.sort_inf AS sort_inf
+        RETURN collect({row}) AS rows
+    }}
+    RETURN rows, total
+    """
+
+
 def _row_to_item(row: dict) -> UserConnectionItem:
     return UserConnectionItem(
         pubkey=row["pubkey"],
@@ -613,33 +646,52 @@ async def get_paginated_section_connections(
     if verified_only:
         filter_parts.append(verified_pred)
 
-    page_parts = list(filter_parts)
-    if cursor_inf is not None and cursor_pk is not None:
+    has_cursor = cursor_inf is not None and cursor_pk is not None
+    if has_cursor:
         params["cursor_inf"] = cursor_inf
         params["cursor_pk"] = cursor_pk
-        page_parts.append(
-            f"(sort_inf {inf_cmp} $cursor_inf "
-            "OR (sort_inf = $cursor_inf AND other.pubkey > $cursor_pk))"
-        )
-    page_where = ("WHERE " + " AND ".join(page_parts)) if page_parts else ""
-    count_where = ("WHERE " + " AND ".join(filter_parts)) if filter_parts else ""
+    row = f"""{{
+            pubkey: other.pubkey,
+            influence: other[$influence_key],
+            trusted_reporters: {_live_reporters()},
+            tier: {_tier_case()},
+            sort_inf: sort_inf
+        }}"""
 
-    # Both subqueries end in an aggregation (collect / count), so each always
-    # yields exactly one row — even on an empty/last page. A plain row-streaming
-    # CALL returning zero rows would drop the outer row and lose `total`.
-    count_block = (
-        f"""
+    if tier == FLAGGED_TIER:
+        query = _flagged_single_pass_query(
+            scan=f"MATCH {scoped_pattern}",
+            where=" AND ".join(filter_parts),
+            row=row,
+            order=order,
+            has_cursor=has_cursor,
+        )
+    else:
+        page_parts = list(filter_parts)
+        if has_cursor:
+            page_parts.append(
+                f"(sort_inf {inf_cmp} $cursor_inf "
+                "OR (sort_inf = $cursor_inf AND other.pubkey > $cursor_pk))"
+            )
+        page_where = ("WHERE " + " AND ".join(page_parts)) if page_parts else ""
+        count_where = ("WHERE " + " AND ".join(filter_parts)) if filter_parts else ""
+
+        # Both subqueries end in an aggregation (collect / count), so each always
+        # yields exactly one row — even on an empty/last page. A plain row-streaming
+        # CALL returning zero rows would drop the outer row and lose `total`.
+        count_block = (
+            f"""
     CALL (user) {{
         MATCH {scoped_pattern}
         {count_where}
         RETURN count(other) AS total
     }}"""
-        if with_total
-        else ""
-    )
-    return_tail = "rows, total" if with_total else "rows"
+            if with_total
+            else ""
+        )
+        return_tail = "rows, total" if with_total else "rows"
 
-    query = f"""
+        query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}})
     CALL (user) {{
         MATCH {scoped_pattern}
@@ -648,13 +700,7 @@ async def get_paginated_section_connections(
         WITH other, sort_inf
         ORDER BY sort_inf {inf_order}, other.pubkey ASC
         LIMIT $limit
-        RETURN collect({{
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: {_live_reporters()},
-            tier: {_tier_case()},
-            sort_inf: sort_inf
-        }}) AS rows
+        RETURN collect({row}) AS rows
     }}{count_block}
     RETURN {return_tail}
     """
@@ -698,11 +744,9 @@ async def get_paginated_flagged_connections(
     them, counted live.
     Cursor-paginated by (influence <order>, pubkey ASC). Same shape as
     get_paginated_section_connections so the client can reuse one item type.
-    When `with_total` is set, the DISTINCT flagged count is computed in the same
-    round-trip. Returns (items, last_record_cursor_or_none, total_or_none)."""
-    inf_order = "ASC" if order == "asc" else "DESC"
-    inf_cmp = ">" if order == "asc" else "<"
-
+    One pass yields both the page and the DISTINCT flagged total; `with_total`
+    only decides whether the total is returned.
+    Returns (items, last_record_cursor_or_none, total_or_none)."""
     params: dict = {
         "pubkey": pubkey,
         "influence_key": influence_key,
@@ -710,59 +754,31 @@ async def get_paginated_flagged_connections(
         "reporter_cutoff": reporter_cutoff,
         "limit": limit,
     }
-    cursor_clause = ""
-    if cursor_inf is not None and cursor_pk is not None:
+    has_cursor = cursor_inf is not None and cursor_pk is not None
+    if has_cursor:
         params["cursor_inf"] = cursor_inf
         params["cursor_pk"] = cursor_pk
-        cursor_clause = (
-            f"AND (sort_inf {inf_cmp} $cursor_inf "
-            "OR (sort_inf = $cursor_inf AND other.pubkey > $cursor_pk))"
-        )
 
-    # Both subqueries end in an aggregation (collect / count) so each always
-    # yields exactly one row, even on an empty/last page.
-    count_block = (
-        f"""
-    CALL (user) {{
-        MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
-        WITH DISTINCT other
-        WHERE {_expand(_TIER_PREDICATES[FLAGGED_TIER])}
-        RETURN count(other) AS total
-    }}"""
-        if with_total
-        else ""
-    )
-    return_tail = "rows, total" if with_total else "rows"
-
-    query = f"""
-    MATCH (user:NostrUser {{pubkey: $pubkey}})
-    CALL (user) {{
-        MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
-        WITH DISTINCT other,
-             coalesce(other[$influence_key], -1.0) AS sort_inf
-        WHERE {_expand(_TIER_PREDICATES[FLAGGED_TIER])}
-          {cursor_clause}
-        WITH other, sort_inf
-        ORDER BY sort_inf {inf_order}, other.pubkey ASC
-        LIMIT $limit
-        RETURN collect({{
+    query = _flagged_single_pass_query(
+        scan=(
+            "MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)\n"
+            "        WITH DISTINCT other"
+        ),
+        where=_expand(_TIER_PREDICATES[FLAGGED_TIER]),
+        row=f"""{{
             pubkey: other.pubkey,
             influence: other[$influence_key],
             trusted_reporters: {_live_reporters()},
             sort_inf: sort_inf
-        }}) AS rows
-    }}{count_block}
-    RETURN {return_tail}
-    """
+        }}""",
+        order=order,
+        has_cursor=has_cursor,
+    )
 
     result = await session.run(query, **params)
     record = await result.single()
     rows = record["rows"] if record else []
-    total = (
-        (int(record["total"]) if record and record["total"] is not None else 0)
-        if with_total
-        else None
-    )
+    total = (int(record["total"]) if record else 0) if with_total else None
     # Every row matched the flagged predicate — the exact complement of
     # verified — so neither needs recomputing per row.
     items = [_row_to_item({**row, "tier": FLAGGED_TIER}) for row in rows]
