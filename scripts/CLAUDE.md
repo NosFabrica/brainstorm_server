@@ -69,8 +69,8 @@ Ad-hoc tools for poking ORE-05 search against a **deployed** host
 ### `trigger_graperank_all.py`
 
 Bulk-re-runs GrapeRank for **every** observer in `brainstorm_nsec` — the backfill
-lever for repopulating per-observer Vespa tensors (e.g. the new `follower_counts`,
-docs/search-vs-tapestry.md §8/§9). GrapeRank is expensive per observer, so:
+lever for re-asserting every observer's published TAs (e.g. after a new tag).
+GrapeRank is expensive per observer, so:
 
 - `--rate N` enqueues/min, `--limit N` cap per run — tune to the worker's throughput.
 - Resumable + observable via the `brainstorm_request` table (no fragile state):
@@ -81,23 +81,7 @@ docs/search-vs-tapestry.md §8/§9). GrapeRank is expensive per observer, so:
   brainstorm-server pod** (needs `.env` + DB + the graperank worker consuming).
 
 Note: the default observer alone covers anonymous/default search; this is for
-populating ALL personalized perspectives at once. See §8.5/§9.
-
-### `refeed_kind0_to_vespa.py`
-
-Re-feeds every kind-0 profile from the internal strfry into Vespa via the SAME
-ingest path the live consumer uses (`process_event_kind_0` → content/tags merge →
-`upsert_profile`). The backfill for P1 (docs/search-vs-tapestry.md §8.4/§9):
-populates the new `username` field and rebuilds the newly-indexed
-`nip05`/`lud16`/`website` fields for existing docs. The transferer only handles
-kinds 3/10000/1984, so this is the only kind-0 → Vespa re-feed path.
-
-- **Requires the schema changes deployed first** (username + indexed fields) —
-  else every `upsert_profile` fails on an unknown field.
-- Walks kind-0 newest→oldest by `until` cursor, dedups by pubkey, writes the
-  cursor to `--state-file` after each page → resumable.
-- `--concurrency` (parallel Vespa writes), `--page`, `--limit`, `--status`,
-  `--dry-run`. Run inside a brainstorm-server pod (needs `.env` + strfry + Vespa).
+refreshing ALL personalized perspectives at once.
 
 ### `clean_trusted_reporters_props.py`
 

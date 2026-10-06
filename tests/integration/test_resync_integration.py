@@ -5,8 +5,8 @@ Requires the real local Postgres (e.g. ``docker compose up -d``). Run with::
     poetry run pytest tests/integration -m integration
 
 Drives ``POST /admin/users/{pubkey}/resync`` against the live DB and asserts the
-enqueued BrainstormRequest row carries the right per-sink ``force_full_*`` flags
-for exactly that one observer. The Redis enqueue is stubbed so the test doesn't
+enqueued BrainstormRequest row carries ``force_full_relay`` for exactly that one
+observer. The Redis enqueue is stubbed so the test doesn't
 push a real GrapeRank job onto the shared queue.
 
 The request and the read-back run on a single asyncio loop (via httpx's
@@ -49,9 +49,7 @@ def admin_observer(monkeypatch) -> str:
 
     # Don't push a real GrapeRank job onto the shared queue from a test. The
     # enqueue lives in scheduler_lanes.enqueue_calc_request -> redis_client.rpush.
-    monkeypatch.setattr(
-        "app.services.scheduler_lanes.redis_client.rpush", AsyncMock()
-    )
+    monkeypatch.setattr("app.services.scheduler_lanes.redis_client.rpush", AsyncMock())
     app.dependency_overrides[verify_token] = _fake_verify_token
     app.dependency_overrides[verify_admin_access] = _fake_admin
     try:
@@ -60,35 +58,16 @@ def admin_observer(monkeypatch) -> str:
         app.dependency_overrides.clear()
 
 
-async def _post_resync(observer: str, target: str) -> httpx.Response:
+async def _post_resync(observer: str) -> httpx.Response:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.post(
-            f"/admin/users/{observer}/resync", params={"target": target}
-        )
+        return await client.post(f"/admin/users/{observer}/resync")
 
 
-def test_resync_rejects_unknown_target(admin_observer):
+def test_resync_persists_force_full_relay_for_one_observer(admin_observer):
     async def _run():
         try:
-            resp = await _post_resync(admin_observer, "everything")
-            assert resp.status_code == 422
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_run())
-
-
-@pytest.mark.parametrize(
-    "target,expected",
-    [("relay", (True, False)), ("vespa", (False, True)), ("both", (True, True))],
-)
-def test_resync_persists_force_full_flags_for_one_observer(
-    admin_observer, target, expected
-):
-    async def _run():
-        try:
-            resp = await _post_resync(admin_observer, target)
+            resp = await _post_resync(admin_observer)
             assert resp.status_code == 200
             request_id = resp.json()["data"]["private_id"]
 
@@ -100,12 +79,8 @@ def test_resync_persists_force_full_flags_for_one_observer(
                         )
                     )
                 ).scalar_one()
-                # The row carries the right per-sink overrides, for this one
-                # observer (a single recompute, never a fan-out).
-                assert (
-                    bool(row.force_full_relay),
-                    bool(row.force_full_vespa),
-                ) == expected
+                # A single recompute for this one observer, never a fan-out.
+                assert row.force_full_relay is True
                 assert row.pubkey == admin_observer
 
                 await db.execute(

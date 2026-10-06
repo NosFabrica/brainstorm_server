@@ -11,6 +11,11 @@ from fastapi import HTTPException, status
 
 from app.utils.observer import default_observer_pubkey
 
+_SEARCH_RELEVANCE = (
+    "rank = search relevance: kind-0 text match weighted by GrapeRank trust; "
+    "query-relative"
+)
+
 # Endpoint -> ordered list of supported Algorithm Objects. The first element of
 # each list is the default algorithm for that endpoint (ORE-01 §"Algorithm
 # selection").
@@ -40,17 +45,13 @@ CAPABILITY_DOC: dict[str, list[dict]] = {
             "id": "relevance",
             "name": "Relevance (global)",
             "description": (
-                "kind 0 profile text-matching score multiplied by a "
-                "web-of-trust metric (default perspective)"
+                f"{_SEARCH_RELEVANCE} (the provider's House Observer's trust)"
             ),
         },
         {
             "id": "relevance-pov",
             "name": "Relevance (personalized)",
-            "description": (
-                "kind 0 profile text-matching score multiplied by a "
-                "web-of-trust metric (personalized)"
-            ),
+            "description": f"{_SEARCH_RELEVANCE} (the pov's own trust)",
             "pov": True,
         },
     ],

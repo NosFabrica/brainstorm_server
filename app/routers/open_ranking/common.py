@@ -14,7 +14,7 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 # Per-endpoint TTL hints (seconds). The protocol treats these as advisory.
 # Aligned with how frequently the underlying data changes:
 #   stats / rank / followers / muters -> GrapeRank cadence (hour-ish)
-#   search -> Vespa index updates near-real-time but profile churn matters less
+#   search -> the search relay updates near-real-time but profile churn matters less
 TTL_HINTS: dict[str, int] = {
     "/stats/pubkey": 3600,
     "/rank/pubkeys": 3600,

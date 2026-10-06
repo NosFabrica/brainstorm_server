@@ -2,7 +2,7 @@
 
 FastAPI service that backs the Brainstorm app. It ingests Nostr events,
 maintains a follow/mute/report graph, drives GrapeRank trust-score
-computations, and exposes a profile search backed by Vespa.
+computations, and publishes the scores to nostr as Trusted Assertions.
 
 The wire format this server publishes — kind-30382 Trusted Assertions and their
 kind-10040 designation — is specified in
@@ -20,22 +20,17 @@ The map of the estate's repos and deployments is
 | **PostgreSQL** | Domain DB, including the share-link records (`short_url`). Alembic migrations in `alembic/`. Schema = `app/db_models/`. |
 | **Neo4j** | Graph DB. Stores follow/mute/report relationships per `NostrUser` pubkey. |
 | **Redis** | Message queue (between strfry plugin → kind-event consumer, and between graperank workers → score uploader), reverse-set caches (`followed_by:<pubkey>`, `muted_by:<pubkey>`, `reported_by:<pubkey>`), and rate-limit counters (including the shortener's — its *records* live in PostgreSQL, see [`app/routers/shorturl/`](app/routers/shorturl/CLAUDE.md)). |
-| **Vespa** | Search engine for Nostr profiles. Per-observer trust scores live in a sparse `quality_scores` tensor on each doc, keyed by observer pubkey. See `app/core/vespa.py`. |
+| **Search relay** | The shared vespa-relay (`SEARCH_RELAY_URL`). Mirrors the 30382s we publish; ORE-05 reads its `/ore/search`. See `app/core/search_relay.py`. |
 | **strfry / neofry** | Local Nostr relays. The server publishes signed TA (Trusted Assertions) events to them and consumes incoming events. |
 | **Nostr SDK** | `nostr_sdk` Python bindings, used for parsing pubkeys (npub ↔ hex), event signing, and relay clients. |
 
-## Three key flows worth knowing
+## Two key flows worth knowing
 
-### 1. Kind-0 (profile metadata) ingestion
-`Redis queue strfry:events` → [`message_queue_consumer.consume_strfry_plugin_messages`](app/message_queue_tasks/message_queue_consumer.py) → [`process_strfry_event`](app/message_queue_tasks/process_strfry_event.py) → for kind 0, [`vespa.upsert_profile(pubkey, profile)`](app/core/vespa.py). Partial update with `create=true`: existing tensor cells (scores) are preserved; missing kind-0 fields are cleared to `""`.
+### 1. GrapeRank score publishing
+`Redis queue nostr_results_message_queue` → [`consume_nostr_upload_messages`](app/message_queue_tasks/message_queue_consumer.py) → [`process_nostr_upload_message`](app/message_queue_tasks/upload_nostr_events.py) → signs TA events and publishes them to the relays. The search relay picks the scores up from there; the server writes to no search index.
 
-### 2. GrapeRank score upsert + Nostr publishing
-`Redis queue nostr_results_message_queue` → [`consume_nostr_upload_messages`](app/message_queue_tasks/message_queue_consumer.py) → [`process_nostr_upload_message`](app/message_queue_tasks/upload_nostr_events.py) → signs TA events, publishes to relays, and calls [`upsert_scores_to_vespa`](app/message_queue_tasks/upload_nostr_events.py) → [`vespa.batch_upsert_scores`](app/core/vespa.py) which fans out N concurrent POSTs (bounded at `_BATCH_CONCURRENCY = 32`). Scores are mirrored for **every** observer (keyed by the observer's pubkey in the `quality_scores` tensor), not just `settings.periodic_graperank_pubkey`.
-
-Failure policy: Vespa is a search mirror. The Nostr publish is the source of truth — Vespa failures are logged but never propagate.
-
-### 3. Profile search
-Profile search is served by the shared search relay (`wss://search.brainstorm.world`, vespa-relay), not this server. The only search endpoint left here is ORE-05 `POST /search/pubkeys` ([`open_ranking/search.py`](app/routers/open_ranking/search.py)), still on the internal Vespa.
+### 2. Profile search
+Profile search is served by the shared search relay (`wss://search.brainstorm.world`, vespa-relay), not this server. The only search endpoint left here is ORE-05 `POST /search/pubkeys` ([`open_ranking/search.py`](app/routers/open_ranking/search.py)), which proxies the relay's HTTP `/ore/search` ([`app/core/search_relay.py`](app/core/search_relay.py), `SEARCH_RELAY_URL`): `rank` is the relay's Search relevance, and the relay's lens gates `relevance-pov`.
 
 ## Directory map
 
@@ -44,7 +39,7 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 | Path | What's inside |
 |---|---|
 | [`app/api.py`](app/api.py) | FastAPI app + lifespan. Spawns all the background asyncio tasks. |
-| [`app/core/`](app/core/CLAUDE.md) | Shared infra: config, vespa client, redis, neo4j driver, logging. |
+| [`app/core/`](app/core/CLAUDE.md) | Shared infra: config, search-relay client, redis, neo4j driver, logging. |
 | [`app/cronjobs/`](app/cronjobs/CLAUDE.md) | Time-based recurring tasks (stale-job sweep, periodic graperank trigger). |
 | [`app/db_models/`](app/db_models/CLAUDE.md) | SQLAlchemy models (PostgreSQL). |
 | [`app/message_queue_tasks/`](app/message_queue_tasks/CLAUDE.md) | Redis-driven consumers + the strfry-event dispatcher. |
@@ -61,36 +56,23 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 | [`BIBLE.md`](BIBLE.md) | The narrative layer — the life of a Brainstorm request, store truth-rankings, keys and identity, what's built, design decisions. Read it to onboard. |
 | [`CONTEXT.md`](CONTEXT.md) | The domain glossary (ubiquitous language): TA, Observer/Observee, Influence vs Rank, the request lifecycle. Read it before naming anything. |
 | [`engineering-team/`](engineering-team/) | Book-of-work artifacts (stories, ADRs, test plans, reviews, audits), run per tapestry's engineering harness. **Strictness: Light (trial)** — gates and lanes in [`workflows/light-profile.md`](engineering-team/workflows/light-profile.md); one Standard control book first, per its trial protocol. Loose ends: `engineering-team/OPEN.md`. |
-| [`docs/`](docs/) | Working docs: the search engineering essays (Meilisearch-vs-Vespa, precision, trust-vs-exact-match) and ADRs (`docs/adr/`). |
+| [`docs/`](docs/) | Working docs: the (historical) internal-Vespa search essays and ADRs (`docs/adr/`). |
 | `start.sh` | Entrypoint: `alembic upgrade head && uvicorn app.api:app`. |
 | `docker-compose.yml` | Local stack (postgres, redis, neo4j, strfry, neofry). |
 | `env.example` | All env vars. Copy to `.env` and fill in. |
 
 ## Conventions
 
-- **Everything is async** — FastAPI endpoints, DB calls (`asyncpg`, `neo4j.AsyncDriver`, `redis.asyncio`), and Vespa HTTP calls. Don't introduce blocking I/O.
+- **Everything is async** — FastAPI endpoints, DB calls (`asyncpg`, `neo4j.AsyncDriver`, `redis.asyncio`), and outbound HTTP. Don't introduce blocking I/O.
 - **Settings via Pydantic** in `app/core/config.py`. Add a `Field(...)` for required vars, `Field(default=...)` for optional. Mirror in `env.example`.
 - **Background tasks are spawned in the FastAPI lifespan** (`app/api.py`) with `asyncio.create_task` and cancelled in the `finally` block. Add new long-running consumers there.
 - **Loggers**: `from app.core.loggr import loggr; logger = loggr.get_logger(__name__)`. Don't use `print` or stdlib `logging` directly.
 - **Client tag**: every event we sign carries `client_tag()` ([`app/utils/client_tag.py`](app/utils/client_tag.py)) — add it to any new `EventBuilder`.
-- **Vespa is best-effort**: writes are mirrored from Nostr/PostgreSQL/Neo4j — failures get logged, don't get raised. The reverse isn't true: the *graph* and *Postgres* are source-of-truth and their writes must succeed.
-
-## Vespa specifics
-
-- The application package (schema, services.xml, hosts.xml) lives out of repo. **Deployed source of truth: the kube chart's copy** (`brainstorm-k8s`, called `nosfabrica-kube` in the search docs — `charts/brainstorm/vespa-app/`). The copy in `brainstorm_one_click_deployment/vespa-app/` is **stale** (it predates the NaN-guard fix) and is for local dev only — see the header notes of [`docs/search-precision-and-filtering.md`](docs/search-precision-and-filtering.md). The brainstorm-server speaks only HTTP to a running Vespa via `settings.vespa_url`.
-- **Per-observer scores** = cells in the `quality_scores` sparse tensor `tensor<int8>(user{})`. The cell address is the observer's pubkey (hex). Upsert = `add` op; delete = `remove` op.
-- **Profile partial updates** = `POST /document/v1/doc/doc/docid/<pubkey>?create=true` with `{"fields": {field: {"assign": value}}}`. The `create=true` makes it act like an upsert.
-- **Search ranking** uses `name_and_quality_score_only`. The query passes `ranking.features.query(user_q)={<observer>:1.0}` so the rank profile picks that observer's score from the tensor.
-- The shared `httpx.AsyncClient` in `app/core/vespa.py` is initialized lazily and closed in the FastAPI lifespan shutdown via `vespa.aclose()`. **Don't open ad-hoc httpx clients elsewhere for Vespa calls** — reuse this one.
 
 ## Common tasks
 
 | I want to… | Look at… |
 |---|---|
-| Add a new Vespa field | the kube chart's `vespa-app/schemas/doc.sd` (deployed source of truth — see Vespa specifics) + update `vespa.upsert_profile` if it's a profile field |
-| Change the search rank profile | `vespa-app/schemas/doc.sd` (rank-profile blocks). Re-deploy needed but no re-feed unless you added a field |
-| Change profile-field clear behaviour | `vespa.upsert_profile` (currently assigns `""` when the new event omits the field) |
-| Adjust score upsert concurrency | `_BATCH_CONCURRENCY` in `app/core/vespa.py` |
 | Add a new redis consumer | `app/message_queue_tasks/` + spawn the task in `app/api.py` lifespan |
 | Add an HTTP endpoint | Create a router under `app/routers/<topic>/router.py`, register it in `app/routers/router.py` |
 | Add an env var | `app/core/config.py` + `env.example` + the relevant compose file |
@@ -99,12 +81,10 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 ## Run locally
 
 ```bash
-cp env.example .env             # then fill in DB creds, neo4j password, vespa URL, etc.
+cp env.example .env             # then fill in DB creds, neo4j password, etc.
 docker compose up -d            # postgres, redis, neo4j, strfry, neofry
 ./start.sh                      # runs alembic migrations then uvicorn
 ```
-
-Vespa is **not** in this compose — it lives in `brainstorm_one_click_deployment`. Either point `VESPA_URL` at a Vespa you run from that repo, or at a remote deploy.
 
 ## Deploying to staging
 
@@ -117,7 +97,4 @@ or start a new cycle — is documented in
 
 - **Prod timestamptz drift.** A few **production** timestamp columns are `timestamp WITH time zone` while migrations/staging/local are naive (`brainstorm_request.*`, most of `brainstorm_nsec.*`, `brainstorm_nostr_relay_transfer.*` — but NOT `last_time_published_graperank`, `scheduling`, `graperank_preset*`, `observerwhitelist`). asyncpg returns tz-aware datetimes from those, so comparing them against naive `utc_now()` throws `can't subtract offset-naive and offset-aware datetimes` **on prod only**. Pass DB values through `as_naive_utc()` (`app/utils/datetimes.py`) at any such boundary.
 
-- **`MAX_QUERY_WORDS = 6`** in `vespa.py` caps how many words of the search query get treated as separate match groups. Longer queries are truncated.
-- **`VESPA_FULL_SYNC` / `RELAY_FULL_SYNC`** (in `app/core/config.py`, both default `False`) re-push every above-cutoff scorecard on each graperank run when `True`. Delta is the steady state; drift is repaired by `FULL_SYNC_EVERY_N_RUNS` + the admin resync.
-- **Vespa needs `about_gram` to exist in the schema** for partial bio matches ("nosfab" → "nosfabrica") to work. If you wipe the volume and re-deploy, you also need to refeed (or `vespa reindex`) so the derived `about_gram` field gets populated.
-- **The brainstorm-server's docker-compose.yml** does NOT include Vespa. Vespa is provided by the sibling `brainstorm_one_click_deployment` repo. Set `VESPA_URL` accordingly.
+- **`RELAY_FULL_SYNC`** (in `app/core/config.py`, default `False`) re-pushes every above-cutoff scorecard on each graperank run when `True`. Delta is the steady state; drift is repaired by `FULL_SYNC_EVERY_N_RUNS` + the admin resync.

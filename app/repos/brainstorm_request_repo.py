@@ -430,7 +430,6 @@ async def create_brainstorm_request_on_db(
     graperank_preset_used: str | None = None,
     graperank_params: dict | None = None,
     force_full_relay: bool = False,
-    force_full_vespa: bool = False,
     trigger_source: str = TriggerSource.MANUAL.value,
 ) -> BrainstormRequest:
     new_brainstorm_request_obj = BrainstormRequest(
@@ -440,7 +439,6 @@ async def create_brainstorm_request_on_db(
         graperank_preset_used=graperank_preset_used,
         graperank_params=graperank_params,
         force_full_relay=force_full_relay,
-        force_full_vespa=force_full_vespa,
         trigger_source=trigger_source,
     )
 

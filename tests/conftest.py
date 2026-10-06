@@ -73,7 +73,6 @@ _DUMMY_ENV = {
     "FLASH_API_KEY": "sk_live_test",
     "FLASH_WEBHOOK_SECRET": "whsec_test_secret",
     "PUBLIC_BASE_URL": "http://localhost:8080",
-    "VESPA_URL": "http://localhost:8080",
     # Default observer perspective for the Open Ranking endpoints (their global
     # algorithms resolve the observer to this pubkey).
     "PERIODIC_GRAPERANK_PUBKEY": (

@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
@@ -27,6 +28,13 @@ def _plaintext_nsec(nsec: str, encrypted_nsec: str | None) -> str:
 
 def _resolve_plaintext_nsec(row: BrainstormNsec) -> str:
     return _plaintext_nsec(row.nsec, row.encrypted_nsec)
+
+
+def _assistant_pubkey(nsec: str, encrypted_nsec: str | None) -> str:
+    """The Assistant pubkey: the public half of the row's nsec (not the owner
+    `pubkey` column). Raises when the nsec won't decrypt or parse."""
+    plaintext = _plaintext_nsec(nsec, encrypted_nsec)
+    return Keys.parse(secret_key=plaintext).public_key().to_hex()
 
 
 async def get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
@@ -320,19 +328,6 @@ async def set_scheduling_for_pubkey_on_db(
     await db.execute(statement)
 
 
-async def set_is_observer_search_available_by_pubkey_on_db(
-    db: AsyncDBSession,
-    pubkey: str,
-    is_available: bool = True,
-) -> None:
-    statement = (
-        update(BrainstormNsec)
-        .where(BrainstormNsec.pubkey == pubkey)
-        .values(is_observer_search_available=is_available)
-    )
-    await db.execute(statement)
-
-
 async def increment_runs_since_full_on_db(db: AsyncDBSession, pubkey: str) -> None:
     """Count one more scheduled delta toward the every-Nth full backstop."""
     statement = (
@@ -353,16 +348,6 @@ async def reset_runs_since_full_on_db(db: AsyncDBSession, pubkey: str) -> None:
     await db.execute(statement)
 
 
-async def get_is_observer_search_available_by_pubkey_on_db(
-    db: AsyncDBSession, pubkey: str
-) -> bool:
-    statement = select(BrainstormNsec.is_observer_search_available).where(
-        BrainstormNsec.pubkey == pubkey
-    )
-    result = await execute_db_statement(db, statement, __name__)
-    return bool(result.scalar_one_or_none())
-
-
 async def brainstorm_nsec_exists_by_pubkey_on_db(
     db: AsyncDBSession, pubkey: str
 ) -> bool:
@@ -373,21 +358,50 @@ async def brainstorm_nsec_exists_by_pubkey_on_db(
 
 async def get_pov_availability_fields_on_db(
     db: AsyncDBSession, pubkey: str
-) -> tuple[bool, bool, bool]:
+) -> tuple[bool, bool]:
     """Availability signals for the Open Ranking pov gate, without touching
-    nsec columns: `(row_exists, graperank_calculated, search_available)`.
-    A missing row returns `(False, False, False)`.
+    nsec columns: `(row_exists, graperank_calculated)`. A missing row returns
+    `(False, False)`.
     """
+    statement = select(BrainstormNsec.last_time_calculated_graperank).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    row = result.first()
+    if row is None:
+        return False, False
+    return True, row[0] is not None
+
+
+@dataclass(frozen=True)
+class PovSearchFields:
+    """What the ORE-05 lens gate needs about a pov. `assistant` is None both
+    for a missing row and for one whose nsec is unusable; `nsec_unusable`
+    tells them apart."""
+
+    assistant: str | None
+    published_at: datetime | None
+    nsec_unusable: bool = False
+
+
+async def get_pov_search_fields_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> PovSearchFields:
     statement = select(
-        BrainstormNsec.last_time_calculated_graperank,
-        BrainstormNsec.is_observer_search_available,
+        BrainstormNsec.nsec,
+        BrainstormNsec.encrypted_nsec,
+        BrainstormNsec.last_time_published_graperank,
     ).where(BrainstormNsec.pubkey == pubkey)
     result = await execute_db_statement(db, statement, __name__)
     row = result.first()
     if row is None:
-        return False, False, False
-    last_calculated, search_available = row
-    return True, last_calculated is not None, bool(search_available)
+        return PovSearchFields(assistant=None, published_at=None)
+    nsec, encrypted_nsec, published = row
+    try:
+        return PovSearchFields(_assistant_pubkey(nsec, encrypted_nsec), published)
+    except Exception as e:
+        logger.error(f"Unusable nsec for {pubkey}: {e}")
+        return PovSearchFields(None, published, nsec_unusable=True)
 
 
 async def select_all_assistant_pubkeys_on_db(db: AsyncDBSession) -> list[str]:
@@ -404,8 +418,7 @@ async def select_all_assistant_pubkeys_on_db(db: AsyncDBSession) -> list[str]:
     pubkeys: list[str] = []
     for nsec, encrypted_nsec in result.all():
         try:
-            plaintext = _plaintext_nsec(nsec, encrypted_nsec)
-            pubkeys.append(Keys.parse(secret_key=plaintext).public_key().to_hex())
+            pubkeys.append(_assistant_pubkey(nsec, encrypted_nsec))
         except Exception as e:
             logger.error(f"Skipping a brainstorm_nsec row with an unusable nsec: {e}")
     return pubkeys

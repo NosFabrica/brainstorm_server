@@ -5,6 +5,8 @@
 **Story:** `engineering-team/stories/trusted-lists/1-trusted-lists-from-taggings.md`
 **Issue:** [NosFabrica/brainstorm_server#73](https://github.com/NosFabrica/brainstorm_server/issues/73)
 
+> **Superseded in part (2026-10):** the server no longer runs its own Vespa (`app/core/vespa*.py`, `app/routers/search/` are deleted); the Vespa references below are historical.
+
 ## Context
 
 Issue #73 asks for admin-triggered generation and publication of one kind-30392

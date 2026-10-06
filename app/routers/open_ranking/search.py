@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import math
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
-from app.core.vespa import DEFAULT_MIN_RANK, RANK_PROFILE_SORT_FOLLOWERS
-from app.core.vespa import search as vespa_search
-from app.routers.open_ranking.availability import ensure_pov_available
+from app.core.search_relay import SearchRelayUnavailable, ore_search
+from app.routers.open_ranking.availability import (
+    ensure_pov_available,
+    ensure_search_lens_serves_pov,
+)
 from app.routers.open_ranking.capabilities import resolve_algorithm
 from app.routers.open_ranking.common import (
     MAX_QUERY_LEN,
@@ -37,18 +38,6 @@ MAX_LIMIT = 400
 _SANITIZE_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def _safe_rank(value) -> float:
-    if value is None:
-        return 0.0
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if math.isnan(f) or math.isinf(f):
-        return 0.0
-    return f
-
-
 @router.post(
     "/search/pubkeys",
     response_model=SearchPubkeysResponse,
@@ -60,7 +49,8 @@ async def search_pubkeys(
     signer: str | None = Depends(optional_nwt_signer),
     db: AsyncDBSession = Depends(get_db),
 ) -> SearchPubkeysResponse:
-    if not isinstance(req.query, str) or not req.query.strip():
+    sanitized = _SANITIZE_RE.sub("", req.query).strip()
+    if not sanitized:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="query field is missing or empty",
@@ -78,37 +68,19 @@ async def search_pubkeys(
         "/search/pubkeys", req.algorithm, pov, forced_observer=signer
     )
     await ensure_pov_available(db, "/search/pubkeys", algo_id, observer)
-    sanitized = _SANITIZE_RE.sub("", req.query).strip()
 
-    # ORE-05 requires results "sorted by rank in descending order", i.e. the
-    # returned rank MUST be the ordering key. That key is Vespa's relevance
-    # (text match x observer-trust multiplier) — the "relevance" score this
-    # endpoint advertises — NOT the 0-100 Trusted-Assertions GrapeRank value
-    # (clients get that from /rank/pubkeys). Vespa already returns hits in
-    # relevance-descending order, so the response is sorted by construction.
-    #
-    # The explicit arguments keep ordering trust-aware:
-    # min_rank=DEFAULT_MIN_RANK drops profiles below the observer-rank floor
-    # (influence*100 < 2) and include_zero_score_results=False drops unranked
-    # profiles. Without both filters, zero-trust exact-name matches enter at
-    # trust multiplier 1.0 and flood the results (bots above ranked users).
-    # min_rank must also never be omitted: the schema default (-1e9) flattens
-    # the trust multiplier to a constant and degrades ordering to pure text.
-    hits = await vespa_search(
-        query_text=sanitized,
-        user_pubkey=observer,
-        hits=limit,
-        include_zero_score_results=False,
-        ranking_profile=RANK_PROFILE_SORT_FOLLOWERS,
-        min_rank=DEFAULT_MIN_RANK,
-    )
+    # rank is the relay's own search relevance, in the relay's order: the
+    # number that orders the results, never a server-side estimate.
+    try:
+        found = await ore_search(sanitized, observer, limit)
+    except SearchRelayUnavailable as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
+        ) from e
+    await ensure_search_lens_serves_pov(db, algo_id, observer, found.lens)
 
-    results: list[RankResult] = []
-    for h in hits:
-        pk = h.get("pubkey")
-        if not isinstance(pk, str):
-            continue
-        results.append(RankResult(pubkey=pk, rank=_safe_rank(h.get("_relevance"))))
+    # The relay caps hits at the limit it was passed.
+    results = [RankResult(pubkey=h.pubkey, rank=h.score) for h in found.hits]
 
     return SearchPubkeysResponse(
         results=results,

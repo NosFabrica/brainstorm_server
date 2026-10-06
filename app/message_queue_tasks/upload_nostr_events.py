@@ -9,7 +9,6 @@ from nostr_sdk import Client, ClientMessage, Event, Keys, NostrSigner  # type: i
 from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
-from app.core.vespa import batch_upsert_scores
 from app.db_models import BrainstormRequestStatus
 from app.message_queue_tasks.ta_signing import (
     UNREACHABLE_HOPS,
@@ -24,7 +23,6 @@ from app.repos.brainstorm_nsec import (
     get_last_published_pubkeys_by_pubkey_on_db,
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
     reset_runs_since_full_on_db,
-    set_is_observer_search_available_by_pubkey_on_db,
     update_assistant_kind0_published_at_on_db,
     update_last_published_pubkeys_by_pubkey_on_db,
     update_last_time_published_graperank_on_db,
@@ -90,7 +88,7 @@ def compute_delete_observees(
     below_cutoff: list[str],
     sweep_below_cutoff: bool,
 ) -> list[str]:
-    """One sink's delete set — computed from a local diff, no relay read.
+    """The relay's delete set — computed from a local diff, no relay read.
 
     Default: `previously_published - currently_published` (everything we'd
     published that is no longer above cutoff; this subsumes both genuine removals
@@ -99,9 +97,9 @@ def compute_delete_observees(
     `sweep_below_cutoff` additionally deletes every below-cutoff Observee, reaping
     orphans the diff can't see (legacy sub-cutoff rows, best-effort-write
     leftovers). Nearly all of those were never published, so the sweep is mostly
-    no-op deletes that still cost a kind-5 tombstone (relay) / a remove op
-    (Vespa) — hence its own gate (`settings.*_sweep_below_cutoff`), NOT tied to
-    full-sync: full-sync re-asserts, it does not decide what to delete."""
+    no-op deletes that still cost a kind-5 tombstone — hence its own gate
+    (`settings.relay_sweep_below_cutoff`), NOT tied to full-sync: full-sync
+    re-asserts, it does not decide what to delete."""
     return _delete_from_sets(
         set(previously_published) - set(currently_published),
         set(below_cutoff),
@@ -113,34 +111,24 @@ class PublishPlan(NamedTuple):
     """What one publish run does with an algo result, decided up front.
 
     `currently_published` is every above-cutoff Observee (the new published-state
-    to persist). `relay_deletes` / `vespa_deletes` are each sink's delete set:
-    equal whenever both sinks sweep the same way, but genuinely independent,
-    because the sinks pay different prices for a sweep (a Vespa remove is a cheap
-    idempotent op; a relay delete costs a kind-5 tombstone) and an admin resync
-    can target one sink alone."""
+    to persist); `deletes` is the relay delete set."""
 
     currently_published: list[str]
-    relay_deletes: list[str]
-    vespa_deletes: list[str]
+    deletes: list[str]
 
 
 def plan_publish(
     grape_rank_result: GrapeRankResult,
     previously_published: list[str],
     cutoff: float,
-    sweep_relay: bool = False,
-    sweep_vespa: bool = False,
+    sweep_below_cutoff: bool = False,
 ) -> PublishPlan:
-    """Decide the per-sink delete sets + the new published-state from one algo
-    result, with no relay read. Pure, so the whole publish decision is testable
-    against algo results without DB/relay/signing.
+    """Decide the delete set + the new published-state from one algo result, with
+    no relay read. Pure, so the whole publish decision is testable against algo
+    results without DB/relay/signing.
 
-    Partitions scorecards into above/below cutoff in a single pass, builds each
-    set once, and reuses them across both sinks — when the two sweep flags match
-    (the common case) the delete set is computed once and shared.
-
-    The delete sets do NOT depend on the full-sync flags — those decide what each
-    sink re-asserts, not what it deletes (see `compute_delete_observees`)."""
+    The delete set does NOT depend on full-sync — that decides what is
+    re-asserted, not what is deleted (see `compute_delete_observees`)."""
     assert grape_rank_result.scorecards is not None
     currently_published: list[str] = []
     above: set[str] = set()
@@ -153,34 +141,30 @@ def plan_publish(
             below.add(sc.observee)
 
     fell_off = set(previously_published) - above
-    relay_deletes = _delete_from_sets(fell_off, below, sweep_relay)
-    vespa_deletes = (
-        relay_deletes
-        if sweep_relay == sweep_vespa
-        else _delete_from_sets(fell_off, below, sweep_vespa)
+    return PublishPlan(
+        currently_published, _delete_from_sets(fell_off, below, sweep_below_cutoff)
     )
-    return PublishPlan(currently_published, relay_deletes, vespa_deletes)
 
 
 def published_state_to_persist(
     previously_published: list[str],
     currently_published: list[str],
-    sink_write_failed: bool,
+    relay_write_failed: bool,
 ) -> list[str]:
     """The `last_published_pubkeys` baseline to persist after a run.
 
-    Clean run → exactly the intended above-cutoff set. But if any sink write
+    Clean run → exactly the intended above-cutoff set. But if a relay write
     failed this run, a delete may not have landed, and pruning the baseline past
-    it would orphan that pubkey in the sink forever (no future `fell_off` could
+    it would orphan that pubkey on the relay forever (no future `fell_off` could
     ever see it). So on a dirty run keep prev + current: the un-confirmed delete
     stays in the baseline and is re-issued (idempotently) next run, while newly
     above-cutoff keys are still tracked. A later clean run prunes back to
     `currently_published`, so the baseline self-corrects and can't grow unbounded.
 
-    Coarse on purpose — it keys on "any sink failure", not on which delete
+    Coarse on purpose — it keys on "any relay failure", not on which delete
     failed, so it over-retains slightly (a redundant, harmless re-delete). This
-    only prevents NEW orphans; orphans already in the sinks need the reset sweep."""
-    if sink_write_failed:
+    only prevents NEW orphans; orphans already on the relay need the reset sweep."""
+    if relay_write_failed:
         return list(set(previously_published) | set(currently_published))
     return currently_published
 
@@ -368,56 +352,6 @@ async def get_deletion_events_for_dropped_pubkeys(
     return [await nostr_client.sign_event_builder(b) for b in builders]
 
 
-async def upsert_scores_to_vespa(
-    grape_rank_result: GrapeRankResult,
-    observer: str,
-    pubkeys_to_delete: list[str],
-    vespa_full_sync: bool,
-) -> int:
-    # Each score depends on the observer; the rank lives in a single cell of
-    # the `quality_scores` sparse tensor, keyed by the observer pubkey.
-    # Vespa partial updates (create=true) create the doc if absent, so unknown
-    # pubkeys get a doc carrying just the tensor cell; the kind-0 upsert fills
-    # in profile fields later. All ops are fanned out concurrently so a large
-    # GrapeRank result completes in seconds rather than minutes.
-    assert grape_rank_result.scorecards is not None
-    changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
-
-    # Vespa now mirrors the relay set exactly: index a score if it's above the
-    # publish `cutoff` (same boundary as the Nostr TA events). Below-cutoff
-    # scorecards are NOT indexed — their removal is handled by `pubkeys_to_delete`
-    # (the previously-published diff / full-sync below-cutoff sweep from
-    # `plan_publish`), so there is no separate rank>0 sweep here. Text search still
-    # finds below-cutoff profiles via their kind-0 doc (onlyRanked=false); only the
-    # trust cell is gated by the cutoff.
-    cutoff = settings.cutoff_of_valid_graperank_scores
-    upserts: list[tuple[str, int, int]] = []
-    for pubkey, scorecard in grape_rank_result.scorecards.items():
-        if round(scorecard.influence, 2) < cutoff:
-            continue
-        if vespa_full_sync or pubkey in changed_pubkeys:
-            upserts.append(
-                (
-                    pubkey,
-                    round(scorecard.influence * 100),
-                    round(scorecard.trusted_followers),
-                )
-            )
-
-    n_ok, n_failed = await batch_upsert_scores(
-        upserts=upserts,
-        removes=pubkeys_to_delete,
-        observer=observer,
-    )
-    logger.info(
-        f"vespa score batch: ok={n_ok} failed={n_failed} "
-        f"(upserts={len(upserts)} removes={len(pubkeys_to_delete)})"
-    )
-    # Surfaced so the caller can tell whether a remove may not have landed and
-    # keep the published-state baseline honest (see published_state_to_persist).
-    return n_failed
-
-
 async def ensure_assistant_kind0_published(
     observer: str,
     assistant_kind0_published_at: datetime | None,
@@ -475,15 +409,11 @@ async def process_nostr_upload_message(message: dict):
             # Captured while the session is live — read again below to decide
             # whether this Assistant still needs its kind-0 profile published.
             assistant_kind0_published_at = nsec_db_obj.assistant_kind0_published_at
-            # Read this run's per-sink force-full overrides off the request row
-            # (drift repair) — folded into the existing status-update session, so
-            # no extra round-trip. settings default OR the per-run override.
+            # This run's force-full override (drift repair), read in the
+            # existing session. settings default OR the per-run override.
             request_row = await select_brainstorm_request_by_id_on_db(db, run_id)
             relay_full_sync = resolve_full_sync(
                 settings.relay_full_sync, request_row.force_full_relay
-            )
-            vespa_full_sync = resolve_full_sync(
-                settings.vespa_full_sync, request_row.force_full_vespa
             )
             with _timed(timings, "nsec_ta_update"):
                 await update_brainstorm_request_ta_status_by_id_on_db(
@@ -520,34 +450,25 @@ async def process_nostr_upload_message(message: dict):
                 )
 
         with _timed(timings, "compute_deletes"):
-            # One pass partitions scorecards into above/below cutoff and decides
-            # both sinks' fetch-free local-diff delete sets (shared when the two
-            # sweep modes match). The local diff subsumes the old dropped+missing
-            # set and catches drops the algo never reported. Independent of
-            # full-sync: that re-asserts, it does not delete.
+            # Fetch-free local-diff delete set; catches drops the algo never
+            # reported. Independent of full-sync: that re-asserts, it does not delete.
             plan = plan_publish(
                 grape_rank_result,
                 previously_published=previously_published_pubkeys,
                 cutoff=settings.cutoff_of_valid_graperank_scores,
-                sweep_relay=settings.relay_sweep_below_cutoff,
-                sweep_vespa=settings.vespa_sweep_below_cutoff,
+                sweep_below_cutoff=settings.relay_sweep_below_cutoff,
             )
             currently_published_pubkeys = plan.currently_published
-            relay_pubkeys_to_delete = plan.relay_deletes
-            vespa_pubkeys_to_delete = plan.vespa_deletes
         # A sweep is a backlog-draining mode, not a steady state — say so loudly
         # so it can't sit on unnoticed, billing no-op deletes every run.
-        if settings.relay_sweep_below_cutoff or settings.vespa_sweep_below_cutoff:
+        if settings.relay_sweep_below_cutoff:
             logger.warning(
-                f"below-cutoff sweep ENABLED for observer {observer} "
-                f"(relay={settings.relay_sweep_below_cutoff} "
-                f"vespa={settings.vespa_sweep_below_cutoff}): every run reaps every "
-                f"below-cutoff Observee. Turn *_SWEEP_BELOW_CUTOFF back off once the "
-                f"orphan backlog has drained."
+                f"below-cutoff sweep ENABLED for observer {observer}: every run "
+                f"reaps every below-cutoff Observee. Turn RELAY_SWEEP_BELOW_CUTOFF "
+                f"back off once the orphan backlog has drained."
             )
         counts["n_above_cutoff"] = len(currently_published_pubkeys)
-        counts["n_relay_deletes"] = len(relay_pubkeys_to_delete)
-        counts["n_vespa_deletes"] = len(vespa_pubkeys_to_delete)
+        counts["n_relay_deletes"] = len(plan.deletes)
 
         # zero_score_events = await get_zero_score_events_for_pubkeys(
         #     pubkeys=pubkeys_to_delete,
@@ -557,7 +478,7 @@ async def process_nostr_upload_message(message: dict):
 
         with _timed(timings, "deletion_build"):
             deletion_events = await get_deletion_events_for_dropped_pubkeys(
-                observees=relay_pubkeys_to_delete,
+                observees=plan.deletes,
                 signing_pubkey=signing_pubkey,
                 nostr_client=nostr_client,
             )
@@ -596,24 +517,6 @@ async def process_nostr_upload_message(message: dict):
                     f"{SEND_MSG_MAX_ATTEMPTS} attempts (run={run_id} observer={observer})"
                 )
 
-        vespa_search_available = False
-        vespa_n_failed = 0
-        try:
-            with _timed(timings, "vespa"):
-                logger.info("Pushing scores to Vespa...")
-                vespa_n_failed = await upsert_scores_to_vespa(
-                    grape_rank_result=grape_rank_result,
-                    observer=observer,
-                    pubkeys_to_delete=vespa_pubkeys_to_delete,
-                    vespa_full_sync=vespa_full_sync,
-                )
-            vespa_search_available = True
-            logger.info("Done pushing scores to Vespa!")
-        except Exception as e:
-            # Don't fail the whole request — Nostr is the source of truth
-            # and has already been written. Vespa is a search-side mirror.
-            logger.error(f"Failed to upsert scores to Vespa: {e}")
-
         with _timed(timings, "final_db"):
             async with db_session() as db:
                 await update_brainstorm_request_ta_status_by_id_on_db(
@@ -622,23 +525,15 @@ async def process_nostr_upload_message(message: dict):
                     status=BrainstormRequestStatus.SUCCESS,
                 )
 
-                # Keep the baseline honest: if any sink write may have failed
-                # (a total Vespa error, a partial Vespa remove failure, or a
-                # relay enqueue failure), a delete may not have landed — don't
-                # prune those pubkeys out of the baseline or they orphan in the
-                # sink forever. Retain prev ∪ current so the delete is retried.
-                sink_write_failed = (
-                    send_failures > 0
-                    or vespa_n_failed > 0
-                    or not vespa_search_available
-                )
+                # A relay enqueue failure means a delete may not have landed —
+                # retain prev ∪ current so it is retried, not orphaned.
                 await update_last_published_pubkeys_by_pubkey_on_db(
                     db,
                     pubkey=observer,
                     published_pubkeys=published_state_to_persist(
                         previously_published=previously_published_pubkeys,
                         currently_published=currently_published_pubkeys,
-                        sink_write_failed=sink_write_failed,
+                        relay_write_failed=send_failures > 0,
                     ),
                     graperank_request_id=run_id,
                 )
@@ -651,15 +546,9 @@ async def process_nostr_upload_message(message: dict):
                     db, run_id, round(time.perf_counter() - run_start, 3)
                 )
 
-                if vespa_search_available:
-                    await set_is_observer_search_available_by_pubkey_on_db(
-                        db, pubkey=observer, is_available=True
-                    )
-
-                # A successful full run on BOTH sinks brings the observer fully in
-                # sync → clear the every-Nth backstop counter (any full run counts,
-                # incl. an admin resync). Piggybacks on this existing Nsec write.
-                if relay_full_sync and vespa_full_sync:
+                # A successful full run brings the observer in sync → clear the
+                # every-Nth backstop counter (incl. an admin resync).
+                if relay_full_sync:
                     await reset_runs_since_full_on_db(db, pubkey=observer)
 
                 await db.commit()

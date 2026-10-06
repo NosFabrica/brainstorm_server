@@ -1,7 +1,7 @@
 """End-to-end tests for the Open Ranking endpoints.
 
 These boot a FastAPI app, route a real HTTP request through ASGI, and verify
-the response per the ORE specs. The Neo4j / Redis / Vespa boundaries are
+the response per the ORE specs. The Neo4j / Redis / search-relay boundaries are
 patched at import sites in the open_ranking router modules so the suite is
 deterministic and infra-free.
 """
@@ -9,12 +9,15 @@ deterministic and infra-free.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from nostr_sdk import Keys
 
+from app.repos.brainstorm_nsec import PovSearchFields
 from tests.conftest import make_nwt
 
 
@@ -29,7 +32,6 @@ INVALID_PUBKEY = "not-a-valid-pubkey"
 def pov_availability(
     exists: bool = True,
     graperank: bool = True,
-    search: bool = True,
     in_pipeline: bool = False,
 ):
     """Stub the availability gate's repo reads (patched at their import site
@@ -37,12 +39,47 @@ def pov_availability(
     fully computed pov."""
     with patch(
         "app.routers.open_ranking.availability.get_pov_availability_fields_on_db",
-        new=AsyncMock(return_value=(exists, graperank, search)),
+        new=AsyncMock(return_value=(exists, graperank)),
     ), patch(
         "app.routers.open_ranking.availability.any_request_in_pipeline_for_pubkey_on_db",
         new=AsyncMock(return_value=in_pipeline),
     ):
         yield
+
+
+class FakeRelay:
+    """Stands in for the search relay's `/ore/search` (contract: ticket 07)."""
+
+    def __init__(self, hits=(), status="READY", service=None, http_status=200):
+        self.hits = list(hits)
+        self.status = status
+        self.service = service
+        self.http_status = http_status
+        self.request: httpx.Request | None = None
+        self.handler = None
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        self.request = request
+        if self.handler is not None:
+            return self.handler(request)
+        return httpx.Response(
+            self.http_status,
+            json={
+                "hits": [{"pubkey": pk, "score": s} for pk, s in self.hits],
+                "lens": {"status": self.status, "service": self.service},
+            },
+        )
+
+    def __enter__(self):
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(self._handle), base_url="http://relay.test"
+        )
+        self._patch = patch("app.core.search_relay._client", client)
+        self._patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._patch.stop()
 
 
 # ===========================================================================
@@ -66,6 +103,15 @@ class TestCapabilityDocument:
             assert isinstance(body[path], list) and body[path]
             for algo in body[path]:
                 assert "id" in algo
+
+    def test_search_algorithms_describe_search_relevance(self, client):
+        search = client.get("/.well-known/open-ranking.json").json()["/search/pubkeys"]
+        assert [a["id"] for a in search] == ["relevance", "relevance-pov"]
+        for algo in search:
+            assert algo["description"].startswith(
+                "rank = search relevance: kind-0 text match weighted by "
+                "GrapeRank trust; query-relative"
+            )
 
     def test_capability_doc_cors_header_present(self, client):
         r = client.get(
@@ -288,52 +334,75 @@ class TestRankPubkeys:
 # ORE-05: /search/pubkeys
 # ===========================================================================
 class TestSearchPubkeys:
-    def test_happy_path(self, client, auth_headers):
-        seen_kwargs = {}
-
-        async def fake_search(
-            query_text,
-            user_pubkey,
-            hits,
-            include_zero_score_results,
-            *,
-            ranking_profile=None,
-            min_rank=None,
-        ):
-            seen_kwargs["ranking_profile"] = ranking_profile
-            seen_kwargs["min_rank"] = min_rank
-            seen_kwargs["include_zero_score_results"] = include_zero_score_results
-            # _quality_score values deliberately contradict the relevance
-            # order: rank MUST come from _relevance (the ordering key ORE-05
-            # requires), not from the 0-100 trust score.
-            return [
-                {"pubkey": VALID_PUBKEY_1, "_relevance": 11988.6, "_quality_score": 0.0},
-                {"pubkey": VALID_PUBKEY_2, "_relevance": 3018.9, "_quality_score": 61.0},
-            ]
-
-        with patch("app.routers.open_ranking.search.vespa_search", new=fake_search):
+    def test_global_search_ranks_by_relay_score_through_house_observer(self, client):
+        relay = FakeRelay(
+            hits=[(VALID_PUBKEY_1, 11988.6), (VALID_PUBKEY_2, 3018.9)],
+            service="e" * 64,
+        )
+        with relay:
             r = client.post(
-                "/search/pubkeys", json={"query": "jack"}, headers=auth_headers,
+                "/search/pubkeys",
+                json={"query": "jack", "algorithm": "relevance", "pov": POV_PUBKEY},
             )
         assert r.status_code == 200, r.text
-        body = r.json()
-        assert [x["pubkey"] for x in body["results"]] == [VALID_PUBKEY_1, VALID_PUBKEY_2]
-        ranks = [x["rank"] for x in body["results"]]
-        assert ranks == pytest.approx([11988.6, 3018.9])
-        # ORE-05: "sorted by rank in descending order"
-        assert ranks == sorted(ranks, reverse=True)
-        # These arguments keep ordering trust-aware:
-        # min_rank omitted degrades ordering to pure text (schema default
-        # -1e9), and min_rank=0 / include_zero=True floods results with
-        # zero-trust exact-name matches at multiplier 1.0.
-        from app.core.vespa import DEFAULT_MIN_RANK, RANK_PROFILE_SORT_FOLLOWERS
+        assert r.json() == {
+            "results": [
+                {"pubkey": VALID_PUBKEY_1, "rank": 11988.6},
+                {"pubkey": VALID_PUBKEY_2, "rank": 3018.9},
+            ],
+            "ttl": 300,
+        }
+        assert relay.request.url.path == "/ore/search"
+        assert dict(relay.request.url.params) == {
+            "q": "jack",
+            "observer": DEFAULT_OBSERVER,
+            "limit": "100",
+        }
 
-        assert seen_kwargs["ranking_profile"] == RANK_PROFILE_SORT_FOLLOWERS
-        assert seen_kwargs["min_rank"] == DEFAULT_MIN_RANK
-        assert seen_kwargs["include_zero_score_results"] is False
+    def test_limit_is_passed_to_the_relay_and_results_keep_its_order(self, client):
+        # The relay caps hits at the limit (ticket 07 contract); no re-slice here.
+        relay = FakeRelay(hits=[(VALID_PUBKEY_2, 9.0), (VALID_PUBKEY_1, 5.0)])
+        with relay:
+            r = client.post("/search/pubkeys", json={"query": "jack", "limit": 2})
+        assert r.status_code == 200, r.text
+        assert r.json()["results"] == [
+            {"pubkey": VALID_PUBKEY_2, "rank": 9.0},
+            {"pubkey": VALID_PUBKEY_1, "rank": 5.0},
+        ]
+        assert relay.request.url.params["limit"] == "2"
+
+    def test_limit_above_400_returns_422(self, client):
+        r = client.post("/search/pubkeys", json={"query": "jack", "limit": 401})
+        assert r.status_code == 422
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            httpx.ConnectError("refused"),
+            httpx.ReadTimeout("slow"),
+            httpx.Response(500, text="boom"),
+            httpx.Response(200, text="not json"),
+        ],
+    )
+    def test_relay_failure_returns_503_with_reason(self, client, failure):
+        def handler(request):
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
+
+        with FakeRelay() as relay:
+            relay.handler = handler
+            r = client.post("/search/pubkeys", json={"query": "jack"})
+        assert r.status_code == 503, r.text
+        assert "search relay" in r.headers["x-reason"]
+        assert r.json()["error"] == r.headers["x-reason"]
 
     def test_empty_query_returns_422(self, client, auth_headers):
         r = client.post("/search/pubkeys", json={"query": ""}, headers=auth_headers)
+        assert r.status_code == 422
+
+    def test_control_character_only_query_returns_422(self, client):
+        r = client.post("/search/pubkeys", json={"query": "\x00\x07"})
         assert r.status_code == 422
 
     def test_query_too_long_returns_422(self, client, auth_headers):
@@ -850,40 +919,8 @@ class TestPovAvailability:
         assert r.status_code == 422
         assert r.headers.get("x-reason")
 
-    def test_search_availability_is_independent_of_graperank(self, client):
-        """GrapeRank done but the Vespa mirror never landed: stats serves,
-        search refuses — availability is per data source."""
-        avail = pov_availability(
-            exists=True, graperank=True, search=False, in_pipeline=False
-        )
-        with avail, patch(
-            "app.routers.open_ranking.stats.get_user_rank_and_counts",
-            new=AsyncMock(return_value=_fake_stats(0.7)),
-        ):
-            stats = client.post(
-                "/stats/pubkey",
-                json={
-                    "pubkey": VALID_PUBKEY_1,
-                    "algorithm": "graperank-pov",
-                    "pov": POV_PUBKEY,
-                },
-            )
-            search = client.post(
-                "/search/pubkeys",
-                json={
-                    "query": "jack",
-                    "algorithm": "relevance-pov",
-                    "pov": POV_PUBKEY,
-                },
-            )
-        assert stats.status_code == 200
-        assert search.status_code == 422
-        assert "search index" in search.headers.get("x-reason", "")
-
-    def test_search_mirror_in_flight_returns_202(self, client):
-        with pov_availability(
-            exists=True, graperank=True, search=False, in_pipeline=True
-        ):
+    def test_search_run_in_pipeline_returns_202(self, client):
+        with pov_availability(exists=True, graperank=False, in_pipeline=True):
             r = client.post(
                 "/search/pubkeys",
                 json={
@@ -894,6 +931,93 @@ class TestPovAvailability:
             )
         assert r.status_code == 202
         assert r.headers.get("retry-after")
+
+
+class TestSearchLens:
+    """relevance-pov is served only when the relay applied the pov's own
+    Brainstorm lens (its 10040 names this pov's Assistant)."""
+
+    ASSISTANT = "f" * 64
+
+    @contextmanager
+    def pov(self, published_hours_ago: float | None = 1.0, nsec_unusable=False):
+        published = None
+        if published_hours_ago is not None:
+            published = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+                hours=published_hours_ago
+            )
+        fields = PovSearchFields(
+            assistant=None if nsec_unusable else self.ASSISTANT,
+            published_at=published,
+            nsec_unusable=nsec_unusable,
+        )
+        with pov_availability(), patch(
+            "app.routers.open_ranking.availability.get_pov_search_fields_on_db",
+            new=AsyncMock(return_value=fields),
+        ):
+            yield
+
+    def search(self, client):
+        return client.post(
+            "/search/pubkeys",
+            json={"query": "jack", "algorithm": "relevance-pov", "pov": POV_PUBKEY},
+        )
+
+    def test_ready_lens_of_our_assistant_returns_200(self, client):
+        relay = FakeRelay(hits=[(VALID_PUBKEY_1, 42.5)], service=self.ASSISTANT)
+        with self.pov(), relay:
+            r = self.search(client)
+        assert r.status_code == 200, r.text
+        assert r.json()["results"] == [{"pubkey": VALID_PUBKEY_1, "rank": 42.5}]
+        assert relay.request.url.params["observer"] == POV_PUBKEY
+
+    def test_ready_lens_of_another_provider_returns_422(self, client):
+        relay = FakeRelay(hits=[(VALID_PUBKEY_1, 42.5)], service="9" * 64)
+        with self.pov(), relay:
+            r = self.search(client)
+        assert r.status_code == 422, r.text
+        assert "another provider" in r.headers["x-reason"]
+        assert "fall back" in r.headers["x-reason"]
+
+    def test_ready_lens_with_an_unreadable_pov_key_is_503_not_another_provider(
+        self, client
+    ):
+        relay = FakeRelay(hits=[(VALID_PUBKEY_1, 42.5)], service="9" * 64)
+        with self.pov(nsec_unusable=True), relay:
+            r = self.search(client)
+        assert r.status_code == 503, r.text
+        assert "another provider" not in r.headers["x-reason"]
+        assert "key" in r.headers["x-reason"]
+
+    def test_no_list_returns_422_asking_for_activation(self, client):
+        with self.pov(), FakeRelay(status="NO_LIST"):
+            r = self.search(client)
+        assert r.status_code == 422, r.text
+        assert "activate" in r.headers["x-reason"]
+
+    def test_no_cards_inside_grace_returns_202(self, client):
+        with self.pov(published_hours_ago=5), FakeRelay(status="NO_CARDS"):
+            r = self.search(client)
+        assert r.status_code == 202, r.text
+        assert r.headers["retry-after"].isdigit()
+        assert "mirror" in r.headers["x-reason"]
+
+    @pytest.mark.parametrize("published_hours_ago", [7, None])
+    def test_no_cards_outside_grace_returns_422(self, client, published_hours_ago):
+        with self.pov(published_hours_ago=published_hours_ago), FakeRelay(
+            status="NO_CARDS"
+        ):
+            r = self.search(client)
+        assert r.status_code == 422, r.text
+        assert "fall back" in r.headers["x-reason"]
+
+    def test_grace_window_is_tunable(self, client, monkeypatch):
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "ore_search_mirror_grace_hours", 1.0)
+        with self.pov(published_hours_ago=2), FakeRelay(status="NO_CARDS"):
+            r = self.search(client)
+        assert r.status_code == 422, r.text
 
 
 # ===========================================================================

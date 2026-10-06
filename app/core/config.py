@@ -3,7 +3,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # extra="ignore": a .env still setting a removed key must not fail boot.
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     db_url: str = Field(...)
     deploy_environment: str = Field(...)
@@ -98,16 +101,18 @@ class Settings(BaseSettings):
     billing_admin_whitelisted_pubkeys: str = Field(default="")
     # A subscriber not read from Flash within this is reported as stale.
     billing_stale_sync_hours: int = Field(default=24)
-    vespa_url: str = Field(...)
-    # Per-sink publish mode. False (default) = only changed scores; True =
-    # re-assert every above-cutoff score each run. Re-assertion only, not deletes.
-    vespa_full_sync: bool = Field(default=False)  # Vespa upserts
-    relay_full_sync: bool = Field(default=False)  # kind-30382 TA republish
-    # Per-sink reaping: also delete EVERY below-cutoff Observee, not just
-    # those that fell off the baseline. Backwards-compat only — drains the legacy
-    # pre-cutoff backlog, then off. Not in env.example
+    # HTTP base of the shared search relay; ORE-05 reads its /ore/search.
+    search_relay_url: str = Field(default="https://search.brainstorm.world")
+    # ORE-05 pov: NO_CARDS within this long of the pov's last publish is the
+    # relay still mirroring (202); after it, the pov can't be served (422).
+    ore_search_mirror_grace_hours: float = Field(default=6.0)
+    # Publish mode. False (default) = only changed scores; True = re-assert
+    # every above-cutoff kind-30382 each run. Re-assertion only, not deletes.
+    relay_full_sync: bool = Field(default=False)
+    # Also delete EVERY below-cutoff Observee, not just those that fell off the
+    # baseline. Backwards-compat only — drains the legacy pre-cutoff backlog,
+    # then off.
     relay_sweep_below_cutoff: bool = Field(default=False)
-    vespa_sweep_below_cutoff: bool = Field(default=False)
     # Count-gated parallel signing. At/below the threshold a publish run signs
     # via the simple sequential client loop (zero pool overhead — the common,
     # steady-state case). Above it, a *large* burst (first publish for an
@@ -132,11 +137,9 @@ class Settings(BaseSettings):
     # to the nip85.* relays is an env change rather than a diff.
     trusted_list_relay: str = Field(default="")
     # Published-state-drift backstop: every Nth *scheduled* run for an observer
-    # forces a full re-assert on both sinks.
+    # forces a full re-assert on the relay.
     # <= 0 disables the backstop.
     full_sync_every_n_runs: int = Field(default=84)
-    # Internal relay holding the original signed kind-0 events (read by the Vespa refeed).
-    nip50_backing_relay_url: str = Field(default="ws://localhost:7777")
     # --- Priority support ----------------------------------------------------
     # Unclosed tickets a user may hold at once; `answered` still counts.
     support_max_open_tickets: int = Field(default=5)

@@ -36,5 +36,5 @@ The session is the unit of work, not the driver. **One session per request scope
 ## Gotchas
 
 - `AsyncGraphDatabase.driver(...)` does *not* connect eagerly — `test_neo4j_driver()` is what surfaces a missing Neo4j at startup.
-- `await driver.close()` is intentionally **not** called in lifespan teardown today — the process exits and lets the driver cleanup happen on its own. If you add graceful shutdown, mirror what `vespa.aclose()` does in `app/api.py`.
+- `await driver.close()` is intentionally **not** called in lifespan teardown today — the process exits and lets the driver cleanup happen on its own. If you add graceful shutdown, mirror what `search_relay.aclose()` / `flash.aclose()` do in `app/api.py`.
 - The driver's URL / auth come from `settings.neo4j_db_url` / `neo4j_db_username` / `neo4j_db_password` in [`app/core/config.py`](../core/config.py).

@@ -19,6 +19,11 @@ _Avoid_: source, truster, viewer
 The user a Trusted Assertion is about — the subject being scored.
 _Avoid_: target, subject, scoree
 
+**House Observer**:
+The Observer whose scores are Brainstorm's default, global view. Used when nobody's own Perspective
+applies; always available.
+_Avoid_: default observer, house key, global observer
+
 **Publish run**:
 The end-to-end processing of one Observer's GrapeRank result into Trusted Assertions: signing the
 above-cutoff scores as TAs, deleting the ones that fell away, and persisting that the run published.
@@ -49,7 +54,7 @@ worker that popped the job off its Redis lane, then was killed mid-run (a deploy
 a merely **queued** request, which is legitimately Waiting with its payload still in the Redis lane. The
 tell: a queued request's payload is still in the lane; an abandoned one's has been popped and lost.
 _Avoid_: stuck (ambiguous — a queued request also looks "stuck"), hung, orphaned ("orphan" already
-means dead Vespa/relay TA cells in this context — a data-sink concept, not a request)
+means dead relay TAs in this context — a data-sink concept, not a request)
 
 **Reap**:
 To force an Abandoned request terminal (Failure, with an admin reason) so it stops counting as In-flight
@@ -68,8 +73,13 @@ _Avoid_: score (reserve for Rank), weight, trust
 
 **Rank**:
 The published integer 0–100, `round(Influence × 100)` — the quantum that appears in a Trusted Assertion's
-`rank` tag and in the Vespa cell. The network's resolution is 1 rank point = 0.01 Influence.
+`rank` tag. The network's resolution is 1 rank point = 0.01 Influence.
 _Avoid_: score, influence (Rank is the rounded, published form of Influence)
+
+**Search relevance**:
+How well a profile matches a search query, weighted by the Observer's trust in it. Query-relative and
+not comparable across queries. It's returned in Open Ranking search's `rank` field but isn't a Rank.
+_Avoid_: rank, score, relevance (the algorithm's name)
 
 **Valid user**:
 A user whose Influence clears the `0.02` publish cutoff (`CUTOFF_OF_VALID_GRAPERANK_SCORES`). Below it a

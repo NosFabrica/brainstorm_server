@@ -8,10 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.flash import FlashCredentialError, FlashUnavailable
-from app.repos.brainstorm_nsec import (
-    get_is_observer_search_available_by_pubkey_on_db,
-    update_assistant_kind0_published_at_on_db,
-)
+from app.repos.brainstorm_nsec import update_assistant_kind0_published_at_on_db
 from app.routers.open_ranking.common import enforce_batch_size, validate_pubkey_list
 from app.routers.user.dependencies import get_verified_cutoffs, resolve_observer
 from app.schemas.request_body_schemas import (
@@ -30,7 +27,6 @@ from app.schemas.request_response_schemas import (
     GetUserHistoryResponse,
     GetUserOverviewResponse,
     GetUserStatsResponse,
-    IsSearchObserverResponse,
     PublishAssistantProfileData,
     PublishAssistantProfileResponse,
     RefreshSubscriptionResponse,
@@ -216,26 +212,6 @@ async def get_own_user_data_endpoint(
     )
 
     return GetOwnUserDataResponse(data=OwnUserData(graph=graph, history=history))
-
-
-@router.get(
-    path="/isSearchObserver",
-    tags=[],
-    dependencies=[],
-    summary="Whether the caller's pubkey is searchable as an observer on Vespa",
-)
-async def is_search_observer_endpoint(
-    request: Request,
-    db: AsyncDBSession = Depends(dependency=get_db),
-) -> IsSearchObserverResponse:
-    jwt_data: JWTData = request.state.jwt_data
-    user_pubkey = jwt_data.nostr_pubkey
-
-    is_available = await get_is_observer_search_available_by_pubkey_on_db(
-        db, pubkey=user_pubkey
-    )
-
-    return IsSearchObserverResponse(data=is_available)
 
 
 @router.get(
