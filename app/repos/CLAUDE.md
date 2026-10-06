@@ -115,14 +115,14 @@ queries:
 - `get_all_section_stats(...)` — one query covering all 6 sections; ~20 % faster than firing them in parallel.
 - `get_user_graph_data(session, pubkey, influence_key, *, reporter_cutoff)` — unpaginated full graph; row `trusted_reporters` is the live `_live_reporters` count.
 - `get_network_alert_candidates(...)` / `count_above_cutoff_followers_capped(...)` / `count_verified_muters(...)` — the three bounded steps behind **`/networkAlerts`** (orchestrated by `network_alerts_service`). Things to preserve if you touch them:
-  - Candidates are anchored *through* the `REPORTS` edge, never a `:NostrUser` label scan. No index can substitute — the influence/reporter properties are per-observer, so indexing them would mean one index per observer.
+  - Candidates are anchored *through* the `REPORTS` edge, never a `:NostrUser` label scan. No index can substitute — the influence properties are per-observer, so indexing them would mean one index per observer.
   - `verified_reporter_count` is live: `REPORTS` edges from raters above the observer's preset reporter cutoff (strict `>`). `>= MIN_ALERT_REPORTERS` (5) prefilters before any arithmetic. Valid because `N = 4 + floor(tf/500) >= 4` for everyone. `BASE_REPORTER_THRESHOLD` (4) and `FOLLOWERS_PER_EXTRA_REPORT` (500) both live in `user_repo.py` so the prefilter and the service's arithmetic can't drift; raise the base without the prefilter and the cap below turns into a zero-or-negative Cypher LIMIT.
   - The capped count's `cap` is **not** an arbitrary page size. A row alerts only when its verified follower count is below `500 * (reporters - 4)`, so a count reaching the cap belongs to a row that fails. That's why a count *below* the cap is exact and safe to publish, and why the service drops rows that hit it.
-  - Step 2 runs only for candidates with no stored `trusted_followers_<observer>`, and goes quiet as observers backfill. `write_neo4j_results.py` persists that property, making it a **fourth** per-observer property — note the cost: Neo4j walks a linked list of property records to resolve a key, and every distinct property *name* permanently consumes a global property-key token that is never reclaimed. Both scale with observer count.
+  - Step 2 runs only for candidates with no stored `trusted_followers_<observer>`, and goes quiet as observers backfill. `write_neo4j_results.py` persists that property, making it a **third** per-observer property — note the cost: Neo4j walks a linked list of property records to resolve a key, and every distinct property *name* permanently consumes a global property-key token that is never reclaimed. Both scale with observer count.
 
 **Per-observer node properties** written by `write_neo4j_results.py`, all suffixed
-with the observer's hex pubkey: `influence_`, `hops_`, `trusted_followers_`,
-`trusted_reporters_`. All four are GrapeRank-run-fresh, NOT ingest-fresh — the
+with the observer's hex pubkey: `influence_`, `hops_`, `trusted_followers_`.
+Reporter counts are not stored; reads count `REPORTS` edges live. All three are GrapeRank-run-fresh, NOT ingest-fresh — the
 `FOLLOWS`/`MUTES`/`REPORTS` edges update within seconds of a kind 3/10000/1984
 event, but these properties only change when that observer's GrapeRank job
 lands. Prefer an edge match over `hops_<observer> = 1` when you need "does X

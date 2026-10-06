@@ -15,7 +15,7 @@ BATCH_SIZE = 100  # Adjust as needed
 
 # Persisted per observer as `<field>_<observer_pubkey>`. `trusted_followers` is
 # here so /networkAlerts reads a property instead of scanning follower edges.
-PERSISTED_FIELDS = ("influence", "hops", "trusted_followers", "trusted_reporters")
+PERSISTED_FIELDS = ("influence", "hops", "trusted_followers")
 
 logger = loggr.get_logger(__name__)
 

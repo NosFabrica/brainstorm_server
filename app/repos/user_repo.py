@@ -1110,7 +1110,7 @@ async def get_shortest_follow_hops(
 #   Anchoring. Candidates are reached *through* the REPORTS edge instead of by
 #   scanning :NostrUser. Only a reported pubkey can clear N >= 2, and the
 #   reported set is orders of magnitude smaller than the node count. (There is
-#   no index that could help instead: the influence/reporter properties are
+#   no index that could help instead: the influence properties are
 #   per-observer, so indexing them would mean one index per observer.)
 #
 #   Prefiltering. The floor term is non-negative, so N >= 2 for everyone and
@@ -1284,8 +1284,8 @@ async def count_verified_muters(
 ) -> dict[str, int]:
     """Above-threshold muter counts, keyed by pubkey.
 
-    Display-only — the algorithm never computes a `trusted_muters` scorecard
-    field, so there is nothing stored to read. Never part of the filter, so
+    Display-only — GrapeRank computes `trusted_muters` but doesn't persist it to
+    Neo4j, so there is nothing stored to read. Never part of the filter, so
     callers run it last, over the already-limited result rows.
     """
     if not pubkeys:
