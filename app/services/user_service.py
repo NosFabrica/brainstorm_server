@@ -170,14 +170,13 @@ async def get_own_latest_graperank(
 async def get_user_graph_data(
     pubkey: str,
     observer: str | None = None,
+    *,
+    reporter_cutoff: float,
 ) -> UserGraphData:
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
-    trusted_reporters_key = (
-        f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
-    )
     async with neo4j_driver.session() as session:
         return await _repo_get_user_graph_data(
-            session, pubkey, influence_key, trusted_reporters_key
+            session, pubkey, influence_key, reporter_cutoff=reporter_cutoff
         )
 
 

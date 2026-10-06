@@ -18,7 +18,7 @@ from app.neo4j_db.driver import driver
 from app.repos.user_repo import get_user_graph_data
 
 async with driver.session() as session:
-    data = await get_user_graph_data(session, pubkey, influence_key)
+    data = await get_user_graph_data(session, pubkey, influence_key, reporter_cutoff=0.1)
 ```
 
 The session is the unit of work, not the driver. **One session per request scope** is the right granularity; long-lived sessions across requests will leak transactions.
