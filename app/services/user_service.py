@@ -196,10 +196,7 @@ async def get_user_overview(
     reporter_cutoff: float,
     observer: str | None = None,
 ) -> UserOverviewData:
-    """`verified_line` (the observer's preset follower cutoff) and
-    `reporter_cutoff` decide the two flagged fields and the subject's own `tier`
-    — the only preset-sensitive outputs here. Required, so a caller has to say
-    which cutoffs it means."""
+    """The preset cutoffs decide the flagged fields and the subject's `tier`."""
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
 
     # Redis SCARD for inbound + one Neo4j query for outbound counts + influence +

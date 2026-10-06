@@ -1,17 +1,8 @@
-"""Remove leftover `trusted_reporters_<observer>` properties from NostrUser nodes.
+"""Remove leftover `trusted_reporters_<observer>` props from NostrUser nodes.
 
-The reporter count is computed live, so these stored props are inert; removing
-them only frees space. Observer keys are discovered from the database's
-property keys. Influence, hops and trusted-follower/muter props are untouched.
-
-DRY-RUN by default (prints property + node counts, writes nothing). Pass --apply
-to remove them in bounded batches (one transaction per batch — a single large
-transaction exhausts Neo4j's transaction memory). Idempotent / re-runnable.
+Dry-run by default; --apply removes them in batches. See scripts/CLAUDE.md.
 
     poetry run python -m scripts.clean_trusted_reporters_props [--apply] [--batch N]
-
-Freed records are reused, but store files only shrink after a dump and reload,
-and property-key tokens are never reclaimed (so keys stay discoverable at 0).
 """
 from __future__ import annotations
 
@@ -77,7 +68,7 @@ async def remove_props(session, keys: list[str], batch: int) -> RemoveResult:
             return RemoveResult(nodes, batches)
         nodes += n
         batches += 1
-        print(f"  batch {batches}: {n} nodes ({nodes} total)", file=sys.stderr)
+        print(f"  batch {batches}: {n} nodes ({nodes} total)")
 
 
 async def main() -> None:
@@ -86,20 +77,19 @@ async def main() -> None:
     ap.add_argument("--batch", type=int, default=10000, help="nodes per transaction")
     args = ap.parse_args()
 
-    log = lambda m: print(m, file=sys.stderr)  # noqa: E731
     t0 = time.monotonic()
     async with neo4j_driver.session() as session:
         keys = await discover_keys(session)
         props, nodes = await count_props(session, keys)
-        log(f"observer keys: {len(keys)}")
-        log(f"leftover: {props} properties on {nodes} nodes")
+        print(f"observer keys: {len(keys)}")
+        print(f"leftover: {props} properties on {nodes} nodes")
 
         if not args.apply:
-            log(f"[dry-run] no writes. elapsed {time.monotonic() - t0:.2f}s")
+            print(f"[dry-run] no writes. elapsed {time.monotonic() - t0:.2f}s")
             return
 
         result = await remove_props(session, keys, args.batch)
-        log(
+        print(
             f"[applied] cleared {result.nodes} nodes in {result.batches} batches. "
             f"elapsed {time.monotonic() - t0:.2f}s"
         )
