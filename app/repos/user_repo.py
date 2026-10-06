@@ -863,66 +863,49 @@ async def get_user_graph_data(
     session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
+    *,
+    reporter_cutoff: float,
 ) -> UserGraphData:
     """Single Cypher returning all 6 relationship lists (full, unpaginated) plus
-    the user's own influence — used by /self and /user/{pubkey}."""
-    query = """
-    MATCH (user:NostrUser {pubkey: $pubkey})
+    the user's own influence — used by /self and /user/{pubkey}. Row
+    `trusted_reporters` is the live count above `reporter_cutoff`."""
+    row = f"""{{
+            pubkey: other.pubkey,
+            influence: other[$influence_key],
+            trusted_reporters: {_live_reporters()}
+        }}"""
+    query = f"""
+    MATCH (user:NostrUser {{pubkey: $pubkey}})
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (other:NostrUser)-[:FOLLOWS]->(user)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS followed_by
-    }
+        RETURN collect({row}) AS followed_by
+    }}
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (user)-[:FOLLOWS]->(other:NostrUser)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS following
-    }
+        RETURN collect({row}) AS following
+    }}
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (other:NostrUser)-[:MUTES]->(user)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS muted_by
-    }
+        RETURN collect({row}) AS muted_by
+    }}
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (user)-[:MUTES]->(other:NostrUser)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS muting
-    }
+        RETURN collect({row}) AS muting
+    }}
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (other:NostrUser)-[:REPORTS]->(user)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS reported_by
-    }
+        RETURN collect({row}) AS reported_by
+    }}
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (user)-[:REPORTS]->(other:NostrUser)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS reporting
-    }
+        RETURN collect({row}) AS reporting
+    }}
 
     RETURN
         user[$influence_key] AS influence,
@@ -937,7 +920,7 @@ async def get_user_graph_data(
         query,
         pubkey=pubkey,
         influence_key=influence_key,
-        trusted_reporters_key=trusted_reporters_key,
+        reporter_cutoff=reporter_cutoff,
     )
     record = await result.single()
     if not record:

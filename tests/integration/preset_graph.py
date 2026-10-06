@@ -119,7 +119,7 @@ def seed_graph(
 
 
 @asynccontextmanager
-async def api(cutoffs: VerifiedCutoffs):
+async def api(cutoffs: VerifiedCutoffs | None):
     """HTTP client over the app with a loop-local Neo4j driver and Redis client.
 
     Same cross-loop caveat as ``test_shortest_path_integration`` — each test
@@ -128,7 +128,7 @@ async def api(cutoffs: VerifiedCutoffs):
     inbound counts) pin their connections to the loop that first used them, so
     each gets a fresh instance for the duration. `get_verified_cutoffs` is
     overridden so the observer's "saved preset" is whatever the test says it
-    is, with no Postgres round-trip.
+    is, with no Postgres round-trip; `None` leaves the real resolution in place.
     """
     driver = fresh_driver()
     redis = get_redis_client()
@@ -136,7 +136,8 @@ async def api(cutoffs: VerifiedCutoffs):
     original_redis = user_service_module.redis_client
     user_service_module.neo4j_driver = driver
     user_service_module.redis_client = redis
-    app.dependency_overrides[get_verified_cutoffs] = lambda: cutoffs
+    if cutoffs is not None:
+        app.dependency_overrides[get_verified_cutoffs] = lambda: cutoffs
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
