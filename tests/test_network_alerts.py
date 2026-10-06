@@ -176,7 +176,7 @@ def test_observer_drives_the_property_keys(client, mock_graph):
     assert kwargs["influence_key"] == f"influence_{observer}"
     assert kwargs["hops_key"] == f"hops_{observer}"
     assert kwargs["trusted_followers_key"] == f"trusted_followers_{observer}"
-    assert kwargs["trusted_reporters_key"] == f"trusted_reporters_{observer}"
+    assert "trusted_reporters_key" not in kwargs
 
 
 @pytest.mark.parametrize("bad_limit", [0, -1, 501])
@@ -373,6 +373,16 @@ def test_resolved_cutoffs_drive_both_graph_queries(client, mock_graph):
 
     assert mock_graph["candidates"].await_args.kwargs["cutoff"] == 0.5
     assert mock_graph["capped"].await_args.kwargs["cutoff"] == 0.5
+
+
+def test_reporter_count_uses_the_reporter_cutoff(client, mock_graph):
+    mock_graph["cutoffs"].return_value = VerifiedCutoffs(
+        follower=0.02, muter=0.01, reporter=0.3
+    )
+
+    _get(client, {"observer": _pk()})
+
+    assert mock_graph["candidates"].await_args.kwargs["reporter_cutoff"] == 0.3
 
 
 def test_the_cutoffs_dependency_resolves_the_named_observers_preset(monkeypatch):
