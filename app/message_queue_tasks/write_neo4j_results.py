@@ -12,7 +12,7 @@ from app.repos.brainstorm_request_repo import (
 )
 
 # Each batch is its own transaction, so fewer, larger batches mean fewer commits.
-BATCH_SIZE = 1000
+BATCH_SIZE = 5000
 
 # Persisted per observer as `<field>_<observer_pubkey>`. `trusted_followers` is
 # here so /networkAlerts reads a property instead of scanning follower edges.
