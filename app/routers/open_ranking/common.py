@@ -14,13 +14,11 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 # Per-endpoint TTL hints (seconds). The protocol treats these as advisory.
 # Aligned with how frequently the underlying data changes:
 #   stats / rank / followers / muters -> GrapeRank cadence (hour-ish)
-#   search -> the search relay updates near-real-time but profile churn matters less
 TTL_HINTS: dict[str, int] = {
     "/stats/pubkey": 3600,
     "/rank/pubkeys": 3600,
     "/followers": 3600,
     "/muters": 3600,
-    "/search/pubkeys": 300,
 }
 
 
@@ -28,7 +26,6 @@ TTL_HINTS: dict[str, int] = {
 MAX_BATCH_PUBKEYS = 1000
 MAX_LIMIT = 1000
 DEFAULT_RECOMMEND_LIMIT = 100
-MAX_QUERY_LEN = 512
 
 
 def validate_pubkey(value: str, field_name: str) -> str:

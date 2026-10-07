@@ -65,7 +65,7 @@ The assistant is also given a public face: a kind-0 profile published on request
 
 **Ingestion** is the strfry-plugin path: events land on the `strfry:events` queue and dispatch by kind — 3/10000/1984 → Neo4j relationship upserts + Redis reverse-sets (user-level reports only, per NIP-56), 5 → reconcile the deleting author's report edges. Details: [`app/message_queue_tasks/CLAUDE.md`](app/message_queue_tasks/CLAUDE.md).
 
-**Search** is served by the shared search relay (vespa-relay at `wss://search.brainstorm.world`), which mirrors the kind-30382 assertions we publish. ORE-05 `POST /search/pubkeys` reads the same relay over HTTP (`/ore/search`), so its `rank` is the relay's Search relevance. The essays in [`docs/`](docs/) on the old internal Vespa search are historical.
+**Search** is served by the shared search relay (vespa-relay at `wss://search.brainstorm.world`), which mirrors the kind-30382 assertions we publish. ORE-05 is served by the search relay (its public `POST /search/pubkeys`); ours forwards there and passes the answer through unchanged, so `rank` is the relay's Search relevance and the relay alone decides 202/422 for a pov. The essays in [`docs/`](docs/) on the old internal Vespa search are historical.
 
 ## 6. API surface
 

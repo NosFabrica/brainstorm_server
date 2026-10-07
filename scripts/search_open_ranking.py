@@ -4,7 +4,7 @@
 Returns pubkeys ranked by the observer's quality score. The observer is chosen
 (in priority order) by:
 
-  * a signed request  -> the signer's pubkey IS the observer (`--nsec` / `--sign`)
+  * a signed request  -> the signer's pubkey IS the pov, when the server enforces auth (`--nsec` / `--sign`)
   * `--pov <hex>`     -> that pubkey (sent unsigned; auth on this endpoint is optional)
   * neither           -> the server's default observer
 
@@ -88,12 +88,13 @@ def main() -> int:
     observer_desc = "server default"
 
     # pov is honored only by a pov-based algorithm; default to the personalized
-    # one when --pov is given (the default relevance algorithm ignores pov).
-    algo = args.algo or ("relevance-pov" if args.pov else None)
+    # one when a pov is given or forced (the default relevance ignores pov).
+    signing = bool(args.nsec or args.sign)
+    algo = args.algo or ("relevance-pov" if args.pov or signing else None)
     if algo:
         body["algorithm"] = algo
 
-    if args.nsec or args.sign:
+    if signing:
         keys = Keys.parse(args.nsec) if args.nsec else Keys.generate()
         audience = args.audience or urlparse(args.base_url).hostname
         headers["Authorization"] = f"Nostr {mint_nwt(keys, audience)}"

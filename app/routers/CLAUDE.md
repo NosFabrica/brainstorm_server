@@ -81,7 +81,7 @@ PRD's admin convention — raw `response_model`, no success wrapper (`Page[...]`
 `/admin/billing`'s divergence/resync/plans/block bodies). The wrapper exists for
 the app client's response handling; the admin UI reads models directly.
 
-**Exception: routes whose shape a third-party spec dictates.** Where an external protocol fixes the response body, the endpoint returns it unwrapped — the `.well-known` documents (`open_ranking/well_known.py` for ORE-01, `nip05/well_known.py` for NIP-05) via an explicit `JSONResponse`, and likewise the Open Ranking payloads. Wrapping any of them would break the spec.
+**Exception: routes whose shape a third-party spec dictates.** Where an external protocol fixes the response body, the endpoint returns it unwrapped — the `.well-known` documents (`open_ranking/well_known.py` for ORE-01, `nip05/well_known.py` for NIP-05) via an explicit `JSONResponse`, and likewise the Open Ranking payloads. Wrapping any of them would break the spec. ORE-05 `/search/pubkeys` is a pass-through to the search relay (`open_ranking/search.py`): its body, status, `X-Reason` and `Retry-After` are the relay's.
 
 ## Per-router summary
 

@@ -61,7 +61,7 @@ Ad-hoc tools for poking ORE-05 search against a **deployed** host
   algorithm, so it auto-selects `relevance-pov` (the default `relevance` is
   global and ignores pov per ORE-01).
 - **`search_open_ranking.py --query <q> [--pov <hex>] [--algo <id>] [--sign|--nsec ...]`**
-  — same endpoint, but can **sign** an NWT so the observer = signer. Observer
+  — same endpoint, but can **sign** an NWT; with server auth on, the signer is forced as `pov` (auto `relevance-pov`). Observer
   priority: signer (when signed) → `--pov` (auto `relevance-pov`) → server
   default. Needs `requests` + `nostr-sdk` (poetry env), like
   `smoke_open_ranking.py`; no `.env` required.

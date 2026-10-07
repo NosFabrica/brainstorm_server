@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
@@ -371,37 +370,6 @@ async def get_pov_availability_fields_on_db(
     if row is None:
         return False, False
     return True, row[0] is not None
-
-
-@dataclass(frozen=True)
-class PovSearchFields:
-    """What the ORE-05 lens gate needs about a pov. `assistant` is None both
-    for a missing row and for one whose nsec is unusable; `nsec_unusable`
-    tells them apart."""
-
-    assistant: str | None
-    published_at: datetime | None
-    nsec_unusable: bool = False
-
-
-async def get_pov_search_fields_on_db(
-    db: AsyncDBSession, pubkey: str
-) -> PovSearchFields:
-    statement = select(
-        BrainstormNsec.nsec,
-        BrainstormNsec.encrypted_nsec,
-        BrainstormNsec.last_time_published_graperank,
-    ).where(BrainstormNsec.pubkey == pubkey)
-    result = await execute_db_statement(db, statement, __name__)
-    row = result.first()
-    if row is None:
-        return PovSearchFields(assistant=None, published_at=None)
-    nsec, encrypted_nsec, published = row
-    try:
-        return PovSearchFields(_assistant_pubkey(nsec, encrypted_nsec), published)
-    except Exception as e:
-        logger.error(f"Unusable nsec for {pubkey}: {e}")
-        return PovSearchFields(None, published, nsec_unusable=True)
 
 
 async def select_all_assistant_pubkeys_on_db(db: AsyncDBSession) -> list[str]:

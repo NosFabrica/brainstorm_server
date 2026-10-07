@@ -1,88 +1,69 @@
-"""ORE-05: POST /search/pubkeys."""
+"""ORE-05: POST /search/pubkeys, served by the search relay and proxied here."""
 
 from __future__ import annotations
 
-import re
+import json
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from app.core.database import get_db
-from app.core.search_relay import SearchRelayUnavailable, ore_search
-from app.routers.open_ranking.availability import (
-    ensure_pov_available,
-    ensure_search_lens_serves_pov,
-)
-from app.routers.open_ranking.capabilities import resolve_algorithm
-from app.routers.open_ranking.common import (
-    MAX_QUERY_LEN,
-    TTL_HINTS,
-    validate_positive_limit,
-    validate_pubkey,
-)
+from app.core.search_relay import SearchRelayUnavailable, search_pubkeys
 from app.routers.open_ranking.schemas import (
-    RankResult,
     SearchPubkeysRequest,
     SearchPubkeysResponse,
     ore_responses,
 )
 from app.utils.auth.nwt import optional_nwt_signer
+from app.utils.observer import default_observer_pubkey
 
 router = APIRouter()
 
 
-DEFAULT_LIMIT = 100  # provider default per ORE-05 §"limit"
-MAX_LIMIT = 400
-
-# Strip control characters; keep printable text only.
-_SANITIZE_RE = re.compile(r"[\x00-\x1f\x7f]")
+def _forwarded(body: bytes, signer: str | None) -> bytes:
+    """Name our House Observer (the relay keeps none) and, with auth on, force
+    the signer as `pov`. A body that isn't a JSON object goes as is and the
+    relay rejects it."""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return body
+    if not isinstance(parsed, dict):
+        return body
+    forced = {"observer": default_observer_pubkey()}
+    if signer is not None:
+        forced["pov"] = signer
+    return json.dumps({**parsed, **forced}).encode()
 
 
 @router.post(
     "/search/pubkeys",
-    response_model=SearchPubkeysResponse,
     summary="ORE-05: search Nostr profiles by free-form text",
-    responses=ore_responses(),
+    description="Forwarded to the search relay's ORE-05; its answer is returned as is.",
+    responses={
+        200: {"model": SearchPubkeysResponse},
+        **ore_responses(
+            unavailable="The search relay is busy, unreachable, or answered "
+            "outside the ORE-05 shape."
+        ),
+    },
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {"schema": SearchPubkeysRequest.model_json_schema()}
+            },
+        }
+    },
 )
-async def search_pubkeys(
-    req: SearchPubkeysRequest,
-    signer: str | None = Depends(optional_nwt_signer),
-    db: AsyncDBSession = Depends(get_db),
-) -> SearchPubkeysResponse:
-    sanitized = _SANITIZE_RE.sub("", req.query).strip()
-    if not sanitized:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="query field is missing or empty",
-        )
-    if len(req.query) > MAX_QUERY_LEN:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"query exceeds the maximum length of {MAX_QUERY_LEN} characters",
-        )
-
-    pov = validate_pubkey(req.pov, "pov") if req.pov else None
-    limit = validate_positive_limit(req.limit, max_value=MAX_LIMIT) or DEFAULT_LIMIT
-
-    algo_id, observer = resolve_algorithm(
-        "/search/pubkeys", req.algorithm, pov, forced_observer=signer
-    )
-    await ensure_pov_available(db, "/search/pubkeys", algo_id, observer)
-
-    # rank is the relay's own search relevance, in the relay's order: the
-    # number that orders the results, never a server-side estimate.
+async def search_pubkeys_proxy(
+    request: Request, signer: str | None = Depends(optional_nwt_signer)
+) -> Response:
+    body = _forwarded(await request.body(), signer)
     try:
-        found = await ore_search(sanitized, observer, limit)
+        answer = await search_pubkeys(body)
     except SearchRelayUnavailable as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
         ) from e
-    await ensure_search_lens_serves_pov(db, algo_id, observer, found.lens)
-
-    # The relay caps hits at the limit it was passed.
-    results = [RankResult(pubkey=h.pubkey, rank=h.score) for h in found.hits]
-
-    return SearchPubkeysResponse(
-        results=results,
-        ttl=TTL_HINTS["/search/pubkeys"],
+    return Response(
+        content=answer.body, status_code=answer.status_code, headers=answer.headers
     )

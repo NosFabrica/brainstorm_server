@@ -16,9 +16,8 @@ An Open Ranking request never provisions state: unknown povs are an
 enumeration / DoS surface, so there is NO auto-provisioning here.
 
 Every endpoint is ready once the pov's calc has completed at least once
-(`BrainstormNsec.last_time_calculated_graperank`). /search/pubkeys then also
-needs the search relay's lens to be this pov's own Brainstorm trust
-(`ensure_search_lens_serves_pov`).
+(`BrainstormNsec.last_time_calculated_graperank`). /search/pubkeys is not
+gated here: the search relay serves it and applies these rules itself.
 
 The house observer (`default_observer_pubkey()`) IS the global perspective:
 its scores are recomputed on the periodic schedule and are the ones every
@@ -28,20 +27,13 @@ may not even have a `brainstorm_nsec` row, and must never be gated on one.
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
-from app.core.search_relay import Lens
-from app.repos.brainstorm_nsec import (
-    get_pov_availability_fields_on_db,
-    get_pov_search_fields_on_db,
-)
+from app.repos.brainstorm_nsec import get_pov_availability_fields_on_db
 from app.repos.brainstorm_request_repo import any_request_in_pipeline_for_pubkey_on_db
 from app.routers.open_ranking.capabilities import CAPABILITY_DOC, algorithm_requires_pov
-from app.utils.datetimes import utc_now
 from app.utils.observer import default_observer_pubkey
 
 # Advisory retry hint for the 202 branch. A manual GrapeRank run typically
@@ -120,53 +112,4 @@ async def ensure_pov_available(
         f"have not been computed for this point of view and no computation is "
         f"in progress. Either {fallback}, or trigger a run at "
         f"{settings.frontend_url}"
-    )
-
-
-async def ensure_search_lens_serves_pov(
-    db: AsyncDBSession, algo_id: str, observer: str, lens: Lens
-) -> None:
-    """Gate ORE-05 on the relay's lens: a personalized search is only honest
-    when the relay applied this pov's own Brainstorm trust."""
-    if not _pov_gated(algo_id, observer):
-        return
-
-    pov = await get_pov_search_fields_on_db(db, observer)
-    cannot = f"algorithm '{algo_id}' cannot be served for pov {observer}"
-    fallback = _fallback("/search/pubkeys")
-    if lens.status == "READY":
-        if pov.nsec_unusable:
-            # Our fault, not the pov's list: we can't tell whose lens it is.
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"{cannot}: the provider cannot read this pov's Brainstorm "
-                f"key to check the search lens; retry later",
-            )
-        if lens.service == pov.assistant:
-            return
-        raise _unavailable(
-            f"{cannot}: its trust provider list names another provider. "
-            f"Either {fallback}, or name Brainstorm as the provider at "
-            f"{settings.frontend_url}"
-        )
-    if lens.status == "NO_LIST":
-        raise _unavailable(
-            f"{cannot}: personalized search needs Brainstorm activated for this "
-            f"pov (no trust provider list found). Either {fallback}, or "
-            f"activate Brainstorm at {settings.frontend_url}"
-        )
-
-    # last_time_published_graperank is naive on every env (not a drift column).
-    published_at = pov.published_at
-    grace = timedelta(hours=settings.ore_search_mirror_grace_hours)
-    if published_at is not None and utc_now() - published_at < grace:
-        raise PovComputing(
-            f"the search relay is still mirroring the scores for pov "
-            f"{observer}; retry the identical request after "
-            f"{RETRY_AFTER_SECONDS} seconds"
-        )
-    raise _unavailable(
-        f"{cannot}: the search relay holds no scores for this pov and no "
-        f"recent publication is mirroring. Either {fallback}, or trigger a new "
-        f"run at {settings.frontend_url}"
     )

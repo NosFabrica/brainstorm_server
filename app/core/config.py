@@ -101,11 +101,8 @@ class Settings(BaseSettings):
     billing_admin_whitelisted_pubkeys: str = Field(default="")
     # A subscriber not read from Flash within this is reported as stale.
     billing_stale_sync_hours: int = Field(default=24)
-    # HTTP base of the shared search relay; ORE-05 reads its /ore/search.
+    # HTTP base of the shared search relay; ORE-05 is proxied to its /search/pubkeys.
     search_relay_url: str = Field(default="https://search.brainstorm.world")
-    # ORE-05 pov: NO_CARDS within this long of the pov's last publish is the
-    # relay still mirroring (202); after it, the pov can't be served (422).
-    ore_search_mirror_grace_hours: float = Field(default=6.0)
     # Publish mode. False (default) = only changed scores; True = re-assert
     # every above-cutoff kind-30382 each run. Re-assertion only, not deletes.
     relay_full_sync: bool = Field(default=False)
