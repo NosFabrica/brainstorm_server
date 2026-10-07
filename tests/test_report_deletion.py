@@ -114,6 +114,11 @@ def _mock_session(current_targets: list[str]) -> MagicMock:
     result = MagicMock()
     result.single = AsyncMock(return_value={"targets": current_targets})
     session.run = AsyncMock(return_value=result)
+
+    async def execute_write(work, *args, **kwargs):  # the session doubles as the transaction
+        return await work(session, *args, **kwargs)
+
+    session.execute_write = AsyncMock(side_effect=execute_write)
     return session
 
 

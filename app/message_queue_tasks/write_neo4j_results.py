@@ -11,7 +11,8 @@ from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_internal_publication_status_by_id_on_db,
 )
 
-BATCH_SIZE = 100  # Adjust as needed
+# Each batch is its own transaction, so fewer, larger batches mean fewer commits.
+BATCH_SIZE = 5000
 
 # Persisted per observer as `<field>_<observer_pubkey>`. `trusted_followers` is
 # here so /networkAlerts reads a property instead of scanning follower edges.
@@ -56,14 +57,22 @@ async def process_neo4j_write_message(message: dict):
 
         await db.commit()
 
+    async def write_batch(tx, batch):
+        result = await tx.run(
+            """
+            UNWIND $rows AS row
+            MATCH (n:NostrUser {pubkey: row.pubkey})
+            SET n += row.props
+            """,
+            rows=batch,
+        )
+        await result.consume()
+
     async def process_batch(batch):
-        query = """
-        UNWIND $rows AS row
-        MATCH (n:NostrUser {pubkey: row.pubkey})
-        SET n += row.props
-        """
+        # Managed transaction: retried on transient errors such as DeadlockDetected, which
+        # event ingestion can cause by locking the same NostrUser nodes.
         async with neo4j_driver.session() as session:
-            await session.run(query, rows=batch)
+            await session.execute_write(write_batch, batch)
 
     start_time = time.time()
 
