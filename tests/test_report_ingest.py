@@ -22,6 +22,11 @@ def _event(tags: list, pubkey: str = "r" * 64) -> dict:
 def _mock_session() -> MagicMock:
     session = MagicMock()
     session.run = AsyncMock()
+
+    async def execute_write(work, *args, **kwargs):  # the session doubles as the transaction
+        return await work(session, *args, **kwargs)
+
+    session.execute_write = AsyncMock(side_effect=execute_write)
     return session
 
 
