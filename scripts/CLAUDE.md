@@ -115,7 +115,7 @@ kinds 3/10000/1984, so this is the only kind-0 → Vespa re-feed path.
 Strips leftover `trusted_reporters_<observer>` props from `NostrUser` nodes (the
 reporter count is computed live, so they are inert). Observer keys come from
 `db.propertyKeys()`. Dry-run by default (property + node counts); `--apply`
-removes in `--batch`-node transactions; idempotent. Space is reused, but store
+removes in one scan, committing every `--batch` nodes; idempotent. Space is reused, but store
 files only shrink after dump/reload. Held by
 `tests/integration/test_clean_trusted_reporters_props_integration.py`.
 

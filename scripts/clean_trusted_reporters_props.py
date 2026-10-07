@@ -52,29 +52,23 @@ async def count_props(session, keys: list[str]) -> tuple[int, int]:
 
 
 async def remove_props(session, keys: list[str], batch: int) -> RemoveResult:
-    # Setting a prop to null via += removes it. Serial batches: Neo4j fails under concurrent writers.
-    nulls = {k: None for k in keys}
-    nodes = batches = 0
-    while True:
-        res = await session.run(
-            "MATCH (u:NostrUser) WHERE any(k IN keys(u) WHERE $keyset[k] IS NOT NULL) "
-            "WITH u LIMIT $batch SET u += $nulls RETURN count(u) AS n",
-            keyset=dict.fromkeys(keys, True),
-            batch=batch,
-            nulls=nulls,
-        )
-        n = (await res.single())["n"]
-        if n == 0:
-            return RemoveResult(nodes, batches)
-        nodes += n
-        batches += 1
-        print(f"  batch {batches}: {n} nodes ({nodes} total)")
+    # One scan, committing every `batch` nodes; null via += removes the prop.
+    res = await session.run(
+        "MATCH (u:NostrUser) WHERE any(k IN keys(u) WHERE $keyset[k] IS NOT NULL) "
+        "CALL (u) { SET u += $nulls } IN TRANSACTIONS OF $batch ROWS "
+        "RETURN count(u) AS n",
+        keyset=dict.fromkeys(keys, True),
+        batch=batch,
+        nulls={k: None for k in keys},
+    )
+    nodes = (await res.single())["n"]
+    return RemoveResult(nodes, -(-nodes // batch))
 
 
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="remove (default: dry-run)")
-    ap.add_argument("--batch", type=int, default=10000, help="nodes per transaction")
+    ap.add_argument("--batch", type=int, default=1000, help="nodes per transaction")
     args = ap.parse_args()
 
     t0 = time.monotonic()
