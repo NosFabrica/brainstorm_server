@@ -31,7 +31,8 @@ logger = loggr.get_logger(__name__)
 
 async def _write(session: AsyncNeoSession, cypher: str, **params):
     """Run one write query as a managed transaction, so the driver retries it on transient
-    errors such as `DeadlockDetected` (the GrapeRank write-back locks the same nodes)."""
+    errors such as `DeadlockDetected` (the GrapeRank write-back locks the same nodes).
+    """
 
     async def work(tx):
         result = await tx.run(cypher, **params)
@@ -179,7 +180,9 @@ async def process_event_kind_1984(session: AsyncNeoSession, event: dict):
         MERGE (pub)-[:REPORTS]->(reported)
     """
 
-    await _write(session, cypher, publisher=publisher, reported_pubkeys=reported_pubkeys)
+    await _write(
+        session, cypher, publisher=publisher, reported_pubkeys=reported_pubkeys
+    )
 
     await _update_reverse_sets(
         REPORTED_BY_KEY_PREFIX, publisher, added_pubkeys=reported_pubkeys
@@ -216,7 +219,9 @@ async def process_event_kind_10000(session: AsyncNeoSession, event: dict):
         MERGE (f:NostrUser {pubkey: fp})
         MERGE (pub)-[:MUTES]->(f)
     """
-    await _write(session, upsert_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys)
+    await _write(
+        session, upsert_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys
+    )
 
     cleanup_cypher = """
     MATCH (pub:NostrUser {pubkey: $publisher})-[r:MUTES]->(oldF)
