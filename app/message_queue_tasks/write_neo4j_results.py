@@ -11,7 +11,8 @@ from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_internal_publication_status_by_id_on_db,
 )
 
-BATCH_SIZE = 100  # Adjust as needed
+# Each batch is its own transaction, so fewer, larger batches mean fewer commits.
+BATCH_SIZE = 1000
 
 # Persisted per observer as `<field>_<observer_pubkey>`. `trusted_followers` is
 # here so /networkAlerts reads a property instead of scanning follower edges.
