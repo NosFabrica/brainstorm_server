@@ -81,6 +81,10 @@ def seeded():
         asyncio.run(_run(_teardown))
 
 
+# Node-id range per transaction; large so the shared local graph is few chunks.
+_ID_CHUNK = 200_000
+
+
 def test_discovers_observer_keys_from_the_database(seeded):
     keys = asyncio.run(_run(discover_keys))
     assert {_KEY_A, _KEY_B} <= set(keys)
@@ -94,17 +98,16 @@ def test_counts_props_and_nodes_for_the_given_keys(seeded):
 
 def test_apply_removes_in_batches_and_rerun_finds_none(seeded):
     keys = [_KEY_A, _KEY_B]
-    first = asyncio.run(_run(lambda s: remove_props(s, keys, batch=2)))
+    first = asyncio.run(_run(lambda s: remove_props(s, keys, batch=_ID_CHUNK)))
     assert first.nodes == 5
-    assert first.batches == 3
     assert asyncio.run(_run(lambda s: count_props(s, keys))) == (0, 0)
 
-    second = asyncio.run(_run(lambda s: remove_props(s, keys, batch=2)))
+    second = asyncio.run(_run(lambda s: remove_props(s, keys, batch=_ID_CHUNK)))
     assert (second.nodes, second.batches) == (0, 0)
 
 
 def test_apply_leaves_other_properties_untouched(seeded):
-    asyncio.run(_run(lambda s: remove_props(s, [_KEY_A, _KEY_B], batch=2)))
+    asyncio.run(_run(lambda s: remove_props(s, [_KEY_A, _KEY_B], batch=_ID_CHUNK)))
     props = asyncio.run(_run(_props_of_synthetic))
     assert len(props) == len(_NODES)
     for pk, p in props.items():

@@ -52,27 +52,43 @@ async def count_props(session, keys: list[str]) -> tuple[int, int]:
 
 
 async def remove_props(session, keys: list[str], batch: int) -> RemoveResult:
-    # One scan, committing every `batch` nodes; null via += removes the prop.
-    res = await session.run(
-        "MATCH (u:NostrUser) WHERE any(k IN keys(u) WHERE $keyset[k] IS NOT NULL) "
-        "CALL (u) { SET u += $nulls } IN TRANSACTIONS OF $batch ROWS "
-        "RETURN count(u) AS n",
-        keyset=dict.fromkeys(keys, True),
-        batch=batch,
-        nulls={k: None for k in keys},
-    )
-    nodes = (await res.single())["n"]
-    return RemoveResult(nodes, -(-nodes // batch))
+    # Chunk by node id, one small transaction each. A single MATCH ... SET
+    # plans an Eager that holds every match in one transaction and OOMs at scale.
+    res = await session.run("MATCH (u:NostrUser) RETURN max(id(u)) AS m")
+    max_id = (await res.single())["m"]
+    if max_id is None:
+        return RemoveResult(0, 0)
+    nodes = batches = 0
+    for lo in range(0, max_id + 1, batch):
+        res = await session.run(
+            "UNWIND range($lo, $hi) AS i MATCH (u:NostrUser) WHERE id(u) = i "
+            "AND any(k IN keys(u) WHERE $keyset[k] IS NOT NULL) "
+            "SET u += $nulls RETURN count(u) AS n",
+            lo=lo,
+            hi=min(lo + batch - 1, max_id),
+            keyset=dict.fromkeys(keys, True),
+            nulls={k: None for k in keys},
+        )
+        n = (await res.single())["n"]
+        if n:
+            nodes += n
+            batches += 1
+        if (lo // batch) % 100 == 0:
+            print(f"  ids {lo}/{max_id}: {nodes} nodes cleared")
+    return RemoveResult(nodes, batches)
 
 
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="remove (default: dry-run)")
-    ap.add_argument("--batch", type=int, default=1000, help="nodes per transaction")
+    ap.add_argument("--batch", type=int, default=1000, help="node ids per transaction")
     args = ap.parse_args()
 
     t0 = time.monotonic()
-    async with neo4j_driver.session() as session:
+    # remove_props seeks by id(), deprecated but fine on 5.x; keep the output readable.
+    async with neo4j_driver.session(
+        notifications_disabled_classifications=["DEPRECATION"]
+    ) as session:
         keys = await discover_keys(session)
         props, nodes = await count_props(session, keys)
         print(f"observer keys: {len(keys)}")
