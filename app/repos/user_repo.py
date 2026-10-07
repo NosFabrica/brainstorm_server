@@ -347,8 +347,9 @@ async def get_outbound_counts_and_influence(
     session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
+    *,
     verified_line: float,
+    reporter_cutoff: float,
 ) -> OutboundOverview:
     """One round-trip: the user's own influence and tier, plus outbound counts,
     flagged_by_observer and a DISTINCT flagged_count across all relationships.
@@ -358,7 +359,8 @@ async def get_outbound_counts_and_influence(
     subject isn't rating anyone here.
 
     "Flagged" is *not verified* (influence `<= verified_line`, the complement of
-    the strict `>` used everywhere else) AND reported by 2+ trusted accounts."""
+    the strict `>` used everywhere else) AND reported by 2+ accounts above
+    `reporter_cutoff`, counted live."""
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
     CALL (user) {{
@@ -379,8 +381,8 @@ async def get_outbound_counts_and_influence(
         query,
         pubkey=pubkey,
         influence_key=influence_key,
-        trusted_reporters_key=trusted_reporters_key,
         verified_line=verified_line,
+        reporter_cutoff=reporter_cutoff,
         **_tier_band_params(),
     )
     record = await result.single()
@@ -407,8 +409,9 @@ async def get_trust_signals_for_pubkeys(
     session: AsyncNeoSession,
     pubkeys: list[str],
     influence_key: str,
-    trusted_reporters_key: str,
+    *,
     verified_line: float,
+    reporter_cutoff: float,
 ) -> dict[str, TrustSignalRow]:
     """`/overview`'s verdicts for many subjects in one UNWIND; unknown pubkeys unrated."""
     if not pubkeys:
@@ -426,8 +429,8 @@ async def get_trust_signals_for_pubkeys(
         query,
         pubkeys=pubkeys,
         influence_key=influence_key,
-        trusted_reporters_key=trusted_reporters_key,
         verified_line=verified_line,
+        reporter_cutoff=reporter_cutoff,
     )
     out = {pk: TrustSignalRow(None, False, False) for pk in pubkeys}
     async for record in result:
@@ -457,7 +460,7 @@ _TIER_PREDICATES: dict[str, str] = {
     # Bucket names match the GR result writer's count_values keys (see
     # message_queue_consumer.py). Placeholders:
     #   __INF__ → other[$influence_key]
-    #   __TR__  → coalesce(other[$trusted_reporters_key], 0)
+    #   __TR__  → the live verified-reporter count of `other`
     # Parameter names $tier_high/$tier_medium_high/$tier_medium are the upper
     # bounds of high/medium_high/medium respectively — kept stable as API
     # surface, the semantic boundary value doesn't change with renaming.
@@ -480,12 +483,20 @@ _TIER_PREDICATES: dict[str, str] = {
 }
 
 
+def _live_reporters(node: str = "other") -> str:
+    """Reporters of `node` strictly above the observer's preset reporter cutoff."""
+    return (
+        f"COUNT {{ (rr:NostrUser)-[:REPORTS]->({node}) "
+        "WHERE rr[$influence_key] > $reporter_cutoff }"
+    )
+
+
 def _expand(predicate: str, node: str = "other") -> str:
     """Bind the __INF__ / __TR__ placeholders to a node."""
     return (
         "("
         + predicate.replace("__INF__", f"{node}[$influence_key]").replace(
-            "__TR__", f"coalesce({node}[$trusted_reporters_key], 0)"
+            "__TR__", _live_reporters(node)
         )
         + ")"
     )
@@ -523,6 +534,59 @@ def _tier_case(node: str = "other") -> str:
     return f"CASE {arms} ELSE null END"
 
 
+def _row_map(*extra: str) -> str:
+    """A connection row's Cypher map over `other`, plus any `extra` fields."""
+    fields = [
+        "pubkey: other.pubkey",
+        "influence: other[$influence_key]",
+        f"trusted_reporters: {_live_reporters()}",
+        *extra,
+    ]
+    return "{" + ", ".join(fields) + "}"
+
+
+def _order_by(order: str) -> str:
+    return f"ORDER BY sort_inf {'ASC' if order == 'asc' else 'DESC'}, other.pubkey ASC"
+
+
+def _after_cursor(order: str, inf: str = "sort_inf", pk: str = "other.pubkey") -> str:
+    """Rows strictly after ($cursor_inf, $cursor_pk) in `order`; ties step by pubkey ASC."""
+    cmp = ">" if order == "asc" else "<"
+    return f"({inf} {cmp} $cursor_inf OR ({inf} = $cursor_inf AND {pk} > $cursor_pk))"
+
+
+def _cursor_params(cursor_inf: float | None, cursor_pk: str | None) -> dict:
+    """Both bound, or both null (no cursor)."""
+    if cursor_inf is None or cursor_pk is None:
+        return {"cursor_inf": None, "cursor_pk": None}
+    return {"cursor_inf": cursor_inf, "cursor_pk": cursor_pk}
+
+
+def _flagged_single_pass_query(scan: str, where: str, row: str, order: str) -> str:
+    """Flagged sets are small (>= 2 verified reports), so collect them once in
+    sort order and take both the cursor page and the total from that list."""
+    after = _after_cursor(order, "r.sort_inf", "r.pubkey")
+    return f"""
+    MATCH (user:NostrUser {{pubkey: $pubkey}})
+    CALL (user) {{
+        {scan}
+        WITH other, coalesce(other[$influence_key], -1.0) AS sort_inf
+        WHERE {where}
+        WITH other, sort_inf
+        {_order_by(order)}
+        RETURN collect({{other: other, pubkey: other.pubkey, sort_inf: sort_inf}}) AS flagged
+    }}
+    WITH [r IN flagged WHERE $cursor_pk IS NULL OR {after}][..$limit] AS page,
+         size(flagged) AS total
+    CALL (page) {{
+        UNWIND page AS r
+        WITH r.other AS other, r.sort_inf AS sort_inf
+        RETURN collect({row}) AS rows
+    }}
+    RETURN rows, total
+    """
+
+
 def _row_to_item(row: dict) -> UserConnectionItem:
     return UserConnectionItem(
         pubkey=row["pubkey"],
@@ -540,7 +604,6 @@ async def get_paginated_section_connections(
     session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
     rel_type: str,
     direction: str,
     limit: int,
@@ -552,6 +615,7 @@ async def get_paginated_section_connections(
     *,
     verified_cutoff: float,
     verified_line: float,
+    reporter_cutoff: float,
     order: str = "desc",
     tier: str | None = None,
     verified_only: bool = False,
@@ -574,22 +638,18 @@ async def get_paginated_section_connections(
     Returns (items, last_record_cursor_or_none, total_or_none).
     """
     scoped_pattern = _scoped_match_pattern(rel_type, direction)
-    inf_order = "ASC" if order == "asc" else "DESC"
-    # Cursor predicate must match the sort direction. Secondary sort stays
-    # ASC by pubkey in both cases — cursor compares pubkey with `>` so we
-    # always step "later" in tied groups.
-    inf_cmp = ">" if order == "asc" else "<"
 
     # Bound unconditionally: the per-row `verified` / `tier` columns reference
     # them whether or not the caller filters on them.
     params: dict = {
         "pubkey": pubkey,
         "influence_key": influence_key,
-        "trusted_reporters_key": trusted_reporters_key,
         "limit": limit,
         "verified_cutoff": verified_cutoff,
         "verified_line": verified_line,
+        "reporter_cutoff": reporter_cutoff,
         **_tier_band_params(),
+        **_cursor_params(cursor_inf, cursor_pk),
     }
     verified_pred = _expand(_verified("verified_cutoff"))
     # Filter predicates (tier / verified_only) are cursor-independent and shared
@@ -602,48 +662,47 @@ async def get_paginated_section_connections(
     if verified_only:
         filter_parts.append(verified_pred)
 
-    page_parts = list(filter_parts)
-    if cursor_inf is not None and cursor_pk is not None:
-        params["cursor_inf"] = cursor_inf
-        params["cursor_pk"] = cursor_pk
-        page_parts.append(
-            f"(sort_inf {inf_cmp} $cursor_inf "
-            "OR (sort_inf = $cursor_inf AND other.pubkey > $cursor_pk))"
-        )
-    page_where = ("WHERE " + " AND ".join(page_parts)) if page_parts else ""
-    count_where = ("WHERE " + " AND ".join(filter_parts)) if filter_parts else ""
+    row = _row_map(f"tier: {_tier_case()}", "sort_inf: sort_inf")
 
-    # Both subqueries end in an aggregation (collect / count), so each always
-    # yields exactly one row — even on an empty/last page. A plain row-streaming
-    # CALL returning zero rows would drop the outer row and lose `total`.
-    count_block = (
-        f"""
+    if tier == FLAGGED_TIER:
+        query = _flagged_single_pass_query(
+            scan=f"MATCH {scoped_pattern}",
+            where=" AND ".join(filter_parts),
+            row=row,
+            order=order,
+        )
+    else:
+        page_parts = list(filter_parts)
+        if params["cursor_pk"] is not None:
+            page_parts.append(_after_cursor(order))
+        page_where = ("WHERE " + " AND ".join(page_parts)) if page_parts else ""
+        count_where = ("WHERE " + " AND ".join(filter_parts)) if filter_parts else ""
+
+        # Both subqueries end in an aggregation (collect / count), so each always
+        # yields exactly one row — even on an empty/last page. A plain row-streaming
+        # CALL returning zero rows would drop the outer row and lose `total`.
+        count_block = (
+            f"""
     CALL (user) {{
         MATCH {scoped_pattern}
         {count_where}
         RETURN count(other) AS total
     }}"""
-        if with_total
-        else ""
-    )
-    return_tail = "rows, total" if with_total else "rows"
+            if with_total
+            else ""
+        )
+        return_tail = "rows, total" if with_total else "rows"
 
-    query = f"""
+        query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}})
     CALL (user) {{
         MATCH {scoped_pattern}
         WITH other, coalesce(other[$influence_key], -1.0) AS sort_inf
         {page_where}
         WITH other, sort_inf
-        ORDER BY sort_inf {inf_order}, other.pubkey ASC
+        {_order_by(order)}
         LIMIT $limit
-        RETURN collect({{
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key],
-            tier: {_tier_case()},
-            sort_inf: sort_inf
-        }}) AS rows
+        RETURN collect({row}) AS rows
     }}{count_block}
     RETURN {return_tail}
     """
@@ -671,88 +730,47 @@ async def get_paginated_flagged_connections(
     session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
-    verified_line: float,
     limit: int,
     cursor_inf: float | None,
     cursor_pk: str | None,
+    *,
+    verified_line: float,
+    reporter_cutoff: float,
     order: str = "desc",
     with_total: bool = False,
 ) -> tuple[list[UserConnectionItem], tuple[float, str] | None, int | None]:
     """DISTINCT flagged users across any relationship to `pubkey`. A user is
     flagged when (from `pubkey`'s perspective) they are not verified — influence
     at or below `verified_line`, the complement of the strict `>` used
-    everywhere else — AND at least 2 trusted reporters have reported them.
+    everywhere else — AND at least 2 reporters above `reporter_cutoff` report
+    them, counted live.
     Cursor-paginated by (influence <order>, pubkey ASC). Same shape as
     get_paginated_section_connections so the client can reuse one item type.
-    When `with_total` is set, the DISTINCT flagged count is computed in the same
-    round-trip. Returns (items, last_record_cursor_or_none, total_or_none)."""
-    inf_order = "ASC" if order == "asc" else "DESC"
-    inf_cmp = ">" if order == "asc" else "<"
-
+    One pass yields both the page and the DISTINCT flagged total; `with_total`
+    only decides whether the total is returned.
+    Returns (items, last_record_cursor_or_none, total_or_none)."""
     params: dict = {
         "pubkey": pubkey,
         "influence_key": influence_key,
-        "trusted_reporters_key": trusted_reporters_key,
         "verified_line": verified_line,
+        "reporter_cutoff": reporter_cutoff,
         "limit": limit,
+        **_cursor_params(cursor_inf, cursor_pk),
     }
-    cursor_clause = ""
-    if cursor_inf is not None and cursor_pk is not None:
-        params["cursor_inf"] = cursor_inf
-        params["cursor_pk"] = cursor_pk
-        cursor_clause = (
-            f"AND (sort_inf {inf_cmp} $cursor_inf "
-            "OR (sort_inf = $cursor_inf AND other.pubkey > $cursor_pk))"
-        )
-
-    # Both subqueries end in an aggregation (collect / count) so each always
-    # yields exactly one row, even on an empty/last page.
-    count_block = (
-        """
-    CALL (user) {
-        MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
-        WHERE other[$influence_key] IS NOT NULL
-          AND other[$influence_key] <= $verified_line
-          AND coalesce(other[$trusted_reporters_key], 0) >= 2
-        RETURN count(DISTINCT other) AS total
-    }"""
-        if with_total
-        else ""
+    query = _flagged_single_pass_query(
+        scan=(
+            "MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)\n"
+            "        WITH DISTINCT other"
+        ),
+        where=_expand(_TIER_PREDICATES[FLAGGED_TIER]),
+        row=_row_map("sort_inf: sort_inf"),
+        order=order,
     )
-    return_tail = "rows, total" if with_total else "rows"
-
-    query = f"""
-    MATCH (user:NostrUser {{pubkey: $pubkey}})
-    CALL (user) {{
-        MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
-        WITH DISTINCT other,
-             coalesce(other[$influence_key], -1.0) AS sort_inf
-        WHERE other[$influence_key] IS NOT NULL
-          AND other[$influence_key] <= $verified_line
-          AND coalesce(other[$trusted_reporters_key], 0) >= 2
-          {cursor_clause}
-        WITH other, sort_inf
-        ORDER BY sort_inf {inf_order}, other.pubkey ASC
-        LIMIT $limit
-        RETURN collect({{
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key],
-            sort_inf: sort_inf
-        }}) AS rows
-    }}{count_block}
-    RETURN {return_tail}
-    """
 
     result = await session.run(query, **params)
     record = await result.single()
     rows = record["rows"] if record else []
-    total = (
-        (int(record["total"]) if record and record["total"] is not None else 0)
-        if with_total
-        else None
-    )
+    total = (int(record["total"]) if record else 0) if with_total else None
     # Every row matched the flagged predicate — the exact complement of
     # verified — so neither needs recomputing per row.
     items = [_row_to_item({**row, "tier": FLAGGED_TIER}) for row in rows]
@@ -777,9 +795,10 @@ async def get_all_section_stats(
     session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
     verified_cutoff_by_kind: dict[str, float],
+    *,
     verified_line: float,
+    reporter_cutoff: float,
 ) -> dict[str, ConnectionStats]:
     """Single-query version of get_section_stats covering all 6 relationships.
     ~20% faster than 6 parallel sessions on heavy accounts (1 round-trip).
@@ -793,8 +812,8 @@ async def get_all_section_stats(
     params: dict = {
         "pubkey": pubkey,
         "influence_key": influence_key,
-        "trusted_reporters_key": trusted_reporters_key,
         "verified_line": verified_line,
+        "reporter_cutoff": reporter_cutoff,
         **_tier_band_params(),
     }
     for name, rel_type, direction in _STATS_KINDS:
@@ -852,66 +871,45 @@ async def get_user_graph_data(
     session: AsyncNeoSession,
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
+    *,
+    reporter_cutoff: float,
 ) -> UserGraphData:
     """Single Cypher returning all 6 relationship lists (full, unpaginated) plus
-    the user's own influence — used by /self and /user/{pubkey}."""
-    query = """
-    MATCH (user:NostrUser {pubkey: $pubkey})
+    the user's own influence — used by /self and /user/{pubkey}. Row
+    `trusted_reporters` is the live count above `reporter_cutoff`."""
+    row = _row_map()
+    query = f"""
+    MATCH (user:NostrUser {{pubkey: $pubkey}})
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (other:NostrUser)-[:FOLLOWS]->(user)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS followed_by
-    }
+        RETURN collect({row}) AS followed_by
+    }}
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (user)-[:FOLLOWS]->(other:NostrUser)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS following
-    }
+        RETURN collect({row}) AS following
+    }}
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (other:NostrUser)-[:MUTES]->(user)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS muted_by
-    }
+        RETURN collect({row}) AS muted_by
+    }}
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (user)-[:MUTES]->(other:NostrUser)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS muting
-    }
+        RETURN collect({row}) AS muting
+    }}
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (other:NostrUser)-[:REPORTS]->(user)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS reported_by
-    }
+        RETURN collect({row}) AS reported_by
+    }}
 
-    CALL (user) {
+    CALL (user) {{
         MATCH (user)-[:REPORTS]->(other:NostrUser)
-        RETURN collect({
-            pubkey: other.pubkey,
-            influence: other[$influence_key],
-            trusted_reporters: other[$trusted_reporters_key]
-        }) AS reporting
-    }
+        RETURN collect({row}) AS reporting
+    }}
 
     RETURN
         user[$influence_key] AS influence,
@@ -926,7 +924,7 @@ async def get_user_graph_data(
         query,
         pubkey=pubkey,
         influence_key=influence_key,
-        trusted_reporters_key=trusted_reporters_key,
+        reporter_cutoff=reporter_cutoff,
     )
     record = await result.single()
     if not record:
@@ -1090,13 +1088,14 @@ async def get_shortest_follow_hops(
 # justifies. The bar scales with audience size so a large account isn't flagged
 # by the same absolute report count as a small one:
 #
-#     N     = 2 + floor(verified_follower_count / 500)
+#     N     = 4 + floor(verified_follower_count / 500)
 #     alert = verified_reporter_count > N
 #
 # The work is split across three bounded queries rather than one big one,
 # because the only expensive input is the verified follower count:
 #
-#   1. get_network_alert_candidates    — property reads only, no edge walks
+#   1. get_network_alert_candidates    — live reporter count, follower count
+#                                        read off the node
 #   2. count_above_cutoff_followers_capped — counts followers, capped; used for
 #                                        any candidate with no stored count
 #   3. count_verified_muters           — display-only, over final rows only
@@ -1113,19 +1112,17 @@ async def get_shortest_follow_hops(
 # Two things keep step (1) off a full label scan:
 #
 #   Anchoring. Candidates are reached *through* the REPORTS edge instead of by
-#   scanning :NostrUser. Only a reported pubkey can clear N >= 2, and the
+#   scanning :NostrUser. Only a reported pubkey can clear N >= 4, and the
 #   reported set is orders of magnitude smaller than the node count. (There is
-#   no index that could help instead: the influence/reporter properties are
+#   no index that could help instead: the influence properties are
 #   per-observer, so indexing them would mean one index per observer.)
 #
-#   Prefiltering. The floor term is non-negative, so N >= 2 for everyone and
-#   `verified_reporter_count >= 3` is a superset of every possible alert. It
+#   Prefiltering. The floor term is non-negative, so N >= 4 for everyone and
+#   `verified_reporter_count >= 5` is a superset of every possible alert. It
 #   applies before any arithmetic without dropping a qualifying row.
 #
-# Retraction is only partly live: the anchor is any live REPORTS edge, so
-# dropping the LAST one stops the alert at once, but the count itself is the
-# run-written `trusted_reporters_<observer>`. Retract 8 of 9 and it still
-# alerts at 9 until the next GrapeRank run.
+# Retraction is fully live: the reporter count is counted off live REPORTS
+# edges under the observer's reporter cutoff, not read from a stored property.
 #
 # Section membership uses the live (observer)-[:FOLLOWS]->(bob) edge, NOT
 # `hops_<observer> = 1`. The edge is maintained by kind-3 ingest (seconds
@@ -1158,23 +1155,23 @@ MIN_ALERT_REPORTERS = BASE_REPORTER_THRESHOLD + 1
 # Callers are expected to log when it bites rather than truncate silently.
 MAX_ALERT_CANDIDATES = 5000
 
-_ALERT_CANDIDATES_QUERY = """
-MATCH (observer:NostrUser {pubkey: $observer_pubkey})
-CALL (observer) {
+_ALERT_CANDIDATES_QUERY = f"""
+MATCH (observer:NostrUser {{pubkey: $observer_pubkey}})
+CALL (observer) {{
     MATCH (:NostrUser)-[:REPORTS]->(bob:NostrUser)
     WITH DISTINCT observer, bob
-    WHERE coalesce(bob[$trusted_reporters_key], 0) >= $min_reporters
-      AND bob.pubkey <> observer.pubkey
-    WITH bob,
-         toInteger(coalesce(bob[$trusted_reporters_key], 0)) AS verified_reporters,
+    WHERE bob.pubkey <> observer.pubkey
+    WITH observer, bob, {_live_reporters("bob")} AS verified_reporters
+    WHERE verified_reporters >= $min_reporters
+    WITH bob, verified_reporters,
          bob[$trusted_followers_key] AS stored_followers,
          bob[$influence_key] AS influence,
          bob[$hops_key] AS hops,
-         EXISTS { (observer)-[:FOLLOWS]->(bob) } AS is_direct
+         EXISTS {{ (observer)-[:FOLLOWS]->(bob) }} AS is_direct
     WHERE is_direct OR (influence IS NOT NULL AND influence > $cutoff)
     RETURN bob.pubkey AS pubkey, verified_reporters, stored_followers,
            influence, hops, is_direct
-}
+}}
 RETURN pubkey, verified_reporters, stored_followers, influence, hops, is_direct
 LIMIT $max_candidates
 """
@@ -1186,8 +1183,9 @@ async def get_network_alert_candidates(
     influence_key: str,
     hops_key: str,
     trusted_followers_key: str,
-    trusted_reporters_key: str,
     cutoff: float,
+    *,
+    reporter_cutoff: float,
     max_candidates: int = MAX_ALERT_CANDIDATES,
 ) -> list[dict]:
     """Pubkeys that could be network alerts, before the report threshold applies.
@@ -1197,8 +1195,8 @@ async def get_network_alert_candidates(
     `stored_followers` comes back None when this observer has no GrapeRank run
     carrying `trusted_followers_<observer>` yet. The caller resolves those.
 
-    Touches no follower or muter edges: every value is a property read on the
-    candidate node itself.
+    Touches no follower or muter edges; the reporter count is live, over
+    REPORTS edges from raters above `reporter_cutoff`.
     """
     result = await session.run(
         _ALERT_CANDIDATES_QUERY,
@@ -1206,8 +1204,8 @@ async def get_network_alert_candidates(
         influence_key=influence_key,
         hops_key=hops_key,
         trusted_followers_key=trusted_followers_key,
-        trusted_reporters_key=trusted_reporters_key,
         cutoff=cutoff,
+        reporter_cutoff=reporter_cutoff,
         min_reporters=MIN_ALERT_REPORTERS,
         max_candidates=int(max_candidates),
     )
@@ -1286,8 +1284,8 @@ async def count_verified_muters(
 ) -> dict[str, int]:
     """Above-threshold muter counts, keyed by pubkey.
 
-    Display-only — the algorithm never computes a `trusted_muters` scorecard
-    field, so there is nothing stored to read. Never part of the filter, so
+    Display-only — GrapeRank computes `trusted_muters` but doesn't persist it to
+    Neo4j, so there is nothing stored to read. Never part of the filter, so
     callers run it last, over the already-limited result rows.
     """
     if not pubkeys:

@@ -167,8 +167,8 @@ async def get_network_alerts_for_observer(
             influence_key=influence_key,
             hops_key=f"hops_{observer}",
             trusted_followers_key=f"trusted_followers_{observer}",
-            trusted_reporters_key=f"trusted_reporters_{observer}",
             cutoff=cutoffs.verified_line,
+            reporter_cutoff=cutoffs.reporter,
         )
         if len(candidates) >= MAX_ALERT_CANDIDATES:
             # Never truncate quietly — a capped candidate set means the sections

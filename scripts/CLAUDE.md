@@ -110,6 +110,15 @@ kinds 3/10000/1984, so this is the only kind-0 → Vespa re-feed path.
 - `--concurrency` (parallel Vespa writes), `--page`, `--limit`, `--status`,
   `--dry-run`. Run inside a brainstorm-server pod (needs `.env` + strfry + Vespa).
 
+### `clean_trusted_reporters_props.py`
+
+Strips leftover `trusted_reporters_<observer>` props from `NostrUser` nodes (the
+reporter count is computed live, so they are inert). Observer keys come from
+`db.propertyKeys()`. Dry-run by default (property + node counts); `--apply`
+removes in node-id chunks of `--batch`, one transaction each; idempotent. Space is reused, but store
+files only shrink after dump/reload. Held by
+`tests/integration/test_clean_trusted_reporters_props_integration.py`.
+
 ## When to add a new script
 
 Add one if:
