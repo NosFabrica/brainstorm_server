@@ -26,7 +26,7 @@ from tests.integration.preset_graph import (
 
 pytestmark = pytest.mark.integration
 
-# node name -> (influence, trusted_reporters) under the default observer.
+# node name -> (influence, verified reporters) under the default observer.
 _NODES: dict[str, tuple[float | None, int]] = {
     "verified": (0.4, 2),  # flagged only once the line passes 0.4
     "at_default_line": (0.02, 0),  # strict `>`: not verified at 0.02
@@ -35,11 +35,13 @@ _NODES: dict[str, tuple[float | None, int]] = {
     "no_influence": (None, 0),
 }
 
-# The same people as seen by a signed-in viewer's own web of trust.
+# The same people as seen by a signed-in viewer's own web of trust. The pool
+# reporters clear the viewer's reporter cutoff too.
 _VIEWER = Keys.generate().public_key().to_hex()
-_VIEWER_PROPS: dict[str, tuple[float, int]] = {
-    "verified": (0.001, 4),
-    "flagged": (0.9, 0),
+_VIEWER_INFLUENCE: dict[str, float] = {
+    "verified": 0.001,
+    "flagged": 0.9,
+    **{f"pool_reporter_{i}": 0.9 for i in range(3)},
 }
 
 
@@ -51,14 +53,12 @@ def graph():
             driver = fresh_driver()
             try:
                 async with driver.session() as session:
-                    for name, (influence, reporters) in _VIEWER_PROPS.items():
+                    for name, influence in _VIEWER_INFLUENCE.items():
                         await session.run(
                             f"MATCH (u:NostrUser {{pubkey: $pk}}) "
-                            f"SET u.`influence_{_VIEWER}` = $inf, "
-                            f"u.`trusted_reporters_{_VIEWER}` = $tr",
+                            f"SET u.`influence_{_VIEWER}` = $inf",
                             pk=pks[name],
                             inf=influence,
-                            tr=reporters,
                         )
             finally:
                 await driver.close()

@@ -11,8 +11,10 @@ that the capped follower count truncates where it should.
 Fixture graph — all per-observer properties are set from alice's perspective
 (``influence_<alice>``, ``trusted_followers_<alice>``, ...). ``tf`` is the
 stored verified-follower count, and ``None`` means the property is absent, which
-is what forces the counted fallback. ``N`` is ``4 + floor(tf / 500)``; a row
-alerts when its verified reporter count is strictly greater than N.
+is what forces the counted fallback. ``tr`` is the number of REPORTS edges from
+verified reporters (influence 0.8); ``weak`` adds edges from reporters below the
+0.1 reporter cutoff. ``N`` is ``4 + floor(tf / 500)``; a row alerts when its
+verified reporter count is strictly greater than N.
 
 Every ``tr`` here clears ``MIN_ALERT_REPORTERS`` (5), so the rows that don't
 alert are decided by the rule under test rather than dropped by the candidate
@@ -20,24 +22,23 @@ prefilter before it applies. That is also why ``direct_boundary`` carries 500
 stored followers: at the floor, "exactly N reports" would be 4 and the prefilter
 would swallow it, testing nothing.
 
-    name                  follows?  influence  tf     tr   N   alerts?
-    direct_flagged        yes       0.001      0      7    4   direct
-    direct_boundary       yes       0.400      500    5    5   no  (5 > 5 false)
-    direct_just_over      yes       0.400      0      5    4   direct
-    ext_flagged           no        0.500      0      6    4   extended
-    ext_below_cutoff      no        0.001      0      9    4   no  (under cutoff)
-    ext_scaled_blocked    no        0.500      1000   6    6   no  (6 > 6 false)
-    ext_scaled_flagged    no        0.500      1000   7    6   extended
-    both_sections         yes       0.900      0      8    4   direct ONLY
-    stale_no_report_edge  yes       0.400      0      7    4   no  (no REPORTS edge)
-    fallback_counted      yes       0.400      None   5    4   direct, tf counted
-    alice (self)          --        0.990      0      9    4   no  (self-excluded)
+    name                  follows?  influence  tf     tr  weak  N   alerts?
+    direct_flagged        yes       0.001      0      7   0     4   direct
+    direct_boundary       yes       0.400      500    5   0     5   no  (5 > 5 false)
+    direct_just_over      yes       0.400      0      5   0     4   direct
+    ext_flagged           no        0.500      0      6   0     4   extended
+    ext_below_cutoff      no        0.001      0      9   0     4   no  (under cutoff)
+    ext_scaled_blocked    no        0.500      1000   6   0     6   no  (6 > 6 false)
+    ext_scaled_flagged    no        0.500      1000   7   0     6   extended
+    both_sections         yes       0.900      0      8   0     4   direct ONLY
+    padded_by_weak        yes       0.400      0      4   3     4   no  (weak don't count)
+    fallback_counted      yes       0.400      None   5   0     4   direct, tf counted
+    alice (self)          --        0.990      0      9   0     4   no  (self-excluded)
 
 ``direct_flagged`` sits *below* the cutoff on purpose: the direct section is
 defined by the follow edge alone, with no influence requirement.
-``stale_no_report_edge`` carries a reporter count with no surviving REPORTS
-edge — the shape left behind when reports are retracted (kind 5) before the
-next GrapeRank run rewrites the property. ``fallback_counted`` is seeded with
+``padded_by_weak`` has 7 REPORTS edges but only 4 from verified reporters, so it
+falls below the prefilter. ``fallback_counted`` is seeded with
 three above-cutoff followers and one below; alice follows it too and counts as a
 fourth (matching ``countTrustedRaters``, which doesn't exclude the observer), so
 the counted value is a known 4.
@@ -60,23 +61,26 @@ from app.services.verified_cutoffs import VerifiedCutoffs
 
 pytestmark = pytest.mark.integration
 
-# influence, stored trusted_followers (None = absent), trusted_reporters,
-# alice-follows, has-report-edge
+# influence, stored trusted_followers (None = absent), verified reports,
+# alice-follows, weak reports
 _FIXTURE = {
-    "direct_flagged": (0.001, 0, 7, True, True),
-    "direct_boundary": (0.400, 500, 5, True, True),
-    "direct_just_over": (0.400, 0, 5, True, True),
-    "ext_flagged": (0.500, 0, 6, False, True),
-    "ext_below_cutoff": (0.001, 0, 9, False, True),
-    "ext_scaled_blocked": (0.500, 1000, 6, False, True),
-    "ext_scaled_flagged": (0.500, 1000, 7, False, True),
-    "both_sections": (0.900, 0, 8, True, True),
-    "stale_no_report_edge": (0.400, 0, 7, True, False),
-    "fallback_counted": (0.400, None, 5, True, True),
+    "direct_flagged": (0.001, 0, 7, True, 0),
+    "direct_boundary": (0.400, 500, 5, True, 0),
+    "direct_just_over": (0.400, 0, 5, True, 0),
+    "ext_flagged": (0.500, 0, 6, False, 0),
+    "ext_below_cutoff": (0.001, 0, 9, False, 0),
+    "ext_scaled_blocked": (0.500, 1000, 6, False, 0),
+    "ext_scaled_flagged": (0.500, 1000, 7, False, 0),
+    "both_sections": (0.900, 0, 8, True, 0),
+    "padded_by_weak": (0.400, 0, 4, True, 3),
+    "fallback_counted": (0.400, None, 5, True, 0),
     # Same follower set as fallback_counted, but with the count stored — so the
     # two must agree once both paths use the same cutoff and membership.
-    "stored_twin": (0.400, 4, 5, True, True),
+    "stored_twin": (0.400, 4, 5, True, 0),
 }
+
+_VERIFIED_REPORTERS = [f"rep_{i}" for i in range(9)]
+_WEAK_REPORTERS = [f"weak_rep_{i}" for i in range(3)]
 
 # Followers seeded onto `fallback_counted`: three above the 0.02 cutoff, one
 # below. Alice (0.99) follows it as well, so the count is these plus her.
@@ -98,7 +102,9 @@ def graph():
     names = (
         list(_FIXTURE)
         + follower_names
-        + ["alice", "reporter", "muter_verified", "muter_weak"]
+        + _VERIFIED_REPORTERS
+        + _WEAK_REPORTERS
+        + ["alice", "muter_verified", "muter_weak"]
     )
     pks = {name: Keys.generate().public_key().to_hex() for name in names}
     alice = pks["alice"]
@@ -106,13 +112,32 @@ def graph():
     inf_key = f"influence_{alice}"
     hops_key = f"hops_{alice}"
     tf_key = f"trusted_followers_{alice}"
-    tr_key = f"trusted_reporters_{alice}"
+
+    async def _report(s, reporters, target):
+        await s.run(
+            """
+            UNWIND $reporters AS rpk
+            MERGE (r:NostrUser {pubkey: rpk})
+            MERGE (b:NostrUser {pubkey: $pk})
+            MERGE (r)-[:REPORTS]->(b)
+            """,
+            reporters=[pks[r] for r in reporters],
+            pk=pks[target],
+        )
 
     async def _seed():
         driver = _fresh_driver()
         try:
             async with driver.session() as s:
-                for name, (inf, tf, tr, followed, reported) in _FIXTURE.items():
+                for name, finf in [(r, 0.8) for r in _VERIFIED_REPORTERS] + [
+                    (r, 0.05) for r in _WEAK_REPORTERS
+                ]:
+                    await s.run(
+                        f"MERGE (r:NostrUser {{pubkey: $pk}}) SET r.`{inf_key}` = $inf",
+                        pk=pks[name],
+                        inf=finf,
+                    )
+                for name, (inf, tf, tr, followed, weak) in _FIXTURE.items():
                     # tf is set only when not None — absent means "no GrapeRank
                     # run has written trusted_followers for this observer yet".
                     tf_clause = f", n.`{tf_key}` = $tf" if tf is not None else ""
@@ -120,14 +145,12 @@ def graph():
                         f"""
                         MERGE (n:NostrUser {{pubkey: $pk}})
                         SET n.`{inf_key}` = $inf,
-                            n.`{hops_key}` = 2,
-                            n.`{tr_key}` = $tr
+                            n.`{hops_key}` = 2
                             {tf_clause}
                         """,
                         pk=pks[name],
                         inf=inf,
                         tf=tf,
-                        tr=tr,
                     )
                     if followed:
                         await s.run(
@@ -139,16 +162,8 @@ def graph():
                             alice=alice,
                             pk=pks[name],
                         )
-                    if reported:
-                        await s.run(
-                            """
-                            MERGE (r:NostrUser {pubkey: $reporter})
-                            MERGE (b:NostrUser {pubkey: $pk})
-                            MERGE (r)-[:REPORTS]->(b)
-                            """,
-                            reporter=pks["reporter"],
-                            pk=pks[name],
-                        )
+                    await _report(s, _VERIFIED_REPORTERS[:tr], name)
+                    await _report(s, _WEAK_REPORTERS[:weak], name)
 
                 # Followers of `fallback_counted`, straddling the cutoff.
                 for fname, finf in _FALLBACK_FOLLOWERS + _FALLBACK_WEAK_FOLLOWERS:
@@ -178,13 +193,11 @@ def graph():
                 await s.run(
                     f"""
                     MERGE (a:NostrUser {{pubkey: $alice}})
-                    SET a.`{inf_key}` = 0.99, a.`{tf_key}` = 0, a.`{tr_key}` = 9
-                    MERGE (r:NostrUser {{pubkey: $reporter}})
-                    MERGE (r)-[:REPORTS]->(a)
+                    SET a.`{inf_key}` = 0.99, a.`{tf_key}` = 0
                     """,
                     alice=alice,
-                    reporter=pks["reporter"],
                 )
+                await _report(s, _VERIFIED_REPORTERS, "alice")
 
                 # Two muters on direct_flagged: only the above-cutoff one counts.
                 await s.run(
@@ -351,12 +364,84 @@ def test_below_cutoff_and_unfollowed_is_not_an_alert(graph):
     assert "ext_below_cutoff" not in all_names
 
 
-def test_stale_reporter_count_without_report_edge_is_ignored(graph):
-    """Anchoring on REPORTS means a retracted report stops alerting immediately,
-    without waiting for the next GrapeRank run to rewrite the property."""
+def test_weak_reporters_do_not_count(graph):
+    """padded_by_weak has 7 REPORTS edges, 4 from verified reporters: no alert."""
     data = _fetch(graph["alice"])
 
-    assert "stale_no_report_edge" not in _names(data, "directFollows", graph)
+    assert "padded_by_weak" not in _names(data, "directFollows", graph)
+
+
+def test_reporter_count_uses_the_observers_preset_reporter_cutoff(graph):
+    """Lower the reporter cutoff below the weak reporters and they count."""
+    cutoffs = VerifiedCutoffs(follower=0.02, muter=0.01, reporter=0.01)
+    data = _fetch(graph["alice"], cutoffs=cutoffs)
+
+    assert _row(data, graph, "padded_by_weak")["verifiedReporterCount"] == 7
+
+
+def test_verified_reporter_count_is_live(graph):
+    data = _fetch(graph["alice"])
+
+    assert _row(data, graph, "direct_flagged")["verifiedReporterCount"] == 7
+    assert _row(data, graph, "ext_scaled_flagged")["verifiedReporterCount"] == 7
+
+
+def test_retracting_reports_drops_the_alert_on_the_next_request(graph):
+    """Retract 8 of 9 and the alert is gone straight away, no GrapeRank run."""
+    target = Keys.generate().public_key().to_hex()
+    alice = graph["alice"]
+    reporters = [graph[r] for r in _VERIFIED_REPORTERS]
+
+    async def _run(query, **params):
+        driver = _fresh_driver()
+        try:
+            async with driver.session() as s:
+                await s.run(query, **params)
+        finally:
+            await driver.close()
+
+    asyncio.run(
+        _run(
+            f"""
+            MATCH (a:NostrUser {{pubkey: $alice}})
+            MERGE (b:NostrUser {{pubkey: $target}})
+            SET b.`influence_{alice}` = 0.4, b.`trusted_followers_{alice}` = 0
+            MERGE (a)-[:FOLLOWS]->(b)
+            WITH b
+            UNWIND $reporters AS rpk
+            MATCH (r:NostrUser {{pubkey: rpk}})
+            MERGE (r)-[:REPORTS]->(b)
+            """,
+            alice=alice,
+            target=target,
+            reporters=reporters,
+        )
+    )
+    try:
+        before = _fetch(alice)
+        assert target in {i["pubkey"] for i in before["directFollows"]}
+
+        asyncio.run(
+            _run(
+                """
+                MATCH (r:NostrUser)-[e:REPORTS]->(:NostrUser {pubkey: $target})
+                WHERE r.pubkey IN $retracted
+                DELETE e
+                """,
+                target=target,
+                retracted=reporters[:8],
+            )
+        )
+
+        after = _fetch(alice)
+        assert target not in {i["pubkey"] for i in after["directFollows"]}
+    finally:
+        asyncio.run(
+            _run(
+                "MATCH (n:NostrUser {pubkey: $target}) DETACH DELETE n",
+                target=target,
+            )
+        )
 
 
 def test_observer_is_never_alerted_about_themselves(graph):

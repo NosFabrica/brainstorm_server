@@ -58,7 +58,7 @@ from app.services.user_service import (
     get_user_overview,
     get_user_stats,
 )
-from app.services.verified_cutoffs import VerifiedCutoffs
+from app.services.verified_cutoffs import VerifiedCutoffs, resolve_verified_cutoffs
 from app.utils.api_validators import verify_token_optional
 from app.utils.auth.auth_models import JWTData
 from app.utils.datetimes import as_naive_utc, utc_now
@@ -207,9 +207,11 @@ async def get_own_user_data_endpoint(
 ) -> GetOwnUserDataResponse:
     jwt_data: JWTData = request.state.jwt_data
     user_pubkey = jwt_data.nostr_pubkey
+    # Before the gather: `db` can't serve two awaits at once.
+    cutoffs = await resolve_verified_cutoffs(db, user_pubkey)
 
     graph, history = await asyncio.gather(
-        get_user_graph_data(user_pubkey, user_pubkey),
+        get_user_graph_data(user_pubkey, user_pubkey, reporter_cutoff=cutoffs.reporter),
         get_user_history_data(db, user_pubkey),
     )
 
@@ -328,6 +330,7 @@ async def get_trust_signals_endpoint(
         pubkeys=pubkeys,
         observer=resolve_observer(jwt_data),
         verified_line=cutoffs.verified_line,
+        reporter_cutoff=cutoffs.reporter,
     )
     return GetTrustSignalsResponse(data=TrustSignalsData(results=results))
 
@@ -345,6 +348,7 @@ async def get_user_overview_endpoint(
         pubkey=pubkey,
         observer=resolve_observer(jwt_data),
         verified_line=cutoffs.verified_line,
+        reporter_cutoff=cutoffs.reporter,
     )
     return GetUserOverviewResponse(data=result)
 
@@ -422,7 +426,10 @@ async def get_user_connections_endpoint(
 async def get_user_by_pubkey_data_endpoint(
     pubkey: str,
     jwt_data: Optional[JWTData] = Depends(verify_token_optional),
+    cutoffs: VerifiedCutoffs = Depends(get_verified_cutoffs),
 ) -> GetUserDataResponse:
-    result = await get_user_graph_data(pubkey, resolve_observer(jwt_data))
+    result = await get_user_graph_data(
+        pubkey, resolve_observer(jwt_data), reporter_cutoff=cutoffs.reporter
+    )
 
     return GetUserDataResponse(data=result)

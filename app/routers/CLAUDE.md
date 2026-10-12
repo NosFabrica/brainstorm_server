@@ -117,7 +117,7 @@ the `/{pubkey}` catch-all.
 |---|---|---|---|
 | GET | `/graperankResult` | `GetOwnLatestGraperankResponse` | Latest result for caller |
 | POST | `/graperank` | `GetOwnLatestGraperankResponse` | Triggers a run; throttled by `settings.block_frequent_graperank_requests_minutes` |
-| GET | `/self` | `GetOwnUserDataResponse` | Caller's graph + history |
+| GET | `/self` | `GetOwnUserDataResponse` | Caller's graph + history. Rows' `trusted_reporters` count above the caller's preset reporter cutoff |
 | GET | `/subscription` | `GetSubscriptionResponse` | The caller's subscription as the UI shows it. Always answers, billing configured or not. `policy` is what they receive (their scheduling assignment — there is no tier string), `plan` is which one they bought (read through `billing_plan_id`) priced from the `pricingSnapshot` Flash recorded at their signup, never the plan's current listing — null price fields when Flash recorded no snapshot, never a substituted or zero one — the three dates come straight off the row, and `status` is the translated Flash vocabulary derived from `policy.is_default`. No `rail` — Flash exposes no payment method |
 | POST | `/subscription/refresh` | `RefreshSubscriptionResponse` | Re-reads Flash for the caller and applies it — the redirect-landing call and the `pending` poll, which are the guide's two return paths. Optional body `{subscription_id?}`: given one, THAT subscription is verified with Flash; absent (a `pending` return carries none) the read is by reference. The id is a handle, not an authority — the reference it must carry is the caller's own pubkey, so a stranger's id changes nothing and discloses nothing. The redirect's `ref` is not accepted at all. The view carries `verification` (`verified`/`mismatch`/`unknown`/`not_given`/`unavailable`) so a refused id is not mistaken for a payment still confirming. An id naming a superseded subscription (an old redirect replayed after a re-subscribe) is decided from the reference read instead, never from the stale row. Per-pubkey rate limit |
 | GET | `/isSearchObserver` | `IsSearchObserverResponse` | Whether caller is searchable as an observer |
@@ -134,15 +134,18 @@ token still 401s:
 | GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence. The subject's own `verified` / `tier` and `flagged_by_observer` / `flagged_count` sit on the saved preset's verified line |
 | GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Per-section total + verified + tier breakdown. No query params — the tier bands are fixed constants |
 | GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor`. `verified_only=true` filters on the section's own preset cutoff; `tier` uses the same fallthrough as `/stats`; each row carries the preset's `verified` verdict + `tier` |
-| GET | `/{pubkey}` | `GetUserDataResponse` | Full 6-relationship graph |
+| GET | `/{pubkey}` | `GetUserDataResponse` | Full 6-relationship graph. Rows' `trusted_reporters` count above the preset reporter cutoff |
 
 The verified cutoffs, the verified line and the tier fallthrough all come from
 the observer's **saved preset** (`get_verified_cutoffs` in
 `user/dependencies.py`; `get_alert_cutoffs` in `network_alerts/dependencies.py`
 for `/networkAlerts`, whose observer is a query param rather than the JWT
 viewer), never from a client-supplied number — the
-`verified_threshold` query param is gone from all three read endpoints, and so
+`verified_threshold` query param is gone from every read endpoint, and so
 is `/connections`' `min_influence` — a client cannot supply a threshold at all.
+`/{pubkey}` and `/self` take only the reporter cutoff. `/self` resolves it inline
+via `resolve_verified_cutoffs`: it authenticates through `request.state.jwt_data`,
+not the optional-token dependency `get_verified_cutoffs` hangs off.
 `/stats` returns the verified *counts*; `/overview` returns no count of its own,
 only the subject's own verdict and the two flagged fields; `/connections` rows
 each carry their own `verified` / `tier`. All of them sit on the same line.

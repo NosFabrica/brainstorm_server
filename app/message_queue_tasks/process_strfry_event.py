@@ -29,6 +29,18 @@ REPORTED_BY_KEY_PREFIX = "reported_by:"
 logger = loggr.get_logger(__name__)
 
 
+async def _write(session: AsyncNeoSession, cypher: str, **params):
+    """Run one write query as a managed transaction, so the driver retries it on transient
+    errors such as `DeadlockDetected` (the GrapeRank write-back locks the same nodes).
+    """
+
+    async def work(tx):
+        result = await tx.run(cypher, **params)
+        return await result.single()
+
+    return await session.execute_write(work)
+
+
 async def process_strfry_event(session: AsyncNeoSession, event: dict):
     kind = event.get("kind")
 
@@ -168,7 +180,9 @@ async def process_event_kind_1984(session: AsyncNeoSession, event: dict):
         MERGE (pub)-[:REPORTS]->(reported)
     """
 
-    await session.run(cypher, publisher=publisher, reported_pubkeys=reported_pubkeys)
+    await _write(
+        session, cypher, publisher=publisher, reported_pubkeys=reported_pubkeys
+    )
 
     await _update_reverse_sets(
         REPORTED_BY_KEY_PREFIX, publisher, added_pubkeys=reported_pubkeys
@@ -190,8 +204,7 @@ async def process_event_kind_10000(session: AsyncNeoSession, event: dict):
         FOREACH (rel IN rels | DELETE rel)
         RETURN removed
         """
-        result = await session.run(cypher, publisher=publisher)
-        record = await result.single()
+        record = await _write(session, cypher, publisher=publisher)
         removed = record["removed"] if record else []
         await _update_reverse_sets(
             MUTED_BY_KEY_PREFIX, publisher, removed_pubkeys=removed
@@ -206,7 +219,9 @@ async def process_event_kind_10000(session: AsyncNeoSession, event: dict):
         MERGE (f:NostrUser {pubkey: fp})
         MERGE (pub)-[:MUTES]->(f)
     """
-    await session.run(upsert_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys)
+    await _write(
+        session, upsert_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys
+    )
 
     cleanup_cypher = """
     MATCH (pub:NostrUser {pubkey: $publisher})-[r:MUTES]->(oldF)
@@ -215,10 +230,9 @@ async def process_event_kind_10000(session: AsyncNeoSession, event: dict):
     FOREACH (rel IN rels | DELETE rel)
     RETURN removed
     """
-    result = await session.run(
-        cleanup_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys
+    record = await _write(
+        session, cleanup_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys
     )
-    record = await result.single()
     removed = record["removed"] if record else []
 
     await _update_reverse_sets(
@@ -241,8 +255,7 @@ async def process_event_kind_3(session: AsyncNeoSession, event: dict):
         FOREACH (rel IN rels | DELETE rel)
         RETURN removed
         """
-        result = await session.run(cypher, publisher=publisher)
-        record = await result.single()
+        record = await _write(session, cypher, publisher=publisher)
         removed = record["removed"] if record else []
         await _update_reverse_sets(
             FOLLOWED_BY_KEY_PREFIX, publisher, removed_pubkeys=removed
@@ -257,8 +270,8 @@ async def process_event_kind_3(session: AsyncNeoSession, event: dict):
         MERGE (f:NostrUser {pubkey: fp})
         MERGE (pub)-[:FOLLOWS]->(f)
     """
-    await session.run(
-        upsert_cypher, publisher=publisher, followed_pubkeys=followed_pubkeys
+    await _write(
+        session, upsert_cypher, publisher=publisher, followed_pubkeys=followed_pubkeys
     )
 
     cleanup_cypher = """
@@ -268,10 +281,9 @@ async def process_event_kind_3(session: AsyncNeoSession, event: dict):
     FOREACH (rel IN rels | DELETE rel)
     RETURN removed
     """
-    result = await session.run(
-        cleanup_cypher, publisher=publisher, followed_pubkeys=followed_pubkeys
+    record = await _write(
+        session, cleanup_cypher, publisher=publisher, followed_pubkeys=followed_pubkeys
     )
-    record = await result.single()
     removed = record["removed"] if record else []
 
     await _update_reverse_sets(
@@ -334,7 +346,8 @@ async def process_event_kind_5(session: AsyncNeoSession, event: dict):
     diff = diff_author_targets(desired, current)
 
     if diff.to_remove:
-        await session.run(
+        await _write(
+            session,
             """
             MATCH (pub:NostrUser {pubkey: $author})-[r:REPORTS]->(t:NostrUser)
             WHERE t.pubkey IN $targets
@@ -345,7 +358,8 @@ async def process_event_kind_5(session: AsyncNeoSession, event: dict):
         )
 
     if diff.to_add:
-        await session.run(
+        await _write(
+            session,
             """
             MERGE (pub:NostrUser {pubkey: $author})
             WITH pub

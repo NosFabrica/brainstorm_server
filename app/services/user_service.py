@@ -105,16 +105,17 @@ async def _redis_inbound_count(prefix: str, pubkey: str) -> int:
 async def _neo4j_outbound_counts_and_influence(
     pubkey: str,
     influence_key: str,
-    trusted_reporters_key: str,
+    *,
     verified_line: float,
+    reporter_cutoff: float,
 ) -> OutboundOverview:
     async with neo4j_driver.session() as session:
         overview = await get_outbound_counts_and_influence(
             session,
             pubkey,
             influence_key,
-            trusted_reporters_key,
-            verified_line,
+            verified_line=verified_line,
+            reporter_cutoff=reporter_cutoff,
         )
     return overview._replace(influence=safe_float(overview.influence))
 
@@ -169,14 +170,13 @@ async def get_own_latest_graperank(
 async def get_user_graph_data(
     pubkey: str,
     observer: str | None = None,
+    *,
+    reporter_cutoff: float,
 ) -> UserGraphData:
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
-    trusted_reporters_key = (
-        f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
-    )
     async with neo4j_driver.session() as session:
         return await _repo_get_user_graph_data(
-            session, pubkey, influence_key, trusted_reporters_key
+            session, pubkey, influence_key, reporter_cutoff=reporter_cutoff
         )
 
 
@@ -191,16 +191,13 @@ async def get_user_history_data(db: AsyncDBSession, pubkey: str) -> UserHistoryI
 
 async def get_user_overview(
     pubkey: str,
+    *,
     verified_line: float,
+    reporter_cutoff: float,
     observer: str | None = None,
 ) -> UserOverviewData:
-    """`verified_line` (the observer's preset follower cutoff) decides the two
-    flagged fields and the subject's own `tier` — the only preset-sensitive
-    outputs here. Required, so a caller has to say which line it means."""
+    """The preset cutoffs decide the flagged fields and the subject's `tier`."""
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
-    trusted_reporters_key = (
-        f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
-    )
 
     # Redis SCARD for inbound + one Neo4j query for outbound counts + influence +
     # flagged_by_observer, all in parallel.
@@ -209,7 +206,10 @@ async def get_user_overview(
         _redis_inbound_count(MUTED_BY_KEY_PREFIX, pubkey),
         _redis_inbound_count(REPORTED_BY_KEY_PREFIX, pubkey),
         _neo4j_outbound_counts_and_influence(
-            pubkey, influence_key, trusted_reporters_key, verified_line
+            pubkey,
+            influence_key,
+            verified_line=verified_line,
+            reporter_cutoff=reporter_cutoff,
         ),
     )
     return UserOverviewData(
@@ -232,7 +232,9 @@ async def get_user_overview(
 async def get_trust_signals(
     pubkeys: list[str],
     observer: str,
+    *,
     verified_line: float,
+    reporter_cutoff: float,
 ) -> list[TrustSignal]:
     """Trust signals for many subjects, deduped, in input order."""
     unique = list(dict.fromkeys(pubkeys))
@@ -241,8 +243,8 @@ async def get_trust_signals(
             session,
             unique,
             f"influence_{observer}",
-            f"trusted_reporters_{observer}",
-            verified_line,
+            verified_line=verified_line,
+            reporter_cutoff=reporter_cutoff,
         )
     return [
         TrustSignal(
@@ -298,18 +300,15 @@ async def get_user_stats(
     observer: str | None = None,
 ) -> UserSectionsStats:
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
-    trusted_reporters_key = (
-        f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
-    )
 
     async with neo4j_driver.session() as session:
         stats_by_kind = await get_all_section_stats(
             session,
             pubkey,
             influence_key,
-            trusted_reporters_key,
             cutoffs.as_kind_map(),
-            cutoffs.verified_line,
+            verified_line=cutoffs.verified_line,
+            reporter_cutoff=cutoffs.reporter,
         )
     return UserSectionsStats(**stats_by_kind)
 
@@ -331,9 +330,6 @@ async def get_user_connections(
     fall through the follower cutoff."""
     limit = max(1, min(limit, MAX_PAGE_SIZE))
     influence_key = f"influence_{observer}" if observer else f"influence_{pubkey}"
-    trusted_reporters_key = (
-        f"trusted_reporters_{observer}" if observer else f"trusted_reporters_{pubkey}"
-    )
 
     cursor_inf, cursor_pk = (None, None)
     if cursor:
@@ -355,8 +351,8 @@ async def get_user_connections(
                 session,
                 pubkey=pubkey,
                 influence_key=influence_key,
-                trusted_reporters_key=trusted_reporters_key,
                 verified_line=cutoffs.verified_line,
+                reporter_cutoff=cutoffs.reporter,
                 limit=limit,
                 cursor_inf=cursor_inf,
                 cursor_pk=cursor_pk,
@@ -370,7 +366,6 @@ async def get_user_connections(
                 session,
                 pubkey=pubkey,
                 influence_key=influence_key,
-                trusted_reporters_key=trusted_reporters_key,
                 rel_type=rel_type,
                 direction=direction,
                 limit=limit,
@@ -380,6 +375,7 @@ async def get_user_connections(
                 tier=tier,
                 verified_cutoff=cutoffs.for_kind(kind),
                 verified_line=cutoffs.verified_line,
+                reporter_cutoff=cutoffs.reporter,
                 verified_only=verified_only,
                 with_total=with_total,
             )

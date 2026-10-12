@@ -6,7 +6,7 @@ machine ``bolt://localhost:7688`` via ``.env``). Run explicitly with::
     poetry run pytest tests/integration/test_preset_stats_integration.py -m integration
 
 Seeds a synthetic graph around one `subject`, with `influence_<observer>` and
-`trusted_reporters_<observer>` set per node, and asserts the per-section
+REPORTS edges from verified reporters, and asserts the per-section
 verified counts and tier buckets the endpoint derives from the *observer's saved
 preset* (the `get_verified_cutoffs` dependency is overridden here so the test
 needs Neo4j only, not Postgres — the preset→cutoff resolution itself is covered
@@ -32,7 +32,7 @@ from tests.integration.preset_graph import (
 
 pytestmark = pytest.mark.integration
 
-# node name -> (influence, trusted_reporters). influence None = property absent.
+# node name -> (influence, verified reporters). influence None = property absent.
 _NODES: dict[str, tuple[float | None, int]] = {
     "subject": (0.4, 0),
     # followed_by — one per tier band, plus the strict-`>` edge case, a flagged

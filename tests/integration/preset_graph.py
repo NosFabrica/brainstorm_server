@@ -35,6 +35,10 @@ def seeded_cutoffs(preset: str) -> VerifiedCutoffs:
 # The real factory presets, so the fixture influences stay meaningful.
 DEFAULT_CUTOFFS = seeded_cutoffs("DEFAULT")  # follower 0.02, muter 0.01, reporter 0.1
 RESTRICTIVE_CUTOFFS = seeded_cutoffs("RESTRICTIVE")  # all 0.5
+PERMISSIVE_CUTOFFS = seeded_cutoffs("PERMISSIVE")  # all 0.002
+
+# Clears every preset's reporter cutoff, so a pool reporter always counts.
+POOL_REPORTER_INFLUENCE = 0.9
 
 
 def fresh_driver():
@@ -50,22 +54,34 @@ def seed_graph(
 ):
     """Generator body for a `graph` fixture: seed, yield {name: hex_pubkey}, clean up.
 
-    `nodes` maps a fixture name to (influence, trusted_reporters); an influence
+    `nodes` maps a fixture name to (influence, verified_reporters); an influence
     of None leaves the property absent, which is a distinct case from 0.
+    `verified_reporters` becomes that many REPORTS edges from a shared pool of
+    reporters (`pool_reporter_<i>`) at `POOL_REPORTER_INFLUENCE`, connected to
+    nothing else.
     """
     observer = default_observer_pubkey()
     influence_key = f"influence_{observer}"
-    trusted_reporters_key = f"trusted_reporters_{observer}"
+    pool_size = max((n for _, n in nodes.values()), default=0)
+    pool = [f"pool_reporter_{i}" for i in range(pool_size)]
+    nodes = {**nodes, **{name: (POOL_REPORTER_INFLUENCE, 0) for name in pool}}
+    edges = [
+        *edges,
+        *[
+            (pool[i], "REPORTS", name)
+            for name, (_, n) in nodes.items()
+            for i in range(n)
+        ],
+    ]
     pks = {name: Keys.generate().public_key().to_hex() for name in nodes}
 
     async def _seed() -> None:
         driver = fresh_driver()
         try:
             async with driver.session() as session:
-                for name, (influence, trusted_reporters) in nodes.items():
+                for name, (influence, _) in nodes.items():
                     await session.run(
-                        f"MERGE (u:NostrUser {{pubkey: $pk}}) "
-                        f"SET u.`{trusted_reporters_key}` = $tr "
+                        "MERGE (u:NostrUser {pubkey: $pk}) "
                         + (
                             f"SET u.`{influence_key}` = $inf"
                             if influence is not None
@@ -73,7 +89,6 @@ def seed_graph(
                         ),
                         pk=pks[name],
                         inf=influence,
-                        tr=trusted_reporters,
                     )
                 for src, rel, dst in edges:
                     await session.run(
@@ -104,7 +119,7 @@ def seed_graph(
 
 
 @asynccontextmanager
-async def api(cutoffs: VerifiedCutoffs):
+async def api(cutoffs: VerifiedCutoffs | None):
     """HTTP client over the app with a loop-local Neo4j driver and Redis client.
 
     Same cross-loop caveat as ``test_shortest_path_integration`` — each test
@@ -113,7 +128,7 @@ async def api(cutoffs: VerifiedCutoffs):
     inbound counts) pin their connections to the loop that first used them, so
     each gets a fresh instance for the duration. `get_verified_cutoffs` is
     overridden so the observer's "saved preset" is whatever the test says it
-    is, with no Postgres round-trip.
+    is, with no Postgres round-trip; `None` leaves the real resolution in place.
     """
     driver = fresh_driver()
     redis = get_redis_client()
@@ -121,7 +136,8 @@ async def api(cutoffs: VerifiedCutoffs):
     original_redis = user_service_module.redis_client
     user_service_module.neo4j_driver = driver
     user_service_module.redis_client = redis
-    app.dependency_overrides[get_verified_cutoffs] = lambda: cutoffs
+    if cutoffs is not None:
+        app.dependency_overrides[get_verified_cutoffs] = lambda: cutoffs
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(

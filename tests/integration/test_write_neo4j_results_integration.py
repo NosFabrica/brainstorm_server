@@ -3,13 +3,9 @@
 Requires Neo4j reachable at ``settings.neo4j_db_url``. Postgres is not needed —
 the status writes are stubbed; only the Cypher is real.
 
-PR #59 added `trusted_followers_<observer>` to the writer's SET clause without a
-test, and no test file for this module existed. These pin the four properties a
-run persists, including that a zero count is stored like any other: /networkAlerts
-reads the reporter count from the same run, so both sides of its threshold stay
-on one clock.
-
-Issue: .scratch/network-alerts/issues/01-preset-drive-alerts.md
+These pin the three properties a run persists, including that a zero count is
+stored like any other, and that the reporter count is not persisted (reads count
+`REPORTS` edges live).
 """
 
 import asyncio
@@ -141,7 +137,7 @@ async def _props(pubkey: str, observer: str) -> dict:
         await driver.close()
 
 
-def test_a_run_persists_all_four_per_observer_properties(graph):
+def test_a_run_persists_three_per_observer_properties_but_not_reporters(graph):
     observer = graph["observer"]
 
     async def body():
@@ -157,7 +153,7 @@ def test_a_run_persists_all_four_per_observer_properties(graph):
     assert props["influence"] == 0.5
     assert props["hops"] == 2
     assert props["trusted_followers"] == 7
-    assert props["trusted_reporters"] == 3
+    assert props["trusted_reporters"] is None
 
 
 def test_a_zero_follower_count_is_stored_not_skipped(graph):
