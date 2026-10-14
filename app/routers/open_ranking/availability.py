@@ -13,18 +13,11 @@ adopted as written):
   "not yet available" mechanism).
 
 An Open Ranking request never provisions state: unknown povs are an
-enumeration / DoS surface, so there is NO auto-provisioning here. (NIP-50's
-cold-start auto-provisioning is a deliberately different, out-of-band
-behavior and remains untouched.)
+enumeration / DoS surface, so there is NO auto-provisioning here.
 
-Availability is per data source, because the sources go live at different
-moments of the GrapeRank pipeline:
-
-- Neo4j-backed endpoints (/stats/pubkey, /rank/pubkeys, /followers, /muters)
-  are ready once the pov's calc has completed at least once
-  (`BrainstormNsec.last_time_calculated_graperank`).
-- /search/pubkeys is ready once the score mirror has landed in Vespa
-  (`BrainstormNsec.is_observer_search_available`).
+Every endpoint is ready once the pov's calc has completed at least once
+(`BrainstormNsec.last_time_calculated_graperank`). /search/pubkeys is not
+gated here: the search relay serves it and applies these rules itself.
 
 The house observer (`default_observer_pubkey()`) IS the global perspective:
 its scores are recomputed on the periodic schedule and are the ones every
@@ -65,6 +58,19 @@ def _unavailable(reason: str) -> HTTPException:
     )
 
 
+def _pov_gated(algo_id: str, observer: str) -> bool:
+    """Global algorithms and the house observer are never gated."""
+    return algorithm_requires_pov(algo_id) and observer != default_observer_pubkey()
+
+
+def _fallback(endpoint: str) -> str:
+    default_algo_id = CAPABILITY_DOC[endpoint][0]["id"]
+    return (
+        f"fall back to the endpoint's default algorithm '{default_algo_id}' "
+        f"for a global view"
+    )
+
+
 async def ensure_pov_available(
     db: AsyncDBSession, endpoint: str, algo_id: str, observer: str
 ) -> None:
@@ -77,20 +83,12 @@ async def ensure_pov_available(
     signer is forced as observer) gets the same never-substitute guarantee on
     personalized algorithms.
     """
-    if not algorithm_requires_pov(algo_id):
-        return
-    if observer == default_observer_pubkey():
+    if not _pov_gated(algo_id, observer):
         return
 
-    exists, graperank_ready, search_ready = await get_pov_availability_fields_on_db(
-        db, observer
-    )
+    exists, graperank_ready = await get_pov_availability_fields_on_db(db, observer)
 
-    default_algo_id = CAPABILITY_DOC[endpoint][0]["id"]
-    fallback = (
-        f"fall back to the endpoint's default algorithm '{default_algo_id}' "
-        f"for a global view"
-    )
+    fallback = _fallback(endpoint)
 
     if not exists:
         raise _unavailable(
@@ -100,24 +98,13 @@ async def ensure_pov_available(
             f"or provision this pov at {settings.frontend_url}"
         )
 
-    ready = search_ready if endpoint == "/search/pubkeys" else graperank_ready
-    if ready:
+    if graperank_ready:
         return
 
     if await any_request_in_pipeline_for_pubkey_on_db(db, observer):
         raise PovComputing(
             f"scores for pov {observer} are still being computed; retry the "
             f"identical request after {RETRY_AFTER_SECONDS} seconds"
-        )
-
-    if graperank_ready:
-        # Only /search/pubkeys can land here: calc done, but the Vespa mirror
-        # never went live and nothing is in flight to repair it.
-        raise _unavailable(
-            f"algorithm '{algo_id}' cannot be served for pov {observer}: "
-            f"scores exist but are not yet available in the search index, and "
-            f"no publication is in progress. Either {fallback}, or trigger a "
-            f"new run at {settings.frontend_url}"
         )
 
     raise _unavailable(

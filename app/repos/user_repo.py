@@ -1226,9 +1226,9 @@ async def count_above_cutoff_followers_capped(
     The observer counts as a follower here, matching
     `GrapeRankAlgorithm.countTrustedRaters` and so the stored value. Excluding
     them would need the same filter in the Java, which also feeds the
-    `followers` tag on every published kind-30382 and the Vespa follower_counts
-    tensor — a protocol-visible change for a ±1 that can only move N at an exact
-    multiple of FOLLOWERS_PER_EXTRA_REPORT.
+    `followers` tag on every published kind-30382 — a protocol-visible change
+    for a ±1 that can only move N at an exact multiple of
+    FOLLOWERS_PER_EXTRA_REPORT.
 
     `cap` is what makes this safe to run on a huge account. A row can only clear
     the threshold when its verified follower count is below

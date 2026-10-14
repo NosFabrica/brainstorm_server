@@ -17,18 +17,6 @@ RUN python3 -m venv "$POETRY_VENV" \
 
 FROM python-base AS example-app
 
-# Vespa JVM feed-client (used for large batch feeds; see app/core/vespa.py
-# _batch_upsert_feeder). The 13MB fat JAR comes from the official Vespa image;
-# a headless JRE runs it. Both are gated behind VESPA_FEEDER_ENABLED at runtime.
-COPY --from=vespaengine/vespa:latest \
-    /opt/vespa/lib/jars/vespa-feed-client-cli-jar-with-dependencies.jar \
-    /opt/vespa-feed-client.jar
-# openjdk-17 explicitly — the JAR targets Java 17. It's bookworm's default-jre
-# too, but pin it so a base image bump can't silently move us off 17.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends openjdk-17-jre-headless \
-    && rm -rf /var/lib/apt/lists/*
-
 # Copy Poetry to app image
 COPY --from=poetry-base ${POETRY_VENV} ${POETRY_VENV}
 

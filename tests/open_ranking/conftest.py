@@ -4,7 +4,7 @@ Boots a real-but-minimal FastAPI app that mounts ONLY the Open Ranking router
 and exercises it through `TestClient` (real ASGI dispatch, real Pydantic
 validation, real exception handlers, real CORS). Keeping the app minimal makes
 these tests independent of the full brainstorm_server lifespan / background
-tasks. External data sources (Neo4j, Redis, Vespa) are stubbed per-test.
+tasks. External data sources (Neo4j, Redis, the search relay) are stubbed per-test.
 
 Settings env and the NWT helpers (`make_nwt`) are bootstrapped in the parent
 `tests/conftest.py`.

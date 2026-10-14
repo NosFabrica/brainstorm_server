@@ -42,7 +42,7 @@ Triggers a periodic GrapeRank run for the *platform observer*
 
 - Reads `settings.periodic_graperank_interval_minutes`. If 0 or unset, the job is a no-op (the loop sleeps but never triggers — useful for dev).
 - Calls into the same path as a user-triggered run: `brainstorm_request_service.create_brainstorm_request(...)` with `algorithm="graperank"` and the default preset.
-- The result of the periodic run is what populates Vespa for search (only this observer's scores get mirrored — see [../message_queue_tasks/CLAUDE.md](../message_queue_tasks/CLAUDE.md)).
+- Its published TAs are the house-observer scores the search relay serves to anonymous search.
 - **Don't run on multiple replicas** unless you also add a lock. Two processes will create two parallel requests every interval.
 
 ### `billing_sync.py`

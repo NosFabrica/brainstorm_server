@@ -66,6 +66,10 @@ file. Briefly:
 | `1d144470cb48_*` etc. | (see file for details) |
 | `c3d4e5f6a7b8_add_short_url.py` | `short_url` — share-link records moved out of Redis (see `docs/adr/0002-short-links-in-postgres.md`) |
 
+**Orphaned columns (intentional):** `brainstorm_request.force_full_vespa` and
+`brainstorm_nsec.is_observer_search_available` stay in the database but are no longer mapped or used
+(internal Vespa removed). Their DB defaults keep inserts working. A later migration drops them.
+
 Treat this table as a hint; the source of truth is the `down_revision` chain in
 the files themselves.
 

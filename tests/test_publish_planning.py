@@ -1,7 +1,7 @@
 """Publish-decision behaviour driven by real GrapeRank algo results.
 
 `plan_publish` is the pure decision the publish consumer makes from one algo
-result + the previously-published set: what to sign, and what each sink deletes.
+result + the previously-published set: what to sign, and what the relay deletes.
 These tests feed it algo results (including the algorithm's own
 `changedScorePubkeys` delta) and assert the publish/delete sets — across a
 steady-state delta and a full-sync reconciliation.
@@ -42,9 +42,8 @@ def test_incremental_delta_run_publishes_only_changed_and_deletes_what_fell_off(
         cutoff=CUTOFF,
     )
 
-    # Both sinks delete c (it fell off); a/b unchanged, d is new.
-    assert plan.relay_deletes == ["c"]
-    assert plan.vespa_deletes == ["c"]
+    # c fell off and is deleted; a/b unchanged, d is new.
+    assert plan.deletes == ["c"]
     assert sorted(plan.currently_published) == ["a", "b", "d"]
     # Incremental publishes only the changed-and-still-above-cutoff Observee (d);
     # c is "changed" too but below cutoff, so it is signed by nobody — only deleted.
@@ -68,7 +67,7 @@ def test_local_diff_catches_a_drop_the_algo_failed_to_report():
 
     # fell_off (previously_published - currently_above_cutoff) catches c despite
     # the empty algo delta.
-    assert plan.relay_deletes == ["c"]
+    assert plan.deletes == ["c"]
 
 
 def test_sweep_on_10k_publishes_all_above_cutoff_and_sweeps_all_below():
@@ -80,13 +79,11 @@ def test_sweep_on_10k_publishes_all_above_cutoff_and_sweeps_all_below():
         run,
         previously_published=[],
         cutoff=CUTOFF,
-        sweep_relay=True,
-        sweep_vespa=True,
+        sweep_below_cutoff=True,
     )
 
     assert len(plan.currently_published) == 6000
-    assert len(plan.relay_deletes) == 4000  # every below-cutoff Observee swept
-    assert plan.relay_deletes == plan.vespa_deletes  # matching modes share the set
+    assert len(plan.deletes) == 4000  # every below-cutoff Observee swept
 
 
 def test_full_sync_does_not_drive_deletes():
@@ -99,8 +96,7 @@ def test_full_sync_does_not_drive_deletes():
 
     plan = plan_publish(run, [], CUTOFF)  # sweep off (the default)
 
-    assert plan.relay_deletes == []  # nothing was published, so nothing fell off
-    assert plan.vespa_deletes == []
+    assert plan.deletes == []  # nothing was published, so nothing fell off
     # ...while full-sync still re-signs every above-cutoff TA.
     assert len(prepare_ta_inputs(run, CUTOFF, full_sync=True)) == 6000
     assert prepare_ta_inputs(run, CUTOFF, full_sync=False) == []  # nothing to sign
@@ -109,30 +105,13 @@ def test_full_sync_does_not_drive_deletes():
 def test_sweep_is_additive_to_the_fell_off_diff():
     run = _result({"a": 0.90, "lo": 0.01}, changed=[])
 
-    swept = plan_publish(run, ["a", "x"], CUTOFF, sweep_relay=True, sweep_vespa=True)
+    swept = plan_publish(run, ["a", "x"], CUTOFF, sweep_below_cutoff=True)
     plain = plan_publish(run, ["a", "x"], CUTOFF)
 
     # "x" fell off the published baseline either way; the sweep adds "lo", which
     # was never published (so its delete is a relay no-op that costs a tombstone).
-    assert plain.relay_deletes == ["x"]
-    assert swept.relay_deletes == ["lo", "x"]
-
-
-def test_plan_publish_splits_delete_sets_when_sinks_sweep_differently():
-    # Draining Vespa alone: its cheap removes reap "lo" while the relay pays no
-    # tombstone for it. Both sinks still delete "x", which genuinely fell off.
-    run = _result({"a": 0.90, "lo": 0.01}, changed=[])
-
-    plan = plan_publish(
-        run,
-        previously_published=["a", "x"],
-        cutoff=CUTOFF,
-        sweep_relay=False,
-        sweep_vespa=True,
-    )
-
-    assert plan.relay_deletes == ["x"]  # diff only: no tombstone for "lo"
-    assert plan.vespa_deletes == ["lo", "x"]  # swept: the orphan cell goes too
+    assert plain.deletes == ["x"]
+    assert swept.deletes == ["lo", "x"]
 
 
 def test_only_the_sweep_reaps_an_orphan():
@@ -142,9 +121,7 @@ def test_only_the_sweep_reaps_an_orphan():
     run = _result({"a": 0.90, "orph": 0.01}, changed=[])
 
     off = plan_publish(run, ["a"], CUTOFF)
-    assert off.relay_deletes == []
-    assert off.vespa_deletes == []
+    assert off.deletes == []
 
-    draining = plan_publish(run, ["a"], CUTOFF, sweep_relay=True, sweep_vespa=True)
-    assert draining.relay_deletes == ["orph"]
-    assert draining.vespa_deletes == ["orph"]
+    draining = plan_publish(run, ["a"], CUTOFF, sweep_below_cutoff=True)
+    assert draining.deletes == ["orph"]

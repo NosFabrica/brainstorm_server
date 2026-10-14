@@ -125,14 +125,11 @@ class BrainstormRequest(TimestampMixin, Base):
         server_default=TriggerSource.MANUAL.value,
         default=TriggerSource.MANUAL.value,
     )
-    # Per-run, per-sink "force a full re-assert" overrides (published-state-drift
-    # repair). Nullable: NULL/false = no override (delta as usual); true = this
-    # run re-asserts that sink's full above-cutoff state. Set by the admin resync
-    # endpoint and the every-Nth scheduled backstop.
+    # Per-run "force a full re-assert" override (published-state-drift repair).
+    # Nullable: NULL/false = delta as usual; true = this run re-asserts the full
+    # above-cutoff state on the relay. Set by the admin resync endpoint and the
+    # every-Nth scheduled backstop.
     force_full_relay: Mapped[bool | None] = mapped_column(
-        Boolean, nullable=True, server_default="false"
-    )
-    force_full_vespa: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True, server_default="false"
     )
 
@@ -174,9 +171,6 @@ class BrainstormNsec(TimestampMixin, Base):
         Integer,
         ForeignKey("brainstorm_request.private_id"),
         nullable=True,
-    )
-    is_observer_search_available: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default="false", default=False
     )
     # Scheduled deltas published since this observer's last successful full run.
     # Drives the every-Nth full backstop (FULL_SYNC_EVERY_N_RUNS). Counts

@@ -1,35 +1,37 @@
 """End-to-end tests for the Open Ranking endpoints.
 
 These boot a FastAPI app, route a real HTTP request through ASGI, and verify
-the response per the ORE specs. The Neo4j / Redis / Vespa boundaries are
+the response per the ORE specs. The Neo4j / Redis / search-relay boundaries are
 patched at import sites in the open_ranking router modules so the suite is
 deterministic and infra-free.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from nostr_sdk import Keys
 
+from app.utils.observer import default_observer_pubkey
 from tests.conftest import make_nwt
-
 
 VALID_PUBKEY_1 = "a" * 64
 VALID_PUBKEY_2 = "b" * 64
 VALID_PUBKEY_3 = "c" * 64
 POV_PUBKEY = "d" * 64
 INVALID_PUBKEY = "not-a-valid-pubkey"
+HOUSE = default_observer_pubkey()
 
 
 @contextmanager
 def pov_availability(
     exists: bool = True,
     graperank: bool = True,
-    search: bool = True,
     in_pipeline: bool = False,
 ):
     """Stub the availability gate's repo reads (patched at their import site
@@ -37,12 +39,41 @@ def pov_availability(
     fully computed pov."""
     with patch(
         "app.routers.open_ranking.availability.get_pov_availability_fields_on_db",
-        new=AsyncMock(return_value=(exists, graperank, search)),
+        new=AsyncMock(return_value=(exists, graperank)),
     ), patch(
         "app.routers.open_ranking.availability.any_request_in_pipeline_for_pubkey_on_db",
         new=AsyncMock(return_value=in_pipeline),
     ):
         yield
+
+
+class FakeRelay:
+    """Stands in for the search relay's private `POST /search/pubkeys`."""
+
+    def __init__(self, answer: httpx.Response | Exception | None = None):
+        self.answer = (
+            answer
+            if answer is not None
+            else httpx.Response(200, json={"results": [], "ttl": 300})
+        )
+        self.request: httpx.Request | None = None
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        self.request = request
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+    def __enter__(self):
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(self._handle), base_url="http://relay.test"
+        )
+        self._patch = patch("app.core.search_relay._client", client)
+        self._patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._patch.stop()
 
 
 # ===========================================================================
@@ -66,6 +97,15 @@ class TestCapabilityDocument:
             assert isinstance(body[path], list) and body[path]
             for algo in body[path]:
                 assert "id" in algo
+
+    def test_search_algorithms_describe_search_relevance(self, client):
+        search = client.get("/.well-known/open-ranking.json").json()["/search/pubkeys"]
+        assert [a["id"] for a in search] == ["relevance", "relevance-pov"]
+        for algo in search:
+            assert algo["description"].startswith(
+                "rank = search relevance: kind-0 text match weighted by "
+                "GrapeRank trust; query-relative"
+            )
 
     def test_capability_doc_cors_header_present(self, client):
         r = client.get(
@@ -98,7 +138,12 @@ def _fake_stats(influence: float | None = 0.42):
     return UserRankAndCounts(
         influence=influence,
         counts=UserConnectionCounts(
-            followed_by=10, following=20, muted_by=1, muting=2, reported_by=3, reporting=4,
+            followed_by=10,
+            following=20,
+            muted_by=1,
+            muting=2,
+            reported_by=3,
+            reporting=4,
         ),
     )
 
@@ -110,7 +155,9 @@ class TestStatsPubkey:
             new=AsyncMock(return_value=_fake_stats(0.42)),
         ):
             r = client.post(
-                "/stats/pubkey", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
+                "/stats/pubkey",
+                json={"pubkey": VALID_PUBKEY_1},
+                headers=auth_headers,
             )
         assert r.status_code == 200, r.text
         body = r.json()
@@ -130,14 +177,18 @@ class TestStatsPubkey:
             new=AsyncMock(return_value=_fake_stats(None)),
         ):
             r = client.post(
-                "/stats/pubkey", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
+                "/stats/pubkey",
+                json={"pubkey": VALID_PUBKEY_1},
+                headers=auth_headers,
             )
         assert r.status_code == 200
         assert r.json()["rank"] == 0.0
 
     def test_invalid_pubkey_returns_422(self, client, auth_headers):
         r = client.post(
-            "/stats/pubkey", json={"pubkey": INVALID_PUBKEY}, headers=auth_headers,
+            "/stats/pubkey",
+            json={"pubkey": INVALID_PUBKEY},
+            headers=auth_headers,
         )
         assert r.status_code == 422
 
@@ -199,7 +250,9 @@ class TestStatsPubkey:
             "app.routers.open_ranking.stats.get_user_rank_and_counts", new=_capture
         ):
             r = client.post(
-                "/stats/pubkey", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
+                "/stats/pubkey",
+                json={"pubkey": VALID_PUBKEY_1},
+                headers=auth_headers,
             )
 
         assert r.status_code == 200, r.text
@@ -288,59 +341,144 @@ class TestRankPubkeys:
 # ORE-05: /search/pubkeys
 # ===========================================================================
 class TestSearchPubkeys:
-    def test_happy_path(self, client, auth_headers):
-        seen_kwargs = {}
+    """ORE-05 is served by the search relay; this endpoint only forwards."""
 
-        async def fake_search(
-            query_text,
-            user_pubkey,
-            hits,
-            include_zero_score_results,
-            *,
-            ranking_profile=None,
-            min_rank=None,
-        ):
-            seen_kwargs["ranking_profile"] = ranking_profile
-            seen_kwargs["min_rank"] = min_rank
-            seen_kwargs["include_zero_score_results"] = include_zero_score_results
-            # _quality_score values deliberately contradict the relevance
-            # order: rank MUST come from _relevance (the ordering key ORE-05
-            # requires), not from the 0-100 trust score.
-            return [
-                {"pubkey": VALID_PUBKEY_1, "_relevance": 11988.6, "_quality_score": 0.0},
-                {"pubkey": VALID_PUBKEY_2, "_relevance": 3018.9, "_quality_score": 61.0},
-            ]
+    def test_forwards_the_body_and_returns_the_relays_200_verbatim(self, client):
+        body = {
+            "results": [
+                {"pubkey": VALID_PUBKEY_1, "rank": 11988.6},
+                {"pubkey": VALID_PUBKEY_2, "rank": 3018.9},
+            ],
+            "ttl": 300,
+        }
+        sent = {"query": "jack", "algorithm": "relevance-pov", "pov": POV_PUBKEY}
+        with FakeRelay(httpx.Response(200, json=body)) as relay:
+            r = client.post("/search/pubkeys", json=sent)
+        assert r.status_code == 200, r.text
+        assert r.json() == body
+        assert relay.request.method == "POST"
+        assert relay.request.url.path == "/search/pubkeys"
+        assert json.loads(relay.request.content) == {**sent, "observer": HOUSE}
 
-        with patch("app.routers.open_ranking.search.vespa_search", new=fake_search):
+    def test_names_our_house_observer_over_any_the_client_sent(self, client):
+        sent = {"query": "jack", "observer": VALID_PUBKEY_2}
+        with FakeRelay() as relay:
+            r = client.post("/search/pubkeys", json=sent)
+        assert r.status_code == 200, r.text
+        assert json.loads(relay.request.content) == {"query": "jack", "observer": HOUSE}
+
+    def test_a_body_that_is_not_an_object_goes_as_is(self, client):
+        with FakeRelay(httpx.Response(400, json={"error": "malformed"})) as relay:
             r = client.post(
-                "/search/pubkeys", json={"query": "jack"}, headers=auth_headers,
+                "/search/pubkeys",
+                content=b"[1]",
+                headers={"Content-Type": "application/json"},
+            )
+        assert r.status_code == 400
+        assert relay.request.content == b"[1]"
+
+    @pytest.mark.parametrize(
+        "status,body,headers",
+        [
+            (
+                202,
+                {"status": "computing"},
+                {"X-Reason": "relay still mirroring", "Retry-After": "60"},
+            ),
+            (422, {"error": "no trust provider list"}, {"X-Reason": "no list"}),
+            (400, {"error": "malformed"}, {"X-Reason": "malformed"}),
+            (503, {"error": "busy"}, {"X-Reason": "busy", "Retry-After": "5"}),
+        ],
+    )
+    def test_relay_status_body_and_reason_pass_through(
+        self, client, status, body, headers
+    ):
+        with FakeRelay(httpx.Response(status, json=body, headers=headers)):
+            r = client.post("/search/pubkeys", json={"query": "jack"})
+        assert r.status_code == status
+        assert r.json() == body
+        for name, value in headers.items():
+            assert r.headers[name] == value
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            httpx.ConnectError("refused"),
+            httpx.ReadTimeout("slow"),
+            httpx.Response(500, text="boom"),
+            httpx.Response(404, text="ORE disabled"),
+            httpx.Response(200, text="not json"),
+            httpx.Response(200, json={"hits": []}),
+            httpx.Response(200, json={"results": [{"pubkey": VALID_PUBKEY_1}]}),
+            httpx.Response(
+                200, json={"results": [{"pubkey": VALID_PUBKEY_1, "rank": "high"}]}
+            ),
+            httpx.Response(202, json={"status": "computing"}),
+        ],
+    )
+    def test_relay_down_or_off_spec_returns_503_with_reason(self, client, answer):
+        with FakeRelay(answer):
+            r = client.post("/search/pubkeys", json={"query": "jack"})
+        assert r.status_code == 503, r.text
+        assert "search relay" in r.headers["x-reason"]
+        assert r.json()["error"] == r.headers["x-reason"]
+
+    @pytest.mark.parametrize("sent_pov", [POV_PUBKEY, None])
+    def test_auth_forces_the_signer_as_pov(self, client, monkeypatch, sent_pov):
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "open_ranking_require_auth", True)
+        token, signer = make_nwt()
+        sent = {"query": "jack", "algorithm": "relevance-pov", "limit": 5}
+        if sent_pov:
+            sent["pov"] = sent_pov
+        with FakeRelay() as relay:
+            r = client.post(
+                "/search/pubkeys",
+                json=sent,
+                headers={"Authorization": f"Nostr {token}"},
             )
         assert r.status_code == 200, r.text
-        body = r.json()
-        assert [x["pubkey"] for x in body["results"]] == [VALID_PUBKEY_1, VALID_PUBKEY_2]
-        ranks = [x["rank"] for x in body["results"]]
-        assert ranks == pytest.approx([11988.6, 3018.9])
-        # ORE-05: "sorted by rank in descending order"
-        assert ranks == sorted(ranks, reverse=True)
-        # These arguments must mirror /search/byText's defaults (UI parity):
-        # min_rank omitted degrades ordering to pure text (schema default
-        # -1e9), and min_rank=0 / include_zero=True floods results with
-        # zero-trust exact-name matches at multiplier 1.0.
-        from app.core.vespa import DEFAULT_MIN_RANK, RANK_PROFILE_SORT_FOLLOWERS
+        assert json.loads(relay.request.content) == {
+            **sent,
+            "pov": signer,
+            "observer": HOUSE,
+        }
 
-        assert seen_kwargs["ranking_profile"] == RANK_PROFILE_SORT_FOLLOWERS
-        assert seen_kwargs["min_rank"] == DEFAULT_MIN_RANK
-        assert seen_kwargs["include_zero_score_results"] is False
+    def test_auth_global_relevance_forwards_signer_and_passes_house_view_through(
+        self, client, monkeypatch
+    ):
+        # ORE-01: the relay ignores pov for global `relevance` and ranks through
+        # the observer we name, so the House view comes back even with the signer
+        # forced in.
+        from app.core.config import settings
 
-    def test_empty_query_returns_422(self, client, auth_headers):
-        r = client.post("/search/pubkeys", json={"query": ""}, headers=auth_headers)
-        assert r.status_code == 422
+        monkeypatch.setattr(settings, "open_ranking_require_auth", True)
+        token, signer = make_nwt()
+        house_view = {"results": [{"pubkey": VALID_PUBKEY_1, "rank": 42.0}], "ttl": 300}
+        sent = {"query": "jack", "algorithm": "relevance"}
+        with FakeRelay(httpx.Response(200, json=house_view)) as relay:
+            r = client.post(
+                "/search/pubkeys",
+                json=sent,
+                headers={"Authorization": f"Nostr {token}"},
+            )
+        assert r.status_code == 200, r.text
+        assert json.loads(relay.request.content) == {
+            **sent,
+            "pov": signer,
+            "observer": HOUSE,
+        }
+        assert r.json() == house_view
 
-    def test_query_too_long_returns_422(self, client, auth_headers):
-        r = client.post(
-            "/search/pubkeys", json={"query": "x" * 513}, headers=auth_headers,
-        )
-        assert r.status_code == 422
+    def test_auth_on_without_token_never_reaches_the_relay(self, client, monkeypatch):
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "open_ranking_require_auth", True)
+        with FakeRelay() as relay:
+            r = client.post("/search/pubkeys", json={"query": "jack"})
+        assert r.status_code == 401
+        assert relay.request is None
 
 
 # ===========================================================================
@@ -360,33 +498,36 @@ class TestFollowersMuters:
         with patch(
             "app.routers.open_ranking.followers_muters.get_top_inbound_by_influence",
             new=AsyncMock(return_value=_fake_top_inbound()),
-        ), patch(
-            "app.routers.open_ranking.followers_muters.neo4j_driver"
-        ), patch(
+        ), patch("app.routers.open_ranking.followers_muters.neo4j_driver"), patch(
             "app.routers.open_ranking.followers_muters._redis_inbound_count",
             new=AsyncMock(return_value=1234),
         ):
             r = client.post(
-                "/followers", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
+                "/followers",
+                json={"pubkey": VALID_PUBKEY_1},
+                headers=auth_headers,
             )
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["total"] == 1234
-        assert [x["pubkey"] for x in body["results"]] == [VALID_PUBKEY_2, VALID_PUBKEY_3]
+        assert [x["pubkey"] for x in body["results"]] == [
+            VALID_PUBKEY_2,
+            VALID_PUBKEY_3,
+        ]
         assert body["results"][0]["rank"] == pytest.approx(0.91)
 
     def test_muters_happy_path(self, client, auth_headers):
         with patch(
             "app.routers.open_ranking.followers_muters.get_top_inbound_by_influence",
             new=AsyncMock(return_value=_fake_top_inbound()),
-        ), patch(
-            "app.routers.open_ranking.followers_muters.neo4j_driver"
-        ), patch(
+        ), patch("app.routers.open_ranking.followers_muters.neo4j_driver"), patch(
             "app.routers.open_ranking.followers_muters._redis_inbound_count",
             new=AsyncMock(return_value=42),
         ):
             r = client.post(
-                "/muters", json={"pubkey": VALID_PUBKEY_1}, headers=auth_headers,
+                "/muters",
+                json={"pubkey": VALID_PUBKEY_1},
+                headers=auth_headers,
             )
         assert r.status_code == 200
         body = r.json()
@@ -394,7 +535,9 @@ class TestFollowersMuters:
 
     def test_invalid_pubkey_returns_422(self, client, auth_headers):
         r = client.post(
-            "/followers", json={"pubkey": INVALID_PUBKEY}, headers=auth_headers,
+            "/followers",
+            json={"pubkey": INVALID_PUBKEY},
+            headers=auth_headers,
         )
         assert r.status_code == 422
 
@@ -490,9 +633,7 @@ class TestNWTAuth:
     def test_multi_aud_token_accepted_when_one_matches(self, client):
         from tests.conftest import TEST_AUD
 
-        token, _pk = make_nwt(
-            aud=["other-provider.example", TEST_AUD, "third.example"]
-        )
+        token, _pk = make_nwt(aud=["other-provider.example", TEST_AUD, "third.example"])
         with patch(
             "app.routers.open_ranking.stats.get_user_rank_and_counts",
             new=AsyncMock(return_value=_fake_stats(0.5)),
@@ -699,7 +840,6 @@ class TestAuthModeForcesOwnObserver:
 _PERSONALIZED_CASES = [
     ("/stats/pubkey", "graperank-pov", {"pubkey": VALID_PUBKEY_1}),
     ("/rank/pubkeys", "graperank-pov", {"pubkeys": [VALID_PUBKEY_1]}),
-    ("/search/pubkeys", "relevance-pov", {"query": "jack"}),
     ("/followers", "graperank-pov", {"pubkey": VALID_PUBKEY_1}),
     ("/muters", "graperank-pov", {"pubkey": VALID_PUBKEY_1}),
 ]
@@ -708,7 +848,6 @@ _PERSONALIZED_CASES = [
 _DEFAULT_ALGO = {
     "/stats/pubkey": "graperank",
     "/rank/pubkeys": "graperank",
-    "/search/pubkeys": "relevance",
     "/followers": "graperank",
     "/muters": "graperank",
 }
@@ -849,51 +988,6 @@ class TestPovAvailability:
             )
         assert r.status_code == 422
         assert r.headers.get("x-reason")
-
-    def test_search_availability_is_independent_of_graperank(self, client):
-        """GrapeRank done but the Vespa mirror never landed: stats serves,
-        search refuses — availability is per data source."""
-        avail = pov_availability(
-            exists=True, graperank=True, search=False, in_pipeline=False
-        )
-        with avail, patch(
-            "app.routers.open_ranking.stats.get_user_rank_and_counts",
-            new=AsyncMock(return_value=_fake_stats(0.7)),
-        ):
-            stats = client.post(
-                "/stats/pubkey",
-                json={
-                    "pubkey": VALID_PUBKEY_1,
-                    "algorithm": "graperank-pov",
-                    "pov": POV_PUBKEY,
-                },
-            )
-            search = client.post(
-                "/search/pubkeys",
-                json={
-                    "query": "jack",
-                    "algorithm": "relevance-pov",
-                    "pov": POV_PUBKEY,
-                },
-            )
-        assert stats.status_code == 200
-        assert search.status_code == 422
-        assert "search index" in search.headers.get("x-reason", "")
-
-    def test_search_mirror_in_flight_returns_202(self, client):
-        with pov_availability(
-            exists=True, graperank=True, search=False, in_pipeline=True
-        ):
-            r = client.post(
-                "/search/pubkeys",
-                json={
-                    "query": "jack",
-                    "algorithm": "relevance-pov",
-                    "pov": POV_PUBKEY,
-                },
-            )
-        assert r.status_code == 202
-        assert r.headers.get("retry-after")
 
 
 # ===========================================================================

@@ -14,8 +14,8 @@ from app.core.billing_admin_whitelist import init_billing_admin_whitelist
 from app.core.config import settings
 from app.core.flash import aclose as flash_aclose
 from app.core.loggr import loggr
+from app.core.search_relay import aclose as search_relay_aclose
 from app.core.sql_admin_panel import add_sql_admin_panel
-from app.core.vespa import aclose as vespa_aclose
 from app.cronjobs.billing_sync import billing_sync_cronjob
 from app.cronjobs.expire_support_diagnostics import expire_support_diagnostics_cronjob
 from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
@@ -154,8 +154,8 @@ async def lifespan(app: FastAPI):
         # surface as a spurious Flash outage during every shutdown.
         await asyncio.gather(billing_sync_task, return_exceptions=True)
         # regular_update_task.cancel()
-        await vespa_aclose()
         await flash_aclose()
+        await search_relay_aclose()
 
 
 app = FastAPI(

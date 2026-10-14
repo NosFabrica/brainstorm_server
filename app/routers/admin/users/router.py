@@ -41,7 +41,6 @@ from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
     create_brainstorm_request,
 )
-from app.services.publish_drift import resync_target_to_flags
 from app.services.relay_audit_service import audit_observer_relay
 
 logger = loggr.get_logger(__name__)
@@ -201,26 +200,16 @@ async def get_user_history_endpoint(
 )
 async def resync_observer_endpoint(
     pubkey: str,
-    target: str = Query(
-        "both", description="Which sink(s) to force full: relay|vespa|both"
-    ),
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> BrainstormRequestResponse:
-    # Enqueue a normal single-observer recompute with the matching force_full_*
-    # set. Never fans out — it's one request for this pubkey; the consumer reads
-    # the flags off the row and re-asserts that sink's full above-cutoff state.
-    try:
-        force_full_relay, force_full_vespa = resync_target_to_flags(target)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
+    # One single-observer recompute, never a fan-out; the consumer reads the
+    # flag off the row and re-asserts the full above-cutoff state on the relay.
     result = await create_brainstorm_request(
         db=db,
         algorithm="graperank",
         parameters=pubkey,
         pubkey=pubkey,
-        force_full_relay=force_full_relay,
-        force_full_vespa=force_full_vespa,
+        force_full_relay=True,
         trigger_source=TriggerSource.ADMIN.value,
     )
     return BrainstormRequestResponse(data=result)
@@ -235,7 +224,7 @@ async def relay_audit_endpoint(
     pubkey: str,
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> GetRelayAuditResponse:
-    # Exact, a few seconds per observer. needs_resync → POST /{pubkey}/resync?target=relay.
+    # Exact, a few seconds per observer. needs_resync → POST /{pubkey}/resync.
     check = await audit_observer_relay(db, pubkey)
     return GetRelayAuditResponse(
         data=RelayAudit(

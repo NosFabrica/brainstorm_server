@@ -1,6 +1,6 @@
 """Pure, process-safe Trusted-Assertion signing.
 
-Deliberately depends on **nostr-sdk only** (no settings/db/vespa/redis): the
+Deliberately depends on **nostr-sdk only** (no settings/db/redis): the
 functions here are the worker bodies for a `ProcessPoolExecutor`, so on a
 `spawn` platform the child re-imports this module and we want that import to be
 cheap and side-effect-free. The orchestration that *reads settings* and decides
