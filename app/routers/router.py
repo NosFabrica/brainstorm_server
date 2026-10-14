@@ -16,9 +16,7 @@ from app.routers.graperank.router import router as graperank_router
 from app.routers.graph.router import router as graph_router
 from app.routers.network_alerts.router import router as network_alerts_router
 from app.routers.nip05.router import router as nip05_router
-from app.routers.nip50.router import router as nip50_router
 from app.routers.open_ranking.router import router as open_ranking_router
-from app.routers.search.router import router as search_router
 from app.routers.setup.router import router as setup_router
 from app.routers.shorturl.router import router as shorturl_router
 from app.routers.support.router import router as support_router
@@ -135,28 +133,12 @@ router.include_router(
     tags=["setup"],
 )
 
-SEARCH_ROUTER_PREFIX = "/search"
-
-router.include_router(
-    router=search_router,
-    prefix=SEARCH_ROUTER_PREFIX,
-    tags=["search"],
-)
-
 SHORTURL_ROUTER_PREFIX = "/shorturl"
 
 router.include_router(
     router=shorturl_router,
     prefix=SHORTURL_ROUTER_PREFIX,
     tags=["shorturl"],
-)
-
-# NIP-50 search relay. Mounted at root because NIP-11 mandates the
-# information document live at the same URL clients connect to over
-# WebSocket — here that's ``/relay``.
-router.include_router(
-    router=nip50_router,
-    tags=["nip50"],
 )
 
 USER_ROUTER_PREFIX = "/user"

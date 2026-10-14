@@ -4,7 +4,8 @@
 Also home to the ORE-00 error / retry schemas and the shared OpenAPI
 `responses` table (`ore_responses`) the endpoint decorators attach, so the
 Swagger surface matches what the exception handlers (errors.py) and the
-pov-availability gate (availability.py) actually emit.
+pov-availability gate (availability.py) actually emit. On /search/pubkeys the
+202/422 (and 400/503) come from the search relay, passed through as is.
 """
 
 from __future__ import annotations
@@ -150,14 +151,18 @@ def _error(
     }
 
 
-def ore_responses(*, batch_cap: int | None = None) -> dict[int | str, dict[str, Any]]:
+def ore_responses(
+    *, batch_cap: int | None = None, unavailable: str | None = None
+) -> dict[int | str, dict[str, Any]]:
     """OpenAPI `responses` for the ORE data endpoints (ORE-02..ORE-07).
 
     Documents the shapes the ORE exception handlers (errors.py) and the
     pov-availability gate (availability.py) actually produce — including
     replacing FastAPI's auto-generated 422 `HTTPValidationError` entry, whose
-    `{"detail": [...]}` body these paths never return. `batch_cap` adds the
-    413 entry for endpoints that enforce a pubkey-batch limit.
+    `{"detail": [...]}` body these paths never return. /search/pubkeys is the
+    exception: its 202/422 are the search relay's, forwarded unchanged.
+    `batch_cap` adds the 413 entry for endpoints that enforce a pubkey-batch
+    limit; `unavailable` documents a 503.
     """
     responses: dict[int | str, dict[str, Any]] = {
         202: {
@@ -197,4 +202,6 @@ def ore_responses(*, batch_cap: int | None = None) -> dict[int | str, dict[str, 
         "of view; `X-Reason` explains the failure and names the fallback "
         "options)."
     )
+    if unavailable is not None:
+        responses[503] = _error(unavailable)
     return responses

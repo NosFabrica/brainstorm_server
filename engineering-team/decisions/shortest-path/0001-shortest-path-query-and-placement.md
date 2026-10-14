@@ -6,6 +6,8 @@ return a result of 0.")
 **Date:** 2026-07-13
 **Story:** `engineering-team/stories/shortest-path/1-get-shortest-path.md`
 
+> **Superseded in part (2026-10):** `app/routers/search/router.py`, cited below as precedent, was deleted with the internal Vespa; search now goes through the shared search relay.
+
 ## Context
 
 The story (shortest-path #1) requires `GET /shortestPath?from=&to=` over the

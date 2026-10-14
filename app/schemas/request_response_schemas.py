@@ -112,10 +112,6 @@ class GetOwnLatestGraperankResponse(SuccessfulResponseDataSchema):
     data: BrainstormRequestInstance | None
 
 
-class IsSearchObserverResponse(SuccessfulResponseDataSchema):
-    data: bool
-
-
 class GetSubscriptionResponse(SuccessfulResponseDataSchema):
     data: SubscriptionView
 
@@ -211,16 +207,6 @@ class AdminPresetHistoryData(BaseModel):
 
 class AdminPresetHistoryResponse(SuccessfulResponseDataSchema):
     data: AdminPresetHistoryData
-
-
-class SearchResults(BaseModel):
-    query: str
-    numResults: int
-    results: list[dict]
-
-
-class SearchByTextResponse(SuccessfulResponseDataSchema):
-    data: SearchResults
 
 
 class CreateShortUrlResponse(SuccessfulResponseDataSchema):

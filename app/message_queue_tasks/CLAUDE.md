@@ -9,16 +9,14 @@ loop forever (`while True: await blpop(...)`) so they're started with
 
 | Redis queue | Consumer (in `message_queue_consumer.py`) | Per-message handler | Side effects |
 |---|---|---|---|
-| `strfry:events` | `consume_strfry_plugin_messages()` | `process_strfry_event()` in `process_strfry_event.py` | Kind 0 → Vespa profile upsert. Kind 3/10000/1984 → Neo4j relationship updates + Redis reverse-set caches. Kind 5 → recompute the author's report edges from the relay. Kind 39999 → persist tag elements / taggings to Postgres (Trusted Lists input). |
-| `nostr_results_message_queue` | `consume_nostr_upload_messages()` | `process_nostr_upload_message()` in `upload_nostr_events.py` | Sign + publish TA events to Nostr relays, then mirror scores into Vespa via `batch_upsert_scores` (for any observer, keyed by the observer pubkey). |
+| `strfry:events` | `consume_strfry_plugin_messages()` | `process_strfry_event()` in `process_strfry_event.py` | Kind 3/10000/1984 → Neo4j relationship updates + Redis reverse-set caches. Kind 5 → recompute the author's report edges from the relay. Kind 39999 → persist tag elements / taggings to Postgres (Trusted Lists input). Other kinds (incl. 0) are ignored. |
+| `nostr_results_message_queue` | `consume_nostr_upload_messages()` | `process_nostr_upload_message()` in `upload_nostr_events.py` | Sign + publish TA events to Nostr relays. |
 | (other queues, see `message_queue_consumer.py`) | `consume_messages`, `consume_neo4j_write_messages`, `consume_job_started_messages` | … | … |
 
 ## process_strfry_event.py
 
 Dispatches incoming Nostr events by kind:
 
-- **Kind 0** (profile metadata) → JSON-parses `content`, calls `vespa.upsert_profile(pubkey, profile)`. Constants in the file:
-  - `KIND_0_PROFILE_FIELDS` — imported from `app.core.vespa.PROFILE_FIELDS`. **If you add/remove a profile field, change it in `vespa.PROFILE_FIELDS`** — the constant here aliases it.
 - **Kind 3** (contacts/follows) → upsert `FOLLOWS` relationships in Neo4j + maintain `followed_by:<pubkey>` Redis reverse-sets.
 - **Kind 10000** (mute list) → same shape as kind 3 but with `MUTES` relationships and `muted_by:` sets.
 - **Kind 1984** (reports) → `REPORTS` relationships + `reported_by:` sets. **Only user-level reports count**: per NIP-56 a note/media report carries an `e` tag, a user report is `p`-only.
@@ -35,20 +33,13 @@ The longest module here. The main entry point is `process_nostr_upload_message(m
 2. Resolve the observer's nsec via `get_or_create_brainstorm_observer_nsec_by_pubkey_on_db`.
 3. Build the Nostr events to publish: TA assertions (above-cutoff scorecards) + deletion events for dropped pubkeys.
 4. Publish all events to the configured relays (best-effort per relay).
-5. Mirror scores to Vespa via `upsert_scores_to_vespa(...)` → `batch_upsert_scores`, keyed by this observer's pubkey in the `quality_scores` tensor (runs for every observer, not just `settings.periodic_graperank_pubkey`). Vespa failures are logged but don't fail the request.
-6. Mark the brainstorm request as `SUCCESS` and persist the published-pubkey list.
+5. Mark the brainstorm request as `SUCCESS` and persist the published-pubkey list (prev ∪ current if any relay enqueue failed, so an unconfirmed delete is retried). A full relay run resets the every-Nth backstop counter.
 
-### `upsert_scores_to_vespa` — the score-mirror function
+### Publish mode and deletes
 
-- `vespa_full_sync` / `relay_full_sync` (both default `False` = delta): `False` publishes only _changed_ scores (`changedScorePubkeys`), `True` re-asserts every above-cutoff scorecard each run. Drift is repaired by the `full_sync_every_n_runs` backstop + admin `resync`, not by leaving a sink `True`. **Re-assertion only — never deletes.** The k8s charts set these per env and override the code default.
-- Below-cutoff scorecards are skipped for upserts.
-- Delete sets are computed **per sink** by `plan_publish` from a local diff (no relay/Vespa read): `fell_off = previously_published − currently_above_cutoff`. Shared as one list when both sweep modes match.
-- The **sweep** (`*_sweep_below_cutoff`, default off) adds every below-cutoff Observee to the delete set, reaping orphans the diff can't see. Backwards-compat drain: on to clear the legacy backlog, then off — it's mostly no-op deletes that each cost a tombstone/remove op. Not implied by full-sync, the backstop, or `resync`.
-- All ops are fanned out concurrently — see `batch_upsert_scores` in `app/core/vespa.py`.
-
-### Order of operations matters
-
-Nostr publish happens **before** Vespa mirror. If you reorder these, Vespa could end up holding scores that were never persisted to Nostr — that breaks the "Nostr is source of truth" invariant.
+- `relay_full_sync` (default `False` = delta) or the request row's `force_full_relay`: `False` publishes only _changed_ scores (`changedScorePubkeys`), `True` re-asserts every above-cutoff scorecard. Drift is repaired by the `full_sync_every_n_runs` backstop + admin `resync`, not by leaving it `True`. **Re-assertion only — never deletes.**
+- The delete set is computed by `plan_publish` from a local diff (no relay read): `fell_off = previously_published − currently_above_cutoff`.
+- The **sweep** (`relay_sweep_below_cutoff`, default off) adds every below-cutoff Observee to the delete set, reaping orphans the diff can't see. Backwards-compat drain: on to clear the legacy backlog, then off — it's mostly no-op deletes that each cost a tombstone. Not implied by full-sync, the backstop, or `resync`.
 
 ## write_neo4j_results.py
 

@@ -36,7 +36,7 @@ from app.core.loggr import loggr
 
 logger = loggr.get_logger(__name__)
 
-# One shared client, lazily built and reused — same pattern as app/core/vespa.py.
+# One shared client, lazily built and reused — same pattern as search_relay.py.
 _client: httpx.AsyncClient | None = None
 
 CONNECT_RETRIES = 3

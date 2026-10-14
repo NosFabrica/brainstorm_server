@@ -1,9 +1,8 @@
 """Bulk-trigger GrapeRank for every observer — paced, resumable, with status.
 
 Re-runs GrapeRank for ALL observer perspectives (rows in `brainstorm_nsec`) so
-each observer's Vespa tensors (`quality_scores` + the new `follower_counts`) get
-repopulated — e.g. the follower-count backfill in docs/search-vs-tapestry.md
-§8/§9. GrapeRank is expensive per observer, so enqueues are RATE-LIMITED.
+each observer's published TAs get re-asserted (e.g. after a new tag is added).
+GrapeRank is expensive per observer, so enqueues are RATE-LIMITED.
 
 "Done" is read from the `brainstorm_request` table, so there's no fragile
 bookkeeping: for a campaign that started at time T, an observer is

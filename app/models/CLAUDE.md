@@ -14,14 +14,13 @@ The GrapeRank algorithm's output, used both internally and as the queue-message 
 - **`GrapeRankResult`** — top-level container. Holds:
   - `scorecards: dict[str, ScoreCard] | None` — keyed by observee pubkey.
   - `rounds: int | None`, `duration_seconds: float`, `success: bool` — run telemetry.
-  - `changedScorePubkeys: list[str]` — incremental-publish hint (only these need new TA events / Vespa upserts). Deletes are computed from the `fell_off` diff, not an algo hint.
+  - `changedScorePubkeys: list[str]` — incremental-publish hint (only these need new TA events). Deletes are computed from the `fell_off` diff, not an algo hint.
   - `error: GrapeRankError | None` — structured failure (imported from [`app/schemas/schemas.py`](../schemas/schemas.py); the only schemas → models import).
 
 Consumed in [../message_queue_tasks/upload_nostr_events.py](../message_queue_tasks/upload_nostr_events.py). When changing fields, also touch:
 
 1. The GrapeRank worker that produces this object (out of repo — talk to the algorithm side).
 2. `upload_nostr_events.py` — the consumer.
-3. [`upsert_scores_to_vespa`](../message_queue_tasks/upload_nostr_events.py) for the Vespa-mirror path.
 
 ## Should I add a file here?
 

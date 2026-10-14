@@ -4,7 +4,7 @@
 Returns pubkeys ranked by the observer's quality score. The observer is chosen
 (in priority order) by:
 
-  * a signed request  -> the signer's pubkey IS the observer (`--nsec` / `--sign`)
+  * a signed request  -> the signer's pubkey IS the pov, when the server enforces auth (`--nsec` / `--sign`)
   * `--pov <hex>`     -> that pubkey (sent unsigned; auth on this endpoint is optional)
   * neither           -> the server's default observer
 
@@ -21,10 +21,6 @@ Usage:
     # sign the request so the observer is the signer (fresh key by default):
     python scripts/search_open_ranking.py --query cloud --sign
     python scripts/search_open_ranking.py --query cloud --nsec nsec1...
-
-The ORE-05 response only carries {pubkey, rank}; this script best-effort
-annotates each pubkey with its profile name via GET /search/byText so the
-output is readable.
 
 Requires: requests, nostr-sdk (both in the server's poetry env).
 """
@@ -57,37 +53,6 @@ def mint_nwt(keys: Keys, audience: str, ttl_seconds: int = 300) -> str:
         .rstrip(b"=")
         .decode("ascii")
     )
-
-
-def name_map(base_url: str, query: str) -> dict[str, str]:
-    """Best-effort pubkey -> display name, via the public byText endpoint."""
-    try:
-        r = requests.get(
-            base_url.rstrip("/") + "/search/byText",
-            params={"text": query, "maxHits": 400, "onlyRanked": "false"},
-            timeout=15,
-        )
-        r.raise_for_status()
-        data = r.json()
-    except Exception:
-        return {}
-
-    def find_list(o):
-        if isinstance(o, list) and o and isinstance(o[0], dict):
-            return o
-        if isinstance(o, dict):
-            for v in o.values():
-                got = find_list(v)
-                if got:
-                    return got
-        return None
-
-    out: dict[str, str] = {}
-    for r in find_list(data) or []:
-        pk = r.get("pubkey")
-        if isinstance(pk, str):
-            out[pk] = r.get("display_name") or r.get("name") or "?"
-    return out
 
 
 def main() -> int:
@@ -123,12 +88,13 @@ def main() -> int:
     observer_desc = "server default"
 
     # pov is honored only by a pov-based algorithm; default to the personalized
-    # one when --pov is given (the default relevance algorithm ignores pov).
-    algo = args.algo or ("relevance-pov" if args.pov else None)
+    # one when a pov is given or forced (the default relevance ignores pov).
+    signing = bool(args.nsec or args.sign)
+    algo = args.algo or ("relevance-pov" if args.pov or signing else None)
     if algo:
         body["algorithm"] = algo
 
-    if args.nsec or args.sign:
+    if signing:
         keys = Keys.parse(args.nsec) if args.nsec else Keys.generate()
         audience = args.audience or urlparse(args.base_url).hostname
         headers["Authorization"] = f"Nostr {mint_nwt(keys, audience)}"
@@ -150,12 +116,8 @@ def main() -> int:
         return 1
 
     results = resp.json().get("results", [])
-    names = name_map(args.base_url, args.query)
     for i, r in enumerate(results):
-        pk = r.get("pubkey", "")
-        rank = r.get("rank")
-        nm = names.get(pk, "?")
-        print(f"{i:2}  {str(nm)[:28]:28}  rank={rank}  {pk[:16]}")
+        print(f"{i:2}  rank={r.get('rank')}  {r.get('pubkey', '')}")
     if not results:
         print("(no results)")
     if args.verbose:

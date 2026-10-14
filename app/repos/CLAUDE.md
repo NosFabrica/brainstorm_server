@@ -64,6 +64,8 @@ was removed — the per-observer whitelist now lives in `observer_whitelist_repo
 `select_brainstorm_nsec_by_pubkey_on_db` decrypts the nsec on read via
 `_resolve_plaintext_nsec`. Plaintext fallback exists for unmigrated rows. Don't
 read `BrainstormNsec.nsec` directly outside the repo — go through the helper.
+The Assistant pubkey (public half of the nsec) is derived by `_assistant_pubkey`,
+used by `select_all_assistant_pubkeys_on_db`.
 
 ### Binary-packed pubkey lists
 
