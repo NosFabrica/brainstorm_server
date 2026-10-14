@@ -218,7 +218,7 @@ async def resync_observer_endpoint(
 @router.get(
     path="/{pubkey}/relay-audit",
     response_model=GetRelayAuditResponse,
-    summary="Admin: relay audit — does the TA relay hold what we recorded as published?",
+    summary="Admin: relay audit — does the TA relay hold every TA the observer's scores call for?",
 )
 async def relay_audit_endpoint(
     pubkey: str,
@@ -230,10 +230,13 @@ async def relay_audit_endpoint(
         data=RelayAudit(
             observer=check.observer,
             signer=check.signer,
+            expected=check.expected,
             published=check.published,
+            baseline_drift=check.baseline_drift,
             on_relay=check.on_relay,
             missing=check.missing,
             orphans=check.orphans,
+            exact=check.exact,
             needs_resync=check.needs_resync,
         )
     )

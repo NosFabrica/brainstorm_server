@@ -978,6 +978,27 @@ async def batch_influence_for_pubkeys(
     return out
 
 
+async def get_ta_observees_for_observer(
+    session: AsyncNeoSession, observer_pubkey: str, cutoff: float
+) -> set[str]:
+    """Observees the publisher would assert a TA for: stored influence at or above
+    the publish cutoff after the same 2-decimal rounding. A full label scan — the
+    per-observer property can't be indexed."""
+    query = """
+    MATCH (user:NostrUser)
+    WHERE user[$influence_key] >= $floor
+    RETURN user.pubkey AS pubkey, user[$influence_key] AS influence
+    """
+    result = await session.run(
+        query, influence_key=f"influence_{observer_pubkey}", floor=cutoff - 0.01
+    )
+    return {
+        record["pubkey"]
+        async for record in result
+        if round(record["influence"], 2) >= cutoff
+    }
+
+
 async def get_top_inbound_by_influence(
     session: AsyncNeoSession,
     pubkey: str,
