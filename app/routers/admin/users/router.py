@@ -41,8 +41,8 @@ from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
     create_brainstorm_request,
 )
-from app.services.relay_audit_service import audit_observer_relay
 from app.services.publish_drift import resync_target_to_flags
+from app.services.relay_audit_service import audit_observer_relay
 
 logger = loggr.get_logger(__name__)
 
