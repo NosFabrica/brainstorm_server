@@ -25,6 +25,7 @@ from app.schemas.schemas import (
     SupportState,
     SupportThread,
     SupportTicketItem,
+    RelayAudit,
     TrustSignalsData,
     UserGraphData,
     UserHistoryInstance,
@@ -325,3 +326,7 @@ class CreateSupportMessageResponse(SuccessfulResponseDataSchema):
 
 class ResolveSupportTicketResponse(SuccessfulResponseDataSchema):
     data: SupportTicketItem
+
+
+class GetRelayAuditResponse(SuccessfulResponseDataSchema):
+    data: RelayAudit

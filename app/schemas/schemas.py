@@ -135,6 +135,16 @@ class AdminUserListItem(BaseModel):
     scheduling_name: str
 
 
+class RelayAudit(BaseModel):
+    observer: str
+    signer: str
+    published: int  # size of last_published: TAs we recorded as delivered
+    on_relay: int  # the signer's kind-30382s on the relay
+    missing: int  # published observees with no TA on the relay
+    orphans: int  # TAs on the relay for observees we don't record as published
+    needs_resync: bool
+
+
 class AdminUserDetail(BaseModel):
     pubkey: str
     scheduling_id: int | None
