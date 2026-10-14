@@ -39,7 +39,11 @@ def _forwarded(body: bytes, signer: str | None) -> bytes:
     summary="ORE-05: search Nostr profiles by free-form text",
     description="Forwarded to the search relay's ORE-05; its answer is returned as is.",
     responses={
-        200: {"model": SearchPubkeysResponse},
+        200: {
+            "model": SearchPubkeysResponse,
+            "description": "Ranked results; empty while the pov's scores are "
+            "still being mirrored to the search relay.",
+        },
         **ore_responses(
             unavailable="The search relay is busy, unreachable, or answered "
             "outside the ORE-05 shape."

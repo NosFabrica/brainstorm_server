@@ -1,4 +1,4 @@
-"""Client for the shared search relay's private `POST /search/pubkeys` backend.
+"""Client for the shared search relay's public `POST /search/pubkeys` backend.
 
 We are the Open Ranking provider; ORE-05 profile search forwards to the
 relay's route and passes its answer through unchanged.
