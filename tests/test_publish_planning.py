@@ -19,7 +19,7 @@ def _result(
 ) -> GrapeRankResult:
     """A GrapeRank result: {observee: influence} plus the algorithm's own delta."""
     cards = {
-        pk: ScoreCard(observer="obs", observee=pk, influence=inf)
+        pk: ScoreCard(observer="obs", observee=pk, influence=inf, hops=1)
         for pk, inf in scores.items()
     }
     return GrapeRankResult(

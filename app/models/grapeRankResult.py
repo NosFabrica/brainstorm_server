@@ -1,29 +1,28 @@
-from pydantic import BaseModel
+from typing import Any, TypedDict
 
-from app.schemas.schemas import GrapeRankError
+# Plain dicts at runtime (parsed with orjson, no validation pass): we consume only
+# what our own worker produces. These describe the shape for type checkers.
 
 
-class ScoreCard(BaseModel):
+class ScoreCard(TypedDict, total=False):
     observer: str
     observee: str
-    context: str = "not a bot"
-    average_score: float = 0
-    input: float | None = 0
-    confidence: float = 0
-    influence: float = 0
-    verified: bool | None = None
-    hops: int = 0
-    trusted_followers: int = 0
-    trusted_reporters: int = 0
-    # Defaulted so a Java worker that predates the count still validates —
-    # the two services deploy in either order.
-    trusted_muters: int = 0
+    context: str
+    averageScore: float
+    input: float
+    confidence: float
+    influence: float
+    verified: bool | None
+    hops: int
+    trusted_followers: int
+    trusted_reporters: int
+    trusted_muters: int  # absent from workers that predate it; read with .get
 
 
-class GrapeRankResult(BaseModel):
-    scorecards: dict[str, ScoreCard] | None = None
-    rounds: int | None = None
+class GrapeRankResult(TypedDict, total=False):
+    scorecards: dict[str, ScoreCard] | None
+    rounds: int | None
     duration_seconds: float
-    success: bool = False
-    changedScorePubkeys: list[str] = []
-    error: GrapeRankError | None = None
+    success: bool
+    changedScorePubkeys: list[str]
+    error: dict[str, Any] | None

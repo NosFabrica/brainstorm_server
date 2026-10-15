@@ -16,7 +16,8 @@ BATCH_SIZE = 5000
 
 # Persisted per observer as `<field>_<observer_pubkey>`. `trusted_followers` is
 # here so /networkAlerts reads a property instead of scanning follower edges.
-PERSISTED_FIELDS = ("influence", "hops", "trusted_followers")
+# Cast: a pre-cutover worker sends hops/counts as floats; Neo4j keeps the type it gets.
+PERSISTED_FIELDS = {"influence": float, "hops": int, "trusted_followers": int}
 
 logger = loggr.get_logger(__name__)
 
@@ -30,22 +31,23 @@ async def process_neo4j_write_message(message: dict):
     #     return
 
     logger.info(f"Writing results to Neo4j... run={run_id}")
-    grape_rank_result = GrapeRankResult.model_validate(message["result"])
-    if not grape_rank_result.scorecards:
+    grape_rank_result: GrapeRankResult = message["result"]
+    scorecards = grape_rank_result.get("scorecards")
+    if not scorecards:
         return
 
-    observer = next(iter(grape_rank_result.scorecards.values())).observer
+    observer = next(iter(scorecards.values()))["observer"]
 
     # Map built here, not interpolated into the Cypher: see app/repos/CLAUDE.md.
     rows = [
         {
-            "pubkey": card.observee,
+            "pubkey": card["observee"],
             "props": {
-                f"{field}_{observer}": getattr(card, field)
-                for field in PERSISTED_FIELDS
+                f"{field}_{observer}": cast(card.get(field, 0))
+                for field, cast in PERSISTED_FIELDS.items()
             },
         }
-        for card in grape_rank_result.scorecards.values()
+        for card in scorecards.values()
     ]
 
     async with db_session() as db:
@@ -95,6 +97,6 @@ async def process_neo4j_write_message(message: dict):
         f"run={run_id} observer={observer}"
     )
     # First, not second: a single-scorecard run made islice(…, 1, 2) raise.
-    example_scorecard = next(iter(grape_rank_result.scorecards.values()))
+    example_scorecard = next(iter(scorecards.values()))
 
-    logger.info(f"Check the observed pubkey {example_scorecard.observee}")
+    logger.info(f"Check the observed pubkey {example_scorecard['observee']}")

@@ -55,28 +55,30 @@ def prepare_ta_inputs(
     Replicates the two filters of the original sign loop: the full-sync /
     changed-score gate (which scorecards to consider this run), then the
     per-scorecard influence cutoff."""
-    assert grape_rank_result.scorecards is not None
-    changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
+    scorecards = grape_rank_result["scorecards"]
+    assert scorecards is not None
+    changed_pubkeys = set(grape_rank_result.get("changedScorePubkeys", []))
     selected = sorted(
         (
             sc
-            for pubkey, sc in grape_rank_result.scorecards.items()
+            for pubkey, sc in scorecards.items()
             if full_sync or pubkey in changed_pubkeys
         ),
-        key=lambda sc: sc.influence,
+        key=lambda sc: sc["influence"],
         reverse=True,
     )
+    # int(): a pre-cutover worker sends counts/hops as floats; tags must read "3", not "3.0"
     return [
         TaInput(
-            sc.observee,
-            round(sc.influence * 100),
-            sc.trusted_followers,
-            sc.trusted_reporters,
-            sc.trusted_muters,
-            sc.hops,
+            sc["observee"],
+            round(sc["influence"] * 100),
+            int(sc.get("trusted_followers", 0)),
+            int(sc.get("trusted_reporters", 0)),
+            int(sc.get("trusted_muters", 0)),
+            int(sc["hops"]),
         )
         for sc in selected
-        if round(sc.influence, 2) >= cutoff
+        if round(sc["influence"], 2) >= cutoff
     ]
 
 
@@ -135,16 +137,17 @@ def plan_publish(
 
     The delete set does NOT depend on full-sync — that decides what is
     re-asserted, not what is deleted (see `compute_delete_observees`)."""
-    assert grape_rank_result.scorecards is not None
+    scorecards = grape_rank_result["scorecards"]
+    assert scorecards is not None
     currently_published: list[str] = []
     above: set[str] = set()
     below: set[str] = set()
-    for sc in grape_rank_result.scorecards.values():
-        if round(sc.influence, 2) >= cutoff:
-            currently_published.append(sc.observee)
-            above.add(sc.observee)
+    for sc in scorecards.values():
+        if round(sc["influence"], 2) >= cutoff:
+            currently_published.append(sc["observee"])
+            above.add(sc["observee"])
         else:
-            below.add(sc.observee)
+            below.add(sc["observee"])
 
     fell_off = set(previously_published) - above
     return PublishPlan(
@@ -263,18 +266,18 @@ def get_ta_inputs(
     grape_rank_result: GrapeRankResult,
     relay_full_sync: bool | None = None,
 ) -> list[TaInput]:
-    assert grape_rank_result.scorecards is not None
+    assert grape_rank_result["scorecards"] is not None
     # Resolved per-run mode (settings default OR a per-run force_full override);
     # callers without an override pass None and get the env default.
     if relay_full_sync is None:
         relay_full_sync = settings.relay_full_sync
-    changed_pubkeys = set(grape_rank_result.changedScorePubkeys)
+    changed_pubkeys = set(grape_rank_result.get("changedScorePubkeys", []))
     # relay_full_sync=True republishes every above-cutoff TA (reconciliation /
     # drift correction); False publishes only changed scores (steady state).
     logger.info(
         f"relay_full_sync={relay_full_sync}: publishing "
         f"{'all above-cutoff' if relay_full_sync else f'{len(changed_pubkeys)} changed-score'} "
-        f"pubkeys out of {len(grape_rank_result.scorecards)} scorecards"
+        f"pubkeys out of {len(grape_rank_result['scorecards'])} scorecards"
     )
     return prepare_ta_inputs(
         grape_rank_result,
@@ -385,13 +388,14 @@ async def process_nostr_upload_message(message: dict):
     # if not is_success:
     #     return
 
-    grape_rank_result = GrapeRankResult.model_validate(message["result"])
-    if not grape_rank_result.scorecards:
+    grape_rank_result: GrapeRankResult = message["result"]
+    scorecards = grape_rank_result.get("scorecards")
+    if not scorecards:
         return
-    observer = next(iter(grape_rank_result.scorecards.values())).observer
+    observer = next(iter(scorecards.values()))["observer"]
     run_id = message["private_id"]
     timings: dict[str, float] = {}
-    counts: dict[str, int | float] = {"n_scorecards": len(grape_rank_result.scorecards)}
+    counts: dict[str, int | float] = {"n_scorecards": len(scorecards)}
     run_start = time.perf_counter()
 
     # TODO: generate a new nsec for the observer of the observer

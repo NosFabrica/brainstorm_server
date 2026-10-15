@@ -20,5 +20,9 @@ class ErrorCode(str, Enum):
     # Unclassified RuntimeException from the algorithm path - likely a bug.
     ALGORITHM_EXCEPTION = "ALGORITHM_EXCEPTION"
 
+    # Python-only: the run's stored result payload was gone (evicted/expired) or
+    # its consumer kept dying, so this stage never processed it.
+    RESULT_PAYLOAD_LOST = "RESULT_PAYLOAD_LOST"
+
     # Python-only sentinel: code received from Java is not in this enum (Python lagging Java).
     UNKNOWN = "UNKNOWN"

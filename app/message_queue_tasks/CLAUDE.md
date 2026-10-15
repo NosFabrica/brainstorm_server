@@ -13,6 +13,17 @@ loop forever (`while True: await blpop(...)`) so they're started with
 | `nostr_results_message_queue` | `consume_nostr_upload_messages()` | `process_nostr_upload_message()` in `upload_nostr_events.py` | Sign + publish TA events to Nostr relays. |
 | (other queues, see `message_queue_consumer.py`) | `consume_messages`, `consume_neo4j_write_messages`, `consume_job_started_messages` | … | … |
 
+## Result queues (`result_queue.py`)
+
+`results_message_queue`, `nostr_results_message_queue` and `write_neo4j_message_queue` carry an
+envelope `{private_id, result_key}`; the worker stores the result once at `result_key` and names
+the queues still needing it in `<result_key>:pending`. Each consumer `BLMOVE`s into
+`<queue>:processing`, acks after the handler, then removes its name — the last one deletes the
+payload (7d TTL only catches leaks). On start, `:processing` is requeued at the head, so a
+consumer killed mid-handler retries; after `MAX_ATTEMPTS` the stage is marked `FAILURE`, as is a
+missing payload. Handler exceptions are not retried. Inline `result` messages (failure results)
+still work. **Assumes one consumer per queue** — recovery would steal a live replica's message.
+
 ## process_strfry_event.py
 
 Dispatches incoming Nostr events by kind:
@@ -29,7 +40,7 @@ The reverse-set helper is `_update_reverse_sets`. Use it for any new "X → rela
 
 The longest module here. The main entry point is `process_nostr_upload_message(message)`. Big picture:
 
-1. Validate the inbound `GrapeRankResult`. Bail if no scorecards.
+1. Read the inbound `GrapeRankResult` (a plain dict, see `app/models/CLAUDE.md`). Bail if no scorecards.
 2. Resolve the observer's nsec via `get_or_create_brainstorm_observer_nsec_by_pubkey_on_db`.
 3. Plan the run: TA inputs (above-cutoff scorecards) + the relay delete set for dropped pubkeys.
 4. Sign and publish as one stream (`sign_publish_events` → `relay_publisher.publish_events`): TAs, then kind-5 deletions, signed locally as JSON and sent over raw websockets to `nostr_upload_ta_events_relay`. Every event must get a `true` OK — rejections and dropped connections are retried — or the run fails without advancing `last_published_pubkeys`.

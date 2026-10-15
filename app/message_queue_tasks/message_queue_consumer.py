@@ -15,6 +15,7 @@ from app.message_queue_tasks.process_strfry_event import (
     create_pubkey_index,
     process_strfry_event,
 )
+from app.message_queue_tasks.result_queue import consume_result_queue
 from app.message_queue_tasks.set_brainstorm_request_as_ongoing import (
     process_job_started_message,
 )
@@ -30,7 +31,9 @@ from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_ta_status_by_id_on_db,
 )
 from app.repos.observer_whitelist_repo import upsert_observer_whitelist_on_db
+from app.schemas.error_codes import ErrorCode
 from app.schemas.graperank_schemas import GrapeRankPresetParams
+from app.schemas.schemas import GrapeRankError
 from app.services.verified_cutoffs import build_cutoffs_from_params
 
 logger = loggr.get_logger(__name__)
@@ -79,33 +82,38 @@ def bucket_scorecards_by_confidence_and_hops(
     whitelist: dict[str, float] = {}
 
     for scorecard in (scorecards or {}).values():
+        influence = scorecard["influence"]
         confidence = classify_tier(
-            scorecard.influence, scorecard.trusted_reporters, verified_line
+            influence, scorecard.get("trusted_reporters", 0), verified_line
         )
         by_hops = number_by_confidence_by_hops[confidence]
-        by_hops[scorecard.hops] = by_hops.get(scorecard.hops, 0) + 1
+        # int(): a pre-cutover worker sends 3.0, which would bucket as "3.0"
+        hops = int(scorecard["hops"])
+        by_hops[hops] = by_hops.get(hops, 0) + 1
 
-        rounded_influence = round(scorecard.influence, 2)
+        rounded_influence = round(influence, 2)
         if rounded_influence >= settings.cutoff_of_valid_graperank_scores:
-            whitelist[scorecard.observee] = rounded_influence
+            whitelist[scorecard["observee"]] = rounded_influence
 
     return number_by_confidence_by_hops, whitelist
 
 
 async def process_message(message: dict):
-    grape_rank_result = GrapeRankResult.model_validate(message["result"])
+    grape_rank_result: GrapeRankResult = message["result"]
+    scorecards = grape_rank_result.get("scorecards")
+    error = grape_rank_result.get("error")
 
     status = (
         BrainstormRequestStatus.SUCCESS
-        if grape_rank_result.success
+        if grape_rank_result.get("success")
         else BrainstormRequestStatus.FAILURE
     )
 
     # Observer is constant across a run's scorecards; read it non-mutatingly
     # (do NOT popitem — that drops one scorecard from the loops below).
     pubkey: str | None = None
-    if grape_rank_result.scorecards:
-        pubkey = next(iter(grape_rank_result.scorecards.values())).observer
+    if scorecards:
+        pubkey = next(iter(scorecards.values()))["observer"]
 
     async with db_session() as db:
         # The line THIS run used, so stored history and live /stats agree.
@@ -116,7 +124,7 @@ async def process_message(message: dict):
             number_by_confidence_by_hops,
             whitelist,
         ) = bucket_scorecards_by_confidence_and_hops(
-            grape_rank_result.scorecards,
+            scorecards,
             verified_line_for_run(request_row),
         )
 
@@ -125,9 +133,7 @@ async def process_message(message: dict):
             brainstorm_request_id=message["private_id"],
             status=status,
             count_values=json.dumps(number_by_confidence_by_hops),
-            error=grape_rank_result.error.model_dump()
-            if grape_rank_result.error
-            else None,
+            error=GrapeRankError.model_validate(error).model_dump() if error else None,
         )
         if status == BrainstormRequestStatus.FAILURE:
             # Calc failed -> the publish + neo4j-write stages never run; mark
@@ -146,11 +152,7 @@ async def process_message(message: dict):
         # write. Only on a successful calc with scorecards present: a degenerate
         # empty-scorecard run must NOT wipe a good snapshot. An all-below-cutoff
         # run legitimately writes {} (nobody trusted now).
-        if (
-            status == BrainstormRequestStatus.SUCCESS
-            and grape_rank_result.scorecards
-            and pubkey
-        ):
+        if status == BrainstormRequestStatus.SUCCESS and scorecards and pubkey:
             await upsert_observer_whitelist_on_db(
                 db, pubkey, whitelist, message["private_id"]
             )
@@ -159,29 +161,18 @@ async def process_message(message: dict):
         await db.commit()
 
 
-async def consume_messages():
-    logger.info(
-        f"Connected to Redis. Waiting for messages on '{RESULTS_QUEUE_NAME}'..."
-    )
+async def _consume_results(queue: str, handler, on_lost) -> None:
+    logger.info(f"Connected to Redis. Waiting for messages on '{queue}'...")
 
     while True:
         redis_client = None
 
         try:
             redis_client = get_redis_client()
+            await consume_result_queue(redis_client, queue, handler, on_lost)
 
-            while True:
-                msg = await redis_client.blpop(RESULTS_QUEUE_NAME, timeout=30)
-                if msg:
-                    try:
-                        _, message_bytes = msg
-                        message = json.loads(message_bytes)
-                        # asyncio.create_task(process_message(message))
-                        await process_message(message)
-                    except Exception as e:
-                        logger.error(e)
-
-        except Exception:
+        except Exception as e:
+            logger.error(f"{queue}: {e}")
             await asyncio.sleep(2)  # backoff
 
         finally:
@@ -190,6 +181,44 @@ async def consume_messages():
                     await redis_client.close()
                 except Exception:
                     pass
+
+
+async def _fail_result_stage(message: dict, reason: str) -> None:
+    async with db_session() as db:
+        await update_brainstorm_request_result_by_id_on_db(
+            db,
+            brainstorm_request_id=message["private_id"],
+            status=BrainstormRequestStatus.FAILURE,
+            count_values=json.dumps({name: {} for name in TIER_NAMES}),
+            error=GrapeRankError(
+                code=ErrorCode.RESULT_PAYLOAD_LOST, message=reason
+            ).model_dump(),
+        )
+        await db.commit()
+
+
+async def _fail_ta_stage(message: dict, reason: str) -> None:
+    async with db_session() as db:
+        await update_brainstorm_request_ta_status_by_id_on_db(
+            db,
+            brainstorm_request_id=message["private_id"],
+            status=BrainstormRequestStatus.FAILURE,
+        )
+        await db.commit()
+
+
+async def _fail_neo4j_stage(message: dict, reason: str) -> None:
+    async with db_session() as db:
+        await update_brainstorm_request_internal_publication_status_by_id_on_db(
+            db,
+            brainstorm_request_id=message["private_id"],
+            status=BrainstormRequestStatus.FAILURE,
+        )
+        await db.commit()
+
+
+async def consume_messages():
+    await _consume_results(RESULTS_QUEUE_NAME, process_message, _fail_result_stage)
 
 
 async def wait_until_graph_db_is_populated():
@@ -243,73 +272,19 @@ async def consume_strfry_plugin_messages():
 
 
 async def consume_nostr_upload_messages():
-    logger.info(
-        f"Connected to Redis. Waiting for messages on '{UPLOAD_NOSTR_RESULTS_QUEUE_NAME}'..."
+    await _consume_results(
+        UPLOAD_NOSTR_RESULTS_QUEUE_NAME,
+        process_nostr_upload_message,
+        _fail_ta_stage,
     )
-
-    while True:
-        redis_client = None
-
-        try:
-            redis_client = get_redis_client()
-
-            while True:
-                msg = await redis_client.blpop(
-                    UPLOAD_NOSTR_RESULTS_QUEUE_NAME, timeout=30
-                )
-                if msg:
-                    try:
-                        _, message_bytes = msg
-                        message = json.loads(message_bytes)
-                        # asyncio.create_task(process_message(message))
-                        await process_nostr_upload_message(message)
-                    except Exception as e:
-                        logger.error(e)
-
-        except Exception:
-            await asyncio.sleep(2)  # backoff
-
-        finally:
-            if redis_client:
-                try:
-                    await redis_client.close()
-                except Exception:
-                    pass
 
 
 async def consume_neo4j_write_messages():
-    logger.info(
-        f"Connected to Redis. Waiting for messages on '{WRITE_NEO4J_RESULTS_QUEUE_NAME}'..."
+    await _consume_results(
+        WRITE_NEO4J_RESULTS_QUEUE_NAME,
+        process_neo4j_write_message,
+        _fail_neo4j_stage,
     )
-
-    while True:
-        redis_client = None
-
-        try:
-            redis_client = get_redis_client()
-
-            while True:
-                msg = await redis_client.blpop(
-                    WRITE_NEO4J_RESULTS_QUEUE_NAME, timeout=30
-                )
-                if msg:
-                    try:
-                        _, message_bytes = msg
-                        message = json.loads(message_bytes)
-                        # asyncio.create_task(process_message(message))
-                        await process_neo4j_write_message(message)
-                    except Exception as e:
-                        logger.error(e)
-
-        except Exception:
-            await asyncio.sleep(2)  # backoff
-
-        finally:
-            if redis_client:
-                try:
-                    await redis_client.close()
-                except Exception:
-                    pass
 
 
 async def consume_job_started_messages():

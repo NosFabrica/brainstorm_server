@@ -28,7 +28,7 @@ from app.models.grapeRankResult import GrapeRankResult, ScoreCard
 
 def _result(scorecards: list[ScoreCard], changed: list[str] | None = None):
     return GrapeRankResult(
-        scorecards={sc.observee: sc for sc in scorecards},
+        scorecards={sc["observee"]: sc for sc in scorecards},
         duration_seconds=0.0,
         changedScorePubkeys=changed or [],
     )

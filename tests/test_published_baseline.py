@@ -55,7 +55,9 @@ def test_retained_failed_delete_is_re_deleted_on_the_next_run():
     # variant retained it in the baseline. Next (clean) run's fell_off must
     # include it, so the relay delete is retried.
     run = GrapeRankResult(
-        scorecards={"a": ScoreCard(observer="obs", observee="a", influence=0.9)},
+        scorecards={
+            "a": ScoreCard(observer="obs", observee="a", influence=0.9, hops=1)
+        },
         duration_seconds=0.0,
         changedScorePubkeys=[],
     )

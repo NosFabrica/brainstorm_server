@@ -23,7 +23,12 @@ OBSERVER = "a" * 64
 
 def _message(changed: list[str]) -> dict:
     def card(observee: str, influence: float) -> dict:
-        return {"observer": OBSERVER, "observee": observee, "influence": influence}
+        return {
+            "observer": OBSERVER,
+            "observee": observee,
+            "influence": influence,
+            "hops": 1,
+        }
 
     return {
         "private_id": 7,
