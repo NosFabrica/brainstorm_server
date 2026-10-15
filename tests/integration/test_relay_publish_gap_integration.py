@@ -21,6 +21,7 @@ def _gap_after(runs: list[tuple[str, bool]]) -> bool:
     """runs: (ta_status, force_full_relay) in creation order; asks about the next run."""
 
     async def body():
+        await engine.dispose()  # pooled connections may belong to an earlier test's loop
         observer = Keys.generate().public_key().to_hex()
         try:
             async with db_session() as db:
