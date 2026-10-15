@@ -1,11 +1,10 @@
 import time
-
-from tqdm import tqdm
+from itertools import islice
 
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.db_models import BrainstormRequestStatus
-from app.models.grapeRankResult import GrapeRankResult
+from app.models.grapeRankResult import GrapeRankResult, ScoreCard
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_internal_publication_status_by_id_on_db,
@@ -16,7 +15,8 @@ BATCH_SIZE = 5000
 
 # Persisted per observer as `<field>_<observer_pubkey>`. `trusted_followers` is
 # here so /networkAlerts reads a property instead of scanning follower edges.
-PERSISTED_FIELDS = ("influence", "hops", "trusted_followers")
+# Cast: a pre-cutover worker sends hops/counts as floats; Neo4j keeps the type it gets.
+PERSISTED_FIELDS = {"influence": float, "hops": int, "trusted_followers": int}
 
 logger = loggr.get_logger(__name__)
 
@@ -30,23 +30,22 @@ async def process_neo4j_write_message(message: dict):
     #     return
 
     logger.info(f"Writing results to Neo4j... run={run_id}")
-    grape_rank_result = GrapeRankResult.model_validate(message["result"])
-    if not grape_rank_result.scorecards:
+    grape_rank_result: GrapeRankResult = message["result"]
+    scorecards = grape_rank_result.get("scorecards")
+    if not scorecards:
         return
 
-    observer = next(iter(grape_rank_result.scorecards.values())).observer
+    observer = next(iter(scorecards.values()))["observer"]
 
     # Map built here, not interpolated into the Cypher: see app/repos/CLAUDE.md.
-    rows = [
-        {
-            "pubkey": card.observee,
+    def row(card: ScoreCard) -> dict:
+        return {
+            "pubkey": card["observee"],
             "props": {
-                f"{field}_{observer}": getattr(card, field)
-                for field in PERSISTED_FIELDS
+                f"{field}_{observer}": cast(card.get(field, 0))
+                for field, cast in PERSISTED_FIELDS.items()
             },
         }
-        for card in grape_rank_result.scorecards.values()
-    ]
 
     async with db_session() as db:
         await update_brainstorm_request_internal_publication_status_by_id_on_db(
@@ -76,8 +75,9 @@ async def process_neo4j_write_message(message: dict):
 
     start_time = time.time()
 
-    for i in tqdm(range(0, len(rows), BATCH_SIZE), desc="Processing Neo4j batches"):
-        batch = rows[i : i + BATCH_SIZE]
+    # Rows built a batch at a time, so the event loop is never held for all of them.
+    cards = iter(scorecards.values())
+    while batch := [row(card) for card in islice(cards, BATCH_SIZE)]:
         await process_batch(batch=batch)
 
     async with db_session() as db:
@@ -91,10 +91,10 @@ async def process_neo4j_write_message(message: dict):
 
     final_time = time.time() - start_time
     logger.info(
-        f"Took {final_time:.2f} seconds to process {len(rows)} Neo4j writes "
+        f"Took {final_time:.2f} seconds to process {len(scorecards)} Neo4j writes "
         f"run={run_id} observer={observer}"
     )
     # First, not second: a single-scorecard run made islice(…, 1, 2) raise.
-    example_scorecard = next(iter(grape_rank_result.scorecards.values()))
+    example_scorecard = next(iter(scorecards.values()))
 
-    logger.info(f"Check the observed pubkey {example_scorecard.observee}")
+    logger.info(f"Check the observed pubkey {example_scorecard['observee']}")

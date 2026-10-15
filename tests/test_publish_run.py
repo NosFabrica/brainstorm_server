@@ -1,28 +1,34 @@
 """One TA publish run, end to end with the DB and relay faked.
 
 The relay is the only sink: a clean run prunes the baseline to the current
-above-cutoff set, a relay enqueue failure keeps the union, and a forced full
-relay run resets the every-Nth backstop.
+above-cutoff set, an unacked publish fails the run without touching the
+baseline, and a forced full relay run resets the every-Nth backstop.
 """
 
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from nostr_sdk import Keys
 
 from app.db_models import BrainstormRequestStatus
 from app.message_queue_tasks import upload_nostr_events as upload
+from app.message_queue_tasks.relay_publisher import PublishStats
 
 OBSERVER = "a" * 64
 
 
 def _message(changed: list[str]) -> dict:
     def card(observee: str, influence: float) -> dict:
-        return {"observer": OBSERVER, "observee": observee, "influence": influence}
+        return {
+            "observer": OBSERVER,
+            "observee": observee,
+            "influence": influence,
+            "hops": 1,
+        }
 
     return {
         "private_id": 7,
@@ -35,17 +41,16 @@ def _message(changed: list[str]) -> dict:
 
 
 class _Relay:
+    """Stands in for `publish_events`: drains the signed stream, OKs all or none."""
+
     def __init__(self, fail: bool = False):
         self.sent: list = []
         self.fail = fail
 
-    def url(self) -> str:
-        return "ws://relay"
-
-    def send_msg(self, msg) -> None:
-        if self.fail:
-            raise RuntimeError("channel full")
-        self.sent.append(msg)
+    async def publish(self, url, events) -> PublishStats:
+        self.sent = [e async for e in events]
+        n = len(self.sent)
+        return PublishStats(n_events=n, n_acked=0 if self.fail else n)
 
 
 @pytest.fixture
@@ -68,12 +73,8 @@ def run(monkeypatch):
         nsec=keys.secret_key().to_hex(),
         assistant_kind0_published_at=datetime(2026, 1, 1),
     )
-    client = MagicMock()
-    client.relays = AsyncMock(side_effect=lambda: {"ws://relay": relay})
-    client.sign_event_builder = AsyncMock(side_effect=lambda b: b.sign_with_keys(keys))
-
     monkeypatch.setattr(upload, "db_session", _fake_db_session)
-    monkeypatch.setattr(upload, "init_nostr_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(upload, "publish_events", relay.publish)
     monkeypatch.setattr(
         upload,
         "get_or_create_brainstorm_observer_nsec_by_pubkey_on_db",
@@ -102,6 +103,9 @@ def run(monkeypatch):
         upload, "update_brainstorm_request_publish_duration_by_id_on_db", AsyncMock()
     )
     monkeypatch.setattr(upload, "reset_runs_since_full_on_db", repo.reset)
+    monkeypatch.setattr(
+        upload, "relay_publish_gap_pending_on_db", AsyncMock(return_value=False)
+    )
 
     def _go(changed: list[str], force_full_relay: bool = False) -> None:
         request_row.force_full_relay = force_full_relay
@@ -128,13 +132,13 @@ def test_clean_run_succeeds_and_prunes_the_baseline(run):
     run.repo.reset.assert_not_awaited()
 
 
-def test_relay_enqueue_failure_keeps_the_union(run):
+def test_unacked_publish_fails_the_run_and_keeps_the_baseline(run):
     run.relay.fail = True
 
     run.go(changed=["hi"])
 
-    assert _final_status(run.repo) == BrainstormRequestStatus.SUCCESS
-    assert _persisted(run.repo) == ["gone", "hi"]
+    assert _final_status(run.repo) == BrainstormRequestStatus.FAILURE
+    run.repo.persist.assert_not_awaited()
 
 
 def test_full_relay_run_resets_the_backstop(run):

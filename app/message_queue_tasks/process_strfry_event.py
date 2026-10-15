@@ -15,6 +15,7 @@ from app.services.tagging_parse import (
     parse_tag_element,
     parse_user_tagging,
 )
+from app.utils.nostr import p_tag_pubkeys
 
 BATCH_SIZE = 100  # Adjust as needed
 
@@ -99,7 +100,7 @@ async def process_event_kind_1984(session: AsyncNeoSession, event: dict):
 async def process_event_kind_10000(session: AsyncNeoSession, event: dict):
     publisher = event["pubkey"]
     # Extract followed pubkeys from tags [["p","pubkey1"], ...]
-    muted_pubkeys = [tag[1] for tag in event.get("tags", []) if tag[0] == "p"]
+    muted_pubkeys = p_tag_pubkeys(event.get("tags", []))
 
     # if not muted_pubkeys and event["content"]:
     #     return
@@ -153,7 +154,7 @@ async def process_event_kind_10000(session: AsyncNeoSession, event: dict):
 async def process_event_kind_3(session: AsyncNeoSession, event: dict):
     publisher = event["pubkey"]
     # Extract followed pubkeys from tags [["p","pubkey1"], ...]
-    followed_pubkeys = [tag[1] for tag in event.get("tags", []) if tag[0] == "p"]
+    followed_pubkeys = p_tag_pubkeys(event.get("tags", []))
 
     if not followed_pubkeys:
         cypher = """

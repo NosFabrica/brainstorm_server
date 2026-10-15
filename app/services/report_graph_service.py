@@ -10,6 +10,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
+from app.utils.nostr import p_tag_pubkeys
+
 
 def extract_report_targets(event: dict) -> list[str]:
     """Reported target pubkeys for a kind-1984 event, or [] if it targets a note.
@@ -20,7 +22,7 @@ def extract_report_targets(event: dict) -> list[str]:
     tags = event.get("tags", [])
     if any(tag and tag[0] == "e" for tag in tags):
         return []
-    return [tag[1] for tag in tags if tag and tag[0] == "p" and len(tag) > 1]
+    return p_tag_pubkeys(tags)
 
 
 def _deletions_by_report_id(

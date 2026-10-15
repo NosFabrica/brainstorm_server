@@ -13,6 +13,17 @@ loop forever (`while True: await blpop(...)`) so they're started with
 | `nostr_results_message_queue` | `consume_nostr_upload_messages()` | `process_nostr_upload_message()` in `upload_nostr_events.py` | Sign + publish TA events to Nostr relays. |
 | (other queues, see `message_queue_consumer.py`) | `consume_messages`, `consume_neo4j_write_messages`, `consume_job_started_messages` | … | … |
 
+## Result queues (`result_queue.py`)
+
+`results_message_queue`, `nostr_results_message_queue` and `write_neo4j_message_queue` carry an
+envelope `{private_id, result_key}`; the worker stores the result once at `result_key` and names
+the queues still needing it in `<result_key>:pending`. Each consumer `BLMOVE`s into
+`<queue>:processing`, acks after the handler, then removes its name — the last one deletes the
+payload (7d TTL only catches leaks). On start, `:processing` is requeued at the head, so a
+consumer killed mid-handler retries; after `MAX_ATTEMPTS` the stage is marked `FAILURE`, as is a
+missing payload. Handler exceptions are not retried. Inline `result` messages (failure results)
+still work. **Assumes one consumer per queue** — recovery would steal a live replica's message.
+
 ## process_strfry_event.py
 
 Dispatches incoming Nostr events by kind:
@@ -29,17 +40,29 @@ The reverse-set helper is `_update_reverse_sets`. Use it for any new "X → rela
 
 The longest module here. The main entry point is `process_nostr_upload_message(message)`. Big picture:
 
-1. Validate the inbound `GrapeRankResult`. Bail if no scorecards.
+1. Read the inbound `GrapeRankResult` (a plain dict, see `app/models/CLAUDE.md`). Bail if no scorecards.
 2. Resolve the observer's nsec via `get_or_create_brainstorm_observer_nsec_by_pubkey_on_db`.
-3. Build the Nostr events to publish: TA assertions (above-cutoff scorecards) + deletion events for dropped pubkeys.
-4. Publish all events to the configured relays (best-effort per relay).
-5. Mark the brainstorm request as `SUCCESS` and persist the published-pubkey list (prev ∪ current if any relay enqueue failed, so an unconfirmed delete is retried). A full relay run resets the every-Nth backstop counter.
+3. Plan the run: TA inputs (above-cutoff scorecards) + the relay delete set for dropped pubkeys.
+4. Sign and publish as one stream (`sign_publish_events` → `relay_publisher.publish_events`): TAs, then kind-5 deletions, signed locally as JSON and sent over raw websockets to `nostr_upload_ta_events_relay`. Every event must get a `true` OK — rejections and dropped connections are retried — or the run fails without advancing `last_published_pubkeys`.
+5. Mark the brainstorm request as `SUCCESS` and persist the published-pubkey list — reached only when every event was OK'd. A full relay run resets the every-Nth backstop counter.
 
 ### Publish mode and deletes
 
 - `relay_full_sync` (default `False` = delta) or the request row's `force_full_relay`: `False` publishes only _changed_ scores (`changedScorePubkeys`), `True` re-asserts every above-cutoff scorecard. Drift is repaired by the `full_sync_every_n_runs` backstop + admin `resync`, not by leaving it `True`. **Re-assertion only — never deletes.**
 - The delete set is computed by `plan_publish` from a local diff (no relay read): `fell_off = previously_published − currently_above_cutoff`.
 - The **sweep** (`relay_sweep_below_cutoff`, default off) adds every below-cutoff Observee to the delete set, reaping orphans the diff can't see. Backwards-compat drain: on to clear the legacy backlog, then off — it's mostly no-op deletes that each cost a tombstone. Not implied by full-sync, the backstop, or `resync`.
+
+### Relay publishing (`relay_publisher.py`)
+
+Raw websockets, not nostr-sdk. nostr-sdk's `send_event` does wait for the OK,
+but one event per await, which was too slow; the publish had moved to
+`relay.send_msg`, which only enqueues (no OK, drops on a full channel). Here
+many events are in flight per connection and each OK is still tracked, and
+there is no turning signed JSON back into `Event`s (costs more than signing). `PublishConfig` holds the knobs (4 connections, ≤2k
+in flight per connection, ≤10k unresolved events in memory, 30s ack timeout,
+retry/backoff caps). The per-run `TA publish timing` log carries `t_acked`,
+`t_sign_cpu`, `n_acked`/`n_failed`/`n_retried`/`n_reconnects`/`n_rejected_*`,
+`loop_lag_max_ms`/`loop_lag_p99_ms` and `rss_peak_mb` (`loop_probe.py`).
 
 ## write_neo4j_results.py
 

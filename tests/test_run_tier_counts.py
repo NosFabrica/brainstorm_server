@@ -189,7 +189,7 @@ def test_process_message_buckets_against_the_runs_own_line():
             "duration_seconds": 1.0,
             "scorecards": {
                 # Banded at the 0.02 baseline, unverified at this run's 0.5.
-                "1": _card("obs_a", 0.3).model_dump(),
+                "1": _card("obs_a", 0.3),
             },
         },
     }
