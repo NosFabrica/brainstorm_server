@@ -34,6 +34,8 @@ from app.repos.brainstorm_nsec import (
     update_last_time_published_graperank_on_db,
 )
 from app.repos.brainstorm_request_repo import (
+    mark_brainstorm_request_force_full_relay_on_db,
+    relay_publish_gap_pending_on_db,
     select_brainstorm_request_by_id_on_db,
     update_brainstorm_request_publish_duration_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
@@ -421,6 +423,15 @@ async def process_nostr_upload_message(message: dict):
             relay_full_sync = resolve_full_sync(
                 settings.relay_full_sync, request_row.force_full_relay
             )
+            if not relay_full_sync and await relay_publish_gap_pending_on_db(
+                db, observer, run_id
+            ):
+                logger.warning(
+                    f"TA publish: an earlier run failed to publish; forcing a full "
+                    f"relay sync (run={run_id} observer={observer})"
+                )
+                relay_full_sync = True
+                await mark_brainstorm_request_force_full_relay_on_db(db, run_id)
             with _timed(timings, "nsec_ta_update"):
                 await update_brainstorm_request_ta_status_by_id_on_db(
                     db,

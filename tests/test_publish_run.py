@@ -103,6 +103,9 @@ def run(monkeypatch):
         upload, "update_brainstorm_request_publish_duration_by_id_on_db", AsyncMock()
     )
     monkeypatch.setattr(upload, "reset_runs_since_full_on_db", repo.reset)
+    monkeypatch.setattr(
+        upload, "relay_publish_gap_pending_on_db", AsyncMock(return_value=False)
+    )
 
     def _go(changed: list[str], force_full_relay: bool = False) -> None:
         request_row.force_full_relay = force_full_relay

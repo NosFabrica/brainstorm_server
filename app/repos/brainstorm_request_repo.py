@@ -1,7 +1,18 @@
 from datetime import datetime, timedelta
 
 from nostr_sdk import PublicKey
-from sqlalchemy import Select, and_, asc, delete, desc, func, or_, select, update
+from sqlalchemy import (
+    Select,
+    and_,
+    asc,
+    delete,
+    desc,
+    exists,
+    func,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import execute_db_statement, handle_no_data
@@ -420,6 +431,49 @@ async def fail_stale_publishing_brainstorm_requests_on_db(
     )
     result = await execute_db_statement(db, statement, __name__)
     return result.rowcount
+
+
+async def relay_publish_gap_pending_on_db(
+    db: AsyncDBSession, pubkey: str, before_run_id: int
+) -> bool:
+    """True if a run of this observer failed its TA publish since its last
+    successful full relay publish. Those TAs never landed, and a delta run won't
+    resend them: its changed set is diffed against Neo4j, which that run's
+    result write already advanced."""
+    last_full_ok = (
+        select(func.max(BrainstormRequest.private_id))
+        .where(
+            BrainstormRequest.pubkey == pubkey,
+            BrainstormRequest.private_id < before_run_id,
+            BrainstormRequest.force_full_relay.is_(True),
+            BrainstormRequest.status_ta_publication
+            == BrainstormRequestStatus.SUCCESS.value,
+        )
+        .scalar_subquery()
+    )
+    statement = select(
+        exists().where(
+            BrainstormRequest.pubkey == pubkey,
+            BrainstormRequest.private_id < before_run_id,
+            BrainstormRequest.private_id > func.coalesce(last_full_ok, 0),
+            BrainstormRequest.status_ta_publication
+            == BrainstormRequestStatus.FAILURE.value,
+        )
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return bool(result.scalar_one())
+
+
+async def mark_brainstorm_request_force_full_relay_on_db(
+    db: AsyncDBSession, brainstorm_request_id: int
+) -> None:
+    """Record that this run publishes in full, so its success clears a gap."""
+    statement = (
+        update(BrainstormRequest)
+        .where(BrainstormRequest.private_id == brainstorm_request_id)
+        .values(force_full_relay=True)
+    )
+    await execute_db_statement(db, statement, __name__)
 
 
 async def create_brainstorm_request_on_db(
