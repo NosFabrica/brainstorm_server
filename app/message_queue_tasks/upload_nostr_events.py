@@ -60,11 +60,13 @@ def prepare_ta_inputs(
     scorecards = grape_rank_result["scorecards"]
     assert scorecards is not None
     changed_pubkeys = set(grape_rank_result.get("changedScorePubkeys", []))
+    # Cutoff before the sort: a full run sorts ~150k, not every scorecard (~360k).
     selected = sorted(
         (
             sc
             for pubkey, sc in scorecards.items()
-            if full_sync or pubkey in changed_pubkeys
+            if (full_sync or pubkey in changed_pubkeys)
+            and round(sc["influence"], 2) >= cutoff
         ),
         key=lambda sc: sc["influence"],
         reverse=True,
@@ -80,7 +82,6 @@ def prepare_ta_inputs(
             int(sc["hops"]),
         )
         for sc in selected
-        if round(sc["influence"], 2) >= cutoff
     ]
 
 
