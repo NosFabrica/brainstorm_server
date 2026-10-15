@@ -19,6 +19,7 @@ from app.schemas.schemas import (
     OwnUserData,
     PaginatedUserConnections,
     RefreshedSubscriptionView,
+    RelayAudit,
     ShortUrlContent,
     SubscriptionView,
     SupportMessageItem,
@@ -311,3 +312,7 @@ class CreateSupportMessageResponse(SuccessfulResponseDataSchema):
 
 class ResolveSupportTicketResponse(SuccessfulResponseDataSchema):
     data: SupportTicketItem
+
+
+class GetRelayAuditResponse(SuccessfulResponseDataSchema):
+    data: RelayAudit

@@ -135,6 +135,19 @@ class AdminUserListItem(BaseModel):
     scheduling_name: str
 
 
+class RelayAudit(BaseModel):
+    observer: str
+    signer: str
+    expected: int  # observees at or above the publish cutoff in Neo4j
+    published: int  # size of last_published: TAs we recorded as sent
+    baseline_drift: int  # observees in exactly one of expected / last_published
+    on_relay: int  # the signer's kind-30382s on the relay
+    missing: int  # expected observees with no TA on the relay
+    orphans: int  # TAs on the relay for observees that aren't expected
+    exact: bool  # False: a too-dense second was sampled; missing/orphans are estimates
+    needs_resync: bool
+
+
 class AdminUserDetail(BaseModel):
     pubkey: str
     scheduling_id: int | None

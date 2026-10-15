@@ -26,17 +26,22 @@ from app.repos.scheduling_repo import (
 )
 from app.schemas.admin_sort import SortOrder, UsersSort
 from app.schemas.request_body_schemas import SetUserSchedulingBody
-from app.schemas.request_response_schemas import BrainstormRequestResponse
+from app.schemas.request_response_schemas import (
+    BrainstormRequestResponse,
+    GetRelayAuditResponse,
+)
 from app.schemas.schemas import (
     AdminUserDetail,
     AdminUserListItem,
     BrainstormRequestInstance,
+    RelayAudit,
 )
 from app.services.billing_service import apply_entitlement
 from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
     create_brainstorm_request,
 )
+from app.services.relay_audit_service import audit_observer_relay
 
 logger = loggr.get_logger(__name__)
 
@@ -208,3 +213,30 @@ async def resync_observer_endpoint(
         trigger_source=TriggerSource.ADMIN.value,
     )
     return BrainstormRequestResponse(data=result)
+
+
+@router.get(
+    path="/{pubkey}/relay-audit",
+    response_model=GetRelayAuditResponse,
+    summary="Admin: relay audit — does the TA relay hold every TA the observer's scores call for?",
+)
+async def relay_audit_endpoint(
+    pubkey: str,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> GetRelayAuditResponse:
+    # Exact, a few seconds per observer. needs_resync → POST /{pubkey}/resync.
+    check = await audit_observer_relay(db, pubkey)
+    return GetRelayAuditResponse(
+        data=RelayAudit(
+            observer=check.observer,
+            signer=check.signer,
+            expected=check.expected,
+            published=check.published,
+            baseline_drift=check.baseline_drift,
+            on_relay=check.on_relay,
+            missing=check.missing,
+            orphans=check.orphans,
+            exact=check.exact,
+            needs_resync=check.needs_resync,
+        )
+    )
