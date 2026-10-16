@@ -56,6 +56,21 @@ class RankPubkeysResponse(BaseModel):
     ttl: int | None = None
 
 
+# ---- ORE-04: /recommend/pubkeys ----
+
+
+class RecommendPubkeysRequest(BaseModel):
+    algorithm: str | None = None
+    pov: str | None = None
+    topic: str | None = None
+    limit: int | None = None
+
+
+class RecommendPubkeysResponse(BaseModel):
+    results: list[RankResult]
+    ttl: int | None = None
+
+
 # ---- ORE-05: /search/pubkeys ----
 
 

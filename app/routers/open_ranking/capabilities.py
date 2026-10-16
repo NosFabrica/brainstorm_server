@@ -16,6 +16,10 @@ _SEARCH_RELEVANCE = (
     "query-relative"
 )
 
+_MERCHANTS = (
+    "sellers of kind-30402 product listings above the trust floor, " "rank = GrapeRank"
+)
+
 # Endpoint -> ordered list of supported Algorithm Objects. The first element of
 # each list is the default algorithm for that endpoint (ORE-01 §"Algorithm
 # selection").
@@ -63,6 +67,38 @@ CAPABILITY_DOC: dict[str, list[dict]] = {
         {"id": "graperank", "name": "GrapeRank (global)"},
         {"id": "graperank-pov", "name": "GrapeRank (personalized)", "pov": True},
     ],
+    "/recommend/pubkeys": [
+        {
+            "id": "merchants",
+            "name": "Trusted merchants (global)",
+            "description": (f"{_MERCHANTS} (the provider's House Observer's trust)"),
+        },
+        {
+            "id": "merchants-pov",
+            "name": "Trusted merchants (personalized)",
+            "description": f"{_MERCHANTS} (the pov's own trust)",
+            "pov": True,
+        },
+        {
+            "id": "merchants-topic",
+            "name": "Trusted merchants on a topic (global)",
+            "description": (
+                f"{_MERCHANTS}, kept to sellers whose listings match the topic "
+                "(the provider's House Observer's trust)"
+            ),
+            "topic": True,
+        },
+        {
+            "id": "merchants-topic-pov",
+            "name": "Trusted merchants on a topic (personalized)",
+            "description": (
+                f"{_MERCHANTS}, kept to sellers whose listings match the topic "
+                "(the pov's own trust)"
+            ),
+            "pov": True,
+            "topic": True,
+        },
+    ],
 }
 
 
@@ -78,6 +114,14 @@ def _pov_required_ids() -> set[str]:
 
 
 _POV_REQUIRED: set[str] = _pov_required_ids()
+
+
+def algorithm_requires_topic(endpoint: str, algo_id: str) -> bool:
+    """Whether this algorithm declares `topic: true` (ORE-04). A topic sent to
+    one that does not is ignored, as a pov is for a global algorithm."""
+    return any(
+        a["id"] == algo_id and a.get("topic") for a in CAPABILITY_DOC.get(endpoint, [])
+    )
 
 
 def algorithm_requires_pov(algo_id: str) -> bool:

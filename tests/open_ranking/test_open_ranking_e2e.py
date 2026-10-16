@@ -92,6 +92,7 @@ class TestCapabilityDocument:
             "/search/pubkeys",
             "/followers",
             "/muters",
+            "/recommend/pubkeys",
         ):
             assert path in body, f"capability doc missing {path}"
             assert isinstance(body[path], list) and body[path]
@@ -842,6 +843,7 @@ _PERSONALIZED_CASES = [
     ("/rank/pubkeys", "graperank-pov", {"pubkeys": [VALID_PUBKEY_1]}),
     ("/followers", "graperank-pov", {"pubkey": VALID_PUBKEY_1}),
     ("/muters", "graperank-pov", {"pubkey": VALID_PUBKEY_1}),
+    ("/recommend/pubkeys", "merchants-pov", {}),
 ]
 
 # The default (global) algorithm id the 422 reason must offer as fallback.
@@ -850,6 +852,7 @@ _DEFAULT_ALGO = {
     "/rank/pubkeys": "graperank",
     "/followers": "graperank",
     "/muters": "graperank",
+    "/recommend/pubkeys": "merchants",
 }
 
 

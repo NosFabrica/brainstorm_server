@@ -69,7 +69,7 @@ The assistant is also given a public face: a kind-0 profile published on request
 
 ## 6. API surface
 
-Route families, one line each — the OpenAPI page (`/docs`) is the contract, [`app/routers/CLAUDE.md`](app/routers/CLAUDE.md) the map: `authChallenge` (nostr login → JWT; NIP-98 also accepted), `user` (own results, trigger runs, assistant profile; public `/{pubkey}` overview/stats/connections with optional auth), `user/graperank` (presets), `search` (ORE-05 `/search/pubkeys`, proxied to the search relay), `setup` (10040 designation rows), `graph` (`/shortestPath`), `networkAlerts`, `nip05` (`/.well-known/nostr.json`), and the `admin/*` families (users, activity, stats, presets, nsec-encryption, requests). Every wrapped response uses the `{code, data, message}` envelope; `.well-known` documents and other third-party-spec shapes are exempt by rule.
+Route families, one line each — the OpenAPI page (`/docs`) is the contract, [`app/routers/CLAUDE.md`](app/routers/CLAUDE.md) the map: `authChallenge` (nostr login → JWT; NIP-98 also accepted), `user` (own results, trigger runs, assistant profile; public `/{pubkey}` overview/stats/connections with optional auth), `user/graperank` (presets), `search` (ORE-05 `/search/pubkeys`, proxied to the search relay), ORE-04 `/recommend/pubkeys` (trusted merchants, from listings the search relay holds), `setup` (10040 designation rows), `graph` (`/shortestPath`), `networkAlerts`, `nip05` (`/.well-known/nostr.json`), and the `admin/*` families (users, activity, stats, presets, nsec-encryption, requests). Every wrapped response uses the `{code, data, message}` envelope; `.well-known` documents and other third-party-spec shapes are exempt by rule.
 
 ## 7. What's built, what's in progress
 
