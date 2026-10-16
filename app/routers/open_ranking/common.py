@@ -19,6 +19,7 @@ TTL_HINTS: dict[str, int] = {
     "/rank/pubkeys": 3600,
     "/followers": 3600,
     "/muters": 3600,
+    "/recommend/pubkeys": 3600,
 }
 
 

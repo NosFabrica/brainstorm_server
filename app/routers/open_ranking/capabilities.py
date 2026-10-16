@@ -16,6 +16,11 @@ _SEARCH_RELEVANCE = (
     "query-relative"
 )
 
+_MERCHANTS = (
+    "sellers of kind-30402 product listings above the trust floor, rank = "
+    "GrapeRank; an optional `topic` keeps sellers whose listings match it"
+)
+
 # Endpoint -> ordered list of supported Algorithm Objects. The first element of
 # each list is the default algorithm for that endpoint (ORE-01 §"Algorithm
 # selection").
@@ -62,6 +67,19 @@ CAPABILITY_DOC: dict[str, list[dict]] = {
     "/muters": [
         {"id": "graperank", "name": "GrapeRank (global)"},
         {"id": "graperank-pov", "name": "GrapeRank (personalized)", "pov": True},
+    ],
+    "/recommend/pubkeys": [
+        {
+            "id": "merchants",
+            "name": "Trusted merchants (global)",
+            "description": (f"{_MERCHANTS} (the provider's House Observer's trust)"),
+        },
+        {
+            "id": "merchants-pov",
+            "name": "Trusted merchants (personalized)",
+            "description": f"{_MERCHANTS} (the pov's own trust)",
+            "pov": True,
+        },
     ],
 }
 
