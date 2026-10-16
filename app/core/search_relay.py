@@ -8,6 +8,7 @@ through `fetch_events` and ranks what comes back itself.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 
@@ -46,7 +47,12 @@ async def aclose() -> None:
 
 class SearchRelayUnavailable(Exception):
     """The relay could not answer: network error, timeout, or an answer
-    outside the ORE-05 shape."""
+    outside the ORE-05 shape. `retry_after` is the relay's own hint, when it
+    sent one with a 429 or 503."""
+
+    def __init__(self, reason: str, retry_after: str | None = None):
+        super().__init__(reason)
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -113,6 +119,15 @@ async def search_pubkeys(body: bytes) -> RelayAnswer:
 # The subscription id of every NIP-FE read; nothing stays open, so one is enough.
 _FE_SUBSCRIPTION = "ore"
 
+# The relay runs at most HTTP_RELAY_PER_CLIENT (default 2) NIP-FE commands per
+# client address and answers the next with 429. Every caller here shares this
+# server's address, so reads queue for a slot instead of being refused.
+_FE_SLOTS = asyncio.Semaphore(2)
+
+# One read's whole budget: httpx's timeout bounds each socket read, not the
+# answer, and the relay may stream for up to its own 30 s deadline.
+_FE_BUDGET_SECONDS = 10.0
+
 
 async def fetch_events(nostr_filter: dict) -> list[dict]:
     """One REQ over NIP-FE, its events in the relay's order (a `sort:` token in
@@ -120,12 +135,14 @@ async def fetch_events(nostr_filter: dict) -> list[dict]:
     so it raises rather than reading as "no results"."""
     frame = json.dumps(["REQ", _FE_SUBSCRIPTION, nostr_filter])
     try:
-        response = await _get_client().post("/", content=frame)
-    except httpx.HTTPError as e:
+        async with _FE_SLOTS, asyncio.timeout(_FE_BUDGET_SECONDS):
+            response = await _get_client().post("/", content=frame)
+    except (httpx.HTTPError, TimeoutError) as e:
         raise SearchRelayUnavailable(f"search relay unreachable: {e!r}") from e
     if response.status_code != 200:
         raise SearchRelayUnavailable(
-            f"search relay answered HTTP {response.status_code}"
+            f"search relay answered HTTP {response.status_code}",
+            retry_after=response.headers.get("Retry-After"),
         )
 
     events: list[dict] = []

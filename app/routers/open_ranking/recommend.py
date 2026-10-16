@@ -3,12 +3,17 @@
 The candidates are the authors of kind-30402 product listings (NIP-99 / Open
 Markets), read from the search relay with the observer as lens: the relay
 returns only listings from authors above the observer's trust floor, ordered
-by that trust (`sort:rank`), and an optional `topic` narrows them to listings
-whose text matches it. Ranks are the observer's GrapeRank influence, the same
-number ORE-03 answers, so a merchant ranks the same on both endpoints.
+by that trust (`sort:rank`). The `-topic` algorithms declare a `topic` and keep
+the listings whose text matches it; the others ignore one. Ranks are the
+observer's GrapeRank influence, the same number ORE-03 answers, so a merchant
+ranks the same on both endpoints.
 """
 
 from __future__ import annotations
+
+import re
+import time
+from collections import OrderedDict
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -18,7 +23,10 @@ from app.core.search_relay import SearchRelayUnavailable, fetch_events
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.user_repo import batch_influence_for_pubkeys
 from app.routers.open_ranking.availability import ensure_pov_available
-from app.routers.open_ranking.capabilities import resolve_algorithm
+from app.routers.open_ranking.capabilities import (
+    algorithm_requires_topic,
+    resolve_algorithm,
+)
 from app.routers.open_ranking.common import (
     DEFAULT_RECOMMEND_LIMIT,
     TTL_HINTS,
@@ -48,25 +56,45 @@ MAX_TOPIC_LENGTH = 512
 LISTINGS_PER_MERCHANT = 5
 MAX_LISTINGS = 1000
 
-# Characters that would let a topic smuggle its own NIP-50 extension token.
-_TOKEN_SEPARATOR = ":"
+# A NIP-50 extension token (`include:spam`, `observer:<hex>`): a topic word of
+# this shape could override the lens. `10:30` and URLs are ordinary words.
+_EXTENSION_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*:(?!//)")
+
+# Answers are reused this long: listings and influence move on the scale of
+# GrapeRank runs, and the relay serves every caller from two NIP-FE slots.
+CACHE_SECONDS = 300
+_CACHE_ENTRIES = 1024
+_cache: OrderedDict[
+    tuple[str, str, int], tuple[float, list[RankResult]]
+] = OrderedDict()
 
 
 def _topic_terms(topic: str | None) -> str:
-    if topic is None:
-        return ""
+    """The topic as NIP-50 words. Quotes are dropped, because an unclosed one
+    would swallow the lens tokens appended after it into a phrase."""
+    if not topic or not topic.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="this algorithm requires a 'topic'",
+        )
     if len(topic) > MAX_TOPIC_LENGTH:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"topic exceeds the maximum length of {MAX_TOPIC_LENGTH}",
         )
-    # Words carrying a `:` are dropped so a topic can never override the lens.
-    words = [w for w in topic.split() if _TOKEN_SEPARATOR not in w]
+    words = [
+        w for w in topic.replace('"', " ").split() if not _EXTENSION_TOKEN.match(w)
+    ]
+    if not words:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="topic is not recognised: it holds no searchable words",
+        )
     return " ".join(words)
 
 
-async def trusted_merchants(observer: str, topic: str, want: int) -> list[str]:
-    """Distinct listing authors in the relay's trust order, at most `want`."""
+async def listing_authors(observer: str, topic: str, want: int) -> list[str]:
+    """Every distinct author on the relay's page of trusted listings."""
     search = " ".join(
         part for part in (topic, f"sort:rank observer:{observer}") if part
     )
@@ -77,16 +105,38 @@ async def trusted_merchants(observer: str, topic: str, want: int) -> list[str]:
             "limit": min(MAX_LISTINGS, want * LISTINGS_PER_MERCHANT),
         }
     )
-    merchants: list[str] = []
-    seen: set[str] = set()
-    for listing in listings:
-        author = listing.get("pubkey")
-        if isinstance(author, str) and author not in seen:
-            seen.add(author)
-            merchants.append(author)
-            if len(merchants) == want:
-                break
-    return merchants
+    authors = (listing.get("pubkey") for listing in listings)
+    return list(dict.fromkeys(a for a in authors if isinstance(a, str)))
+
+
+async def trusted_merchants(observer: str, topic: str, limit: int) -> list[RankResult]:
+    """The page's authors ranked by influence, then cut: the relay's order is
+    by match tier and a 0..100 rank with many ties, so it never decides the cut."""
+    key = (observer, topic, limit)
+    hit = _cache.get(key)
+    if hit is not None and hit[0] > time.monotonic():
+        _cache.move_to_end(key)
+        return hit[1]
+
+    authors = await listing_authors(observer, topic, limit)
+    async with neo4j_driver.session() as session:
+        influence = await batch_influence_for_pubkeys(session, authors, observer)
+
+    # The relay's lens already dropped sellers below the floor; a zero here is
+    # a seller the graph has no score for, which "trusted" cannot claim.
+    ranked = [
+        RankResult(pubkey=pk, rank=rank)
+        for pk in authors
+        if (rank := _safe_rank(influence.get(pk))) > 0
+    ]
+    ranked.sort(key=lambda r: (-r.rank, r.pubkey))
+    results = ranked[:limit]
+
+    _cache[key] = (time.monotonic() + CACHE_SECONDS, results)
+    _cache.move_to_end(key)
+    while len(_cache) > _CACHE_ENTRIES:
+        _cache.popitem(last=False)
+    return results
 
 
 @router.post(
@@ -102,29 +152,23 @@ async def recommend_pubkeys(
 ) -> RecommendPubkeysResponse:
     pov = validate_pubkey(req.pov, "pov") if req.pov else None
     limit = validate_positive_limit(req.limit) or DEFAULT_RECOMMEND_LIMIT
-    topic = _topic_terms(req.topic)
 
     algo_id, observer = resolve_algorithm(
         ENDPOINT, req.algorithm, pov, forced_observer=signer
     )
+    # As a pov is for a global algorithm, a topic is ignored where none is declared.
+    topic = (
+        _topic_terms(req.topic) if algorithm_requires_topic(ENDPOINT, algo_id) else ""
+    )
     await ensure_pov_available(db, ENDPOINT, algo_id, observer)
 
     try:
-        merchants = await trusted_merchants(observer, topic, limit)
+        results = await trusted_merchants(observer, topic, limit)
     except SearchRelayUnavailable as e:
+        headers = {"Retry-After": e.retry_after} if e.retry_after else None
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+            headers=headers,
         ) from e
-
-    async with neo4j_driver.session() as session:
-        influence = await batch_influence_for_pubkeys(session, merchants, observer)
-
-    # The relay's lens already dropped sellers below the floor; a zero here is
-    # a seller the graph has no score for, which "trusted" cannot claim.
-    results = [
-        RankResult(pubkey=pk, rank=rank)
-        for pk in merchants
-        if (rank := _safe_rank(influence.get(pk))) > 0
-    ]
-    results.sort(key=lambda r: (-r.rank, r.pubkey))
-    return RecommendPubkeysResponse(results=results[:limit], ttl=TTL_HINTS[ENDPOINT])
+    return RecommendPubkeysResponse(results=results, ttl=TTL_HINTS[ENDPOINT])

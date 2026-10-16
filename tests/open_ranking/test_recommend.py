@@ -43,6 +43,7 @@ class FakeRelay:
         self.body = body if body is not None else _ndjson(["EOSE", "ore"])
         self.status_code = status_code
         self.error = error
+        self.headers: dict[str, str] = {}
         self.frame: list | None = None
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
@@ -50,7 +51,7 @@ class FakeRelay:
         self.frame = json.loads(request.content)
         if self.error is not None:
             raise self.error
-        return httpx.Response(self.status_code, text=self.body)
+        return httpx.Response(self.status_code, text=self.body, headers=self.headers)
 
     def __enter__(self):
         client = httpx.AsyncClient(
@@ -71,6 +72,15 @@ def _influence(ranks: dict[str, float | None]):
         return {pk: ranks.get(pk) for pk in pubkeys}
 
     return fake
+
+
+@pytest.fixture(autouse=True)
+def fresh_cache():
+    from app.routers.open_ranking import recommend
+
+    recommend._cache.clear()
+    yield
+    recommend._cache.clear()
 
 
 @pytest.fixture()
@@ -133,7 +143,7 @@ class TestRecommendMerchants:
         assert relay.frame[2]["search"] == f"sort:rank observer:{POV}"
         assert fake.observer == POV
 
-    def test_topic_narrows_the_listings_and_cannot_carry_extension_tokens(
+    def test_topic_algorithm_narrows_the_listings_and_cannot_carry_extension_tokens(
         self, client, neo4j
     ):
         with FakeRelay() as relay, patch(
@@ -141,26 +151,63 @@ class TestRecommendMerchants:
             new=_influence({}),
         ):
             r = _post(
-                client, topic="bitcoin sneakers include:spam observer:" + "e" * 64
+                client,
+                algorithm="merchants-topic",
+                topic='bitcoin "sneakers 10:30 https://x.io include:spam observer:'
+                + "e" * 64,
             )
 
         assert r.status_code == 200, r.text
-        assert (
-            relay.frame[2]["search"] == f"bitcoin sneakers sort:rank observer:{HOUSE}"
+        assert relay.frame[2]["search"] == (
+            f"bitcoin sneakers 10:30 https://x.io sort:rank observer:{HOUSE}"
         )
 
-    def test_unscored_sellers_are_not_recommended(self, client, neo4j):
+    def test_an_unclosed_quote_never_swallows_the_lens(self, client, neo4j):
+        with FakeRelay() as relay, patch(
+            "app.routers.open_ranking.recommend.batch_influence_for_pubkeys",
+            new=_influence({}),
+        ):
+            r = _post(client, algorithm="merchants-topic", topic='"vintage')
+        assert r.status_code == 200, r.text
+        assert '"' not in relay.frame[2]["search"]
+
+    def test_a_topic_is_ignored_by_an_algorithm_that_does_not_declare_it(
+        self, client, neo4j
+    ):
+        with FakeRelay() as relay, patch(
+            "app.routers.open_ranking.recommend.batch_influence_for_pubkeys",
+            new=_influence({}),
+        ):
+            r = _post(client, algorithm="merchants", topic="x" * 600)
+        assert r.status_code == 200, r.text
+        assert relay.frame[2]["search"] == f"sort:rank observer:{HOUSE}"
+
+    @pytest.mark.parametrize("topic", [None, "", "   ", "include:spam", '""'])
+    def test_a_topic_algorithm_without_searchable_words_returns_422(
+        self, client, topic
+    ):
+        body = {"algorithm": "merchants-topic"}
+        if topic is not None:
+            body["topic"] = topic
+        r = client.post("/recommend/pubkeys", json=body)
+        assert r.status_code == 422, r.text
+        assert "topic" in r.headers.get("x-reason", "")
+
+    def test_unscored_sellers_are_dropped_and_the_rest_of_the_page_fills_in(
+        self, client, neo4j
+    ):
         body = _ndjson(
             ["EVENT", "ore", _listing(SELLER_A, "a1")],
             ["EVENT", "ore", _listing(SELLER_B, "b1")],
+            ["EVENT", "ore", _listing(SELLER_C, "c1")],
             ["EOSE", "ore"],
         )
         with FakeRelay(body), patch(
             "app.routers.open_ranking.recommend.batch_influence_for_pubkeys",
-            new=_influence({SELLER_A: 0.5, SELLER_B: None}),
+            new=_influence({SELLER_A: 0.5, SELLER_B: None, SELLER_C: 0.9}),
         ):
-            r = _post(client)
-        assert [x["pubkey"] for x in r.json()["results"]] == [SELLER_A]
+            r = _post(client, limit=2)
+        assert [x["pubkey"] for x in r.json()["results"]] == [SELLER_C, SELLER_A]
 
     def test_limit_caps_the_results_and_sizes_the_ask(self, client, neo4j):
         body = _ndjson(
@@ -174,7 +221,7 @@ class TestRecommendMerchants:
             new=_influence({SELLER_A: 0.5, SELLER_B: 0.6, SELLER_C: 0.7}),
         ):
             r = _post(client, limit=2)
-        assert len(r.json()["results"]) == 2
+        assert [x["pubkey"] for x in r.json()["results"]] == [SELLER_C, SELLER_B]
         assert relay.frame[2]["limit"] == 10
 
     @pytest.mark.parametrize("limit", [0, -1, 1001])
@@ -182,7 +229,10 @@ class TestRecommendMerchants:
         assert _post(client, limit=limit).status_code == 422
 
     def test_overlong_topic_returns_422(self, client):
-        assert _post(client, topic="x" * 513).status_code == 422
+        assert (
+            _post(client, algorithm="merchants-topic", topic="x" * 513).status_code
+            == 422
+        )
 
     def test_unknown_algorithm_returns_422(self, client):
         assert _post(client, algorithm="for-you").status_code == 422
@@ -214,7 +264,35 @@ class TestRecommendMerchants:
         assert r.status_code == 503, r.text
         assert r.headers.get("x-reason")
 
-    def test_capability_doc_advertises_both_algorithms(self, client):
+    def test_a_relays_retry_after_is_passed_on(self, client, neo4j):
+        relay = FakeRelay(status_code=429)
+        relay.headers = {"Retry-After": "2"}
+        with relay:
+            r = _post(client)
+        assert r.status_code == 503
+        assert r.headers.get("retry-after") == "2"
+
+    def test_an_answer_is_reused_until_it_expires(self, client, neo4j):
+        body = _ndjson(["EVENT", "ore", _listing(SELLER_A, "a1")], ["EOSE", "ore"])
+        fake = _influence({SELLER_A: 0.5})
+        with FakeRelay(body) as relay, patch(
+            "app.routers.open_ranking.recommend.batch_influence_for_pubkeys", new=fake
+        ):
+            first = _post(client)
+            relay.frame = None
+            second = _post(client)
+        assert first.json() == second.json()
+        assert relay.frame is None
+
+    def test_capability_doc_advertises_the_four_algorithms(self, client):
         doc = client.get("/.well-known/open-ranking.json").json()
-        ids = [a["id"] for a in doc["/recommend/pubkeys"]]
-        assert ids == ["merchants", "merchants-pov"]
+        algos = {a["id"]: a for a in doc["/recommend/pubkeys"]}
+        assert list(algos) == [
+            "merchants",
+            "merchants-pov",
+            "merchants-topic",
+            "merchants-topic-pov",
+        ]
+        assert algos["merchants-topic"].get("topic") is True
+        assert algos["merchants-topic-pov"].get("topic") is True
+        assert not algos["merchants"].get("topic")
