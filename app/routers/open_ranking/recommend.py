@@ -6,7 +6,8 @@ returns only listings from authors above the observer's trust floor, ordered
 by that trust (`sort:rank`). The `-topic` algorithms declare a `topic` and keep
 the listings whose text matches it; the others ignore one. Ranks are the
 observer's GrapeRank influence, the same number ORE-03 answers, so a merchant
-ranks the same on both endpoints.
+ranks the same on both endpoints. The relay's gate is the only trust filter:
+influence orders the sellers it let through and never removes one.
 """
 
 from __future__ import annotations
@@ -111,7 +112,9 @@ async def listing_authors(observer: str, topic: str, want: int) -> list[str]:
 
 async def trusted_merchants(observer: str, topic: str, limit: int) -> list[RankResult]:
     """The page's authors ranked by influence, then cut: the relay's order is
-    by match tier and a 0..100 rank with many ties, so it never decides the cut."""
+    by match tier and a 0..100 rank with many ties, so it never decides the cut
+    between scored sellers. It still orders the ones influence cannot tell
+    apart, including those with no score at all."""
     key = (observer, topic, limit)
     hit = _cache.get(key)
     if hit is not None and hit[0] > time.monotonic():
@@ -122,14 +125,15 @@ async def trusted_merchants(observer: str, topic: str, limit: int) -> list[RankR
     async with neo4j_driver.session() as session:
         influence = await batch_influence_for_pubkeys(session, authors, observer)
 
-    # The relay's lens already dropped sellers below the floor; a zero here is
-    # a seller the graph has no score for, which "trusted" cannot claim.
+    # The relay's lens is the gate: every author here passed the pov's trust
+    # floor. Influence only orders them. A seller our graph has no score for
+    # (a 30382 left on the relay from before a recompute, or a pov whose 10040
+    # names another provider) keeps its place after the scored ones at rank 0
+    # rather than being dropped, which would empty a foreign pov's answer.
     ranked = [
-        RankResult(pubkey=pk, rank=rank)
-        for pk in authors
-        if (rank := _safe_rank(influence.get(pk))) > 0
+        RankResult(pubkey=pk, rank=_safe_rank(influence.get(pk))) for pk in authors
     ]
-    ranked.sort(key=lambda r: (-r.rank, r.pubkey))
+    ranked.sort(key=lambda r: -r.rank)  # stable: ties keep the relay's order
     results = ranked[:limit]
 
     _cache[key] = (time.monotonic() + CACHE_SECONDS, results)

@@ -193,21 +193,49 @@ class TestRecommendMerchants:
         assert r.status_code == 422, r.text
         assert "topic" in r.headers.get("x-reason", "")
 
-    def test_unscored_sellers_are_dropped_and_the_rest_of_the_page_fills_in(
+    def test_unscored_sellers_follow_the_scored_ones_in_the_relays_order(
         self, client, neo4j
     ):
+        # The relay's lens already gated these authors; influence only orders
+        # them, so a seller with no score is ranked last, never dropped.
         body = _ndjson(
-            ["EVENT", "ore", _listing(SELLER_A, "a1")],
             ["EVENT", "ore", _listing(SELLER_B, "b1")],
+            ["EVENT", "ore", _listing(SELLER_A, "a1")],
             ["EVENT", "ore", _listing(SELLER_C, "c1")],
             ["EOSE", "ore"],
         )
         with FakeRelay(body), patch(
             "app.routers.open_ranking.recommend.batch_influence_for_pubkeys",
-            new=_influence({SELLER_A: 0.5, SELLER_B: None, SELLER_C: 0.9}),
+            new=_influence({SELLER_A: None, SELLER_B: None, SELLER_C: 0.9}),
         ):
-            r = _post(client, limit=2)
-        assert [x["pubkey"] for x in r.json()["results"]] == [SELLER_C, SELLER_A]
+            r = _post(client)
+        results = r.json()["results"]
+        assert [x["pubkey"] for x in results] == [SELLER_C, SELLER_B, SELLER_A]
+        assert [x["rank"] for x in results] == [pytest.approx(0.9), 0.0, 0.0]
+
+    def test_a_pov_ranked_by_another_provider_still_gets_the_relays_sellers(
+        self, client, neo4j
+    ):
+        # A pov whose 10040 names another provider: the relay gates by that
+        # provider's cards, and our graph holds no influence for the pov at
+        # all. The answer is the relay's sellers, in its order, not nothing.
+        body = _ndjson(
+            ["EVENT", "ore", _listing(SELLER_B, "b1")],
+            ["EVENT", "ore", _listing(SELLER_A, "a1")],
+            ["EVENT", "ore", _listing(SELLER_B, "b2")],
+            ["EVENT", "ore", _listing(SELLER_C, "c1")],
+            ["EOSE", "ore"],
+        )
+        fake = _influence({})
+        with pov_availability(), FakeRelay(body) as relay, patch(
+            "app.routers.open_ranking.recommend.batch_influence_for_pubkeys", new=fake
+        ):
+            r = _post(client, algorithm="merchants-pov", pov=POV, limit=2)
+
+        assert r.status_code == 200, r.text
+        assert relay.frame[2]["search"] == f"sort:rank observer:{POV}"
+        assert fake.observer == POV
+        assert [x["pubkey"] for x in r.json()["results"]] == [SELLER_B, SELLER_A]
 
     def test_limit_caps_the_results_and_sizes_the_ask(self, client, neo4j):
         body = _ndjson(
