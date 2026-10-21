@@ -133,6 +133,11 @@ class BrainstormRequest(TimestampMixin, Base):
     force_full_relay: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True, server_default="false"
     )
+    # Same for the Neo4j score write: true = write every scorecard and clear the
+    # Observer's scores on nodes it no longer reaches.
+    force_full_neo4j: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, server_default="false"
+    )
 
 
 class BrainstormNostrRelayTransfer(TimestampMixin, Base):

@@ -72,6 +72,15 @@ and applied with `SET n += row.props` — never interpolated into the query text
 which would give every observer its own Neo4j plan-cache entry. Same rule the
 read side follows via `n[$key]`; see [`../repos/CLAUDE.md`](../repos/CLAUDE.md).
 
+Delta by default when `neo4j_full_write=False`: only the worker's
+`neo4jWritePubkeys` are written. The worker diffs against what Neo4j holds, so a
+lost write reappears as changed next run. The stored raw `influence` can lag
+within its 2-decimal rounding until a full write. A full write (setting, the
+row's `force_full_neo4j`, or a worker sending no write set) writes every
+scorecard. Only a forced one (`force_full_neo4j`: resync `target=neo4j|both`,
+the every-Nth backstop) also clears the observer's properties on nodes it no
+longer reaches — one label scan. The Cypher lives in `repos/user_repo.py`.
+
 ## Adding a new consumer
 
 1. Add an `async def consume_<topic>(): while True: msg = await ...; await handle(msg)` to `message_queue_consumer.py`.

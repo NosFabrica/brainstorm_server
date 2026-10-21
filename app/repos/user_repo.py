@@ -1,5 +1,6 @@
 from typing import Any, NamedTuple
 
+from neo4j import AsyncManagedTransaction
 from neo4j import AsyncSession as AsyncNeoSession
 from neo4j import Query
 from neo4j.exceptions import ClientError
@@ -1332,3 +1333,43 @@ async def count_verified_muters(
     return {
         record["pubkey"]: int(record["verified_muters"] or 0) async for record in result
     }
+
+
+async def set_observer_scores(tx: AsyncManagedTransaction, rows: list[dict]) -> None:
+    """`rows`: `{pubkey, props}`, props keyed `<field>_<observer>` (built by the caller)."""
+    result = await tx.run(
+        """
+        UNWIND $rows AS row
+        MATCH (n:NostrUser {pubkey: row.pubkey})
+        SET n += row.props
+        """,
+        rows=rows,
+    )
+    await result.consume()
+
+
+async def get_pubkeys_scored_by_observer(
+    session: AsyncNeoSession, influence_key: str
+) -> list[str]:
+    """Every node holding `influence_<observer>`. A label scan: full writes only."""
+    result = await session.run(
+        "MATCH (n:NostrUser) WHERE n[$key] IS NOT NULL RETURN n.pubkey AS pubkey",
+        key=influence_key,
+    )
+    return [r["pubkey"] async for r in result]
+
+
+async def clear_observer_scores(
+    tx: AsyncManagedTransaction, pubkeys: list[str], keys: list[str]
+) -> None:
+    """Remove the observer's score properties; the nodes and edges stay."""
+    result = await tx.run(
+        """
+        UNWIND $pubkeys AS pubkey
+        MATCH (n:NostrUser {pubkey: pubkey})
+        SET n += $nulls
+        """,
+        pubkeys=pubkeys,
+        nulls=dict.fromkeys(keys),
+    )
+    await result.consume()

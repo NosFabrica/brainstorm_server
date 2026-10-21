@@ -1,13 +1,21 @@
 import time
+from collections.abc import Awaitable, Callable, Iterable
 from itertools import islice
 
+from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.db_models import BrainstormRequestStatus
 from app.models.grapeRankResult import GrapeRankResult, ScoreCard
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.brainstorm_request_repo import (
+    select_brainstorm_request_by_id_on_db,
     update_brainstorm_request_internal_publication_status_by_id_on_db,
+)
+from app.repos.user_repo import (
+    clear_observer_scores,
+    get_pubkeys_scored_by_observer,
+    set_observer_scores,
 )
 
 # Each batch is its own transaction, so fewer, larger batches mean fewer commits.
@@ -19,6 +27,31 @@ BATCH_SIZE = 5000
 PERSISTED_FIELDS = {"influence": float, "hops": int, "trusted_followers": int}
 
 logger = loggr.get_logger(__name__)
+
+
+def _keys(observer: str) -> dict[str, str]:
+    return {field: f"{field}_{observer}" for field in PERSISTED_FIELDS}
+
+
+async def _write_batches(work: Callable[..., Awaitable[None]], items: Iterable) -> None:
+    it = iter(items)
+    while batch := list(islice(it, BATCH_SIZE)):
+        # Managed transaction: retried on transient errors such as DeadlockDetected, which
+        # event ingestion can cause by locking the same NostrUser nodes.
+        async with neo4j_driver.session() as session:
+            await session.execute_write(work, batch)
+
+
+async def _clear_unreached(observer: str, scored: set[str]) -> int:
+    """Clear the observer's scores on nodes it no longer reaches."""
+    keys = _keys(observer)
+    async with neo4j_driver.session() as session:
+        holders = await get_pubkeys_scored_by_observer(session, keys["influence"])
+    stale = [pk for pk in holders if pk not in scored]
+    await _write_batches(
+        lambda tx, batch: clear_observer_scores(tx, batch, list(keys.values())), stale
+    )
+    return len(stale)
 
 
 async def process_neo4j_write_message(message: dict):
@@ -36,18 +69,25 @@ async def process_neo4j_write_message(message: dict):
         return
 
     observer = next(iter(scorecards.values()))["observer"]
+    keys = _keys(observer)
+    write_set = grape_rank_result.get("neo4jWritePubkeys")
 
     # Map built here, not interpolated into the Cypher: see app/repos/CLAUDE.md.
     def row(card: ScoreCard) -> dict:
         return {
             "pubkey": card["observee"],
             "props": {
-                f"{field}_{observer}": cast(card.get(field, 0))
+                keys[field]: cast(card.get(field, 0))
                 for field, cast in PERSISTED_FIELDS.items()
             },
         }
 
     async with db_session() as db:
+        request_row = await select_brainstorm_request_by_id_on_db(db, run_id)
+        # Cleanup only when forced (resync, backstop): it costs a label scan.
+        clear_unreached = bool(request_row.force_full_neo4j)
+        # An older worker sends no write set.
+        full = settings.neo4j_full_write or clear_unreached or write_set is None
         await update_brainstorm_request_internal_publication_status_by_id_on_db(
             db,
             brainstorm_request_id=message["private_id"],
@@ -56,29 +96,21 @@ async def process_neo4j_write_message(message: dict):
 
         await db.commit()
 
-    async def write_batch(tx, batch):
-        result = await tx.run(
-            """
-            UNWIND $rows AS row
-            MATCH (n:NostrUser {pubkey: row.pubkey})
-            SET n += row.props
-            """,
-            rows=batch,
-        )
-        await result.consume()
-
-    async def process_batch(batch):
-        # Managed transaction: retried on transient errors such as DeadlockDetected, which
-        # event ingestion can cause by locking the same NostrUser nodes.
-        async with neo4j_driver.session() as session:
-            await session.execute_write(write_batch, batch)
-
     start_time = time.time()
 
+    cards: list[ScoreCard] = list(scorecards.values())
+    if not full:
+        changed = set(write_set or ())
+        cards = [c for c in cards if c["observee"] in changed]
+
     # Rows built a batch at a time, so the event loop is never held for all of them.
-    cards = iter(scorecards.values())
-    while batch := [row(card) for card in islice(cards, BATCH_SIZE)]:
-        await process_batch(batch=batch)
+    await _write_batches(set_observer_scores, (row(card) for card in cards))
+    written = len(cards)
+
+    cleared = 0
+    if clear_unreached:
+        scored = {c["observee"] for c in scorecards.values()}
+        cleared = await _clear_unreached(observer, scored)
 
     async with db_session() as db:
         await update_brainstorm_request_internal_publication_status_by_id_on_db(
@@ -91,10 +123,7 @@ async def process_neo4j_write_message(message: dict):
 
     final_time = time.time() - start_time
     logger.info(
-        f"Took {final_time:.2f} seconds to process {len(scorecards)} Neo4j writes "
-        f"run={run_id} observer={observer}"
+        f"Took {final_time:.2f} seconds to process Neo4j writes "
+        f"(mode={'full' if full else 'changed'} written={written} of {len(scorecards)} "
+        f"cleared={cleared}) run={run_id} observer={observer}"
     )
-    # First, not second: a single-scorecard run made islice(…, 1, 2) raise.
-    example_scorecard = next(iter(scorecards.values()))
-
-    logger.info(f"Check the observed pubkey {example_scorecard['observee']}")

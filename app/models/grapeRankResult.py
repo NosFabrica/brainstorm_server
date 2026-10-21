@@ -25,4 +25,6 @@ class GrapeRankResult(TypedDict, total=False):
     duration_seconds: float
     success: bool
     changedScorePubkeys: list[str]
+    # Scorecards whose persisted Neo4j fields changed; None/absent = write all.
+    neo4jWritePubkeys: list[str] | None
     error: dict[str, Any] | None
