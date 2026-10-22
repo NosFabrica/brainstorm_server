@@ -10,7 +10,7 @@ publishing — and routers just thin-wrap them.
 
 | File | LOC | Owns |
 |---|---|---|
-| `auth_service.py` | 24 | JWT mint / NIP-98 verify glue. The repo-less service — pure crypto + Redis. |
+| `auth_service.py` | 75 | Nostr login: issue the single-use challenge (Redis), verify the signed login event against it, mint the session JWT. |
 | `user_service.py` | 380 | Everything under `/user/*`: graph fetches, stats, connection pagination, assistant-profile publish, GrapeRank trigger throttling. The biggest service. |
 | `brainstorm_request_service.py` | 157 | GrapeRank job lifecycle: create, status, result attach, error capture, throttle decisions. |
 | `brainstorm_pubkey_service.py` | 54 | Create-or-get the per-user brainstorm-assistant pubkey (delegates to `brainstorm_nsec` repo + GrapeRank trigger). |
@@ -123,8 +123,8 @@ process; if/when you horizontally scale the server, push this flag into Redis.
 
 ### `auth_service.py`
 
-- `generate_nostr_auth_challenge(pubkey)` → stores challenge in Redis with TTL.
-- `verify_nostr_auth_challenge(pubkey, signed_event)` → validates NIP-98-style signed event against the stored challenge, mints JWT via `app/utils/auth/auth_util.py`.
+- `generate_nostr_auth_challenge(pubkey)` → a nonce stored in Redis (`nostr:challenge:{nonce}` → pubkey, 5 min).
+- `verify_nostr_auth_challenge(db, pubkey, signed_event)` → checks the kind-22242 login event, consumes its challenge (GETDEL), mints the JWT via `app/utils/auth/auth_util.py`.
 
 ### `user_service.py`
 

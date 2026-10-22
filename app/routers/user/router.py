@@ -64,7 +64,6 @@ from app.utils.rate_limiting.rate_limiting import (
     validate_subscription_refresh_allowed,
 )
 
-CHALLENGE_TTL = 120  # seconds (2 minutes)
 MAX_TRUST_SIGNALS_PUBKEYS = 500
 
 router = APIRouter()
