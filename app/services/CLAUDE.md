@@ -10,7 +10,8 @@ publishing — and routers just thin-wrap them.
 
 | File | LOC | Owns |
 |---|---|---|
-| `auth_service.py` | 80 | Nostr login: issue the single-use challenge (Redis), verify the signed login event against it, apply the new-Observer limit, mint the session JWT. |
+| `auth_service.py` | 86 | Nostr login: issue the single-use challenge (Redis), verify the signed login event against it, apply the new-Observer limit, mint the session JWT at the user's current session version. |
+| `session_service.py` | 24 | Session versions: `current_session_version` (the cached read, via `repos/session_version_repo.py` — the same path `verify_token` checks against) and `revoke_sessions` (bump; commits itself, then writes the cache through — see **Transactions**). |
 | `user_service.py` | 380 | Everything under `/user/*`: graph fetches, stats, connection pagination, assistant-profile publish, GrapeRank trigger throttling. The biggest service. |
 | `brainstorm_request_service.py` | 157 | GrapeRank job lifecycle: create, status, result attach, error capture, throttle decisions. |
 | `brainstorm_pubkey_service.py` | 54 | Create-or-get the per-user brainstorm-assistant pubkey (delegates to `brainstorm_nsec` repo + GrapeRank trigger). |
@@ -89,6 +90,10 @@ reasons, both structural rather than stylistic:
 - The periodic jobs commit per item, so a crash forty rows into a batch keeps
   the thirty-nine already done. Every one of those writes is idempotent, so
   partial progress is strictly better than an all-or-nothing batch.
+
+**Also `session_service.revoke_sessions`**, for the same kind of reason: the bump is
+written through to the Redis cache, and that write must follow the commit — cached
+before it, a rolled-back bump would leave the cache ahead of the database.
 
 Don't extend this to new subsystems without the same kind of reason.
 

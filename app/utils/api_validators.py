@@ -9,6 +9,7 @@ from app.core.admin_whitelist import get_whitelisted_pubkeys
 from app.core.config import settings
 from app.core.database import get_db
 from app.repos.brainstorm_nsec import brainstorm_nsec_exists_by_pubkey_on_db
+from app.repos.session_version_repo import read_session_version_on_db
 from app.utils.auth.auth_models import JWTData
 from app.utils.auth.auth_util import decrypt_jwt_token
 from app.utils.auth.nip98 import validate_nip98_event
@@ -74,6 +75,13 @@ async def verify_token(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Bad token",
+        )
+    if jwt_data.session_version < await read_session_version_on_db(
+        db, jwt_data.nostr_pubkey
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session revoked",
         )
     request.state.jwt_data = jwt_data
     return jwt_data

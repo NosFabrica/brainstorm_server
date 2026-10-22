@@ -193,6 +193,10 @@ class BrainstormNsec(TimestampMixin, Base):
     billing_blocked: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # Session tokens minted under an older version are rejected (sign out everywhere).
+    session_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
     # See SchedulingSource. Billing only overwrites when this isn't ADMIN, so a
     # comped user survives a lapse and stays distinguishable from a bug.
     scheduling_source: Mapped[str] = mapped_column(

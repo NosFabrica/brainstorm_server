@@ -59,6 +59,9 @@ def observer_create(monkeypatch) -> AsyncMock:
     monkeypatch.setattr(
         auth_service, "get_or_create_brainstorm_observer_nsec_by_pubkey_on_db", mock
     )
+    monkeypatch.setattr(
+        auth_service, "current_session_version", AsyncMock(return_value=0)
+    )
     return mock
 
 

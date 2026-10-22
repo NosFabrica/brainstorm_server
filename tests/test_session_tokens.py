@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from unittest.mock import AsyncMock
 
 import jwt
 import pytest
@@ -27,7 +28,10 @@ def _sign(payload: dict, key: str | None = None, algorithm: str | None = None) -
 
 
 @pytest.fixture
-def guarded() -> TestClient:
+def guarded(monkeypatch) -> TestClient:
+    monkeypatch.setattr(
+        "app.utils.api_validators.read_session_version_on_db", AsyncMock(return_value=0)
+    )
     app = FastAPI()
 
     @app.get("/whoami")

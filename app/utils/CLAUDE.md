@@ -35,6 +35,8 @@ Accepts either:
 1. **JWT bearer** — `Authorization: Bearer <token>` or legacy `access_token` header.
 2. **NIP-98** — `Authorization: Nostr <base64-event>`. Delegates to `auth/nip98.py` for signature + tag validation.
 
+A bearer token whose `session_version` is behind the user's (`repos/session_version_repo.py`, Redis-cached for 60s, written through on a bump) is a 401 "Session revoked"; tokens without the claim count as version 0. NIP-98 is never version-checked: it's signed per request.
+
 On failure it raises `HTTPException(401, detail="...")` — `detail` is a plain string throughout this repo, see [`app/services/CLAUDE.md`](../services/CLAUDE.md) → Errors.
 
 There's also a `verify_admin_access` dependency defined in
@@ -44,8 +46,8 @@ admin-specific). It chains after `verify_token` and checks
 
 ## auth/
 
-- **`auth_util.py`** — `create_jwt_token(...)` mints session tokens with standard `sub`/`iat`/`exp` (+ `is_admin` for UI display); `decrypt_jwt_token(...)` is the one session-token decode path (library-enforced expiry, `None` on any invalid token). SQLAdmin panel: `sql_admin_create_jwt_token` / `sql_admin_verify_jwt_token`. Also `generate_secure_password()` (used as default for `BrainstormRequest.password`), and `warn_if_session_secret_short()` — the startup warning (never a refusal) for an `AUTH_SECRET_KEY` under 32 bytes.
-- **`auth_models.py`** — `JWTData` (pubkey, optional `is_admin`).
+- **`auth_util.py`** — `create_jwt_token(...)` mints session tokens with standard `sub`/`iat`/`exp` (+ `is_admin` for UI display, `session_version` for revocation); `decrypt_jwt_token(...)` is the one session-token decode path (library-enforced expiry, `None` on any invalid token). SQLAdmin panel: `sql_admin_create_jwt_token` / `sql_admin_verify_jwt_token`. Also `generate_secure_password()` (used as default for `BrainstormRequest.password`), and `warn_if_session_secret_short()` — the startup warning (never a refusal) for an `AUTH_SECRET_KEY` under 32 bytes.
+- **`auth_models.py`** — `JWTData` (pubkey, optional `is_admin`, `session_version`).
 - **`nip98.py`** — validates a NIP-98 signed event:
   - method/URL tags match the inbound request
   - signature verifies against the claimed pubkey

@@ -14,6 +14,7 @@ from app.repos.brainstorm_nsec import (
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
 )
 from app.schemas.schemas import AuthSuccessfulToken
+from app.services.session_service import current_session_version
 from app.utils.auth.auth_util import create_jwt_token
 from app.utils.nostr import first_tag_value
 from app.utils.rate_limiting.rate_limiting import rate_limit_login_new_observer
@@ -30,12 +31,15 @@ def _unauthorized(detail: str = "Invalid event") -> HTTPException:
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
 
-def generate_authentication_token(nostr_pubkey: str) -> AuthSuccessfulToken:
+def generate_authentication_token(
+    nostr_pubkey: str, session_version: int = 0
+) -> AuthSuccessfulToken:
     is_admin = settings.admin_enabled and nostr_pubkey in get_whitelisted_pubkeys()
     jwt_token = create_jwt_token(
         nostr_pubkey=nostr_pubkey,
         ttl=timedelta(minutes=settings.auth_access_token_expire_minutes),
         is_admin=is_admin,
+        session_version=session_version,
     )
 
     return AuthSuccessfulToken(token=jwt_token)
@@ -77,4 +81,6 @@ async def verify_nostr_auth_challenge(
         await rate_limit_login_new_observer(request)
 
     await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey)
-    return generate_authentication_token(pubkey)
+    return generate_authentication_token(
+        pubkey, session_version=await current_session_version(db, pubkey)
+    )

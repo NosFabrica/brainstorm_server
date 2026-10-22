@@ -30,6 +30,7 @@ def create_jwt_token(
     nostr_pubkey: str,
     ttl: timedelta,
     is_admin: bool = False,
+    session_version: int = 0,
 ) -> str:
     issued_at = utc_now().replace(microsecond=0)
     expires_at = issued_at + ttl
@@ -40,6 +41,7 @@ def create_jwt_token(
             "exp": expires_at,
             "token_type": TokenType.USER.value,
             "is_admin": is_admin,
+            "session_version": session_version,
         },
         key=settings.auth_secret_key,
         algorithm=settings.auth_algorithm,
@@ -59,6 +61,7 @@ def decrypt_jwt_token(jwt_token: str) -> JWTData | None:
             nostr_pubkey=claims["sub"],
             token_type=claims.get("token_type", TokenType.USER),
             is_admin=claims.get("is_admin", False),
+            session_version=claims.get("session_version", 0),
         )
     except (jwt.PyJWTError, ValidationError):
         return None

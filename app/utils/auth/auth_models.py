@@ -12,3 +12,4 @@ class JWTData(BaseModel):
     nostr_pubkey: str
     token_type: TokenType = TokenType.USER
     is_admin: bool = False
+    session_version: int = 0
