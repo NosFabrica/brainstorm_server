@@ -684,6 +684,56 @@ class TestNWTAuth:
         assert r.status_code == 200, r.text
 
 
+    def test_token_without_exp_rejected(self, client):
+        token, _pk = make_nwt(exp=None)
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1},
+            headers={"Authorization": f"Nostr {token}"},
+        )
+        assert r.status_code == 403
+        assert "exp" in r.headers.get("x-reason", "").lower()
+
+
+    def test_lifetime_over_cap_rejected(self, client):
+        now = int(time.time())
+        token, _pk = make_nwt(iat=now, exp=now + 3600 + 1)
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1},
+            headers={"Authorization": f"Nostr {token}"},
+        )
+        assert r.status_code == 403
+        assert "lifetime" in r.headers.get("x-reason", "").lower()
+
+    def test_lifetime_over_cap_measured_from_created_at_without_iat(self, client):
+        token, _pk = make_nwt(exp=int(time.time()) + 2 * 3600)
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1},
+            headers={"Authorization": f"Nostr {token}"},
+        )
+        assert r.status_code == 403
+        assert "lifetime" in r.headers.get("x-reason", "").lower()
+
+    def test_lifetime_within_configured_cap_accepted(self, client, monkeypatch):
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "open_ranking_nwt_max_lifetime_seconds", 7200)
+        now = int(time.time())
+        token, _pk = make_nwt(iat=now, exp=now + 7200)
+        with patch(
+            "app.routers.open_ranking.stats.get_user_rank_and_counts",
+            new=AsyncMock(return_value=_fake_stats(0.5)),
+        ):
+            r = client.post(
+                "/stats/pubkey",
+                json={"pubkey": VALID_PUBKEY_1},
+                headers={"Authorization": f"Nostr {token}"},
+            )
+        assert r.status_code == 200, r.text
+
+
 # Default observer = PERIODIC_GRAPERANK_PUBKEY in the test env (conftest).
 DEFAULT_OBSERVER = "be7bf5de068c1d842ed34a7c270507ec940f5ea51671cfd062a95e9d09420d0a"
 

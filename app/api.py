@@ -49,6 +49,7 @@ from app.services.flash_webhook_service import (
 )
 from app.services.nsec_encryption_service import bootstrap_keys
 from app.services.support_notifier import drain_notifications
+from app.utils.auth.auth_util import warn_if_session_secret_short
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
 
 logger = loggr.get_logger(__name__)
@@ -81,6 +82,7 @@ async def lifespan(app: FastAPI):
     rotation = describe_rotation_state(settings.flash_webhook_secret_previous)
     if rotation:
         logger.warning(rotation)
+    warn_if_session_secret_short(settings.auth_secret_key)
 
     await bootstrap_keys()
 

@@ -49,7 +49,7 @@ _DUMMY_ENV = {
     "DB_URL": "postgresql+asyncpg://u:p@localhost:5432/test",
     "DEPLOY_ENVIRONMENT": "TEST",
     "AUTH_ALGORITHM": "HS256",
-    "AUTH_SECRET_KEY": "test-secret",
+    "AUTH_SECRET_KEY": "test-secret-at-least-32-bytes-long",
     "AUTH_ACCESS_TOKEN_EXPIRE_MINUTES": "60",
     "SQL_ADMIN_USERNAME": "admin",
     "SQL_ADMIN_PASSWORD": "admin",

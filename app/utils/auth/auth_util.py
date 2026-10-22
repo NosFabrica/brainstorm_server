@@ -7,8 +7,21 @@ from datetime import datetime, timedelta
 import jwt
 
 from app.core.config import settings
+from app.core.loggr import loggr
 from app.utils.auth.auth_models import JWTData, JWTSQLAdminData
 from app.utils.datetimes import utc_now
+
+logger = loggr.get_logger(__name__)
+
+MIN_SESSION_SECRET_BYTES = 32
+
+
+def warn_if_session_secret_short(secret: str) -> None:
+    if len(secret.encode("utf-8")) < MIN_SESSION_SECRET_BYTES:
+        logger.warning(
+            "AUTH_SECRET_KEY is shorter than 32 bytes; session tokens are easier "
+            "to forge. Generate one with: openssl rand -hex 32"
+        )
 
 
 def create_jwt_token(

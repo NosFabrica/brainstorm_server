@@ -1,7 +1,9 @@
 import re
+from collections.abc import Iterable, Iterator
+from typing import Any
 
 from fastapi import HTTPException, status
-from nostr_sdk import Keys, PublicKey
+from nostr_sdk import Event, Keys, PublicKey
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -17,6 +19,25 @@ def to_hex_pubkey(value: str) -> str:
         return PublicKey.parse(value).to_hex()
     except Exception:
         raise ValueError("must be a valid hex pubkey or npub")
+
+
+def event_tags(event: Event) -> list[list[str]]:
+    return [tag.as_vec() for tag in event.tags().to_vec()]
+
+
+def _iter_tag_values(tags: Iterable[Any], name: str) -> Iterator[Any]:
+    for tag in tags:
+        if isinstance(tag, list) and len(tag) >= 2 and tag[0] == name:
+            yield tag[1]
+
+
+def tag_values(tags: Iterable[Any], name: str) -> list[Any]:
+    """Every `name` tag's value, in order. Takes raw JSON tags or `event_tags(...)`."""
+    return list(_iter_tag_values(tags, name))
+
+
+def first_tag_value(tags: Iterable[Any], name: str) -> Any | None:
+    return next(_iter_tag_values(tags, name), None)
 
 
 def p_tag_pubkeys(tags: list) -> list[str]:

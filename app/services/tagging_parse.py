@@ -13,6 +13,8 @@ import json
 from dataclasses import dataclass
 from typing import TypeGuard
 
+from app.utils.nostr import tag_values
+
 # --------------------------------------------------------------------------
 # The z-tag composition pubkey. THIS IS NOT A SIGNING KEY and is NOT this
 # deployment's assistant pubkey.
@@ -72,11 +74,10 @@ def _is_hex64(value: object) -> TypeGuard[str]:
 
 
 def _first_tag_value(event: dict, key: str) -> str | None:
-    for tag in event.get("tags") or []:
-        if isinstance(tag, list) and len(tag) >= 2 and tag[0] == key:
-            value = tag[1]
-            if isinstance(value, str) and value:
-                return value
+    """First non-empty string value; malformed tags are skipped, not fatal."""
+    for value in tag_values(event.get("tags") or [], key):
+        if isinstance(value, str) and value:
+            return value
     return None
 
 

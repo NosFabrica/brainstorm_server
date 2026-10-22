@@ -142,6 +142,8 @@ class Settings(BaseSettings):
     # the endpoints are open/unauthenticated and use the public global observer
     # plus any client-supplied `pov` per ORE-01.
     open_ranking_require_auth: bool = Field(default=False)
+    # Longest NWT lifetime (exp minus iat/created_at) accepted, in seconds.
+    open_ranking_nwt_max_lifetime_seconds: int = Field(default=3600)
 
     @property
     def billing_sync_active(self) -> bool:

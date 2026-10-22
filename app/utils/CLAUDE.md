@@ -44,7 +44,7 @@ admin-specific). It chains after `verify_token` and checks
 
 ## auth/
 
-- **`auth_util.py`** — `mint_jwt(...)`, `verify_jwt(...)`, `generate_secure_password()` (used as default for `BrainstormRequest.password`).
+- **`auth_util.py`** — `mint_jwt(...)`, `verify_jwt(...)`, `generate_secure_password()` (used as default for `BrainstormRequest.password`), and `warn_if_session_secret_short()` — the startup warning (never a refusal) for an `AUTH_SECRET_KEY` under 32 bytes.
 - **`auth_models.py`** — `JWTData` (pubkey, expiry, optional `is_admin`).
 - **`nip98.py`** — validates a NIP-98 signed event:
   - method/URL tags match the inbound request
@@ -65,7 +65,7 @@ or you'll have rows that can't be decrypted.
 
 ## nostr.py
 
-Tiny Nostr helpers: `generate_random_nsec`, and `resolve_pubkey_or_400` (hex or npub in, canonical hex out, 400 on anything else — shared by `/networkAlerts` and `/shortestPath`). Treat it as a place to drop small helpers; if it grows past ~50 LOC, split by topic.
+Tiny Nostr helpers: `generate_random_nsec`, the one tag reader (`tag_values` / `first_tag_value` over raw JSON tags, or `event_tags(event)` for a parsed `Event`), and `resolve_pubkey_or_400` (hex or npub in, canonical hex out, 400 on anything else — shared by `/networkAlerts` and `/shortestPath`). Treat it as a place to drop small helpers; if it grows past ~50 LOC, split by topic.
 
 ## rate_limiting/
 

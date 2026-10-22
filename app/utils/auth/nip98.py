@@ -6,6 +6,7 @@ from fastapi import HTTPException, Request, status
 from nostr_sdk import Event
 
 from app.core.config import settings
+from app.utils.nostr import event_tags, first_tag_value
 
 NIP98_KIND = 27235
 NIP98_MAX_CLOCK_SKEW_SECONDS = 60
@@ -16,14 +17,6 @@ def _expected_request_url(request: Request) -> str:
     path = request.url.path
     query = request.url.query
     return f"{base}{path}?{query}" if query else f"{base}{path}"
-
-
-def _find_tag_value(event: Event, name: str) -> str | None:
-    for tag in event.tags().to_vec():
-        vec = tag.as_vec()
-        if len(vec) >= 2 and vec[0] == name:
-            return vec[1]
-    return None
 
 
 def _unauthorized(detail: str) -> HTTPException:
@@ -56,11 +49,12 @@ async def validate_nip98_event(request: Request, encoded_event: str) -> str:
     if abs(now - created_at) > NIP98_MAX_CLOCK_SKEW_SECONDS:
         raise _unauthorized("Bad NIP-98 token: created_at outside accepted window")
 
-    method_tag = _find_tag_value(event, "method")
+    tags = event_tags(event)
+    method_tag = first_tag_value(tags, "method")
     if not method_tag or method_tag.upper() != request.method.upper():
         raise _unauthorized("Bad NIP-98 token: HTTP method mismatch")
 
-    url_tag = _find_tag_value(event, "u")
+    url_tag = first_tag_value(tags, "u")
     if not url_tag or url_tag != _expected_request_url(request):
         raise _unauthorized("Bad NIP-98 token: URL mismatch")
 
@@ -69,7 +63,7 @@ async def validate_nip98_event(request: Request, encoded_event: str) -> str:
     # body here is safe — Starlette caches it on the Request, so downstream
     # body-parsing in the route handler reuses the cached bytes.
     body = await request.body()
-    payload_tag = _find_tag_value(event, "payload")
+    payload_tag = first_tag_value(tags, "payload")
     if body:
         if not payload_tag:
             raise _unauthorized(
