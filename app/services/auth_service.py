@@ -2,7 +2,7 @@ import json
 import secrets
 from datetime import timedelta
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 from nostr_sdk import Event
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
@@ -10,11 +10,13 @@ from app.core.admin_whitelist import get_whitelisted_pubkeys
 from app.core.config import settings
 from app.core.redis_db import redis_client
 from app.repos.brainstorm_nsec import (
+    brainstorm_nsec_exists_by_pubkey_on_db,
     get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
 )
 from app.schemas.schemas import AuthSuccessfulToken
 from app.utils.auth.auth_util import create_jwt_token
 from app.utils.nostr import first_tag_value
+from app.utils.rate_limiting.rate_limiting import rate_limit_login_new_observer
 
 CHALLENGE_TTL = 300  # seconds
 LOGIN_KIND = 22242
@@ -46,7 +48,7 @@ async def generate_nostr_auth_challenge(pubkey: str) -> str:
 
 
 async def verify_nostr_auth_challenge(
-    db: AsyncDBSession, pubkey: str, raw_event: dict
+    db: AsyncDBSession, request: Request, pubkey: str, raw_event: dict
 ) -> AuthSuccessfulToken:
     """Consume the challenge the signed login event answers, then mint a session token."""
     try:
@@ -70,6 +72,9 @@ async def verify_nostr_auth_challenge(
     issued_for = await redis_client.getdel(_challenge_key(challenge))
     if issued_for is None or issued_for != pubkey:
         raise _unauthorized("No challenge found or expired")
+
+    if not await brainstorm_nsec_exists_by_pubkey_on_db(db, pubkey):
+        await rate_limit_login_new_observer(request)
 
     await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey)
     return generate_authentication_token(pubkey)

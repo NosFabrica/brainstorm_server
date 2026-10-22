@@ -210,6 +210,32 @@ def mock_rate_limit() -> AsyncMock:
     app.dependency_overrides.pop(rate_limit_graperank, None)
 
 
+class _LimiterRedis:
+    """In-memory counters, so per-IP limiters never reach a real Redis."""
+
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = {}
+
+    async def incr(self, key: str) -> int:
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return self.counts[key]
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        return True
+
+    async def ttl(self, key: str) -> int:
+        return -1
+
+
+@pytest.fixture(autouse=True)
+def limiter_redis(monkeypatch) -> _LimiterRedis:
+    fake = _LimiterRedis()
+    monkeypatch.setattr(
+        "app.utils.rate_limiting.rate_limiting.get_redis_client", lambda: fake
+    )
+    return fake
+
+
 @pytest.fixture
 def mock_kind3_write(monkeypatch) -> AsyncMock:
     """Patch the reused kind-3 handler + Neo4j session opener.

@@ -78,7 +78,15 @@ check in `user_service.py`.
   /user/graperank` and `POST /user/followList`; `/shorturl` POST defines its own
   (`"shorturl_create"`, 1 / 1s) in its router.
 - `validate_rate_limit(ip, policy)` — the only per-IP limiter. Counter key is
-  `rate_limit:<key_prefix>:<ip>`.
+  `rate_limit:<key_prefix>:<client_bucket(ip)>`; `client_bucket` folds IPv6 to
+  its /64 (one host normally holds the whole prefix). Every 429 carries
+  `Retry-After` (the window's remaining TTL) and logs a warning naming the bucket.
+- Login (`/authChallenge`): `rate_limit_login_challenge` / `rate_limit_login_verify`
+  (per IP per minute) and `rate_limit_login_new_observer` (per IP per hour, only
+  for verifies that would create an Observer row), all built by
+  `rate_limit_per_ip(key_prefix, limit, window)`. Limits are settings
+  (`LOGIN_*_RATE_LIMIT_*`), read per request; never per pubkey, or an attacker
+  could spend a victim's bucket.
 - `validate_subscription_refresh_allowed(pubkey)` (12 / 60s) and
   `validate_flash_record_read_allowed(operator_pubkey)` (30 / 60s) — per-pubkey
   billing throttles. All limiters share `_enforce_window`.

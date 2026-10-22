@@ -1,3 +1,5 @@
+import ipaddress
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
@@ -28,7 +30,17 @@ async def _enforce_window(key: str, limit: int, window_seconds: int) -> None:
     if current == 1:
         await redis_client.expire(key, window_seconds)
     if current > limit:
-        raise HTTPException(status_code=429, detail="Too many requests")
+        retry_after = await redis_client.ttl(key)
+        if retry_after < 1:
+            retry_after = window_seconds
+        logger.warning(
+            "rate limit hit: bucket=%s limit=%d/%ds", key, limit, window_seconds
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests",
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 def resolve_client_ip(request: Request) -> str:
@@ -52,10 +64,23 @@ def resolve_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def client_bucket(ip_address: str) -> str:
+    """IPv6 callers are bucketed by /64: one host normally holds the whole prefix."""
+    try:
+        address = ipaddress.ip_address(ip_address)
+    except ValueError:
+        return ip_address
+    if address.version == 4:
+        return str(address)
+    if address.ipv4_mapped:
+        return str(address.ipv4_mapped)
+    return str(ipaddress.ip_network(f"{address}/64", strict=False))
+
+
 async def validate_rate_limit(ip_address: str, policy: RateLimitPolicy) -> None:
     """Fixed-window rate limit per IP; 429 once the window's count exceeds the limit."""
     await _enforce_window(
-        f"rate_limit:{policy.key_prefix}:{ip_address}",
+        f"rate_limit:{policy.key_prefix}:{client_bucket(ip_address)}",
         policy.limit,
         policy.window_seconds,
     )
@@ -68,6 +93,32 @@ def rate_limit(policy: RateLimitPolicy):
         await validate_rate_limit(resolve_client_ip(request), policy)
 
     return dependency
+
+
+def rate_limit_per_ip(
+    key_prefix: str, limit: Callable[[], int], window_seconds: int
+) -> Callable[[Request], Awaitable[None]]:
+    """Like ``rate_limit``, but ``limit`` is read on every request (a setting)."""
+
+    async def dependency(request: Request) -> None:
+        await validate_rate_limit(
+            resolve_client_ip(request),
+            RateLimitPolicy(key_prefix, limit(), window_seconds),
+        )
+
+    return dependency
+
+
+rate_limit_login_challenge = rate_limit_per_ip(
+    "login_challenge", lambda: settings.login_challenge_rate_limit_per_minute, 60
+)
+rate_limit_login_verify = rate_limit_per_ip(
+    "login_verify", lambda: settings.login_verify_rate_limit_per_minute, 60
+)
+# Bounds Observer rows minted from throwaway keypairs.
+rate_limit_login_new_observer = rate_limit_per_ip(
+    "login_new_observer", lambda: settings.login_new_observer_rate_limit_per_hour, 3600
+)
 
 
 # Generous enough for the pending-checkout poll (every few seconds), tight

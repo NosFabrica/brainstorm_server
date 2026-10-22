@@ -56,6 +56,9 @@ class _FakeRedis:
         self.expiries[key] = seconds
         return True
 
+    async def ttl(self, key: str) -> int:
+        return self.expiries.get(key, -1)
+
 
 @pytest.fixture
 def fake_redis(monkeypatch) -> _FakeRedis:

@@ -89,6 +89,7 @@ the app client's response handling; the admin UI reads models directly.
 
 - **GET** `/{pubkey}` → `NostrAuthChallengeResponse` (`data.challenge`). Issues a nonce, stored in Redis as `nostr:challenge:{nonce}` → pubkey for 5 min. A new challenge never invalidates an outstanding one.
 - **POST** `/{pubkey}/verify` (body: `SubmitNostrAuthChallengeBody{signed_event}`) → `SubmitNostrAuthChallengeResponse` (`data.token`). Requires kind 22242, author = path pubkey, `t=brainstorm_login`, a valid id+sig, and a live challenge (from the event's `challenge` tag) issued for that pubkey; consumes it atomically (GETDEL), so it works once. Every failure is 401. No `created_at` check: freshness is the single-use 5-min challenge. Mints JWT. Logic lives in `services/auth_service.py`.
+- Both are rate-limited per client IP (429 + `Retry-After`), plus a tighter per-IP hourly cap on verifies that create a new Observer. See `utils/CLAUDE.md` § rate_limiting.
 
 ### `setup/router.py` — Nostr pubkey setup
 

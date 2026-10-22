@@ -191,13 +191,16 @@ import sys
 from unittest.mock import AsyncMock
 from fastapi.testclient import TestClient
 from nostr_sdk import Keys
+import tests.conftest
 from tests.test_auth_challenge import _FakeRedis, _challenge, _signed, _verify
 from app.api import app
 from app.core.database import get_db
 from app.services import auth_service
+from app.utils.rate_limiting import rate_limiting
 
 assert False, "asserts must be stripped"
 auth_service.redis_client = _FakeRedis()
+rate_limiting.get_redis_client = lambda: tests.conftest._LimiterRedis()
 auth_service.get_or_create_brainstorm_observer_nsec_by_pubkey_on_db = AsyncMock()
 async def _no_db():
     yield AsyncMock()
