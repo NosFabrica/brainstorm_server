@@ -1,19 +1,21 @@
 import hashlib
-import json
 import secrets
 import string
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import jwt
+from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.loggr import loggr
-from app.utils.auth.auth_models import JWTData, JWTSQLAdminData
+from app.utils.auth.auth_models import JWTData, TokenType
 from app.utils.datetimes import utc_now
 
 logger = loggr.get_logger(__name__)
 
+JWT_LEEWAY = timedelta(seconds=30)
 MIN_SESSION_SECRET_BYTES = 32
+SQL_ADMIN_TOKEN_TTL = timedelta(minutes=15)
 
 
 def warn_if_session_secret_short(secret: str) -> None:
@@ -26,37 +28,40 @@ def warn_if_session_secret_short(secret: str) -> None:
 
 def create_jwt_token(
     nostr_pubkey: str,
-    token_expiration_datetime: datetime,
+    ttl: timedelta,
     is_admin: bool = False,
 ) -> str:
-    jwt_data = JWTData(
-        nostr_pubkey=nostr_pubkey,
-        expires_date=token_expiration_datetime,
-        is_admin=is_admin,
-    )
-
-    jwt_token = jwt.encode(
-        payload=json.loads(jwt_data.model_dump_json()),
+    issued_at = utc_now().replace(microsecond=0)
+    expires_at = issued_at + ttl
+    return jwt.encode(
+        payload={
+            "sub": nostr_pubkey,
+            "iat": issued_at,
+            "exp": expires_at,
+            "token_type": TokenType.USER.value,
+            "is_admin": is_admin,
+        },
         key=settings.auth_secret_key,
         algorithm=settings.auth_algorithm,
     )
 
-    return jwt_token
-
 
 def decrypt_jwt_token(jwt_token: str) -> JWTData | None:
     try:
-        jwt_data = JWTData.model_validate(
-            jwt.decode(
-                jwt_token,
-                settings.auth_secret_key,
-                algorithms=[settings.auth_algorithm],
-            )
+        claims = jwt.decode(
+            jwt_token,
+            settings.auth_secret_key,
+            algorithms=[settings.auth_algorithm],
+            options={"require": ["exp", "iat", "sub"]},
+            leeway=JWT_LEEWAY,
         )
-    except (jwt.exceptions.DecodeError, jwt.exceptions.InvalidAlgorithmError):
+        return JWTData(
+            nostr_pubkey=claims["sub"],
+            token_type=claims.get("token_type", TokenType.USER),
+            is_admin=claims.get("is_admin", False),
+        )
+    except (jwt.PyJWTError, ValidationError):
         return None
-
-    return jwt_data
 
 
 def encrypt_password(password: str) -> str:
@@ -67,29 +72,26 @@ def encrypt_password(password: str) -> str:
 
 
 def sql_admin_create_jwt_token() -> str:
-    jwt_data = JWTSQLAdminData(
-        expires_date=utc_now() + timedelta(minutes=15),
-    )
-
-    jwt_token = jwt.encode(
-        payload=json.loads(jwt_data.model_dump_json()),
+    issued_at = utc_now().replace(microsecond=0)
+    return jwt.encode(
+        payload={"iat": issued_at, "exp": issued_at + SQL_ADMIN_TOKEN_TTL},
         key=settings.auth_secret_key,
         algorithm=settings.auth_algorithm,
     )
 
-    return jwt_token
 
-
-def sql_admin_decrypt_jwt_token(jwt_token: str) -> JWTSQLAdminData:
-    jwt_data = JWTSQLAdminData.model_validate(
+def sql_admin_verify_jwt_token(jwt_token: str) -> bool:
+    try:
         jwt.decode(
             jwt_token,
             settings.auth_secret_key,
             algorithms=[settings.auth_algorithm],
+            options={"require": ["exp", "iat"]},
+            leeway=JWT_LEEWAY,
         )
-    )
-
-    return jwt_data
+    except jwt.PyJWTError:
+        return False
+    return True
 
 
 def generate_secure_password(length: int = 32) -> str:

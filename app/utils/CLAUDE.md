@@ -44,8 +44,8 @@ admin-specific). It chains after `verify_token` and checks
 
 ## auth/
 
-- **`auth_util.py`** — `mint_jwt(...)`, `verify_jwt(...)`, `generate_secure_password()` (used as default for `BrainstormRequest.password`), and `warn_if_session_secret_short()` — the startup warning (never a refusal) for an `AUTH_SECRET_KEY` under 32 bytes.
-- **`auth_models.py`** — `JWTData` (pubkey, expiry, optional `is_admin`).
+- **`auth_util.py`** — `create_jwt_token(...)` mints session tokens with standard `sub`/`iat`/`exp` (+ `is_admin` for UI display); `decrypt_jwt_token(...)` is the one session-token decode path (library-enforced expiry, `None` on any invalid token). SQLAdmin panel: `sql_admin_create_jwt_token` / `sql_admin_verify_jwt_token`. Also `generate_secure_password()` (used as default for `BrainstormRequest.password`), and `warn_if_session_secret_short()` — the startup warning (never a refusal) for an `AUTH_SECRET_KEY` under 32 bytes.
+- **`auth_models.py`** — `JWTData` (pubkey, optional `is_admin`).
 - **`nip98.py`** — validates a NIP-98 signed event:
   - method/URL tags match the inbound request
   - signature verifies against the claimed pubkey

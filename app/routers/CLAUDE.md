@@ -50,7 +50,7 @@ Defined in `app/utils/api_validators.py` (not here).
 - **`verify_token`** — FastAPI dependency. Accepts EITHER:
   - JWT bearer (`Authorization: Bearer <token>` or legacy `access_token` header), OR
   - **NIP-98** signed Nostr event (`Authorization: Nostr <base64-event>`).
-  - On success sets `request.state.jwt_data: JWTData` (pubkey, expiry, is_admin).
+  - On success sets `request.state.jwt_data: JWTData` (pubkey, is_admin).
 - **`verify_billing_access`** — Defined in `admin/billing/router.py`. Checks `app.core.billing_admin_whitelist.get_billing_pubkeys()`, which falls back to the admin whitelist when `billing_admin_whitelisted_pubkeys` is unset. Deliberately **not** coupled to `admin_enabled`: these views carry payment data, and whoever answers "did my payment go through?" should not thereby inherit nsec key rotation.
 - **`verify_admin_access`** — Defined in `admin/router.py`. Checks `request.state.jwt_data.nostr_pubkey` against the in-memory admin whitelist (`app.core.admin_whitelist.get_whitelisted_pubkeys`, hydrated at startup from `settings.admin_whitelisted_pubkeys`).
 - Applied via `.include_router(..., dependencies=[Depends(verify_token), Depends(verify_admin_access)])` rather than per-handler.

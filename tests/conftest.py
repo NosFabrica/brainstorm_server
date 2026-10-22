@@ -23,7 +23,6 @@ import os
 import sys
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -189,7 +188,7 @@ def caller() -> _Caller:
 def client(caller: _Caller):
     async def _fake_verify_token(request: Request) -> None:
         request.state.jwt_data = JWTData(
-            nostr_pubkey=caller.pubkey, expires_date=datetime.max
+            nostr_pubkey=caller.pubkey
         )
 
     app.dependency_overrides[verify_token] = _fake_verify_token
