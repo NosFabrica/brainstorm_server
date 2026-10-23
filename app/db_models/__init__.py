@@ -21,6 +21,7 @@ from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.utils.auth.auth_util import generate_secure_password
+from app.utils.shorturl_entities import EntityKind
 
 
 class BrainstormRequestStatus(enum.Enum):
@@ -522,7 +523,7 @@ class NostrUserTagging(Base):
 
 
 class ShortUrl(TimestampMixin, Base):
-    """A share link: a short code for a pubkey + relay-hint set.
+    """A share link: a short code for an entity `(kind, entity_key)`.
 
     See docs/adr/0002-short-links-in-postgres.md.
     """
@@ -531,18 +532,16 @@ class ShortUrl(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     # Variable-length on purpose: the generated length may change.
     short_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
-    pubkey: Mapped[str] = mapped_column(String(64), nullable=False)
-    # sha256 of the normalized relay set.
-    relays_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[EntityKind] = mapped_column(String(16), nullable=False)
+    entity_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    # First mint wins; never rewritten.
     relays: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
 
     # short_code needs no explicit Index: unique=True already creates one.
     __table_args__ = (
-        UniqueConstraint(
-            "pubkey", "relays_fingerprint", name="uq_short_url_pubkey_fingerprint"
-        ),
+        UniqueConstraint("kind", "entity_key", name="uq_short_url_kind_entity_key"),
     )
 
 

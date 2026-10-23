@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_valida
 
 from app.core.flash import SettableStatus, is_whole_day_boundary
 from app.schemas.error_codes import ErrorCode
+from app.utils.shorturl_entities import EntityKind
 
 
 def _instant_wire_format(value: datetime | None) -> str | None:
@@ -704,16 +705,17 @@ class UnresolvedResolutionOutcome(BaseModel):
 ###################
 
 
-class ShortUrlContent(BaseModel):
-    pubkey: str
+class ShortUrlEntity(BaseModel):
+    kind: EntityKind
+    key: str
     relays: list[str]
+    path: str
 
 
-class CreatedShortUrl(BaseModel):
+class CreatedShortUrl(ShortUrlEntity):
     model_config = ConfigDict(populate_by_name=True)
 
     short_code: str = Field(serialization_alias="shortCode")
-    content: ShortUrlContent
 
 
 class SupportTicketItem(BaseModel):
