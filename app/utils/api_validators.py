@@ -1,5 +1,4 @@
 import re
-from datetime import datetime
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, Security, status
@@ -10,10 +9,10 @@ from app.core.admin_whitelist import get_whitelisted_pubkeys
 from app.core.config import settings
 from app.core.database import get_db
 from app.repos.brainstorm_nsec import brainstorm_nsec_exists_by_pubkey_on_db
+from app.repos.session_version_repo import read_session_version_on_db
 from app.utils.auth.auth_models import JWTData
 from app.utils.auth.auth_util import decrypt_jwt_token
 from app.utils.auth.nip98 import validate_nip98_event
-from app.utils.datetimes import utc_now
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -53,15 +52,7 @@ async def verify_token(
                 detail="NIP-98 pubkey is not registered",
             )
         is_admin = settings.admin_enabled and pubkey in get_whitelisted_pubkeys()
-        # expires_date is required by JWTData but unused on this path: NIP-98
-        # freshness is enforced per-request via the event's created_at ±60s
-        # window, and verify_token's expires_date check runs only on the JWT
-        # branch below.
-        nip98_jwt_data = JWTData(
-            nostr_pubkey=pubkey,
-            expires_date=datetime.max,
-            is_admin=is_admin,
-        )
+        nip98_jwt_data = JWTData(nostr_pubkey=pubkey, is_admin=is_admin)
         request.state.jwt_data = nip98_jwt_data
         return nip98_jwt_data
 
@@ -85,11 +76,12 @@ async def verify_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Bad token",
         )
-
-    if utc_now() > jwt_data.expires_date:
+    if jwt_data.session_version < await read_session_version_on_db(
+        db, jwt_data.nostr_pubkey
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Your token has expired",
+            detail="Session revoked",
         )
     request.state.jwt_data = jwt_data
     return jwt_data

@@ -50,7 +50,7 @@ Defined in `app/utils/api_validators.py` (not here).
 - **`verify_token`** — FastAPI dependency. Accepts EITHER:
   - JWT bearer (`Authorization: Bearer <token>` or legacy `access_token` header), OR
   - **NIP-98** signed Nostr event (`Authorization: Nostr <base64-event>`).
-  - On success sets `request.state.jwt_data: JWTData` (pubkey, expiry, is_admin).
+  - On success sets `request.state.jwt_data: JWTData` (pubkey, is_admin).
 - **`verify_billing_access`** — Defined in `admin/billing/router.py`. Checks `app.core.billing_admin_whitelist.get_billing_pubkeys()`, which falls back to the admin whitelist when `billing_admin_whitelisted_pubkeys` is unset. Deliberately **not** coupled to `admin_enabled`: these views carry payment data, and whoever answers "did my payment go through?" should not thereby inherit nsec key rotation.
 - **`verify_admin_access`** — Defined in `admin/router.py`. Checks `request.state.jwt_data.nostr_pubkey` against the in-memory admin whitelist (`app.core.admin_whitelist.get_whitelisted_pubkeys`, hydrated at startup from `settings.admin_whitelisted_pubkeys`).
 - Applied via `.include_router(..., dependencies=[Depends(verify_token), Depends(verify_admin_access)])` rather than per-handler.
@@ -81,14 +81,18 @@ PRD's admin convention — raw `response_model`, no success wrapper (`Page[...]`
 `/admin/billing`'s divergence/resync/plans/block bodies). The wrapper exists for
 the app client's response handling; the admin UI reads models directly.
 
+**Exception: `POST /user/sessions/revoke` is a bare 204.** Sign-out-everywhere has
+nothing to report; the client only needs success, so there is no body to wrap.
+
 **Exception: routes whose shape a third-party spec dictates.** Where an external protocol fixes the response body, the endpoint returns it unwrapped — the `.well-known` documents (`open_ranking/well_known.py` for ORE-01, `nip05/well_known.py` for NIP-05) via an explicit `JSONResponse`, and likewise the Open Ranking payloads. Wrapping any of them would break the spec. ORE-05 `/search/pubkeys` is a pass-through to the search relay (`open_ranking/search.py`): its body, status, `X-Reason` and `Retry-After` are the relay's.
 
 ## Per-router summary
 
 ### `auth_challenge/router.py` — Nostr login
 
-- **GET** `/{pubkey}` → `NostrAuthChallengeResponse` (`data.challenge`). Generates challenge, stores in Redis with TTL.
-- **POST** `/{pubkey}/verify` (body: `SubmitNostrAuthChallengeBody{signed_event}`) → `SubmitNostrAuthChallengeResponse` (`data.token`). Validates signed event, mints JWT.
+- **GET** `/{pubkey}` → `NostrAuthChallengeResponse` (`data.challenge`). Issues a nonce, stored in Redis as `nostr:challenge:{nonce}` → pubkey for 5 min. A new challenge never invalidates an outstanding one.
+- **POST** `/{pubkey}/verify` (body: `SubmitNostrAuthChallengeBody{signed_event}`) → `SubmitNostrAuthChallengeResponse` (`data.token`). Requires kind 22242, author = path pubkey, `t=brainstorm_login`, a valid id+sig, and a live challenge (from the event's `challenge` tag) issued for that pubkey; consumes it atomically (GETDEL), so it works once. Every failure is 401. No `created_at` check: freshness is the single-use 5-min challenge. Mints JWT. Logic lives in `services/auth_service.py`.
+- Both are rate-limited per client IP (429 + `Retry-After`), plus a tighter per-IP hourly cap on verifies that create a new Observer. See `utils/CLAUDE.md` § rate_limiting.
 
 ### `setup/router.py` — Nostr pubkey setup
 
@@ -119,6 +123,7 @@ the `/{pubkey}` catch-all.
 | GET | `/self` | `GetOwnUserDataResponse` | Caller's graph + history. Rows' `trusted_reporters` count above the caller's preset reporter cutoff |
 | GET | `/subscription` | `GetSubscriptionResponse` | The caller's subscription as the UI shows it. Always answers, billing configured or not. `policy` is what they receive (their scheduling assignment — there is no tier string), `plan` is which one they bought (read through `billing_plan_id`) priced from the `pricingSnapshot` Flash recorded at their signup, never the plan's current listing — null price fields when Flash recorded no snapshot, never a substituted or zero one — the three dates come straight off the row, and `status` is the translated Flash vocabulary derived from `policy.is_default`. No `rail` — Flash exposes no payment method |
 | POST | `/subscription/refresh` | `RefreshSubscriptionResponse` | Re-reads Flash for the caller and applies it — the redirect-landing call and the `pending` poll, which are the guide's two return paths. Optional body `{subscription_id?}`: given one, THAT subscription is verified with Flash; absent (a `pending` return carries none) the read is by reference. The id is a handle, not an authority — the reference it must carry is the caller's own pubkey, so a stranger's id changes nothing and discloses nothing. The redirect's `ref` is not accepted at all. The view carries `verification` (`verified`/`mismatch`/`unknown`/`not_given`/`unavailable`) so a refused id is not mistaken for a payment still confirming. An id naming a superseded subscription (an old redirect replayed after a re-subscribe) is decided from the reference read instead, never from the stale row. Per-pubkey rate limit |
+| POST | `/sessions/revoke` | 204, no body | Sign out everywhere: bumps the caller's session version, so every token issued so far is a 401 |
 | POST | `/assistantProfile` | `PublishAssistantProfileResponse` | Publishes kind-0 for the user's brainstorm assistant key |
 
 **Public (`public_router`)** — optional auth. Observer perspective = caller's
@@ -187,7 +192,7 @@ Attribute and dismiss both answer `UnresolvedResolutionOutcome`. `applied` false
 
 ### `admin/...` — administrative endpoints
 
-- **`admin/users`** — list users (paginated). Sort: `pubkey | times_calculated | last_triggered | last_updated`. `search` supports hex or npub. History: `/{pubkey}/history`. `POST /{pubkey}/resync` forces a full relay re-assert for that one observer.
+- **`admin/users`** — list users (paginated). Sort: `pubkey | times_calculated | last_triggered | last_updated`. `search` supports hex or npub. History: `/{pubkey}/history`. `POST /{pubkey}/resync` forces a full relay re-assert for that one observer. `POST /{pubkey}/sessions/revoke` kills that user's session tokens (users sign out everywhere themselves via `POST /user/sessions/revoke`).
 - **`admin/activity`** — platform-wide request activity feed (paginated, filter by `status`, `algorithm`, `pubkey`, `days`).
 - **`admin/stats`** — `GET /` → `AdminStats{total_users, scored_users, sp_adopters, queue_depth}`.
 - **`admin/graperank`** — `PUT/GET /preset/{id}` for DEFAULT/PERMISSIVE/RESTRICTIVE; `GET /preset/{id}/history` for the audit log.

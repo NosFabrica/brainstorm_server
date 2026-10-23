@@ -443,3 +443,23 @@ async def select_brainstorm_nsec_history_fields_on_db(
 
     result.nsec = _resolve_plaintext_nsec(result)
     return result
+
+
+async def get_session_version_on_db(db: AsyncDBSession, pubkey: str) -> int:
+    statement = select(BrainstormNsec.session_version).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none() or 0
+
+
+async def bump_session_version_on_db(db: AsyncDBSession, pubkey: str) -> int | None:
+    """Returns the new version, or None when the user has no row."""
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(session_version=BrainstormNsec.session_version + 1)
+        .returning(BrainstormNsec.session_version)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none()

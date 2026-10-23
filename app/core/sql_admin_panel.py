@@ -12,9 +12,8 @@ from app.db_models import (
 )
 from app.utils.auth.auth_util import (
     sql_admin_create_jwt_token,
-    sql_admin_decrypt_jwt_token,
+    sql_admin_verify_jwt_token,
 )
-from app.utils.datetimes import utc_now
 
 
 class AdminAuth(AuthenticationBackend):
@@ -40,10 +39,7 @@ class AdminAuth(AuthenticationBackend):
     async def authenticate(self, request: Request) -> RedirectResponse | bool:
         sqladmin_token = request.session.get("admin_panel_token")
 
-        if (
-            not sqladmin_token
-            or utc_now() > sql_admin_decrypt_jwt_token(sqladmin_token).expires_date
-        ):
+        if not sqladmin_token or not sql_admin_verify_jwt_token(sqladmin_token):
             return RedirectResponse(request.url_for("admin:login"), status_code=302)
 
         return True

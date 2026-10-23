@@ -65,6 +65,7 @@ file. Briefly:
 | `75e7de43ccf0_add_unique_kind_constraint.py` | UNIQUE(kind) on transferer rows |
 | `1d144470cb48_*` etc. | (see file for details) |
 | `c3d4e5f6a7b8_add_short_url.py` | `short_url` — share-link records moved out of Redis (see `docs/adr/0002-short-links-in-postgres.md`) |
+| `a7c3e9f1b2d4_add_session_version.py` | `brainstorm_nsec.session_version` — bumped to revoke a user's session tokens |
 
 **Orphaned columns (intentional):** `brainstorm_request.force_full_vespa` and
 `brainstorm_nsec.is_observer_search_available` stay in the database but are no longer mapped or used

@@ -35,6 +35,8 @@ Accepts either:
 1. **JWT bearer** — `Authorization: Bearer <token>` or legacy `access_token` header.
 2. **NIP-98** — `Authorization: Nostr <base64-event>`. Delegates to `auth/nip98.py` for signature + tag validation.
 
+A bearer token whose `session_version` is behind the user's (`repos/session_version_repo.py`, Redis-cached for 60s, written through on a bump) is a 401 "Session revoked"; tokens without the claim count as version 0. NIP-98 is never version-checked: it's signed per request.
+
 On failure it raises `HTTPException(401, detail="...")` — `detail` is a plain string throughout this repo, see [`app/services/CLAUDE.md`](../services/CLAUDE.md) → Errors.
 
 There's also a `verify_admin_access` dependency defined in
@@ -44,8 +46,8 @@ admin-specific). It chains after `verify_token` and checks
 
 ## auth/
 
-- **`auth_util.py`** — `mint_jwt(...)`, `verify_jwt(...)`, `generate_secure_password()` (used as default for `BrainstormRequest.password`).
-- **`auth_models.py`** — `JWTData` (pubkey, expiry, optional `is_admin`).
+- **`auth_util.py`** — `create_jwt_token(...)` mints session tokens with standard `sub`/`iat`/`exp` (+ `is_admin` for UI display, `session_version` for revocation); `decrypt_jwt_token(...)` is the one session-token decode path (library-enforced expiry, `None` on any invalid token). SQLAdmin panel: `sql_admin_create_jwt_token` / `sql_admin_verify_jwt_token`. Also `generate_secure_password()` (used as default for `BrainstormRequest.password`), and `warn_if_session_secret_short()` — the startup warning (never a refusal) for an `AUTH_SECRET_KEY` under 32 bytes.
+- **`auth_models.py`** — `JWTData` (pubkey, optional `is_admin`, `session_version`).
 - **`nip98.py`** — validates a NIP-98 signed event:
   - method/URL tags match the inbound request
   - signature verifies against the claimed pubkey
@@ -65,7 +67,7 @@ or you'll have rows that can't be decrypted.
 
 ## nostr.py
 
-Tiny Nostr helpers: `generate_random_nsec`, and `resolve_pubkey_or_400` (hex or npub in, canonical hex out, 400 on anything else — shared by `/networkAlerts` and `/shortestPath`). Treat it as a place to drop small helpers; if it grows past ~50 LOC, split by topic.
+Tiny Nostr helpers: `generate_random_nsec`, the one tag reader (`tag_values` / `first_tag_value` over raw JSON tags, or `event_tags(event)` for a parsed `Event`), and `resolve_pubkey_or_400` (hex or npub in, canonical hex out, 400 on anything else — shared by `/networkAlerts` and `/shortestPath`). Treat it as a place to drop small helpers; if it grows past ~50 LOC, split by topic.
 
 ## rate_limiting/
 
@@ -78,7 +80,15 @@ check in `user_service.py`.
   /user/graperank` and `POST /user/followList`; `/shorturl` POST defines its own
   (`"shorturl_create"`, 1 / 1s) in its router.
 - `validate_rate_limit(ip, policy)` — the only per-IP limiter. Counter key is
-  `rate_limit:<key_prefix>:<ip>`.
+  `rate_limit:<key_prefix>:<client_bucket(ip)>`; `client_bucket` folds IPv6 to
+  its /64 (one host normally holds the whole prefix). Every 429 carries
+  `Retry-After` (the window's remaining TTL) and logs a warning naming the bucket.
+- Login (`/authChallenge`): `rate_limit_login_challenge` / `rate_limit_login_verify`
+  (per IP per minute) and `rate_limit_login_new_observer` (per IP per hour, only
+  for verifies that would create an Observer row), all built by
+  `rate_limit_per_ip(key_prefix, limit, window)`. Limits are settings
+  (`LOGIN_*_RATE_LIMIT_*`), read per request; never per pubkey, or an attacker
+  could spend a victim's bucket.
 - `validate_subscription_refresh_allowed(pubkey)` (12 / 60s) and
   `validate_flash_record_read_allowed(operator_pubkey)` (30 / 60s) — per-pubkey
   billing throttles. All limiters share `_enforce_window`.

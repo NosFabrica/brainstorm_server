@@ -9,6 +9,7 @@ never touch SQLAlchemy `Select`s or Cypher strings directly.
 |---|---|---|
 | `brainstorm_request_repo.py` | PostgreSQL (`brainstorm_request`) | GrapeRank job lifecycle: CRUD, status transitions, stale sweep, recent-activity statement builders |
 | `brainstorm_nsec.py` | PostgreSQL (`brainstorm_nsec`) | Per-user observer keypair + preset params + last-published-pubkeys binary blob |
+| `session_version_repo.py` | Redis over PostgreSQL (`brainstorm_nsec.session_version`) | Read-through cache of a user's session version (60s TTL, the revocation bound) + `cache_session_version` for write-through on a bump. The one read path for both `verify_token` and login |
 | `graperank_preset_repo.py` | PostgreSQL (`graperank_preset`, `graperank_preset_history`) | Builtin preset CRUD + audit-log helpers + camelCase ↔ snake_case converters |
 | `brainstorm_nostr_transferer.py` | PostgreSQL (`brainstorm_nostr_relay_transfer`) | Relay-sync state machine (per-kind cursor + completion) |
 | `short_url_repo.py` | PostgreSQL (`short_url`) | Share-link records: resolve by code, dedup lookup by (pubkey, relay-set fingerprint), insert |

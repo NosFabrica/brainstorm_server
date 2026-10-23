@@ -6,7 +6,7 @@ to an Open Ranking provider. Claims are carried as event tags:
     ["aud",  "<provider-domain>"]   required when the provider enforces audience
     ["iat",  "<unix-seconds>"]      issued-at, optional but sanity-checked
     ["nbf",  "<unix-seconds>"]      not-before, optional
-    ["exp",  "<unix-seconds>"]      expiry, optional but strongly recommended
+    ["exp",  "<unix-seconds>"]      expiry, required
 
 Transport per ORE-A: `Authorization: Nostr <base64url-no-padding-token>` where
 the token is the JSON-serialized signed event.
@@ -28,6 +28,7 @@ from fastapi import HTTPException, Request, status
 from nostr_sdk import Event
 
 from app.core.config import settings
+from app.utils.nostr import event_tags, first_tag_value, tag_values
 
 NWT_KIND = 27519
 
@@ -56,28 +57,6 @@ def _b64url_decode_no_pad(value: str) -> bytes:
     # `base64.urlsafe_b64decode` requires correct padding; pad to a multiple of 4.
     padding = (-len(s)) % 4
     return base64.urlsafe_b64decode(s + ("=" * padding))
-
-
-def _find_tag_value(event: Event, name: str) -> Optional[str]:
-    """Return the FIRST value for the named tag, or None."""
-    for tag in event.tags().to_vec():
-        vec = tag.as_vec()
-        if len(vec) >= 2 and vec[0] == name:
-            return vec[1]
-    return None
-
-
-def _find_tag_values(event: Event, name: str) -> list[str]:
-    """Return ALL values for the named tag. The NWT spec allows a token to
-    carry multiple `aud` tags (one per intended recipient); a verifier
-    accepts the token when ANY of them matches.
-    """
-    out: list[str] = []
-    for tag in event.tags().to_vec():
-        vec = tag.as_vec()
-        if len(vec) >= 2 and vec[0] == name:
-            out.append(vec[1])
-    return out
 
 
 def _unauthorized(detail: str) -> HTTPException:
@@ -132,27 +111,32 @@ def validate_nwt_token(encoded_token: str) -> str:
     # in place of `created_at`. If neither is acceptable as a "not too far in
     # the future" value, the token is rejected — defends against tokens whose
     # validity window is shifted forward by clock manipulation.
-    iat_tag = _parse_unix_int(_find_tag_value(event, "iat"))
+    tags = event_tags(event)
+    iat_tag = _parse_unix_int(first_tag_value(tags, "iat"))
     issued_at = iat_tag if iat_tag is not None else event.created_at().as_secs()
     if issued_at - now > NWT_CLOCK_SKEW_SECONDS:
         raise _bad_token("Bad NWT: iat is in the future")
 
     # nbf: token not yet valid. Allow clock skew so a clock-drifted client
     # whose nbf is a few seconds ahead of the server still goes through.
-    nbf = _parse_unix_int(_find_tag_value(event, "nbf"))
+    nbf = _parse_unix_int(first_tag_value(tags, "nbf"))
     if nbf is not None and now + NWT_CLOCK_SKEW_SECONDS < nbf:
         raise _bad_token("Bad NWT: token not yet valid (nbf)")
 
     # exp: token expired. Same symmetric skew.
-    exp = _parse_unix_int(_find_tag_value(event, "exp"))
-    if exp is not None and now - NWT_CLOCK_SKEW_SECONDS >= exp:
+    exp = _parse_unix_int(first_tag_value(tags, "exp"))
+    if exp is None:
+        raise _bad_token("Bad NWT: missing exp claim")
+    if now - NWT_CLOCK_SKEW_SECONDS >= exp:
         raise _bad_token("Bad NWT: token expired (exp)")
+    if exp - issued_at > settings.open_ranking_nwt_max_lifetime_seconds:
+        raise _bad_token("Bad NWT: lifetime (exp - iat) exceeds the allowed maximum")
 
     # Audience check. The NWT spec allows MULTIPLE `aud` tags on a single
     # token — accept the token when ANY of them matches this provider. The
     # expected audience is the hostname of the provider's public_base_url.
     expected_aud = _expected_audience()
-    aud_values = _find_tag_values(event, "aud")
+    aud_values = tag_values(tags, "aud")
     if not aud_values:
         raise _bad_token("Bad NWT: missing aud claim")
     if expected_aud not in aud_values:

@@ -42,6 +42,7 @@ from app.services.brainstorm_request_service import (
     create_brainstorm_request,
 )
 from app.services.relay_audit_service import audit_observer_relay
+from app.services.session_service import revoke_sessions
 
 logger = loggr.get_logger(__name__)
 
@@ -166,6 +167,19 @@ async def clear_user_scheduling_override_endpoint(
         scheduling_id=scheduling.id if scheduling else None,
         scheduling_name=scheduling.name if scheduling else "",
     )
+
+
+@router.post(
+    path="/{pubkey}/sessions/revoke",
+    status_code=204,
+    summary="Admin: revoke every session token issued to a user so far",
+)
+async def revoke_user_sessions_endpoint(
+    pubkey: str,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> None:
+    if await revoke_sessions(db, pubkey) is None:
+        raise HTTPException(status_code=404, detail="Unknown user")
 
 
 @router.get(

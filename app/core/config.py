@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     block_frequent_graperank_requests_minutes: int = Field(default=30)
     # Our proxy's position from the right of X-Forwarded-For (1 = ingress only).
     trusted_proxy_hops: int = Field(default=1)
+    # Per-IP login limits. Generous: carrier NAT, offices and VPNs share one IP.
+    login_challenge_rate_limit_per_minute: int = Field(default=60)
+    login_verify_rate_limit_per_minute: int = Field(default=30)
+    # Verifies that create a new Observer row (throwaway-keypair signups).
+    login_new_observer_rate_limit_per_hour: int = Field(default=20)
     # Global kill-switch for the tier scheduler. Default off; enable per environment
     scheduler_enabled: bool = Field(default=False)
     # Max scheduled runs whose publishing may be in flight before admission pauses.
@@ -142,6 +147,8 @@ class Settings(BaseSettings):
     # the endpoints are open/unauthenticated and use the public global observer
     # plus any client-supplied `pov` per ORE-01.
     open_ranking_require_auth: bool = Field(default=False)
+    # Longest NWT lifetime (exp minus iat/created_at) accepted, in seconds.
+    open_ranking_nwt_max_lifetime_seconds: int = Field(default=3600)
 
     @property
     def billing_sync_active(self) -> bool:

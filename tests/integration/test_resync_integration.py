@@ -16,7 +16,6 @@ inside that loop to avoid "event loop is closed" teardown races.
 """
 
 import asyncio
-from datetime import datetime
 from unittest.mock import AsyncMock
 
 import httpx
@@ -41,7 +40,7 @@ def admin_observer(monkeypatch) -> str:
 
     async def _fake_verify_token(request: Request) -> None:
         request.state.jwt_data = JWTData(
-            nostr_pubkey=observer, expires_date=datetime.max
+            nostr_pubkey=observer
         )
 
     async def _fake_admin() -> None:

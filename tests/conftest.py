@@ -23,7 +23,6 @@ import os
 import sys
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -49,7 +48,7 @@ _DUMMY_ENV = {
     "DB_URL": "postgresql+asyncpg://u:p@localhost:5432/test",
     "DEPLOY_ENVIRONMENT": "TEST",
     "AUTH_ALGORITHM": "HS256",
-    "AUTH_SECRET_KEY": "test-secret",
+    "AUTH_SECRET_KEY": "test-secret-at-least-32-bytes-long",
     "AUTH_ACCESS_TOKEN_EXPIRE_MINUTES": "60",
     "SQL_ADMIN_USERNAME": "admin",
     "SQL_ADMIN_PASSWORD": "admin",
@@ -189,7 +188,7 @@ def caller() -> _Caller:
 def client(caller: _Caller):
     async def _fake_verify_token(request: Request) -> None:
         request.state.jwt_data = JWTData(
-            nostr_pubkey=caller.pubkey, expires_date=datetime.max
+            nostr_pubkey=caller.pubkey
         )
 
     app.dependency_overrides[verify_token] = _fake_verify_token
@@ -209,6 +208,32 @@ def mock_rate_limit() -> AsyncMock:
     app.dependency_overrides[rate_limit_graperank] = _limited
     yield limiter
     app.dependency_overrides.pop(rate_limit_graperank, None)
+
+
+class _LimiterRedis:
+    """In-memory counters, so per-IP limiters never reach a real Redis."""
+
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = {}
+
+    async def incr(self, key: str) -> int:
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return self.counts[key]
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        return True
+
+    async def ttl(self, key: str) -> int:
+        return -1
+
+
+@pytest.fixture(autouse=True)
+def limiter_redis(monkeypatch) -> _LimiterRedis:
+    fake = _LimiterRedis()
+    monkeypatch.setattr(
+        "app.utils.rate_limiting.rate_limiting.get_redis_client", lambda: fake
+    )
+    return fake
 
 
 @pytest.fixture

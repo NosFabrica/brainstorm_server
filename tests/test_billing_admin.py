@@ -828,6 +828,9 @@ class _FakeRedis:
     async def expire(self, key: str, seconds: int) -> bool:
         return True
 
+    async def ttl(self, key: str) -> int:
+        return -1
+
 
 @pytest.fixture
 def flash_record_client(billing_client, monkeypatch):

@@ -7,7 +7,6 @@ exactly what /overview says for each pubkey, for the same Observer and line::
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
 
 import pytest
 from nostr_sdk import Keys
@@ -71,7 +70,6 @@ def graph():
 def signed_in_viewer():
     app.dependency_overrides[verify_token_optional] = lambda: JWTData(
         nostr_pubkey=_VIEWER,
-        expires_date=datetime.now(timezone.utc) + timedelta(hours=1),
     )
     yield
     app.dependency_overrides.pop(verify_token_optional, None)

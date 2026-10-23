@@ -139,7 +139,7 @@ def test_user_graph_rows_carry_the_live_count_under_the_preset(graph, cutoffs, p
 def signed_in_as_subject(graph, monkeypatch):
     async def _fake_verify_token(request: Request) -> None:
         request.state.jwt_data = JWTData(
-            nostr_pubkey=graph["subject"], expires_date=datetime.max
+            nostr_pubkey=graph["subject"]
         )
 
     async def _no_history(_db, pubkey):

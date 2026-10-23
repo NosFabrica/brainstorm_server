@@ -38,6 +38,7 @@ from app.services.billing_service import apply_entitlement
 from app.services.brainstorm_request_service import create_brainstorm_request
 from app.services.manual_quota import enforce_manual_quota
 from app.services.onboarding_service import ingest_follow_list
+from app.services.session_service import revoke_sessions
 from app.services.subscription_view_service import (
     read_refreshed_subscription_view,
     read_subscription_view,
@@ -64,7 +65,6 @@ from app.utils.rate_limiting.rate_limiting import (
     validate_subscription_refresh_allowed,
 )
 
-CHALLENGE_TTL = 120  # seconds (2 minutes)
 MAX_TRUST_SIGNALS_PUBKEYS = 500
 
 router = APIRouter()
@@ -212,6 +212,19 @@ async def get_own_user_data_endpoint(
     )
 
     return GetOwnUserDataResponse(data=OwnUserData(graph=graph, history=history))
+
+
+@router.post(
+    path="/sessions/revoke",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Sign out everywhere: every session token issued so far stops working",
+)
+async def revoke_own_sessions_endpoint(
+    request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> None:
+    jwt_data: JWTData = request.state.jwt_data
+    await revoke_sessions(db, jwt_data.nostr_pubkey)
 
 
 @router.get(
