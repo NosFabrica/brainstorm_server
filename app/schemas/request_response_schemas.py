@@ -20,7 +20,7 @@ from app.schemas.schemas import (
     PaginatedUserConnections,
     RefreshedSubscriptionView,
     RelayAudit,
-    ShortUrlContent,
+    ShortUrlEntity,
     SubscriptionView,
     SupportMessageItem,
     SupportState,
@@ -215,7 +215,7 @@ class CreateShortUrlResponse(SuccessfulResponseDataSchema):
 
 
 class GetShortUrlResponse(SuccessfulResponseDataSchema):
-    data: ShortUrlContent
+    data: ShortUrlEntity
 
 
 class ShortestPathData(BaseModel):

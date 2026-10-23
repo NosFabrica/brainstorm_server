@@ -145,20 +145,20 @@ retrying after a few attempts and never replays.
 
 ### `ShortUrl` — `short_url`
 
-Share links: a short code standing in for a pubkey + relay-hint set. Why
+Share links: a short code standing in for an entity `(kind, entity_key)`. Why
 Postgres, not Redis: [ADR 0002](../../docs/adr/0002-short-links-in-postgres.md).
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | int PK | autoincrement |
 | `short_code` | str(32) UNIQUE | Crockford base32, 8 chars today. **Variable-length on purpose** — the generated length may change and already-shared codes must keep resolving, so nothing may infer a width from it. The UNIQUE constraint supplies the lookup index; no separate one |
-| `pubkey` | str(64) | the profile the link points at |
-| `relays_fingerprint` | str(64) | sha256 of the normalized relay set |
-| `relays` | JSONB | the relay hints, default `[]` |
+| `kind` | str(16) | `profile` / `event` / `address` / `hashtag` / `tag` |
+| `entity_key` | str(512) | normalised key for the kind (see `utils/shorturl_entities.py`) |
+| `relays` | JSONB | relay hints, default `[]`; set by the first mint, never rewritten |
 
-UNIQUE `(pubkey, relays_fingerprint)` is what makes minting idempotent: a
-concurrent double-mint loses the race in the database rather than creating a
-second code for the same content.
+UNIQUE `(kind, entity_key)` is what makes minting idempotent: a concurrent
+double-mint loses the race in the database rather than creating a second code
+for the same entity.
 
 ### `SupportTicket` — `support_ticket`
 

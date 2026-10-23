@@ -19,7 +19,7 @@ publishing — and routers just thin-wrap them.
 | `verified_cutoffs.py` | 95 | Resolves an observer's saved preset into the three per-relationship verified cutoffs (`follower`/`muter`/`reporter`) that `/stats`, `/overview` and `/connections` all compare Influence against. Inbound sections use their own cutoff; outbound sections and the tier `verified_line` use the follower cutoff. Strict `>`, no validity-floor clamp. |
 | `assistant_profile_service.py` | 172 | Publish a kind-0 profile event for the assistant pubkey, then a best-effort kind-10002 relay list (scores/TA relay first, then the kind-0 relays). `website`, `picture`/`banner` (Brainstorm-UI's static `/assistant-default.jpg` / `/assistant-banner.jpg`) and the NIP-05 domain all come from `settings.frontend_url`; `nip05` is derived per-pubkey by `app/utils/assistant_nip05.py` and omitted when that URL has no hostname. |
 | `nsec_encryption_service.py` | 210 | Background rotation of `BrainstormNsec.encrypted_nsec`: scan rows, decrypt-old/encrypt-new, write back. Idempotent and resumable. |
-| `shorturl_service.py` | 129 | URL shortener: generate/dedupe Crockford base32 codes, Postgres storage via `short_url_repo`. Powers [`/shorturl`](../routers/shorturl/CLAUDE.md). |
+| `shorturl_service.py` | 103 | URL shortener: generate/dedupe Crockford base32 codes, Postgres storage via `short_url_repo`; per-kind key rules and paths in `app/utils/shorturl_entities.py`. Powers [`/shorturl`](../routers/shorturl/CLAUDE.md). |
 | `graph_service.py` | 122 | `/shortestPath`: resolves pubkeys, short-circuits `from == to`, and folds the repo's shortest paths into the Path network (`layers`/`links`, sorted by pubkey); `get_follow_hops` answers `only=hops` from the single-path query. Repo timeout → 504, never a partial network (ADR 0004). |
 | `network_alerts_service.py` | 229 | `/networkAlerts`: builds the per-observer property keys and maps graph rows → panel payload. **Neo4j only** — the observer pubkey and their preset cutoffs arrive already resolved, from `routers/network_alerts/dependencies.py`. |
 | `report_graph_service.py` | 120 | **Pure, no I/O.** The user-only report rules, shared by all three report paths (live kind-1984 ingest, the backfill script, the kind-5 recompute) so they cannot drift. Owns `extract_report_targets` (NIP-56 user-vs-note), the backfill's `build_desired_reported_by`/`diff_reported_by`, and kind-5's `deletion_may_target_reports`/`surviving_report_targets`/`diff_author_targets`. |
@@ -106,7 +106,7 @@ async with db.begin_nested():          # savepoint
 ```
 
 `shorturl_service.create_short_url` is the reference: it retries on a code
-collision, and on a *content* collision re-reads the winner's row instead of
+collision, and on an *entity* collision (same `(kind, entity_key)`) re-reads the winner's row instead of
 retrying. Don't invent a second pattern for this.
 
 ### Concurrency
@@ -153,8 +153,8 @@ process; if/when you horizontally scale the server, push this flag into Redis.
 
 ### `shorturl_service.py`
 
-- `create_short_url(db, pubkey, relays)` → `CreatedShortUrl`. Input is already validated and normalised by `CreateShortUrlBody` (pubkey is hex, relays are well-formed and stripped), so this returns the existing code for that `(pubkey, relay-set)` or mints a new one. Idempotent via a unique constraint on `(pubkey, relays_fingerprint)`; a concurrent double-mint is resolved by re-reading the winner's row, not retried.
-- `get_short_url_content(db, short_code)` → `ShortUrlContent`, 404 if absent. Normalizes the code first (uppercase + Crockford folding).
+- `create_short_url(db, kind, entity_key, relays)` → `CreatedShortUrl`. Input is already validated and normalised by `CreateShortUrlBody`, so this returns the existing code for that entity (stored relays untouched — first mint wins) or mints a new one. Idempotent via a unique constraint on `(kind, entity_key)`; a concurrent double-mint is resolved by re-reading the winner's row, not retried.
+- `get_short_url_entity(db, short_code)` → `ShortUrlEntity` (`kind`, `key`, `relays`, `path`), 404 if absent. Normalizes the code first (uppercase + Crockford folding).
 - Storage is Postgres via `app/repos/short_url_repo.py`. Redis holds only the rate-limit counter. Layout in [`../routers/shorturl/CLAUDE.md`](../routers/shorturl/CLAUDE.md).
 
 ## Adding a new service

@@ -17,6 +17,7 @@ app/utils/
 ├── encryption.py            # Fernet symmetric encryption for nsec storage
 ├── neo4j_values.py          # safe_float / safe_int — inf/nan coercion on graph reads
 ├── nostr.py                 # Tiny Nostr helpers (constants, format conversions)
+├── shorturl_entities.py     # Short-link entity kinds: key normalisation + on-site path (pure)
 ├── rate_limiting/
 │   └── rate_limiting.py     # Redis-backed rate limiter + trusted-proxy client IP
 ├── datetimes.py             # utc_now() for the naive timestamp columns
