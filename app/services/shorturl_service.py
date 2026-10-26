@@ -1,6 +1,5 @@
 """URL-shortener service. Storage rationale: docs/adr/0002-short-links-in-postgres.md."""
 
-import hashlib
 import secrets
 
 from fastapi import HTTPException, status
@@ -12,9 +11,10 @@ from app.db_models import ShortUrl
 from app.repos.short_url_repo import (
     insert_short_url_on_db,
     select_short_url_by_code_on_db,
-    select_short_url_by_content_on_db,
+    select_short_url_by_entity_on_db,
 )
-from app.schemas.schemas import CreatedShortUrl, ShortUrlContent
+from app.schemas.schemas import CreatedShortUrl, ShortUrlEntity
+from app.utils.shorturl_entities import EntityKind, build_entity_path
 
 logger = loggr.get_logger(__name__)
 
@@ -40,28 +40,25 @@ def normalize_short_code(raw: str) -> str:
     return raw.strip().upper().translate(_CONFUSABLES)
 
 
-def relays_fingerprint(relays: list[str]) -> str:
-    """Order-, duplicate-, case- and trailing-slash-insensitive hash of a relay set."""
-    normalized = sorted({r.strip().rstrip("/").lower() for r in relays})
-    joined = "\n".join(normalized)
-    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
-
-
-def _to_content(row: ShortUrl) -> ShortUrlContent:
-    return ShortUrlContent(pubkey=row.pubkey, relays=list(row.relays))
+def _to_entity(row: ShortUrl) -> ShortUrlEntity:
+    relays = list(row.relays)
+    return ShortUrlEntity(
+        kind=row.kind,
+        key=row.entity_key,
+        relays=relays,
+        path=build_entity_path(row.kind, row.entity_key, relays),
+    )
 
 
 def _to_created(row: ShortUrl) -> CreatedShortUrl:
-    return CreatedShortUrl(short_code=row.short_code, content=_to_content(row))
+    return CreatedShortUrl(short_code=row.short_code, **_to_entity(row).model_dump())
 
 
 async def create_short_url(
-    db: AsyncDBSession, pubkey: str, relays: list[str]
+    db: AsyncDBSession, kind: EntityKind, entity_key: str, relays: list[str]
 ) -> CreatedShortUrl:
-    """Return the existing short code for (pubkey, relays) or mint a new one."""
-    fingerprint = relays_fingerprint(relays)
-
-    existing = await select_short_url_by_content_on_db(db, pubkey, fingerprint)
+    """Return the existing code for the entity, stored relays untouched, or mint one."""
+    existing = await select_short_url_by_entity_on_db(db, kind, entity_key)
     if existing:
         return _to_created(existing)
 
@@ -73,16 +70,14 @@ async def create_short_url(
                 row = await insert_short_url_on_db(
                     db,
                     short_code=generate_short_code(),
-                    pubkey=pubkey,
-                    relays_fingerprint=fingerprint,
+                    kind=kind,
+                    entity_key=entity_key,
                     relays=relays,
                 )
         except IntegrityError:
-            # Either the code collided, or another request minted this exact
-            # (pubkey, relay-set) first. The latter is settled, not retried.
-            concurrent = await select_short_url_by_content_on_db(
-                db, pubkey, fingerprint
-            )
+            # Either the code collided, or another request minted this entity
+            # first. The latter is settled, not retried.
+            concurrent = await select_short_url_by_entity_on_db(db, kind, entity_key)
             if concurrent:
                 return _to_created(concurrent)
             continue
@@ -98,11 +93,11 @@ async def create_short_url(
     )
 
 
-async def get_short_url_content(db: AsyncDBSession, short_code: str) -> ShortUrlContent:
+async def get_short_url_entity(db: AsyncDBSession, short_code: str) -> ShortUrlEntity:
     row = await select_short_url_by_code_on_db(db, normalize_short_code(short_code))
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Short url not found",
         )
-    return _to_content(row)
+    return _to_entity(row)

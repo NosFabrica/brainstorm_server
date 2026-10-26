@@ -1,4 +1,4 @@
-"""Short-code format and relay-set fingerprinting — the pure half of the shortener.
+"""Short-code format — the pure half of the shortener.
 
 Codes are Crockford base32: uppercase, and never `I`, `L`, `O` or `U`. Those four
 are the glyphs people mistype when a link is read aloud or retyped, so resolution
@@ -11,7 +11,6 @@ from app.services.shorturl_service import (
     SHORT_CODE_LENGTH,
     generate_short_code,
     normalize_short_code,
-    relays_fingerprint,
 )
 
 _AMBIGUOUS = set("ILOU")
@@ -91,42 +90,3 @@ def test_a_generated_code_normalizes_to_itself():
 def test_u_is_not_folded():
     """Crockford folds I/L/O only; U is merely excluded from the alphabet."""
     assert normalize_short_code("U") == "U"
-
-
-# --------------------------------------------------------------------------
-# relay-set fingerprint — what makes minting idempotent
-# --------------------------------------------------------------------------
-
-
-def test_the_same_set_fingerprints_the_same():
-    relays = ["wss://relay.damus.io", "wss://nos.lol"]
-    assert relays_fingerprint(relays) == relays_fingerprint(relays)
-
-
-def test_order_does_not_matter():
-    a = relays_fingerprint(["wss://a.example", "wss://b.example"])
-    b = relays_fingerprint(["wss://b.example", "wss://a.example"])
-    assert a == b
-
-
-def test_duplicates_do_not_matter():
-    a = relays_fingerprint(["wss://a.example"])
-    b = relays_fingerprint(["wss://a.example", "wss://a.example"])
-    assert a == b
-
-
-def test_case_and_trailing_slash_do_not_matter():
-    a = relays_fingerprint(["wss://A.example/", "wss://b.example"])
-    b = relays_fingerprint(["wss://a.example", "wss://B.EXAMPLE/"])
-    assert a == b
-
-
-def test_an_empty_set_has_its_own_stable_fingerprint():
-    assert relays_fingerprint([]) == relays_fingerprint([])
-    assert relays_fingerprint([]) != relays_fingerprint(["wss://a.example"])
-
-
-def test_different_sets_differ():
-    a = relays_fingerprint(["wss://a.example"])
-    b = relays_fingerprint(["wss://a.example", "wss://b.example"])
-    assert a != b

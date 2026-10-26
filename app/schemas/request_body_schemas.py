@@ -2,13 +2,18 @@ import json
 from typing import ClassVar
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.networks import validate_email
 
 from app.core.config import settings
 from app.schemas.graperank_schemas import GrapeRankPresetTemplate
 from app.schemas.nostr_event import NostrEvent
-from app.utils.nostr import to_hex_pubkey
+from app.utils.shorturl_entities import (
+    EntityKind,
+    check_relay_encodable,
+    check_relay_search,
+    normalize_entity_key,
+)
 
 
 class CreateBrainstormRequestBody(BaseModel):
@@ -46,23 +51,19 @@ class RefreshSubscriptionBody(BaseModel):
 
 
 class CreateShortUrlBody(BaseModel):
-    # Relay hints ride in the share link so a visitor's client can resolve a
-    # profile we haven't indexed. Seven is plenty and bounds the stored row.
+    # Hints only for an entity loaded from outside Brainstorm. Seven is plenty
+    # and bounds the stored row.
     MAX_RELAYS: ClassVar[int] = 7
 
-    pubkey: str = Field(
-        description="Profile pubkey, hex or npub. Normalised to hex on the way in."
+    kind: EntityKind
+    key: str = Field(
+        description="Entity key for the kind; normalised to its stored form."
     )
     relays: list[str] = Field(
+        default_factory=list,
         max_length=MAX_RELAYS,
         description="Relay hints; each a ws:// or wss:// URL with a host.",
     )
-
-    @field_validator("pubkey")
-    @classmethod
-    def _normalise_pubkey(cls, value: str) -> str:
-        """Hex or npub in, hex out."""
-        return to_hex_pubkey(value.strip())
 
     @field_validator("relays")
     @classmethod
@@ -72,10 +73,20 @@ class CreateShortUrlBody(BaseModel):
         for relay in relays:
             stripped = relay.strip()
             parsed = urlparse(stripped)
-            if parsed.scheme not in ("ws", "wss") or not parsed.netloc:
+            if (
+                parsed.scheme not in ("ws", "wss")
+                or not parsed.netloc
+                or not check_relay_encodable(stripped)
+            ):
                 raise ValueError(f"{relay!r} is not a ws:// or wss:// URL with a host")
-            cleaned.append(stripped)
+            if not check_relay_search(stripped):
+                cleaned.append(stripped)
         return cleaned
+
+    @model_validator(mode="after")
+    def _key_fits_kind(self) -> "CreateShortUrlBody":
+        self.key = normalize_entity_key(self.kind, self.key)
+        return self
 
 
 class SetUserSchedulingBody(BaseModel):

@@ -2,6 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.db_models import ShortUrl
+from app.utils.shorturl_entities import EntityKind
 
 
 async def select_short_url_by_code_on_db(
@@ -12,14 +13,14 @@ async def select_short_url_by_code_on_db(
     return result.scalar_one_or_none()
 
 
-async def select_short_url_by_content_on_db(
-    db: AsyncDBSession, pubkey: str, relays_fingerprint: str
+async def select_short_url_by_entity_on_db(
+    db: AsyncDBSession, kind: EntityKind, entity_key: str
 ) -> ShortUrl | None:
-    """The dedup lookup: has this (pubkey, relay-set) already been minted?"""
+    """The dedup lookup: has this entity already been minted?"""
     result = await db.execute(
         select(ShortUrl).where(
-            ShortUrl.pubkey == pubkey,
-            ShortUrl.relays_fingerprint == relays_fingerprint,
+            ShortUrl.kind == kind,
+            ShortUrl.entity_key == entity_key,
         )
     )
     return result.scalar_one_or_none()
@@ -28,15 +29,15 @@ async def select_short_url_by_content_on_db(
 async def insert_short_url_on_db(
     db: AsyncDBSession,
     short_code: str,
-    pubkey: str,
-    relays_fingerprint: str,
+    kind: EntityKind,
+    entity_key: str,
     relays: list[str],
 ) -> ShortUrl:
     """Insert a row and flush so a unique violation surfaces here, not at commit."""
     row = ShortUrl(
         short_code=short_code,
-        pubkey=pubkey,
-        relays_fingerprint=relays_fingerprint,
+        kind=kind,
+        entity_key=entity_key,
         relays=relays,
     )
     db.add(row)

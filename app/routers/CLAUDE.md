@@ -100,11 +100,11 @@ nothing to report; the client only needs success, so there is no body to wrap.
 
 ### `shorturl/router.py` — URL shortener
 
-Short codes for `{pubkey, relays}`, stored in Postgres. See
+Short codes for an entity `(kind, key)`, stored in Postgres. See
 [`shorturl/CLAUDE.md`](shorturl/CLAUDE.md) for the full design.
 
-- **POST** `/` (body: `CreateShortUrlBody{pubkey, relays}`) → `CreateShortUrlResponse` (`data.shortCode`, `data.content`). Rate-limited 1 req/s/IP. Idempotent per `(pubkey, relay-set)`; `[]` relays is valid; max 7 relays; relays format-checked as `ws://`/`wss://`.
-- **GET** `/{short_code}` → `GetShortUrlResponse` (`data.pubkey`, `data.relays`). 404 if unknown; 422 if not `[A-Za-z0-9]{6,32}`. Codes never expire.
+- **POST** `/` (body: `CreateShortUrlBody{kind, key, relays?}`) → `CreateShortUrlResponse` (`data.shortCode/kind/key/relays/path`). Rate-limited 1 req/s/IP. Idempotent per `(kind, key)`; first mint's relays win; max 7 relays.
+- **GET** `/{short_code}` → `GetShortUrlResponse` (`data.kind/key/relays/path`). 404 if unknown; 422 if not `[A-Za-z0-9]{6,32}`. Codes never expire.
 
 ### `user/router.py` — user endpoints
 

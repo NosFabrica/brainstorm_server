@@ -192,7 +192,7 @@ def test_a_burst_is_throttled_whether_or_not_the_caller_spoofs(
     """
     from app.core.database import get_db
     from app.api import app as fastapi_app
-    from app.schemas.schemas import CreatedShortUrl, ShortUrlContent
+    from app.schemas.schemas import CreatedShortUrl
 
     async def _no_db():
         yield None
@@ -203,12 +203,15 @@ def test_a_burst_is_throttled_whether_or_not_the_caller_spoofs(
         AsyncMock(
             return_value=CreatedShortUrl(
                 short_code="AB3XK9QZ",
-                content=ShortUrlContent(pubkey="a" * 64, relays=[]),
+                kind="profile",
+                key="a" * 64,
+                relays=[],
+                path="/p/npub1",
             )
         ),
     )
     try:
-        body = {"pubkey": "a" * 64, "relays": []}
+        body = {"kind": "profile", "key": "a" * 64, "relays": []}
 
         statuses = []
         for attempt in range(4):

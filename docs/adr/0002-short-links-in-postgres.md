@@ -51,3 +51,28 @@ accepted
 - **Dedup is by `(pubkey, relay set)`**, normalised order-, duplicate-, case- and
   trailing-slash-insensitively, so sharing the same profile twice returns the same code and creates no
   second row.
+
+## Amendment (2026-10-22): a code points at an entity
+
+Phase 1 shortened only profiles. Every shareable thing now gets a code, so the row changes shape.
+Everything above about Postgres, eviction and code format still holds.
+
+- **A code stands for an entity, `(kind, entity_key)`, `UNIQUE`.** Kinds are a closed set —
+  `profile`, `event`, `address`, `hashtag`, `tag` — each with its own key rule, normalised before
+  storing. Same thing → same code, whatever hints the sharer's link carried. Storing the full path
+  was rejected: it dedups per URL string, not per entity. This replaces dedup by
+  `(pubkey, relay set)`. The server does not check the entity exists; an unknown one resolves to
+  the not-found page.
+- **No stored relay hints by default.** Anything shared from inside Brainstorm came from the search
+  relay, which holds every shareable kind, so our own pages find it without hints. The search relay
+  is never a hint: it refuses anonymous reads, and even after NIP-42 AUTH a key with no kind-10040
+  gets an empty answer to an exact-id read — useless to the outside clients hints exist for.
+  Mandatory hints were rejected: more data for no reader.
+- **Relays are stored only for entities loaded from foreign hints** (e.g. a pasted `nevent` with
+  someone else's relays). **First mint wins**: a later mint never changes them.
+- **DList addresses (kinds 39998/39999) with no stored relays get `wss://dcosl.brainstorm.world`**
+  in the resolved link, where anonymous reads work. Added at resolve time, never stored.
+- **No expiry, unchanged.** Rows are ~100 bytes; the reasoning above holds.
+- **The old `{pubkey, relays}` contract is dropped, not shimmed.** Server, UI and og ship together.
+  Existing rows migrated to `kind=profile`, `entity_key=pubkey`, relays and codes kept — prod's 13
+  codes all still resolve; staging duplicates kept the oldest per pubkey.
