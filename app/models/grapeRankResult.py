@@ -27,4 +27,8 @@ class GrapeRankResult(TypedDict, total=False):
     changedScorePubkeys: list[str]
     # Scorecards whose persisted Neo4j fields changed; None/absent = write all.
     neo4jWritePubkeys: list[str] | None
+    # Stored scores now at or below the persist floor: cleared, never written.
+    neo4jClearPubkeys: list[str]
+    # The worker's persist floor; absent = an older worker, full writes store everything.
+    neo4jPersistFloor: float | None
     error: dict[str, Any] | None

@@ -84,6 +84,13 @@ costs one label scan, so it runs on forced runs (`force_full_neo4j`: resync
 By time, not run count, because cadences range from hours to months. The
 Cypher lives in `repos/user_repo.py`.
 
+Persist floor: the worker sends `neo4jPersistFloor` (default 0.0001, its
+`INFLUENCE_PERSIST_FLOOR`) and leaves scorecards at or below it out of
+`neo4jWritePubkeys`; full writes skip them too. `neo4jClearPubkeys` lists the ones
+Neo4j still holds scores for, and the writer clears them every run (by pubkey, no
+scan). No stored score = Influence at or below the floor, or out of reach. An older
+worker sends neither field: everything is written as before.
+
 ## Adding a new consumer
 
 1. Add an `async def consume_<topic>(): while True: msg = await ...; await handle(msg)` to `message_queue_consumer.py`.

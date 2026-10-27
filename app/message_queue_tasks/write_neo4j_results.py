@@ -84,6 +84,8 @@ async def process_neo4j_write_message(message: dict):
     observer = next(iter(scorecards.values()))["observer"]
     keys = _keys(observer)
     write_set = grape_rank_result.get("neo4jWritePubkeys")
+    clear_set = grape_rank_result.get("neo4jClearPubkeys") or []
+    floor = grape_rank_result.get("neo4jPersistFloor")
 
     # Map built here, not interpolated into the Cypher: see app/repos/CLAUDE.md.
     def row(card: ScoreCard) -> dict:
@@ -120,10 +122,18 @@ async def process_neo4j_write_message(message: dict):
     if not full:
         changed = set(write_set or ())
         cards = [c for c in cards if c["observee"] in changed]
+    elif floor is not None:
+        cards = [c for c in cards if c["influence"] > floor]
 
     # Rows built a batch at a time, so the event loop is never held for all of them.
     await _write_batches(set_observer_scores, (row(card) for card in cards))
     written = len(cards)
+
+    key_list = list(keys.values())
+    await _write_batches(
+        lambda session, batch: clear_observer_scores(session, batch, key_list),
+        clear_set,
+    )
 
     cleared = 0
     if clear_unreached:
@@ -145,5 +155,6 @@ async def process_neo4j_write_message(message: dict):
     logger.info(
         f"Took {final_time:.2f} seconds to process Neo4j writes "
         f"(mode={'full' if full else 'changed'} written={written} of {len(scorecards)} "
-        f"cleared={cleared}) run={run_id} observer={observer}"
+        f"below_floor_cleared={len(clear_set)} cleared={cleared}) run={run_id} "
+        f"observer={observer}"
     )

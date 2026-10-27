@@ -32,11 +32,13 @@ def _fresh_driver():
     )
 
 
-def _scorecard(observer: str, observee: str, trusted_followers: int) -> dict:
+def _scorecard(
+    observer: str, observee: str, trusted_followers: int, influence: float = 0.5
+) -> dict:
     return {
         "observer": observer,
         "observee": observee,
-        "influence": 0.5,
+        "influence": influence,
         "hops": 2,
         "trusted_followers": trusted_followers,
         "trusted_reporters": 3,
@@ -45,17 +47,23 @@ def _scorecard(observer: str, observee: str, trusted_followers: int) -> dict:
 
 
 def _message(
-    observer: str, scorecards: dict, write_set: list[str] | None = None
+    observer: str,
+    scorecards: dict,
+    write_set: list[str] | None = None,
+    clear_set: list[str] | None = None,
+    floor: float | None = None,
 ) -> dict:
-    return {
-        "private_id": 1,
-        "result": {
-            "success": True,
-            "duration_seconds": 1.0,
-            "scorecards": scorecards,
-            "neo4jWritePubkeys": write_set,
-        },
+    result = {
+        "success": True,
+        "duration_seconds": 1.0,
+        "scorecards": scorecards,
+        "neo4jWritePubkeys": write_set,
     }
+    if clear_set is not None:
+        result["neo4jClearPubkeys"] = clear_set
+    if floor is not None:
+        result["neo4jPersistFloor"] = floor
+    return {"private_id": 1, "result": result}
 
 
 @pytest.fixture
@@ -119,7 +127,12 @@ def graph(monkeypatch):
 
     asyncio.run(_seed())
     try:
-        yield {"observer": observer, "request_row": request_row, "cleanup": cleanup, **pks}
+        yield {
+            "observer": observer,
+            "request_row": request_row,
+            "cleanup": cleanup,
+            **pks,
+        }
     finally:
         asyncio.run(_teardown())
 
@@ -374,3 +387,54 @@ def test_cleanup_clears_a_node_that_lost_only_its_influence(graph):
     left = asyncio.run(_props(gone, observer))
     assert left["hops"] is None
     assert left["trusted_followers"] is None
+
+
+def test_the_clear_set_removes_scores_that_fell_to_the_floor(graph):
+    observer, a, tail = (
+        graph["observer"],
+        graph["many_followers"],
+        graph["no_followers"],
+    )
+    _write(
+        _message(
+            observer,
+            {a: _scorecard(observer, a, 1), tail: _scorecard(observer, tail, 1)},
+        )
+    )
+
+    second = {
+        a: _scorecard(observer, a, 1),
+        tail: _scorecard(observer, tail, 0, influence=0.00005),
+    }
+    _write(_message(observer, second, write_set=[], clear_set=[tail], floor=0.0001))
+
+    assert asyncio.run(_props(a, observer))["influence"] == 0.5
+    cleared = asyncio.run(_props(tail, observer))
+    assert cleared["influence"] is None
+    assert cleared["hops"] is None
+    assert cleared["trusted_followers"] is None
+
+
+def test_a_full_write_skips_scorecards_at_or_below_the_floor(graph, monkeypatch):
+    monkeypatch.setattr(writer_module.settings, "neo4j_full_write", True)
+    observer, a, tail = (
+        graph["observer"],
+        graph["many_followers"],
+        graph["no_followers"],
+    )
+    cards = {
+        a: _scorecard(observer, a, 1),
+        tail: _scorecard(observer, tail, 0, influence=0.0001),
+    }
+    _write(_message(observer, cards, write_set=[a], floor=0.0001))
+
+    assert asyncio.run(_props(a, observer))["influence"] == 0.5
+    assert asyncio.run(_props(tail, observer))["influence"] is None
+
+
+def test_a_full_write_from_an_older_worker_stores_every_scorecard(graph, monkeypatch):
+    monkeypatch.setattr(writer_module.settings, "neo4j_full_write", True)
+    observer, tail = graph["observer"], graph["no_followers"]
+    _write(_message(observer, {tail: _scorecard(observer, tail, 0, influence=0.00005)}))
+
+    assert asyncio.run(_props(tail, observer))["influence"] == 0.00005
