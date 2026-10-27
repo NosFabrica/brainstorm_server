@@ -1,20 +1,11 @@
 import json
-from datetime import timedelta
 
-from nostr_sdk import (  # type: ignore
-    Client,
-    EventBuilder,
-    Filter,
-    Keys,
-    Kind,
-    NostrSigner,
-    PublicKey,
-    Tag,
-)
+from nostr_sdk import Client, EventBuilder, Keys, Kind, NostrSigner, Tag  # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
 from app.core.loggr import loggr
+from app.core.search_relay import fetch_profiles
 from app.repos.brainstorm_nsec import select_brainstorm_nsec_by_pubkey_on_db
 from app.utils.assistant_nip05 import compute_assistant_nip05
 from app.utils.client_tag import client_tag
@@ -62,24 +53,14 @@ def assistant_relay_list() -> list[str]:
 
 
 async def _fetch_owner_name(user_pubkey: str) -> str:
-    fetcher = Client()
-    await fetcher.add_relay(settings.nostr_transfer_from_relay)
-    await fetcher.connect()
-
-    try:
-        flt = Filter().kinds([Kind(0)]).authors([PublicKey.parse(user_pubkey)]).limit(1)
-        events_obj = await fetcher.fetch_events(flt, timeout=timedelta(seconds=10))
-        events = events_obj.to_vec()
-    finally:
-        await fetcher.disconnect()
-
-    if not events:
+    latest = (await fetch_profiles([user_pubkey])).get(user_pubkey)
+    if latest is None:
         return ""
-
-    latest = max(events, key=lambda e: e.created_at().as_secs())
     try:
-        metadata = json.loads(latest.content())
+        metadata = json.loads(latest.get("content") or "")
     except (json.JSONDecodeError, ValueError):
+        return ""
+    if not isinstance(metadata, dict):
         return ""
 
     return metadata.get("name") or metadata.get("display_name") or ""

@@ -37,6 +37,14 @@ def sent_events(client, monkeypatch, assistant_keys) -> list:
 
     app.dependency_overrides[get_db] = _fake_get_db
 
+    async def _fake_profiles(pubkeys):
+        return {pk: json.loads(owner_kind0.as_json()) for pk in pubkeys}
+
+    # The owner's kind-0 comes from our search relay.
+    monkeypatch.setattr(
+        "app.services.assistant_profile_service.fetch_profiles", _fake_profiles
+    )
+
     monkeypatch.setattr(
         "app.services.assistant_profile_service.select_brainstorm_nsec_by_pubkey_on_db",
         AsyncMock(

@@ -30,21 +30,17 @@ import socket
 from urllib.parse import urlsplit
 
 import httpx
-from nostr_sdk import Event
 
-from app.core.config import settings
 from app.core.loggr import loggr
-from app.services.designation_service import fetch_latest_event
+from app.core.search_relay import fetch_profiles
 
 logger = loggr.get_logger(__name__)
-
-METADATA_KIND = 0
 
 _HEX_PUBKEY = re.compile(r"^[0-9a-f]{64}$")
 # LUD-16: the username is a-z0-9-_.+ ; the domain a plain hostname.
 _LUD16 = re.compile(r"^([a-z0-9\-_.+]+)@([a-z0-9\-]+(?:\.[a-z0-9\-]+)+)$")
 
-# Upstream relay for the kind-0 (neofry does not sync profiles), then one
+# The kind-0 from our search relay (neofry does not sync profiles), then one
 # third-party HTTP GET. Bounded as a whole so a slow host can't hold up the
 # enqueue for longer than the 10040 read it runs beside.
 _STEP_TIMEOUT_SECONDS = 5.0
@@ -182,28 +178,10 @@ async def _fetch_lnurl_pay(url: str) -> object | None:
         return None
 
 
-def _is_signed_kind0_of(event: dict, author: str) -> bool:
-    try:
-        parsed = Event.from_json(json.dumps(event))
-    except Exception:
-        return False
-    return (
-        parsed.kind().as_u16() == METADATA_KIND
-        and parsed.author().to_hex() == author
-        and parsed.verify()
-    )
-
-
 async def _lookup(observer: str) -> str | None:
-    event = await fetch_latest_event(
-        settings.nostr_transfer_from_relay,
-        METADATA_KIND,
-        observer,
-        timeout=_STEP_TIMEOUT_SECONDS,
-    )
-    # Read past strfry, so nothing has checked it, and the key it leads to is
-    # pinned at 95: only the Observer's own signature counts.
-    if event is None or not _is_signed_kind0_of(event, observer):
+    # Our own relay verifies what it stores, so the kind-0 needs no signature check.
+    event = (await fetch_profiles([observer])).get(observer)
+    if event is None:
         return None
     try:
         metadata = json.loads(event.get("content") or "")

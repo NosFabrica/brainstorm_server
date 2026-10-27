@@ -4,9 +4,6 @@ request with the 10040 keys, so the GrapeRank worker pins it at 95 too."""
 import asyncio
 import json
 
-from nostr_sdk import EventBuilder, Keys, Kind
-
-from app.core.config import settings
 from app.services import zap_provider_service
 from app.services.zap_provider_service import (
     decode_lnurl,
@@ -17,13 +14,9 @@ from app.services.zap_provider_service import (
 OBSERVER = "a" * 64
 PROVIDER = "b" * 64
 
-# The end-to-end lookups read a kind-0 that must really be the Observer's.
-SIGNER = Keys.generate()
-SIGNED_OBSERVER = SIGNER.public_key().to_hex()
 
-
-def _kind0(content: str, keys: Keys = SIGNER) -> dict:
-    return json.loads(EventBuilder(Kind(0), content).sign_with_keys(keys).as_json())
+def _kind0(content: str) -> dict:
+    return {"kind": 0, "pubkey": OBSERVER, "created_at": 1, "content": content}
 
 
 # LUD-01's own example.
@@ -124,31 +117,31 @@ def test_never_fetches_a_non_public_host():
 def _stub(monkeypatch, kind0, answer):
     asked = {}
 
-    async def fake_latest(relay, kind, author, timeout):
-        asked["relay"], asked["kind"], asked["author"] = relay, kind, author
-        return kind0
+    async def fake_profiles(pubkeys):
+        asked["pubkeys"] = pubkeys
+        return {} if kind0 is None else {OBSERVER: kind0}
 
     async def fake_pay(url):
         asked["url"] = url
         return answer
 
-    monkeypatch.setattr(zap_provider_service, "fetch_latest_event", fake_latest)
+    monkeypatch.setattr(zap_provider_service, "fetch_profiles", fake_profiles)
     monkeypatch.setattr(zap_provider_service, "_fetch_lnurl_pay", fake_pay)
     return asked
 
 
 def _lookup():
-    return asyncio.run(zap_provider_service.fetch_zap_provider_pubkey(SIGNED_OBSERVER))
+    return asyncio.run(zap_provider_service.fetch_zap_provider_pubkey(OBSERVER))
 
 
-def test_fetches_the_provider_from_the_observers_kind0(monkeypatch):
+def test_fetches_the_provider_from_the_observers_kind0_on_the_search_relay(
+    monkeypatch,
+):
     kind0 = _kind0(json.dumps({"lud16": "alice@getalby.com"}))
     asked = _stub(monkeypatch, kind0, {"allowsNostr": True, "nostrPubkey": PROVIDER})
     assert _lookup() == PROVIDER
     assert asked == {
-        "relay": settings.nostr_transfer_from_relay,
-        "kind": 0,
-        "author": SIGNED_OBSERVER,
+        "pubkeys": [OBSERVER],
         "url": "https://getalby.com/.well-known/lnurlp/alice",
     }
 
@@ -162,42 +155,9 @@ def test_no_kind0_or_no_address_means_no_provider(monkeypatch):
     assert _lookup() is None
 
 
-def test_only_the_observers_own_signed_kind0_counts(monkeypatch):
-    """The kind-0 is read straight off an outside relay, past strfry's checks;
-    a forged one would get its author's chosen key pinned at 95."""
-    answer = {"allowsNostr": True, "nostrPubkey": PROVIDER}
-    content = json.dumps({"lud16": "mallory@evil.example"})
-
-    someone_else = _kind0(content, Keys.generate())
-    asked = _stub(monkeypatch, someone_else, answer)
-    assert _lookup() is None
-    assert "url" not in asked
-
-    relabelled = {**someone_else, "pubkey": SIGNED_OBSERVER}
-    asked = _stub(monkeypatch, relabelled, answer)
-    assert _lookup() is None
-    assert "url" not in asked
-
-    tampered = {
-        **_kind0(json.dumps({"lud16": "alice@getalby.com"})),
-        "content": content,
-    }
-    asked = _stub(monkeypatch, tampered, answer)
-    assert _lookup() is None
-    assert "url" not in asked
-
-    asked = _stub(monkeypatch, {"content": content}, answer)
-    assert _lookup() is None
-
-    note = json.loads(EventBuilder(Kind(1), content).sign_with_keys(SIGNER).as_json())
-    asked = _stub(monkeypatch, note, answer)
-    assert _lookup() is None
-    assert "url" not in asked
-
-
 def test_a_lookup_error_means_no_provider(monkeypatch):
     async def boom(*args, **kwargs):
         raise ConnectionError("down")
 
-    monkeypatch.setattr(zap_provider_service, "fetch_latest_event", boom)
-    assert asyncio.run(zap_provider_service.fetch_zap_provider_pubkey(OBSERVER)) is None
+    monkeypatch.setattr(zap_provider_service, "fetch_profiles", boom)
+    assert _lookup() is None
