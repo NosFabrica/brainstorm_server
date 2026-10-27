@@ -246,7 +246,7 @@ Static enum on purpose — adding a preset name is a code change, not a config c
 
 ## Scripts
 
-Scripts live in `scripts/` and are excluded from the Docker image via `.dockerignore`. Run from your local machine.
+Scripts live in `scripts/` and ship in the server image (`.dockerignore` drops only `test_*.py` files, so the `test_admin_*` smoke scripts stay out). Most run from your local machine; the data backfills can also run inside a server pod.
 
 ### Setup
 

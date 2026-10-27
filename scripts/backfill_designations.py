@@ -15,9 +15,11 @@ Enumerate from the relay the server consumes from (neofry, which the
     docker exec -w /app neofry ./strfry scan '{"kinds":[10040]}' \
       | poetry run python -m scripts.backfill_designations --scan - [--apply]
 
-    # in k8s:
-    kubectl exec -n <ns> deploy/neofry -- ./strfry scan '{"kinds":[10040]}' \
-      | poetry run python -m scripts.backfill_designations --scan - [--apply]
+    # in k8s, running the script in a server pod (it ships in the image):
+    kubectl -n <ns> exec brainstorm-neofry-0 -c neofry -- \
+        /app/strfry scan '{"kinds":[10040]}' \
+      | kubectl -n <ns> exec -i deploy/brainstorm-server -- \
+        poetry run python -m scripts.backfill_designations --scan - [--apply]
 """
 from __future__ import annotations
 
