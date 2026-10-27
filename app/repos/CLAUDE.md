@@ -147,13 +147,13 @@ from `_tier_band_params()` — the `TIER_*` constants, bound the same way by eve
 expander. No endpoint takes band overrides: a client that could move a band could
 make `/connections?tier=…` return rows `/stats` counted in a different bucket.
 Verified is strict `>` the
-verified line, so `_VERIFIED_LINE` / `_UNVERIFIED_LINE` are exact complements
-among subjects that have an influence at all (`_NO_INFLUENCE` is the third
-case); let them drift and a subject sitting exactly on the line lands in no
+verified line, so `_VERIFIED_LINE` / `_UNVERIFIED_LINE` are exact complements;
+`_UNVERIFIED_LINE` includes "no stored influence" (out of reach, or at or below
+the worker's persist floor), so a reported near-zero account is still flagged.
+Let them drift and a subject sitting exactly on the line lands in no
 bucket. `get_outbound_counts_and_influence` and
-`get_paginated_flagged_connections` share the same `<= $verified_line` reading
-of "flagged", which is why `/overview`'s `flagged_count` matches
-`/connections?kind=flagged`.
+`get_paginated_flagged_connections` share the same reading of "flagged", which
+is why `/overview`'s `flagged_count` matches `/connections?kind=flagged`.
 
 Dynamic property access uses `user[$influence_key]` parameterization so
 `influence_<observer>` columns don't get string-interpolated into Cypher.

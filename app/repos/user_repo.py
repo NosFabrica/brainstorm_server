@@ -359,9 +359,9 @@ async def get_outbound_counts_and_influence(
     the follower cutoff (`verified_line`) — the general trusted bar, since the
     subject isn't rating anyone here.
 
-    "Flagged" is *not verified* (influence `<= verified_line`, the complement of
-    the strict `>` used everywhere else) AND reported by 2+ accounts above
-    `reporter_cutoff`, counted live."""
+    "Flagged" is *not verified* (no stored influence, or `<= verified_line`: the
+    complement of the strict `>` used everywhere else) AND reported by 2+ accounts
+    above `reporter_cutoff`, counted live."""
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
     CALL (user) {{
@@ -449,13 +449,11 @@ def _verified(param: str) -> str:
     return f"__INF__ IS NOT NULL AND __INF__ > ${param}"
 
 
-# Among subjects with an influence, these two are exact complements; a subject
-# with no influence property at all is neither. The tier buckets partition a
-# section across the three, so any drift leaves subjects sitting exactly on the
-# line in no bucket at all.
+# Exact complements: no stored influence (out of reach, or at or below the
+# worker's persist floor) counts as not verified. Let them drift and a subject
+# sitting exactly on the line lands in no bucket.
 _VERIFIED_LINE = _verified("verified_line")
-_UNVERIFIED_LINE = "__INF__ IS NOT NULL AND __INF__ <= $verified_line"
-_NO_INFLUENCE = "__INF__ IS NULL"
+_UNVERIFIED_LINE = "(__INF__ IS NULL OR __INF__ <= $verified_line)"
 
 _TIER_PREDICATES: dict[str, str] = {
     # Bucket names match the GR result writer's count_values keys (see
@@ -479,7 +477,7 @@ _TIER_PREDICATES: dict[str, str] = {
         f"{_VERIFIED_LINE} AND __INF__ >= $tier_medium AND __INF__ < $tier_medium_high"
     ),
     "medium_low": f"{_VERIFIED_LINE} AND __INF__ < $tier_medium",
-    "low": f"({_NO_INFLUENCE} OR ({_UNVERIFIED_LINE} AND __TR__ < 2))",
+    "low": f"{_UNVERIFIED_LINE} AND __TR__ < 2",
     FLAGGED_TIER: f"{_UNVERIFIED_LINE} AND __TR__ >= 2",
 }
 
@@ -741,10 +739,10 @@ async def get_paginated_flagged_connections(
     with_total: bool = False,
 ) -> tuple[list[UserConnectionItem], tuple[float, str] | None, int | None]:
     """DISTINCT flagged users across any relationship to `pubkey`. A user is
-    flagged when (from `pubkey`'s perspective) they are not verified — influence
-    at or below `verified_line`, the complement of the strict `>` used
-    everywhere else — AND at least 2 reporters above `reporter_cutoff` report
-    them, counted live.
+    flagged when (from `pubkey`'s perspective) they are not verified — no stored
+    influence, or at or below `verified_line`, the complement of the strict `>`
+    used everywhere else — AND at least 2 reporters above `reporter_cutoff`
+    report them, counted live.
     Cursor-paginated by (influence <order>, pubkey ASC). Same shape as
     get_paginated_section_connections so the client can reuse one item type.
     One pass yields both the page and the DISTINCT flagged total; `with_total`
