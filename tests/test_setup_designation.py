@@ -120,3 +120,27 @@ def test_trusted_list_row_falls_back_to_the_ta_relay(setup_client, monkeypatch):
     tl_row = next(r for r in rows if r[0] == "30392")
     ta_row = next(r for r in rows if r[0] == "30382:rank")
     assert tl_row[2] == ta_row[2]
+
+
+def test_dictionary_rows_follow_the_trusted_list_row(setup_client):
+    """The Assistant manages the Dictionary: its kinds come right after 30392,
+    as bare kinds, signed by the same Assistant."""
+    client, assistant_pubkey = setup_client
+    rows = _rows(client)
+    keys = [r[0] for r in rows]
+    assert keys[keys.index("30392") + 1 :] == ["39998", "39999"]
+    for row in rows[-2:]:
+        assert row[1] == assistant_pubkey
+
+
+def test_dictionary_rows_name_the_dictionary_relay(setup_client, monkeypatch):
+    from app.core.config import settings
+
+    client, _ = setup_client
+    assert {r[2] for r in _rows(client) if r[0] in ("39998", "39999")} == {
+        "wss://dcosl.brainstorm.world"
+    }
+    monkeypatch.setattr(settings, "dictionary_relay", "wss://dictionary.example")
+    assert {r[2] for r in _rows(client) if r[0] in ("39998", "39999")} == {
+        "wss://dictionary.example"
+    }

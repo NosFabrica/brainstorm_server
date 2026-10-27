@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Generic, Literal, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from fastapi_pagination import Page
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
@@ -790,3 +790,25 @@ class AdminSupportThread(BaseModel):
     events: list[AdminSupportEventItem]
     diagnostics: dict[str, str] | None
     requester: SupportRequester
+
+
+class AssistantDutyMenuOffer(BaseModel):
+    """What the caller's Assistant's Duty Menu offers now (`GET /user/assistantDutyMenu`)."""
+
+    assistant: str
+    # `[<Treasure Map key>, <relay>]`, one per duty, in `/setup`'s order.
+    rows: list[list[str]]
+
+
+class DutyMenuRelayResult(BaseModel):
+    url: str
+    ok: bool
+    message: str | None = None
+
+
+class PublishedAssistantDutyMenu(BaseModel):
+    """The menu the Assistant signed, and how each relay took it."""
+
+    # The signed kind-39999 event, as relays received it.
+    event: dict[str, Any]
+    relays: list[DutyMenuRelayResult]

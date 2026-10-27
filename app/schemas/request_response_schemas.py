@@ -10,6 +10,7 @@ from app.schemas.graperank_schemas import (
 )
 from app.schemas.schemas import (
     AdminStats,
+    AssistantDutyMenuOffer,
     AuthSuccessfulToken,
     BillingPlansData,
     BrainstormPubkeyInstance,
@@ -18,6 +19,7 @@ from app.schemas.schemas import (
     FollowListIngestResult,
     OwnUserData,
     PaginatedUserConnections,
+    PublishedAssistantDutyMenu,
     RefreshedSubscriptionView,
     RelayAudit,
     ShortUrlEntity,
@@ -142,6 +144,14 @@ class PublishAssistantProfileData(BaseModel):
 
 class PublishAssistantProfileResponse(SuccessfulResponseDataSchema):
     data: PublishAssistantProfileData
+
+
+class GetAssistantDutyMenuResponse(SuccessfulResponseDataSchema):
+    data: AssistantDutyMenuOffer
+
+
+class PublishAssistantDutyMenuResponse(SuccessfulResponseDataSchema):
+    data: PublishedAssistantDutyMenu
 
 
 class AdminStatsResponse(SuccessfulResponseDataSchema):

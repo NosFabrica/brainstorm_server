@@ -96,7 +96,7 @@ nothing to report; the client only needs success, so there is no body to wrap.
 
 ### `setup/router.py` — Nostr pubkey setup
 
-- **GET** `/{nostr_pubkey}` → 30382 relay hints (`list[list[str]]`).
+- **GET** `/{nostr_pubkey}` → kind-10040 designation rows (`list[list[str]]`): the five `30382:<tag>` rows, `30392`, then `39998` and `39999` at `settings.dictionary_relay`. Built by `services/duty_menu_build.designation_rows`, which the Duty Menu's offer also reads.
 
 ### `shorturl/router.py` — URL shortener
 
@@ -125,6 +125,8 @@ the `/{pubkey}` catch-all.
 | POST | `/subscription/refresh` | `RefreshSubscriptionResponse` | Re-reads Flash for the caller and applies it — the redirect-landing call and the `pending` poll, which are the guide's two return paths. Optional body `{subscription_id?}`: given one, THAT subscription is verified with Flash; absent (a `pending` return carries none) the read is by reference. The id is a handle, not an authority — the reference it must carry is the caller's own pubkey, so a stranger's id changes nothing and discloses nothing. The redirect's `ref` is not accepted at all. The view carries `verification` (`verified`/`mismatch`/`unknown`/`not_given`/`unavailable`) so a refused id is not mistaken for a payment still confirming. An id naming a superseded subscription (an old redirect replayed after a re-subscribe) is decided from the reference read instead, never from the stale row. Per-pubkey rate limit |
 | POST | `/sessions/revoke` | 204, no body | Sign out everywhere: bumps the caller's session version, so every token issued so far is a 401 |
 | POST | `/assistantProfile` | `PublishAssistantProfileResponse` | Publishes kind-0 for the user's brainstorm assistant key |
+| GET | `/assistantDutyMenu` | `GetAssistantDutyMenuResponse` | `{assistant, rows}`: what the assistant's Duty Menu offers now — `/setup`'s rows as `[key, relay]`, in its order, public relays, empty-relay rows dropped. **Must stay on this router**: on `public_router`, `/{pubkey}` would answer it as a profile with a 200, and Brainstorm-UI reads any 200 that isn't `{assistant, rows}` as "not supported here" |
+| POST | `/assistantDutyMenu` | `PublishAssistantDutyMenuResponse` | No body. Signs the kind-39999 menu (`d`, Nous' `z`, `p` = the assistant, one `duty` per GET row, `client`) dated `max(now, newest found + 1)`, checks it against § 6.1, and publishes to each row's relay (the internal TA relay for its public URL), the outbox (`assistant_relay_list()`), every relay an earlier version's rows named, and `wss://dcosl.brainstorm.world`. Answers `{event, relays: [{url, ok, message}]}` within the UI's 30 s; 502 when no relay took it |
 
 **Public (`public_router`)** — optional auth. Observer perspective = caller's
 pubkey when authenticated, else `app.utils.observer.default_observer_pubkey()`
