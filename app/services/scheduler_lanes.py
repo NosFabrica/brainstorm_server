@@ -38,8 +38,9 @@ async def enqueue_calc_request(
 ) -> None:
     """Resolve the lane for this request and rpush it.
 
-    `designated_pubkeys` (the Observer's kind-10040 keys) ride on the queue
-    message only — the worker scores them at a fixed 95 — not on the API schema.
+    `designated_pubkeys` (the Observer's kind-10040 keys and their NIP-57 zap
+    provider's key) ride on the queue message only — the worker scores them at
+    a fixed 95 — not on the API schema.
     """
     scheduling = None
     if trigger_source == TriggerSource.SCHEDULED.value:

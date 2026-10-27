@@ -1,3 +1,5 @@
+import asyncio
+
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.db_models import BrainstormRequest, BrainstormRequestStatus, TriggerSource
@@ -19,6 +21,7 @@ from app.services.graperank_preset_service import (
     resolve_preset_params,
 )
 from app.services.scheduler_lanes import enqueue_calc_request
+from app.services.zap_provider_service import fetch_zap_provider_pubkey
 
 
 def brainstorm_request_db_obj_to_schema_converter(
@@ -116,8 +119,13 @@ async def create_brainstorm_request(
     force_full_relay: bool = False,
     trigger_source: str = TriggerSource.MANUAL.value,
 ) -> BrainstormRequestInstance:
-    # Before any DB work, so a slow relay never holds a transaction open.
-    designated_pubkeys = await fetch_designated_pubkeys(parameters)
+    # Before any DB work, so a slow relay never holds a transaction open. The
+    # zap provider is pinned like a 10040 key: the Observer chose both.
+    designated_pubkeys, zap_provider = await asyncio.gather(
+        fetch_designated_pubkeys(parameters), fetch_zap_provider_pubkey(parameters)
+    )
+    if zap_provider and zap_provider not in designated_pubkeys:
+        designated_pubkeys.append(zap_provider)
 
     stored_preset = await get_graperank_preset_by_pubkey_on_db(db, parameters)
     requested_preset = normalize_preset(stored_preset)
