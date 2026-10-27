@@ -2,6 +2,7 @@ from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import get_redis_client
 from app.message_queue_tasks.process_strfry_event import (
+    DESIGNATES_KEY_PREFIX,
     FOLLOWED_BY_KEY_PREFIX,
     MUTED_BY_KEY_PREFIX,
     REPORTED_BY_KEY_PREFIX,
@@ -24,6 +25,18 @@ _RELATIONSHIP_TO_PREFIX = {
     "REPORTS": REPORTED_BY_KEY_PREFIX,
 }
 
+# Written by brainstorm_profile_resolver, not this server; the GrapeRank worker reads it.
+ZAPS_VIA_KEY_PREFIX = "zaps_via:"
+
+# Forward sets: keyed by the source, holding its targets — the designations a user
+# chose (kind-10040 keys and their zap signer). Neo4j holds the same edges, so a
+# wiped Redis is rebuilt from them like the reverse sets above; nothing else would
+# restore them (the resolver skips users it already settled).
+_FORWARD_RELATIONSHIP_TO_PREFIX = {
+    "DESIGNATES": DESIGNATES_KEY_PREFIX,
+    "ZAPS_VIA": ZAPS_VIA_KEY_PREFIX,
+}
+
 
 async def _is_graph_db_populated() -> bool:
     async with db_session() as db:
@@ -37,7 +50,10 @@ async def _is_graph_db_populated() -> bool:
 
 
 async def _redis_has_relationship_data(redis_client) -> bool:
-    for prefix in _RELATIONSHIP_TO_PREFIX.values():
+    for prefix in [
+        *_RELATIONSHIP_TO_PREFIX.values(),
+        *_FORWARD_RELATIONSHIP_TO_PREFIX.values(),
+    ]:
         async for _ in redis_client.scan_iter(match=f"{prefix}*", count=1):
             return True
     return False
@@ -52,7 +68,11 @@ async def _count_nostr_users() -> int:
 
 
 async def _backfill_relationship(
-    redis_client, relationship: str, prefix: str, total_users: int
+    redis_client,
+    relationship: str,
+    prefix: str,
+    total_users: int,
+    forward: bool = False,
 ) -> int:
     # We iterate by source (publisher) rather than by target. Out-degree is bounded
     # by a user's contact-list / mute-list / report-list size (usually thousands at
@@ -82,7 +102,10 @@ async def _backfill_relationship(
             async for record in result:
                 source = record["source"]
                 for target in record["targets"]:
-                    pipe.sadd(f"{prefix}{target}", source)
+                    if forward:
+                        pipe.sadd(f"{prefix}{source}", target)
+                    else:
+                        pipe.sadd(f"{prefix}{target}", source)
                     pending += 1
                     if pending >= PIPELINE_FLUSH_EVERY:
                         await pipe.execute()
@@ -152,6 +175,10 @@ async def backfill_redis_relationships_if_needed() -> None:
         for relationship, prefix in _RELATIONSHIP_TO_PREFIX.items():
             await _backfill_relationship(
                 redis_client, relationship, prefix, total_users
+            )
+        for relationship, prefix in _FORWARD_RELATIONSHIP_TO_PREFIX.items():
+            await _backfill_relationship(
+                redis_client, relationship, prefix, total_users, forward=True
             )
 
         await redis_client.set(DONE_MARKER_KEY, "1")

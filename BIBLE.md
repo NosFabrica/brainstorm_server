@@ -51,7 +51,7 @@ The unit of work is a **Brainstorm request**: one full GrapeRank lifecycle for o
 | **nostr relays** (strfry/neofry) | The published record: signed TAs, and the incoming assertion events | **Source of truth for published scores.** The publish is the act; everything else mirrors it |
 | **PostgreSQL** | Domain state: requests and their lifecycle, encrypted assistant nsecs, presets and their history, the published-pubkeys baseline | Source of truth for the *process* (what ran, what was published, with which keys and parameters) |
 | **Neo4j** | The social graph (`FOLLOWS`/`MUTES`/`REPORTS` per pubkey) + per-observer scorecard properties | Source of truth for the *input graph* |
-| **Redis** | The lanes and result queues, plus reverse-set caches (`followed_by:` / `muted_by:` / `reported_by:`) | Transport and cache — rebuildable |
+| **Redis** | The lanes and result queues, plus reverse-set caches (`followed_by:` / `muted_by:` / `reported_by:`) and the forward designation sets (`designates:` / `zaps_via:`) | Transport and cache — rebuildable: an empty Redis is refilled from Neo4j at startup (`backfill_redis_relationships`) |
 
 One invariant follows, and code review should enforce it: **graph/Postgres writes must succeed** — they are source of truth for their domain.
 

@@ -37,6 +37,8 @@ Dispatches incoming Nostr events by kind:
 
 The reverse-set helper is `_update_reverse_sets`. Use it for any new "X → relationships → reverse-cache" pattern.
 
+**A wiped Redis is rebuilt from Neo4j** by `backfill_redis_relationships.py`, once, at startup (when the done marker is absent, the graph is populated and no relationship keys exist): the reverse sets from `FOLLOWS` / `MUTES` / `REPORTS` keyed by target, and the forward sets `designates:` / `zaps_via:` from `DESIGNATES` / `ZAPS_VIA` keyed by source. Any new Redis copy of a Neo4j relationship the worker reads belongs in it — otherwise a wipe loses it for good (the profile resolver, for one, skips users it already settled).
+
 ## upload_nostr_events.py
 
 The longest module here. The main entry point is `process_nostr_upload_message(message)`. Big picture:
