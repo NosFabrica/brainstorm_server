@@ -74,8 +74,10 @@ read side follows via `n[$key]`; see [`../repos/CLAUDE.md`](../repos/CLAUDE.md).
 
 Delta by default when `neo4j_full_write=False`: only the worker's
 `neo4jWritePubkeys` are written. The worker diffs against what Neo4j holds, so a
-lost write reappears as changed next run. The stored raw `influence` can lag
-within its 2-decimal rounding until a full write. A full write (setting, the
+lost write reappears as changed next run. The worker's influence dead zone
+(`INFLUENCE_DEAD_ZONE`, 0.0005) holds a value that moved less than that, so the
+stored `influence` lags the computed one by under 0.0005; every larger move is
+written. A full write (setting, the
 row's `force_full_neo4j`, or a worker sending no write set) writes every
 scorecard. Clearing the observer's properties on nodes it no longer reaches
 costs one label scan, so it runs on forced runs (`force_full_neo4j`: resync
