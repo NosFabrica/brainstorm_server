@@ -1,5 +1,6 @@
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from datetime import datetime, timedelta
 from itertools import islice
 
 from app.core.config import settings
@@ -8,6 +9,10 @@ from app.core.loggr import loggr
 from app.db_models import BrainstormRequestStatus
 from app.models.grapeRankResult import GrapeRankResult, ScoreCard
 from app.neo4j_db.driver import driver as neo4j_driver
+from app.repos.brainstorm_nsec import (
+    get_last_neo4j_cleanup_at_on_db,
+    mark_neo4j_cleanup_on_db,
+)
 from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
     update_brainstorm_request_internal_publication_status_by_id_on_db,
@@ -17,6 +22,7 @@ from app.repos.user_repo import (
     get_pubkeys_scored_by_observer,
     set_observer_scores,
 )
+from app.utils.datetimes import utc_now
 
 # Each batch is its own transaction, so fewer, larger batches mean fewer commits.
 BATCH_SIZE = 5000
@@ -54,6 +60,14 @@ async def _clear_unreached(observer: str, scored: set[str]) -> int:
     return len(stale)
 
 
+def cleanup_due(last: datetime | None, interval_days: int, now: datetime) -> bool:
+    """Out-of-reach scores are cleared by time, not run count: cadences range from
+    hours to months."""
+    if interval_days <= 0:
+        return False
+    return last is None or now - last >= timedelta(days=interval_days)
+
+
 async def process_neo4j_write_message(message: dict):
     run_id = message["private_id"]
     is_success = message["result"]["success"]
@@ -84,10 +98,15 @@ async def process_neo4j_write_message(message: dict):
 
     async with db_session() as db:
         request_row = await select_brainstorm_request_by_id_on_db(db, run_id)
-        # Cleanup only when forced (resync, backstop): it costs a label scan.
-        clear_unreached = bool(request_row.force_full_neo4j)
+        forced = bool(request_row.force_full_neo4j)
+        # The clear costs a label scan, so it runs on forced runs and then by time.
+        clear_unreached = forced or cleanup_due(
+            await get_last_neo4j_cleanup_at_on_db(db, observer),
+            settings.neo4j_cleanup_interval_days,
+            utc_now(),
+        )
         # An older worker sends no write set.
-        full = settings.neo4j_full_write or clear_unreached or write_set is None
+        full = settings.neo4j_full_write or forced or write_set is None
         await update_brainstorm_request_internal_publication_status_by_id_on_db(
             db,
             brainstorm_request_id=message["private_id"],
@@ -118,6 +137,8 @@ async def process_neo4j_write_message(message: dict):
             brainstorm_request_id=message["private_id"],
             status=BrainstormRequestStatus.SUCCESS,
         )
+        if clear_unreached:
+            await mark_neo4j_cleanup_on_db(db, observer)
 
         await db.commit()
 

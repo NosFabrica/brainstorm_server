@@ -42,7 +42,7 @@ The unit of work is a **Brainstorm request**: one full GrapeRank lifecycle for o
 
 **Terminal states.** *Success* or *Failure*, with a parallel TA-publication status so a calculation that succeeded but never finished publishing is visible as exactly that. A non-terminal request whose worker died (deploy, crash — its lane payload popped and lost) is **Abandoned**; an admin **reaps** it terminal so it stops counting against admission. Reaping marks the row; it cannot resurrect, and a late worker write-back cannot un-reap it.
 
-**Drift repair.** Steady state is incremental. Divergence between what the relay holds and what the baseline believes is repaired by scheduled full-syncs (`FULL_SYNC_EVERY_N_RUNS`), per-run `force_full_relay` / `force_full_neo4j` overrides on the request row, or the admin resync — full-sync **re-asserts, it never decides deletions** on the relay. A forced Neo4j run also clears the observer's scores on nodes it no longer reaches. The below-cutoff sweep modes are backlog drains, deliberately not a steady state.
+**Drift repair.** Steady state is incremental. Divergence between what the relay holds and what the baseline believes is repaired by scheduled full-syncs (`FULL_SYNC_EVERY_N_RUNS`), per-run `force_full_relay` / `force_full_neo4j` overrides on the request row, or the admin resync — full-sync **re-asserts, it never decides deletions** on the relay. Neo4j clears the observer's scores on nodes it no longer reaches on forced runs and, by time, every `NEO4J_CLEANUP_INTERVAL_DAYS`. The below-cutoff sweep modes are backlog drains, deliberately not a steady state.
 
 ## 3. Stores, and who holds the truth
 

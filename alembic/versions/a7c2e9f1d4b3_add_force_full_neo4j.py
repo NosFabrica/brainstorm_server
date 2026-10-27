@@ -1,4 +1,4 @@
-"""add force_full_neo4j to brainstorm_request
+"""add force_full_neo4j to brainstorm_request, last_neo4j_cleanup_at to brainstorm_nsec
 
 Revision ID: a7c2e9f1d4b3
 Revises: b4e8d2a6f0c1
@@ -22,7 +22,12 @@ def upgrade() -> None:
             "force_full_neo4j", sa.Boolean(), server_default="false", nullable=True
         ),
     )
+    op.add_column(
+        "brainstorm_nsec",
+        sa.Column("last_neo4j_cleanup_at", sa.DateTime(), nullable=True),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("brainstorm_nsec", "last_neo4j_cleanup_at")
     op.drop_column("brainstorm_request", "force_full_neo4j")

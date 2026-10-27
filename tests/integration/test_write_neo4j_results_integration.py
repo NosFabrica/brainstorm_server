@@ -9,6 +9,7 @@ stored like any other, and that the reporter count is not persisted (reads count
 """
 
 import asyncio
+from datetime import timedelta
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -84,6 +85,17 @@ def graph(monkeypatch):
         AsyncMock(return_value=request_row),
     )
     monkeypatch.setattr(writer_module.settings, "neo4j_full_write", False)
+    # Cleaned recently by default, so only tests that move the clock see a time-based clear.
+    cleanup = {"last": writer_module.utc_now(), "marked": 0}
+
+    async def _last(db, pubkey):
+        return cleanup["last"]
+
+    async def _mark(db, pubkey):
+        cleanup["marked"] += 1
+
+    monkeypatch.setattr(writer_module, "get_last_neo4j_cleanup_at_on_db", _last)
+    monkeypatch.setattr(writer_module, "mark_neo4j_cleanup_on_db", _mark)
 
     async def _seed():
         driver = _fresh_driver()
@@ -107,7 +119,7 @@ def graph(monkeypatch):
 
     asyncio.run(_seed())
     try:
-        yield {"observer": observer, "request_row": request_row, **pks}
+        yield {"observer": observer, "request_row": request_row, "cleanup": cleanup, **pks}
     finally:
         asyncio.run(_teardown())
 
@@ -303,3 +315,32 @@ def test_a_delta_write_keeps_scores_on_nodes_no_longer_reached(graph):
     _write(_message(observer, {a: _scorecard(observer, a, 1)}, write_set=[]))
 
     assert asyncio.run(_props(gone, observer))["influence"] == 0.5
+
+
+def _seed_then_drop(graph):
+    observer, a, gone = graph["observer"], graph["many_followers"], graph["unreached"]
+    _write(
+        _message(
+            observer,
+            {a: _scorecard(observer, a, 1), gone: _scorecard(observer, gone, 1)},
+        )
+    )
+    _write(_message(observer, {a: _scorecard(observer, a, 1)}, write_set=[]))
+    return observer, a, gone
+
+
+def test_a_never_cleaned_observer_clears_on_a_delta_run(graph):
+    graph["cleanup"]["last"] = None
+    observer, a, gone = _seed_then_drop(graph)
+
+    assert asyncio.run(_props(gone, observer))["influence"] is None
+    assert asyncio.run(_props(a, observer))["influence"] == 0.5
+    assert graph["cleanup"]["marked"] >= 1
+
+
+def test_an_observer_past_the_interval_clears_on_a_delta_run(graph, monkeypatch):
+    monkeypatch.setattr(writer_module.settings, "neo4j_cleanup_interval_days", 30)
+    graph["cleanup"]["last"] = writer_module.utc_now() - timedelta(days=31)
+    observer, _, gone = _seed_then_drop(graph)
+
+    assert asyncio.run(_props(gone, observer))["influence"] is None
