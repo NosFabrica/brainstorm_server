@@ -55,4 +55,4 @@ accepted
   read in `designation_service`, once the backfill has run in every environment.
 - Deploy order: either. An old worker ignores `designates:`; a new worker with no
   `designates:` data behaves as before.
-- The same edges will carry the NIP-57 zap provider key (`ZAPS_VIA`) next.
+- The NIP-57 zap provider key gets the same treatment (`ZAPS_VIA` edges + `zaps_via:` sets), written by `NosFabrica/brainstorm_profile_resolver`, not this server.
