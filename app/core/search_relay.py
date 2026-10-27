@@ -146,7 +146,9 @@ async def fetch_events(nostr_filter: dict) -> list[dict]:
         )
 
     events: list[dict] = []
-    for line in response.text.splitlines():
+    # NDJSON lines end at "\n" only: `splitlines()` also breaks on U+2028 and
+    # friends, which JSON allows unescaped inside a string (profiles carry them).
+    for line in response.text.split("\n"):
         if not line.strip():
             continue
         try:

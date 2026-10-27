@@ -44,3 +44,33 @@ def test_no_pubkeys_asks_nothing(monkeypatch):
 
     monkeypatch.setattr(search_relay, "fetch_events", fail)
     assert asyncio.run(search_relay.fetch_profiles([])) == {}
+
+
+def test_a_line_separator_inside_a_profile_does_not_split_its_line():
+    """Regression: `splitlines()` broke NDJSON at U+2028, which JSON allows
+    unescaped in a string — and real profiles carry it — so one such profile
+    failed the whole read as "a line that is not JSON"."""
+    import json
+    from unittest.mock import patch
+
+    import httpx
+
+    profile = {
+        "kind": 0,
+        "pubkey": ALICE,
+        "created_at": 1,
+        "content": json.dumps({"about": "line one line two"}, ensure_ascii=False),
+    }
+    body = "\n".join(
+        json.dumps(frame, ensure_ascii=False)
+        for frame in (["EVENT", "ore", profile], ["EOSE", "ore"])
+    )
+    assert " " in body
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=body)),
+        base_url="http://relay.test",
+    )
+    with patch("app.core.search_relay._client", client):
+        profiles = asyncio.run(search_relay.fetch_profiles([ALICE]))
+
+    assert profiles == {ALICE: profile}
