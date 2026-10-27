@@ -5,6 +5,7 @@ from sqlalchemy import (
     Select,
     and_,
     asc,
+    case,
     delete,
     desc,
     exists,
@@ -294,6 +295,12 @@ async def update_brainstorm_request_status_by_id_on_db(
     return None
 
 
+_NON_TERMINAL = [
+    BrainstormRequestStatus.WAITING.value,
+    BrainstormRequestStatus.ONGOING.value,
+]
+
+
 async def update_brainstorm_request_result_by_id_on_db(
     db: AsyncDBSession,
     brainstorm_request_id: int,
@@ -301,9 +308,14 @@ async def update_brainstorm_request_result_by_id_on_db(
     status: BrainstormRequestStatus,
     error: dict | None = None,
 ) -> None:
+    # Only from a non-terminal status: a reaped run stays failed if its worker
+    # reports late.
     statement = (
         update(BrainstormRequest)
-        .where(BrainstormRequest.private_id == brainstorm_request_id)
+        .where(
+            BrainstormRequest.private_id == brainstorm_request_id,
+            BrainstormRequest.status.in_(_NON_TERMINAL),
+        )
         .values(
             status=status.value,
             count_values=count_values,
@@ -313,28 +325,6 @@ async def update_brainstorm_request_result_by_id_on_db(
 
     _ = await execute_db_statement(db, statement, __name__)
     return None
-
-
-async def fail_stale_ongoing_brainstorm_requests_on_db(
-    db: AsyncDBSession, stale_threshold: timedelta
-) -> int:
-    cutoff = utc_now() - stale_threshold
-    statement = (
-        update(BrainstormRequest)
-        .where(
-            BrainstormRequest.status == BrainstormRequestStatus.ONGOING.value,
-            BrainstormRequest.updated_at < cutoff,
-        )
-        .values(status=BrainstormRequestStatus.FAILURE.value)
-    )
-    result = await execute_db_statement(db, statement, __name__)
-    return result.rowcount
-
-
-_NON_TERMINAL = [
-    BrainstormRequestStatus.WAITING.value,
-    BrainstormRequestStatus.ONGOING.value,
-]
 
 
 def in_pipeline_condition():
@@ -412,25 +402,30 @@ async def any_interactive_in_pipeline_on_db(db: AsyncDBSession) -> bool:
     return int(result.scalar_one()) > 0
 
 
-async def fail_stale_publishing_brainstorm_requests_on_db(
+async def fail_stale_in_pipeline_brainstorm_requests_on_db(
     db: AsyncDBSession, stale_threshold: timedelta
-) -> int:
-    """Fail hung publishes (ta_publication non-terminal past the cutoff) so a
-    stuck job can't permanently block scheduler admission."""
+) -> list[int]:
+    """Reap runs stuck in the pipeline (calc or TA publish non-terminal) past the
+    cutoff, whatever stage they stalled in, so a lost job can't block scheduler
+    admission. The Neo4j stage is left alone: it never blocks admission."""
     cutoff = utc_now() - stale_threshold
     statement = (
         update(BrainstormRequest)
-        .where(
-            BrainstormRequest.status_ta_publication.in_(_NON_TERMINAL),
-            BrainstormRequest.updated_at < cutoff,
-        )
+        .where(in_pipeline_condition(), BrainstormRequest.updated_at < cutoff)
         .values(
-            status_ta_publication=BrainstormRequestStatus.FAILURE.value,
             status=BrainstormRequestStatus.FAILURE.value,
+            status_ta_publication=case(
+                (
+                    BrainstormRequest.status_ta_publication.in_(_NON_TERMINAL),
+                    BrainstormRequestStatus.FAILURE.value,
+                ),
+                else_=BrainstormRequest.status_ta_publication,
+            ),
         )
+        .returning(BrainstormRequest.private_id)
     )
     result = await execute_db_statement(db, statement, __name__)
-    return result.rowcount
+    return list(result.scalars().all())
 
 
 async def relay_publish_gap_pending_on_db(

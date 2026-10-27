@@ -81,7 +81,7 @@ in `brainstorm_nsec.py` are the only safe entry points.
 - `create_brainstorm_request_on_db(db, algorithm, parameters, pubkey, graperank_preset_used, graperank_params) → BrainstormRequest`
 - `select_latest_brainstorm_request_on_db(db, pubkey) → BrainstormRequest | None` (+ `non_waiting`, `successful` variants)
 - Status mutators: `update_brainstorm_request_status_by_id_on_db`, `…_ta_status_by_id_on_db`, `…_internal_publication_status_by_id_on_db`, `update_brainstorm_request_result_by_id_on_db`
-- `fail_stale_ongoing_brainstorm_requests_on_db(db, stale_threshold) → int` (rowcount; used by the cronjob in `app/cronjobs/`)
+- `fail_stale_in_pipeline_brainstorm_requests_on_db(db, stale_threshold) → list[int]` (reaped run ids; calc or TA publish non-terminal past the cutoff; used by the cronjob in `app/cronjobs/`). `update_brainstorm_request_result_by_id_on_db` only writes over a non-terminal calc status, so a reaped run can't be resurrected.
 - `compute_admin_stats_on_db(db) → dict` (queue_depth, scored_users, sp_adopters — single round-trip)
 
 ### `brainstorm_nsec.py`
