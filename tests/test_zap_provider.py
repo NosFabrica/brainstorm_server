@@ -4,6 +4,8 @@ request with the 10040 keys, so the GrapeRank worker pins it at 95 too."""
 import asyncio
 import json
 
+from nostr_sdk import EventBuilder, Keys, Kind
+
 from app.core.config import settings
 from app.services import zap_provider_service
 from app.services.zap_provider_service import (
@@ -14,6 +16,15 @@ from app.services.zap_provider_service import (
 
 OBSERVER = "a" * 64
 PROVIDER = "b" * 64
+
+# The end-to-end lookups read a kind-0 that must really be the Observer's.
+SIGNER = Keys.generate()
+SIGNED_OBSERVER = SIGNER.public_key().to_hex()
+
+
+def _kind0(content: str, keys: Keys = SIGNER) -> dict:
+    return json.loads(EventBuilder(Kind(0), content).sign_with_keys(keys).as_json())
+
 
 # LUD-01's own example.
 LUD01_LNURL = (
@@ -30,6 +41,13 @@ def test_lud16_maps_to_the_well_known_lnurlp_endpoint():
     assert (
         lnurl_pay_url({"lud16": "Alice@Getalby.com"})
         == "https://getalby.com/.well-known/lnurlp/alice"
+    )
+
+
+def test_lud16_accepts_punycode_domains():
+    assert (
+        lnurl_pay_url({"lud16": "bob@xn--e1afmkfd.xn--p1ai"})
+        == "https://xn--e1afmkfd.xn--p1ai/.well-known/lnurlp/bob"
     )
 
 
@@ -119,28 +137,62 @@ def _stub(monkeypatch, kind0, answer):
     return asked
 
 
+def _lookup():
+    return asyncio.run(zap_provider_service.fetch_zap_provider_pubkey(SIGNED_OBSERVER))
+
+
 def test_fetches_the_provider_from_the_observers_kind0(monkeypatch):
-    kind0 = {"content": json.dumps({"lud16": "alice@getalby.com"})}
+    kind0 = _kind0(json.dumps({"lud16": "alice@getalby.com"}))
     asked = _stub(monkeypatch, kind0, {"allowsNostr": True, "nostrPubkey": PROVIDER})
-    assert (
-        asyncio.run(zap_provider_service.fetch_zap_provider_pubkey(OBSERVER))
-        == PROVIDER
-    )
+    assert _lookup() == PROVIDER
     assert asked == {
         "relay": settings.nostr_transfer_from_relay,
         "kind": 0,
-        "author": OBSERVER,
+        "author": SIGNED_OBSERVER,
         "url": "https://getalby.com/.well-known/lnurlp/alice",
     }
 
 
 def test_no_kind0_or_no_address_means_no_provider(monkeypatch):
     _stub(monkeypatch, None, None)
-    assert asyncio.run(zap_provider_service.fetch_zap_provider_pubkey(OBSERVER)) is None
-    _stub(monkeypatch, {"content": "not json"}, None)
-    assert asyncio.run(zap_provider_service.fetch_zap_provider_pubkey(OBSERVER)) is None
-    _stub(monkeypatch, {"content": json.dumps({"name": "alice"})}, None)
-    assert asyncio.run(zap_provider_service.fetch_zap_provider_pubkey(OBSERVER)) is None
+    assert _lookup() is None
+    _stub(monkeypatch, _kind0("not json"), None)
+    assert _lookup() is None
+    _stub(monkeypatch, _kind0(json.dumps({"name": "alice"})), None)
+    assert _lookup() is None
+
+
+def test_only_the_observers_own_signed_kind0_counts(monkeypatch):
+    """The kind-0 is read straight off an outside relay, past strfry's checks;
+    a forged one would get its author's chosen key pinned at 95."""
+    answer = {"allowsNostr": True, "nostrPubkey": PROVIDER}
+    content = json.dumps({"lud16": "mallory@evil.example"})
+
+    someone_else = _kind0(content, Keys.generate())
+    asked = _stub(monkeypatch, someone_else, answer)
+    assert _lookup() is None
+    assert "url" not in asked
+
+    relabelled = {**someone_else, "pubkey": SIGNED_OBSERVER}
+    asked = _stub(monkeypatch, relabelled, answer)
+    assert _lookup() is None
+    assert "url" not in asked
+
+    tampered = {
+        **_kind0(json.dumps({"lud16": "alice@getalby.com"})),
+        "content": content,
+    }
+    asked = _stub(monkeypatch, tampered, answer)
+    assert _lookup() is None
+    assert "url" not in asked
+
+    asked = _stub(monkeypatch, {"content": content}, answer)
+    assert _lookup() is None
+
+    note = json.loads(EventBuilder(Kind(1), content).sign_with_keys(SIGNER).as_json())
+    asked = _stub(monkeypatch, note, answer)
+    assert _lookup() is None
+    assert "url" not in asked
 
 
 def test_a_lookup_error_means_no_provider(monkeypatch):

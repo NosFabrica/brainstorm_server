@@ -30,6 +30,7 @@ import socket
 from urllib.parse import urlsplit
 
 import httpx
+from nostr_sdk import Event
 
 from app.core.config import settings
 from app.core.loggr import loggr
@@ -41,7 +42,7 @@ METADATA_KIND = 0
 
 _HEX_PUBKEY = re.compile(r"^[0-9a-f]{64}$")
 # LUD-16: the username is a-z0-9-_.+ ; the domain a plain hostname.
-_LUD16 = re.compile(r"^([a-z0-9\-_.+]+)@([a-z0-9\-.]+\.[a-z]{2,})$")
+_LUD16 = re.compile(r"^([a-z0-9\-_.+]+)@([a-z0-9\-]+(?:\.[a-z0-9\-]+)+)$")
 
 # Upstream relay for the kind-0 (neofry does not sync profiles), then one
 # third-party HTTP GET. Bounded as a whole so a slow host can't hold up the
@@ -49,6 +50,28 @@ _LUD16 = re.compile(r"^([a-z0-9\-_.+]+)@([a-z0-9\-.]+\.[a-z]{2,})$")
 _STEP_TIMEOUT_SECONDS = 5.0
 _TOTAL_TIMEOUT_SECONDS = 8.0
 _MAX_BODY_BYTES = 64 * 1024
+
+# One shared keep-alive client, lazily built — same pattern as app/core/flash.py.
+# Building one loads the CA bundle synchronously (~100 ms on the event loop).
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(
+            timeout=httpx.Timeout(_STEP_TIMEOUT_SECONDS), follow_redirects=False
+        )
+    return _client
+
+
+async def aclose() -> None:
+    """Close the shared client. Called from the FastAPI lifespan shutdown."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
 
 _BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 
@@ -143,23 +166,32 @@ async def _fetch_lnurl_pay(url: str) -> object | None:
         return None
     if not await _resolves_publicly(parts.hostname, parts.port or 443):
         return None
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(_STEP_TIMEOUT_SECONDS), follow_redirects=False
-    ) as client:
-        async with client.stream(
-            "GET", url, headers={"Accept": "application/json"}
-        ) as response:
-            if response.status_code != 200:
+    async with _get_client().stream(
+        "GET", url, headers={"Accept": "application/json"}
+    ) as response:
+        if response.status_code != 200:
+            return None
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            body += chunk
+            if len(body) > _MAX_BODY_BYTES:
                 return None
-            body = bytearray()
-            async for chunk in response.aiter_bytes():
-                body += chunk
-                if len(body) > _MAX_BODY_BYTES:
-                    return None
     try:
         return json.loads(body)
     except ValueError:
         return None
+
+
+def _is_signed_kind0_of(event: dict, author: str) -> bool:
+    try:
+        parsed = Event.from_json(json.dumps(event))
+    except Exception:
+        return False
+    return (
+        parsed.kind().as_u16() == METADATA_KIND
+        and parsed.author().to_hex() == author
+        and parsed.verify()
+    )
 
 
 async def _lookup(observer: str) -> str | None:
@@ -169,7 +201,9 @@ async def _lookup(observer: str) -> str | None:
         observer,
         timeout=_STEP_TIMEOUT_SECONDS,
     )
-    if event is None:
+    # Read past strfry, so nothing has checked it, and the key it leads to is
+    # pinned at 95: only the Observer's own signature counts.
+    if event is None or not _is_signed_kind0_of(event, observer):
         return None
     try:
         metadata = json.loads(event.get("content") or "")
