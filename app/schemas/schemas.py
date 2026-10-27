@@ -718,6 +718,25 @@ class CreatedShortUrl(ShortUrlEntity):
     short_code: str = Field(serialization_alias="shortCode")
 
 
+class PasskeyVaultEntry(BaseModel):
+    """A stored passkey as its owner sees it in Settings — never the blob."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    credential_id_hash: str = Field(serialization_alias="credentialIdHash")
+    label: str | None
+    created_at: Instant = Field(serialization_alias="createdAt")
+    last_used_at: Instant = Field(serialization_alias="lastUsedAt")
+
+
+class PasskeyVaultBlob(BaseModel):
+    blob: str
+
+
+class PasskeyVaultChallenge(BaseModel):
+    challenge: str
+
+
 class SupportTicketItem(BaseModel):
     id: int
     subject: str

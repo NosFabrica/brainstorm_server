@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     login_verify_rate_limit_per_minute: int = Field(default=30)
     # Verifies that create a new Observer row (throwaway-keypair signups).
     login_new_observer_rate_limit_per_hour: int = Field(default=20)
+    # Origins whose passkeys may open a passkey vault, comma-separated; empty =
+    # FRONTEND_URL alone. Each origin's host is its passkeys' relying party, so a
+    # staging UI's passkeys open only rows staging's UI wrote.
+    passkey_origins: str = Field(default="")
+    # Per-IP limits on the vault's unauthenticated half (challenge, open).
+    passkey_challenge_rate_limit_per_minute: int = Field(default=30)
+    passkey_open_rate_limit_per_minute: int = Field(default=20)
     # Global kill-switch for the tier scheduler. Default off; enable per environment
     scheduler_enabled: bool = Field(default=False)
     # Max scheduled runs whose publishing may be in flight before admission pauses.
