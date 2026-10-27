@@ -7,7 +7,7 @@ columns, the consumer, the scheduled trigger, and the admin resync endpoint wire
 these in.
 """
 
-from typing import Literal
+from typing import Literal, NamedTuple
 
 
 def resolve_full_sync(setting_full: bool, force_full: bool | None) -> bool:
@@ -25,9 +25,16 @@ def backstop_due(runs_since_full: int, every_n: int) -> bool:
 
 ResyncTarget = Literal["relay", "neo4j", "both"]
 
-# Admin resync target → (force_full_relay, force_full_neo4j).
-RESYNC_TARGETS: dict[ResyncTarget, tuple[bool, bool]] = {
-    "relay": (True, False),
-    "neo4j": (False, True),
-    "both": (True, True),
+
+class ForceFull(NamedTuple):
+    """Which sinks a run re-asserts in full (the request row's `force_full_*`)."""
+
+    relay: bool
+    neo4j: bool
+
+
+RESYNC_TARGETS: dict[ResyncTarget, ForceFull] = {
+    "relay": ForceFull(relay=True, neo4j=False),
+    "neo4j": ForceFull(relay=False, neo4j=True),
+    "both": ForceFull(relay=True, neo4j=True),
 }

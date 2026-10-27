@@ -344,3 +344,33 @@ def test_an_observer_past_the_interval_clears_on_a_delta_run(graph, monkeypatch)
     observer, _, gone = _seed_then_drop(graph)
 
     assert asyncio.run(_props(gone, observer))["influence"] is None
+
+
+def test_cleanup_clears_a_node_that_lost_only_its_influence(graph):
+    observer, a, gone = graph["observer"], graph["many_followers"], graph["unreached"]
+    _write(
+        _message(
+            observer,
+            {a: _scorecard(observer, a, 1), gone: _scorecard(observer, gone, 1)},
+        )
+    )
+
+    async def drop_influence():
+        driver = _fresh_driver()
+        try:
+            async with driver.session() as s:
+                await s.run(
+                    "MATCH (n:NostrUser {pubkey: $pk}) SET n[$k] = null",
+                    pk=gone,
+                    k=f"influence_{observer}",
+                )
+        finally:
+            await driver.close()
+
+    asyncio.run(drop_influence())
+    graph["request_row"].force_full_neo4j = True
+    _write(_message(observer, {a: _scorecard(observer, a, 1)}, write_set=[]))
+
+    left = asyncio.run(_props(gone, observer))
+    assert left["hops"] is None
+    assert left["trusted_followers"] is None

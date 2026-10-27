@@ -181,10 +181,12 @@ class BrainstormNsec(TimestampMixin, Base):
     # Scheduled deltas published since this observer's last successful full run.
     # Drives the every-Nth full backstop (FULL_SYNC_EVERY_N_RUNS). Counts
     # scheduled runs only; reset to 0 after a successful full run.
-    # Last clear of this observer's out-of-reach Neo4j scores (NEO4J_CLEANUP_INTERVAL_DAYS).
-    last_neo4j_cleanup_at = mapped_column(DateTime, nullable=True)
     runs_since_full: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
+    )
+    # Last clear of this observer's out-of-reach Neo4j scores (NEO4J_CLEANUP_INTERVAL_DAYS).
+    last_neo4j_cleanup_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
     )
     # The scheduling policy this user is assigned to (see the Scheduling table).
     # NULL = the default policy (is_default row). Assigned by admins / a future

@@ -218,7 +218,7 @@ async def resync_observer_endpoint(
     target: ResyncTarget = Query("both"),
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> BrainstormRequestResponse:
-    force_full_relay, force_full_neo4j = RESYNC_TARGETS[target]
+    force = RESYNC_TARGETS[target]
     # One single-observer recompute, never a fan-out; the consumers read the
     # flags off the row and re-assert the full state on each targeted sink.
     result = await create_brainstorm_request(
@@ -226,8 +226,8 @@ async def resync_observer_endpoint(
         algorithm="graperank",
         parameters=pubkey,
         pubkey=pubkey,
-        force_full_relay=force_full_relay,
-        force_full_neo4j=force_full_neo4j,
+        force_full_relay=force.relay,
+        force_full_neo4j=force.neo4j,
         trigger_source=TriggerSource.ADMIN.value,
     )
     return BrainstormRequestResponse(data=result)

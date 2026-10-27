@@ -1335,41 +1335,52 @@ async def count_verified_muters(
     }
 
 
-async def set_observer_scores(tx: AsyncManagedTransaction, rows: list[dict]) -> None:
-    """`rows`: `{pubkey, props}`, props keyed `<field>_<observer>` (built by the caller)."""
-    result = await tx.run(
-        """
-        UNWIND $rows AS row
-        MATCH (n:NostrUser {pubkey: row.pubkey})
-        SET n += row.props
-        """,
-        rows=rows,
-    )
-    await result.consume()
+async def set_observer_scores(session: AsyncNeoSession, rows: list[dict]) -> None:
+    """`rows`: `{pubkey, props}`, props keyed `<field>_<observer>` (built by the caller).
+    Managed transaction: retried on transient errors (ingest can deadlock on the same nodes).
+    """
+
+    async def work(tx: AsyncManagedTransaction) -> None:
+        result = await tx.run(
+            """
+            UNWIND $rows AS row
+            MATCH (n:NostrUser {pubkey: row.pubkey})
+            SET n += row.props
+            """,
+            rows=rows,
+        )
+        await result.consume()
+
+    await session.execute_write(work)
 
 
 async def get_pubkeys_scored_by_observer(
-    session: AsyncNeoSession, influence_key: str
+    session: AsyncNeoSession, keys: list[str]
 ) -> list[str]:
-    """Every node holding `influence_<observer>`. A label scan: full writes only."""
+    """Every node holding any of the observer's score properties. A label scan."""
     result = await session.run(
-        "MATCH (n:NostrUser) WHERE n[$key] IS NOT NULL RETURN n.pubkey AS pubkey",
-        key=influence_key,
+        "MATCH (n:NostrUser) WHERE any(k IN $keys WHERE n[k] IS NOT NULL) "
+        "RETURN n.pubkey AS pubkey",
+        keys=keys,
     )
     return [r["pubkey"] async for r in result]
 
 
 async def clear_observer_scores(
-    tx: AsyncManagedTransaction, pubkeys: list[str], keys: list[str]
+    session: AsyncNeoSession, pubkeys: list[str], keys: list[str]
 ) -> None:
     """Remove the observer's score properties; the nodes and edges stay."""
-    result = await tx.run(
-        """
-        UNWIND $pubkeys AS pubkey
-        MATCH (n:NostrUser {pubkey: pubkey})
-        SET n += $nulls
-        """,
-        pubkeys=pubkeys,
-        nulls=dict.fromkeys(keys),
-    )
-    await result.consume()
+
+    async def work(tx: AsyncManagedTransaction) -> None:
+        result = await tx.run(
+            """
+            UNWIND $pubkeys AS pubkey
+            MATCH (n:NostrUser {pubkey: pubkey})
+            SET n += $nulls
+            """,
+            pubkeys=pubkeys,
+            nulls=dict.fromkeys(keys),
+        )
+        await result.consume()
+
+    await session.execute_write(work)

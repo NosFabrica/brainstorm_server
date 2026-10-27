@@ -40,22 +40,21 @@ def _keys(observer: str) -> dict[str, str]:
 
 
 async def _write_batches(work: Callable[..., Awaitable[None]], items: Iterable) -> None:
+    """One session (and transaction) per batch."""
     it = iter(items)
     while batch := list(islice(it, BATCH_SIZE)):
-        # Managed transaction: retried on transient errors such as DeadlockDetected, which
-        # event ingestion can cause by locking the same NostrUser nodes.
         async with neo4j_driver.session() as session:
-            await session.execute_write(work, batch)
+            await work(session, batch)
 
 
-async def _clear_unreached(observer: str, scored: set[str]) -> int:
+async def _clear_unreached(keys: dict[str, str], scored: set[str]) -> int:
     """Clear the observer's scores on nodes it no longer reaches."""
-    keys = _keys(observer)
+    key_list = list(keys.values())
     async with neo4j_driver.session() as session:
-        holders = await get_pubkeys_scored_by_observer(session, keys["influence"])
+        holders = await get_pubkeys_scored_by_observer(session, key_list)
     stale = [pk for pk in holders if pk not in scored]
     await _write_batches(
-        lambda tx, batch: clear_observer_scores(tx, batch, list(keys.values())), stale
+        lambda session, batch: clear_observer_scores(session, batch, key_list), stale
     )
     return len(stale)
 
@@ -129,7 +128,7 @@ async def process_neo4j_write_message(message: dict):
     cleared = 0
     if clear_unreached:
         scored = {c["observee"] for c in scorecards.values()}
-        cleared = await _clear_unreached(observer, scored)
+        cleared = await _clear_unreached(keys, scored)
 
     async with db_session() as db:
         await update_brainstorm_request_internal_publication_status_by_id_on_db(
