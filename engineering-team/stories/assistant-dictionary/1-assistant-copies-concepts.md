@@ -186,7 +186,8 @@ added this third one, for the strict reader's W1–W8.
 - **Why a separate file:** these tests run the reader over a real local websocket, as `tests/test_designated_pubkeys.py`
   runs `fetch_latest_designation`. The route tests fake the reader at the service's import site, so they can't see a
   socket, a timeout or a close before EOSE.
-- **It's test-only.** The test plan declares it (its coverage map and error-path table).
+- **It's test-only.** The test plan declares it: its W handles are in the coverage map and the error-path table, and the
+  file itself is in its How to run and Verification sections.
 - **It came before the implementation:** it was committed in the test-design phase (`498fc5f`, `1e26204`, `c32c5b6`),
   before the implementation commit.
 
