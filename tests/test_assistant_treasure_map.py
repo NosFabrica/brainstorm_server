@@ -831,7 +831,8 @@ def test_the_newest_version_across_relays_is_the_one_compared(map_client, world)
 
 
 def test_a_version_that_does_not_verify_is_never_the_newest(map_client, world):
-    """[R6] Nor is it dated after, or followed to the relays it names."""
+    """[R6] Nor is it dated after, or followed to the relays it names: the good
+    version is the newest, and the relays without it get it."""
     says_it_all = [[key, world.hex, PUBLIC_TA] for key in FIVE]
     good = _version(world.assistant, says_it_all, 1_700_000_000)
     forged = dict(
@@ -842,7 +843,8 @@ def test_a_version_that_does_not_verify_is_never_the_newest(map_client, world):
     world.held[OUTBOX[0]] = [forged]
 
     published = _post(map_client, True)
-    assert published["published"] is False
+    assert published["event"] == good
+    assert {r["url"] for r in published["relays"]} == set(OUTBOX)
     assert all("wss://forged.example" not in urls for urls, _ in world.sent)
 
 
@@ -860,6 +862,24 @@ def test_nothing_to_change_publishes_nothing_and_remembers_the_choice(
 
     world.held.clear()
     assert _post(map_client, False)["published"] is False
+
+
+def test_nothing_to_change_still_sends_the_version_where_it_is_missing(
+    map_client, world
+):
+    """A press whose TA relay was down left that relay without the version.
+    The next press finds nothing to change, and sends it the same version."""
+    world.down.add(INTERNAL_TA)
+    first = _post(map_client, True)
+    assert {r["url"]: r["ok"] for r in first["relays"]}[PUBLIC_TA] is False
+    world.down.clear()
+
+    again = _post(map_client, True)
+
+    assert again["published"] is True and again["event"] == first["event"]
+    assert again["relays"] == [{"url": PUBLIC_TA, "ok": True, "message": None}]
+    assert world.held[INTERNAL_TA][-1] == first["event"]
+    assert _post(map_client, True)["published"] is False
 
 
 def test_turn_off_lists_none_of_its_duties(map_client, world):

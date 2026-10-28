@@ -25,11 +25,13 @@ included: it is saved with the request's transaction. Signing and sending are
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from fastapi import HTTPException, status
+from nostr_sdk import Event  # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
@@ -56,7 +58,13 @@ from app.services.assistant_publish import (
     sign_checked,
 )
 from app.services.designation_service import fetch_latest_designation
-from app.services.duty_menu_build import menu_created_at, offer_rows, publish_targets
+from app.services.duty_menu_build import (
+    RelayTarget,
+    menu_created_at,
+    offer_rows,
+    publish_targets,
+    relay_key,
+)
 from app.services.self_map_build import (
     MAX_MAP_KEYS,
     SELF_MAP_KIND,
@@ -161,6 +169,18 @@ def _writer_relays(check: SelfMapCheck) -> list[str]:
     return self_map_relays(assistant_relay_list(), check.should_say, [])
 
 
+def _missing(
+    targets: list[RelayTarget], held: dict[str, dict | None], latest: dict[str, Any]
+) -> list[RelayTarget]:
+    """The targets read that don't hold `latest`: no answer, none, or another
+    version."""
+    return [
+        t
+        for t in targets
+        if (held.get(relay_key(t.write_url)) or {}).get("id") != latest.get("id")
+    ]
+
+
 async def read_assistant_treasure_map(
     db: AsyncDBSession, user_pubkey: str
 ) -> AssistantTreasureMapCheck:
@@ -232,8 +252,9 @@ async def publish_assistant_treasure_map(
         )
         target = check.should_say if on else []
         relays = _writer_relays(check)
+        read = publish_targets(relays)
         held = await read_newest(
-            publish_targets(relays),
+            read,
             {"kinds": [SELF_MAP_KIND], "authors": [who], "limit": 1},
             lambda e: is_own(e, who, SELF_MAP_KIND),
             MAP,
@@ -243,8 +264,18 @@ async def publish_assistant_treasure_map(
 
         await set_treasure_map_on_by_pubkey_on_db(db, user_pubkey, on)
         if nothing_to_change(latest, who, target):
+            missing = _missing(read, held, latest) if latest is not None else []
+            if not missing:
+                return PublishedAssistantTreasureMap(
+                    on=on, published=False, event=None, relays=[]
+                )
+            # A relay missed it, such as the TA relay while it was down: the
+            # version already signed goes there, unchanged.
+            report = await send_to(
+                Event.from_json(json.dumps(latest)), missing, MAP, who
+            )
             return PublishedAssistantTreasureMap(
-                on=on, published=False, event=None, relays=[]
+                on=on, published=True, event=latest, relays=report
             )
 
         event, signed = sign_checked(
