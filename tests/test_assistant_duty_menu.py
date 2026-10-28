@@ -24,6 +24,7 @@ from app.core.database import get_db
 from app.routers.setup import router as setup_router
 from app.services.duty_menu_build import (
     DUTY_MENU_HEADER,
+    NOUS_MENU_RELAYS,
     build_menu_tags,
     is_duty_menu,
     menu_created_at,
@@ -34,8 +35,9 @@ from app.services.duty_menu_build import (
 
 PUBLIC_TA = "wss://scores.example"
 INTERNAL_TA = "ws://strfry.internal:7777"
-DICTIONARY = "wss://dcosl.brainstorm.world"
-NOUS = "wss://dcosl.brainstorm.world"
+# Apart from Nous' relay, so a check of one can't pass on the other.
+DICTIONARY = "wss://dictionary.example"
+NOUS = NOUS_MENU_RELAYS[0]
 OUTBOX = ["wss://relay.damus.io", "wss://relay.primal.net"]
 
 EXPECTED_KEYS = [
@@ -332,9 +334,10 @@ def test_the_report_names_public_addresses_one_line_per_relay(menu_client, relay
 
     report = {r["url"]: r for r in _publish(menu_client)["relays"]}
 
-    assert set(report) == {PUBLIC_TA, DICTIONARY, *OUTBOX}
+    assert set(report) == {PUBLIC_TA, DICTIONARY, NOUS, *OUTBOX}
     assert report[PUBLIC_TA]["ok"] is True
     assert report[DICTIONARY]["ok"] is True
+    assert report[NOUS]["ok"] is True
     assert report["wss://relay.primal.net"] == {
         "url": "wss://relay.primal.net",
         "ok": False,
@@ -359,7 +362,7 @@ def test_a_relay_spelled_with_its_default_port_is_sent_to(
 
 
 def test_a_menu_no_relay_took_is_an_error(menu_client, relays):
-    relays.down.update([INTERNAL_TA, DICTIONARY, *OUTBOX])
+    relays.down.update([INTERNAL_TA, DICTIONARY, NOUS, *OUTBOX])
     r = menu_client.post("/user/assistantDutyMenu")
     assert r.status_code == 502
     assert isinstance(r.json()["detail"], str)
@@ -450,6 +453,7 @@ def test_publish_targets_are_each_relay_once():
         (PUBLIC_TA, INTERNAL_TA),
         (DICTIONARY, DICTIONARY),
         ("wss://relay.damus.io", "wss://relay.damus.io"),
+        (NOUS, NOUS),
     ]
 
 
