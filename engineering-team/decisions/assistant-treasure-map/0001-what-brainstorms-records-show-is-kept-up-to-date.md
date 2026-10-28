@@ -3,7 +3,8 @@
 **Status:** Proposed. Written after the build, on draft PR
 [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110) (commit `e2ca872`). No
 Gate A was held. It's for David to accept and for the Gate B reviewer to ratify, together with this ADR's
-classification.
+classification. Revised 2026-10-28 for the PR 110 audit: D2 (follows), D3 (when the choice is saved), D4 (no merge,
+the writer's relays only, the repair, the 64-key cap), D5 (refuse, not queue), D6, D7 and the Debt.
 **Date:** 2026-10-27
 **Story:** none written (see Consequences, "Owed")
 **Ask:** Brainstorm-UI `docs/assistant/TREASURE-MAP-ASK.md`, corrected by NosFabrica/Brainstorm-UI#301; the UI is
@@ -51,16 +52,14 @@ made them:
   A candidate is valid at relay R when every duty it would win is live at R, and it wins at least one. Nothing else
   is copied from the caller's Map (§ 9.2 "No order, no copies").
 - **The published metrics as the supported Scores** (ADR `assistant-self-map/0001`, open question 1, as answered).
-  Here those are the five `ta_signing.ta_tags` writes.
+  Here those are `ta_signing.TA_METRIC_TAGS`, the five `ta_tags` writes.
 - **One allowance of two intervals.** One missed run is a brief gap; two in a row is a stop.
-- **The writer's rules** (ADR `assistant-self-map/0002` sub-decision 4, Amendment 1 item 2):
-  - The writer owns every tag whose element 1 has a kind slot and whose element 2 is the Assistant.
-  - The next version keeps every other tag and the content as found, with the new self-entries where the first owned
-    tag stood.
-  - An `expiration` goes only from beside a self-entry.
-  - When the self-entries already match and nothing stale sits beside them, nothing is published.
-- **The preservation check** before anything is sent. **One route with a strict boolean body**, where Turn on and
-  Update now are both `{on: true}` (ADR `assistant-self-map/0002` P1). **The strict read before a merge** (R1 there).
+- **One route with a strict boolean body**, where Turn on and Update now are both `{on: true}` (ADR
+  `assistant-self-map/0002` P1). **The strict read** (R1 there), for a reason of its own here (D4).
+
+**Not adopted: the writer's merge** (ADR `assistant-self-map/0002` sub-decision 4 and Amendment 1 item 2: every other
+tag and the content kept, the owned tags, the `expiration` rule) and its preservation check. Here nothing but this
+server signs the Assistant's kind 10040, so there is nothing to keep (D4).
 - **The line keys of a part** avoid § 4.4's Profiles spelling (Tapestry ledger
   `2026-10-12-self-map-profiles-category-lines`).
 
@@ -75,7 +74,8 @@ made them:
 - The scheduler admits a customer by these inputs:
   - `settings.scheduler_enabled`;
   - a default scheduling policy (it skips every cycle without one);
-  - the customer's policy, or the default, with its `enabled` and `schedule_interval_seconds`.
+  - the customer's policy, or the default, with its `enabled` and `schedule_interval_seconds`;
+  - a grapevine: it skips a customer who follows no one (`cronjobs.scheduler.has_grapevine`).
 
   It excludes the House Observer, which `periodic_graperank_trigger` re-runs every `PERIOD_HOURS` (2).
 - Trusted Lists are published only when an admin runs `POST /admin/trustedLists`. The Assistant publishes no Concepts
@@ -107,15 +107,17 @@ made them:
   - Tapestry's own note says to narrow to `30382:<metric>` keys once the supported Scores name a metric not computed
     (ledger `2026-10-12-self-map-upkeep-cross-book-notes` item 3). Brainstorm's offer is that case from the start.
 
-**Consequence accepted:** a reader whose Map is what `/setup` publishes gets exactly the five Score rows, entry for
-entry. A reader who gave a bare `30382` gets the same five, never `30382`.
+**Consequence accepted:** a reader whose Map is `/setup`'s rows gets exactly the five Score rows, entry for entry. A
+reader who gave a bare `30382` gets the same five, never `30382`. One whose Map is what Brainstorm-UI's activation
+writes (`30382:rank` and `30382:followers`, and `30392`–`30394` from `/setup`'s `30392` row) gets those two Score
+rows; `30393` and `30394` read as not offered.
 
 ### D2 — "Live" comes from Brainstorm's own records, not from reading the relay
 
 Scores are **live** when all of these hold:
 - `last_time_published_graperank` is set;
-- something keeps them up to date: the scheduler's inputs above, or, for the House Observer, the periodic trigger's
-  2 hours;
+- something keeps them up to date: the scheduler's inputs above, follows included, or, for the House Observer, the
+  periodic trigger's 2 hours;
 - the last publish is no older than two of those intervals.
 
 Otherwise the reason is:
@@ -133,8 +135,10 @@ Trusted Lists are `not-scheduled`. Concepts are `not-published-here`. Neither is
   - It also costs a relay read on every check.
 - **E2 (chosen): the publish clock and the scheduler's own inputs.** Tapestry rejected its run records (its E2)
   because failures read as success there. Here the clock moves only when every event was OK'd, so that objection
-  doesn't hold. The schedule is read the way the scheduler admits work, so the check and the scheduler can't
-  disagree about whether anything is scheduled.
+  doesn't hold. The check reads the scheduler's standing inputs, and its follows rule through the same helper, so
+  the two agree on whether anything keeps the Scores up to date. It doesn't read what only delays a run: one in
+  flight, the retry backoff after a failure, the admission budget. Those the two intervals absorb. The first build
+  missed the follows rule, so a customer who followed no one read as live (the PR 110 audit).
 - **E3: new upkeep stamps written by the publishers.** Not needed: E2's clock already is one.
 
 **Consequences accepted:**
@@ -145,7 +149,10 @@ Trusted Lists are `not-scheduled`. Concepts are `not-published-here`. Neither is
 ### D3 — The choice is a column, `brainstorm_nsec.treasure_map_on`
 
 It's a boolean, default false, added by migration `c5f1d7a9e2b4`. Only `POST /user/assistantTreasureMap` writes it,
-inside the request's transaction, so a press that answers an error leaves it as it was.
+at a press's success exits, after the publish, and commits it before answering (`self_map_service._save_choice`). A
+press that answers an error leaves it as it was. Written before the publish, as first built, it kept the caller's
+`brainstorm_nsec` row locked through the sign, the connect and the send. Left to `get_db`, which commits only after
+the response, a failed commit would have followed a 200.
 
 **Options considered:**
 - **A (chosen): a column on the Assistant's row.** That row already exists for every Assistant and holds its key. It
@@ -158,66 +165,88 @@ inside the request's transaction, so a press that answers an error leaves it as 
   volume. Its state of record is PostgreSQL, so C1's reasons for a file (surviving relay rebuilds and firmware
   reinstalls) point to the database here.
 
-### D4 — A press reads strictly, replaces only the self-entries, and checks what it signed
+### D4 — A press reads strictly, publishes the self-entries alone, and goes only where § 9.2 sends a writer
 
 **The reads:**
 - The caller's Map is read from our relay, through `designation_service.fetch_latest_designation`:
   - strictly for Turn on: 502 when it can't be read;
-  - best-effort for Turn off, which lists nothing and uses the Map only for relay hints.
-- Then every relay in the GET's `relays` is asked for the Assistant's kind 10040, the TA relay at its internal URL:
+  - best-effort for Turn off, which lists nothing and uses the Map only for the relays its live duties name.
+- A Map naming more than 64 keys (`self_map_build.MAX_MAP_KEYS`) is a 422 for the GET and for Turn on, and Turn off
+  goes ahead without it. A check weighs each key against every other, so its cost grows with the square of the keys:
+  an 835-key Map took seconds of the event loop's CPU per GET. It is never truncated, which could give the wrong
+  self-entries. `/setup` writes eight keys.
+- Then the writer's relays (below) are asked for the Assistant's kind 10040, the TA relay at its internal URL:
   - only versions validly signed by the Assistant count;
-  - the newest by NIP-01 is the base;
+  - the newest by NIP-01 is the one compared and dated after;
   - 502 when no relay answers.
-- The designation reader now raises on `CLOSED`, so a refusal never reads as "none".
+- The reader is the plain REQ-until-EOSE, which raises on `CLOSED`, so a refusal never reads as "none":
   - nostr-sdk can't tell a silent relay from an empty one; both give zero events and no error.
-  - So these reads use the reader's plain REQ-until-EOSE.
+  - Its 5 s deadline covers the answer, not the close, which is bounded at 1 s.
 
 **Options considered:**
-- **R1 (chosen): strict, as Tapestry's R1.** A kind 10040 can hold entries other than self-entries, so a press must
-  not build over nothing.
-- **R2: best-effort, as the Duty Menu reads** (ADR `assistant-duty-menu/0001` D5). **Rejected** for that reason. A
-  menu holds nothing else; a Map can.
+- **R1 (chosen): strict.** A version left unread could be dated ahead of now, so the new one wouldn't replace it, or
+  name relays the press would then miss.
+- **R2: best-effort.** **Rejected** for that reason. The Duty Menu now reads strictly too (ADR
+  `assistant-duty-menu/0001` D5).
 
-**How this differs from Tapestry's R1:**
-- **No "this instance's relay must answer".** Brainstorm has no local relay.
-- **No stored copy of the last version** (Tapestry ADR `assistant-self-map/0002` Amendment 3). If every relay that
-  holds the newest version is silent while another answers empty, the press builds over less. Today nothing else
-  signs the Assistant's kind 10040, so its tags are the self-entries and the `client` tag, and nothing is lost.
-  Revisit if anything else ever writes it.
+**No merge.** A version's tags are its self-entries and our `client` tag, and its content is empty
+(`self_map_build.self_map_tags`). Tapestry keeps every other tag and the content of the version found, because other
+writers sign its Assistant's kind 10040. Here nothing else does: no route exports the Assistant's key, and nothing
+else in this server signs that kind. So the kept tags would always be none. Should the key ever be exported,
+restore Tapestry's merge (ADR `assistant-self-map/0002` sub-decision 4) and its preservation check. "Nothing to
+change" is the self-entries alone: the newest version's already are the target. The new version is dated
+`max(now, newest version found + 1)` (§ 9.2 "When it changes").
 
-**The merge:**
-- It follows Tapestry's rules above.
-- The earlier version's `client` tag is replaced by ours, not kept beside it.
-- The new version is dated `max(now, newest version found + 1)` (§ 9.2 "When it changes").
+**The check before sending** (`assistant_publish.sign_checked`, shared with the Duty Menu): the signed event
+verifies, its tags are exactly what was built, and its self-entries read back as the target. If not, the press is a
+500.
 
-**The check before sending:**
-- the signed event verifies;
-- its tags are exactly what was built;
-- it is the next version of what was found: the same content, the target as its self-entries, and every other tag
-  kept.
+**Where it goes:** what § 9.2 "Finding a self-Map" gives a writer:
+- the Assistant's outbox (kind-10002 write relays, `assistant_relay_list()`);
+- every relay its self-entries name;
+- every relay a self-entry of a version found named.
 
-If any of that fails, the press is a 500.
-- `allow_self_tagging()` keeps a `p` carried over from the version found.
-- Self-entries themselves name the signer in element 2, which nostr-sdk keeps without it.
-
-**Where it goes:**
-- the GET's `relays`: the Assistant's outbox, every relay the self-entries name, and the caller's hints for the
-  Assistant;
-- every relay a self-entry of a version found named (§ 9.2 "Finding a self-Map").
-
-It goes through the Duty Menu's relay I/O, now shared (`connect_targets`, `send_event`, `relay_report`). Tapestry
-left that sharing for later (its S2) because its Duty Menu route had shipped. Neither route had shipped here.
-
-### D5 — One press at a time per Assistant, held in this process
+Every one comes from settings or from a version the Assistant signed. The caller's hints for the Assistant (element
+3 of their entries naming it) are in the GET's `relays`, for readers, as § 9.2 tells readers to look there, but a
+press never connects to them.
 
 **Options considered:**
-- **A (chosen): an `asyncio.Lock` per Assistant** in `self_map_service`. The server runs one replica with one worker
-  (see the repo facts), so it holds today.
-- **B: a Redis lock**, as `leader_lock`. **Deferred:** it's needed only if the server scales out, and the module's
+- **W1 (chosen): the writer's relays only**, as above.
+- **W2: also the caller's hints**, as first built, because Brainstorm-UI's `TREASURE-MAP-ASK.md` asked for them.
+  **Rejected** (the PR 110 audit): the caller writes their own Map, so a hint can name any host, internal ones
+  included, any number of times. Every press dialled them twice, with no cap, and answered the transport's errors.
+  It also sent every version to the Dictionary relay, a hint from `/setup`'s Concept rows, which refuses a kind
+  10040, and counted that relay's EOSE as a finished read.
+- **W3: Tapestry's**, hints too, capped at 50 and kept to public addresses (`selfMap.js`, `MAX_RELAYS` and
+  `isPublicRelayHostWithin`). **Not adopted:** § 9.2 doesn't ask a writer to send there. A public-address guard has
+  to resolve each host and pin the address it checked, or a rebinding name gets past it.
+
+**When nothing would change, a relay that missed the newest version gets it.** The read keeps each relay's answer.
+A press whose target is already the newest version's self-entries sends that version, already signed and unchanged,
+to every relay it read that answered nothing, none, or another version. It answers `published: true` with that event
+and those relays' report. So the press after one whose TA relay was down repairs it; as first built, every later
+press answered "nothing changed". Only when every relay holds it is the answer `published: false`.
+
+Signing and sending are `assistant_publish`'s, shared with the Duty Menu. Tapestry left that sharing for later (its
+S2) because its Duty Menu route had shipped. Neither route had shipped here.
+
+### D5 — One press at a time per Assistant, in this process; a second is refused
+
+**Options considered:**
+- **A (chosen): refuse a second press**, a 409 with a plain sentence while one for the same Assistant is under way.
+  `self_map_service` keeps the set of Assistants with a press under way, and an Assistant leaves it when its press
+  ends, errors included. The server runs one replica with one worker (see the repo facts), so it holds today.
+- **B: queue it behind an `asyncio.Lock`**, as first built. **Rejected** (the PR 110 audit): a queued press answers
+  only once both have run, up to ~50 s with a slow relay and past the UI's 30 s, and still publishes. It holds a
+  pooled DB connection while it waits, and a burst of them ties up the pool the scheduler and the MQ consumers share.
+- **C: a Redis lock**, as `leader_lock`. **Deferred:** it's needed only if the server scales out, and the module's
   comment says so.
-- **C: no lock.** **Rejected:** two presses at once read the same version and sign two with the same `created_at`.
+- **D: no lock.** **Rejected:** two presses at once read the same version and sign two with the same `created_at`.
   NIP-01 keeps the lower id, so a Turn off racing a Turn on would leave either one (§ 9.2 "When it changes"). A test
   runs two at once.
+
+A press takes about 28 s of the UI's 30 at worst: the caller's Map and the versions are read in up to 6 s each, the
+connect takes up to 4 s and the send 12 s.
 
 ### D6 — The server answers what to list; the UI reads the published version itself
 
@@ -233,9 +262,11 @@ Map. The UI reads the Assistant's kind 10040 from `relays` and compares it with 
   - every page load would cost an outside relay round;
   - it would add a second, server-side copy of a Nostr read the UI already holds and keeps current.
 
-**The cost:** the UI reads a version as the press does, so the two must agree on the writer's rules. That is a
-cross-repo contract. NosFabrica/Brainstorm-UI#301 aligned the UI with `nothing_to_change`: the kind slots the writer
-owns, each key and relay once, and the `expiration` and stray-tag rule.
+**The cost:** the UI reads a version as the press does, so the two must agree on when nothing would change. That is
+a cross-repo contract. NosFabrica/Brainstorm-UI#301 aligned the UI with `nothing_to_change` as first built: the kind
+slots the writer owns, each key and relay once, and the `expiration` and stray-tag rule. The server's rule is now the
+self-entries alone (D4). The UI's `nothingStale` still also wants no `expiration` and no stray owned tag beside them,
+which no version this server signs carries, so the two agree on every version there is.
 
 ### D7 — The wire: camelCase, plain sentences, nothing changed on an error
 
@@ -246,12 +277,18 @@ owns, each key and relay once, and the `expiration` and stray-tag rule.
 - **On the authenticated `/user` router**, as the Duty Menu's (its D7).
 - **The body** is `{on: StrictBool}`; anything else is a 422.
 - **Errors are plain sentences** in `detail` (`app/services/CLAUDE.md` § Errors):
-  - 502 when the caller's Map can't be read (the GET, and Turn on), when no relay answers the read, or when no relay
-    takes the new version;
+  - 502 when the caller's Map or follow count can't be read (the GET, and Turn on), when no relay answers the read,
+    or when no relay takes the new version;
+  - 422 when the Map names more than 64 keys (the GET, and Turn on);
+  - 409 while another press for the same Assistant is under way;
   - 500 when the signed event fails its own check.
 - **`reason` uses only the words the UI has:** `not-landed`, `not-scheduled`, `upkeep-stopped`,
   `not-published-here`, `nothing-to-publish`, `unchecked`.
-- **Nothing to change** answers `{on, published: false, event: null, relays: []}`.
+- **Nothing to change** answers `{on, published: false, event: null, relays: []}` when every relay read holds the
+  newest version. When one doesn't, the press sends it there and answers `{on, published: true, event, relays}`,
+  with that version and those relays (D4).
+- **A relay that couldn't be reached** is reported as `couldn't connect`. The transport's own error is logged, not
+  answered: it can describe a host the caller can't see.
 
 ## Consequences
 
@@ -259,22 +296,27 @@ owns, each key and relay once, and the `expiration` and stray-tag rule.
 - The UI's fifth setup step, with Tapestry's buttons.
 - A client that sees the self-entries can take the customer's Scores from this Assistant at once, and count them as
   maintained at the Assistant's relay (§ 9.2 "Confirmed duties", "Maintained").
-- The Duty Menu and the Treasure Map share one offer and one relay I/O.
+- The Duty Menu and the Treasure Map share one offer and one way to sign and send (`assistant_publish`).
 
 **Constrains / makes harder**
 - **The self-Map is only as true as the publish clock and the scheduling policies.** A change to how either works
   changes what it claims.
 - **Scores are listed as five entries, not one** (D1), and the published event is the self-entries plus `client`.
-- **The writer's rules are now a contract with Brainstorm-UI** (D6), and with Tapestry's readers through § 9.2.
+- **When nothing would change is now a contract with Brainstorm-UI** (D6), and where a version goes one with
+  Tapestry's readers, through § 9.2.
 
 **Debt and follow-ups**
 - **It doesn't keep itself true.** § 9.2 says a key MUST remove or narrow a self-entry before it stops keeping it up
   to date. Until something republishes when the answer changes, the UI shows the Map out of date and the customer
   presses Update now. Natural hooks are a successful TA publish, a policy disabled, or an entitlement lapsing. This is
   Tapestry's story 5, not built there either.
-- **A relay that refused a removal keeps serving the old claim**, and a second Turn off then says nothing changed.
-  Same as Tapestry's ledger row `2026-10-13-self-map-refused-removal-stays-outside`.
-- **The lock is in-process** (D5).
+- **A relay that refused a removal keeps serving the old claim.** Each later press sends it the newest version again
+  (D4) and reports the refusal. Tapestry's ledger row `2026-10-13-self-map-refused-removal-stays-outside` is the same
+  case.
+- **Brainstorm-UI reads a self-Map as an activation.** Its `describeDesignation` describes any kind 10040 whose
+  providers are all on Brainstorm relays as "Activated Brainstorm trust signals", and the Assistant's own self-Map is
+  one. **The UI's fix must land before this PR deploys** (Out of scope).
+- **One press at a time is held in-process** (D5).
 - **No rate limit on the POST**, like the Duty Menu's.
 - **Trusted Lists and Concepts become claimable** once something publishes and keeps them up to date, starting with
   [NosFabrica/brainstorm_server#112](https://github.com/NosFabrica/brainstorm_server/issues/112). `evaluate_live`
@@ -286,22 +328,25 @@ owns, each key and relay once, and the `expiration` and stray-tag rule.
 
 ## Implementation notes
 
-As built in commit `e2ca872`:
+As built in commit `e2ca872`, with the PR 110 audit's fixes after it:
 - `app/services/self_map_build.py` (pure, no I/O):
   - the grammar: `parse_key`, `compare_keys`, `matches`, `covers`, `build_probes`;
-  - the caller's Map: `map_groups`, `duties_of`;
+  - the caller's Map: `map_groups`, `too_big_to_check` (`MAX_MAP_KEYS`), `duties_of`;
   - the offer and liveness: `Offer`, `scores_upkeep`, `evaluate_live`;
   - what to list: `build_should_say`, `duty_lines`, `evaluate_self_map`;
-  - the writer's side: `owns_tag`, `kept_tags`, `build_self_map_tags`, `nothing_to_change`, `is_next_version`,
-    `self_map_relays`, `self_entry_relays`, `newest`.
+  - the writer's side: `self_map_tags`, `read_self_entries`, `nothing_to_change`, `self_map_relays`,
+    `self_entry_relays`, `newest`.
 - `app/services/self_map_service.py`:
   - the routes' logic: `read_assistant_treasure_map`, `publish_assistant_treasure_map`;
-  - the upkeep inputs: `_upkeep_interval`;
-  - the strict read: `_read_versions`;
-  - signing: `_sign`;
-  - the lock: `_one_press_at_a_time`.
-- `app/services/designation_service.py`: `fetch_latest_designation` is public and raises on `CLOSED`.
-- `app/services/duty_menu_service.py`: `connect_targets`, `send_event`, `relay_report` are public.
+  - the upkeep inputs: `_upkeep_interval`, with `cronjobs.scheduler.has_grapevine`;
+  - the relays: `_relays` (the GET's, with the hints) and `_writer_relays` (a press's);
+  - the repair: `_missing`;
+  - the choice: `_save_choice`;
+  - one press at a time: `_one_press_at_a_time`, over `_pressing`.
+- `app/services/assistant_publish.py`, shared with the Duty Menu: `assistant`, `is_own`, `read_newest`,
+  `sign_checked`, `send_to`, `reached_some`.
+- `app/services/designation_service.py`: `fetch_latest(relay, flt)`, strict, its close bounded at 1 s, and
+  `fetch_latest_designation` over it.
 - `app/routers/user/router.py`: the two routes.
 - `app/schemas/`:
   - `TreasureMapDutyLine`, `AssistantTreasureMapCheck`, `PublishedAssistantTreasureMap`;
@@ -311,13 +356,14 @@ As built in commit `e2ca872`:
 - `app/db_models/__init__.py`, `app/repos/brainstorm_nsec.py` (`set_treasure_map_on_by_pubkey_on_db`), and
   `alembic/versions/c5f1d7a9e2b4_add_treasure_map_on.py`.
 - Tests: `tests/test_assistant_treasure_map.py` (the cases ported from Tapestry's two self-map suites are named by
-  their ids) and `tests/test_designated_pubkeys.py`.
+  their ids), `tests/test_designated_pubkeys.py` and `tests/test_alembic_heads.py`.
 
 ## Out of scope
 
 - Keeping the self-Map true on its own (above).
-- Counting Maps (§ 9.2): anything that counts kind-10040 adopters should skip a Map whose public entries all name
-  its author.
+- Counting or describing Maps (§ 9.2): anything that counts kind-10040 adopters, or describes a kind 10040 to
+  people, should skip a Map whose public entries all name its author. Brainstorm-UI's `describeDesignation` doesn't
+  yet, and its fix must land before this PR deploys (Debt).
 - Private duties, NIP-85's encrypted `.content`, which never go in a self-Map's public tags.
 - Trusted Lists and Concepts as live duties.
 - Dictionary management
