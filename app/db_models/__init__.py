@@ -555,8 +555,11 @@ class PasskeyVault(TimestampMixin, Base):
     """
 
     __tablename__ = "passkey_vault"
-    # sha256 of the raw credential id, hex: the id itself never needs storing.
+    # sha256 of the raw credential id, hex: a fixed-width key for any id length.
     credential_id_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # The raw id, base64url: public, and what a client lists in excludeCredentials
+    # so a new passkey can't silently replace one made on another device.
+    credential_id: Mapped[str] = mapped_column(String(1024), nullable=False)
     pubkey: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # SPKI DER, base64url, as the browser's getPublicKey() returned it.
     credential_public_key: Mapped[str] = mapped_column(Text, nullable=False)

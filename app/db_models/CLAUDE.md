@@ -168,7 +168,8 @@ at all: [ADR 0005](../../docs/adr/0005-passkey-vault.md).
 
 | Column | Type | Notes |
 |---|---|---|
-| `credential_id_hash` | str(64) PK | sha256 of the raw credential id, hex. The id itself is never stored |
+| `credential_id_hash` | str(64) PK | sha256 of the raw credential id, hex: a fixed-width key whatever the id's length |
+| `credential_id` | str(1024) | the raw id, base64url. Public; listed back to the owner so a new passkey can exclude it (an authenticator otherwise overwrites one with the same user handle) |
 | `pubkey` | str(64), indexed | the owner. Every write and delete is scoped to it |
 | `credential_public_key` | text | SPKI DER, base64url, from the browser's `getPublicKey()` |
 | `alg` | int | COSE alg: -7 ES256, -8 EdDSA, -257 RS256 |

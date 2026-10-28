@@ -34,6 +34,7 @@ async def upsert_passkey_vault_on_db(
     db: AsyncDBSession,
     *,
     credential_id_hash: str,
+    credential_id: str,
     pubkey: str,
     credential_public_key: str,
     alg: int,
@@ -49,6 +50,7 @@ async def upsert_passkey_vault_on_db(
     """
     values = insert(PasskeyVault).values(
         credential_id_hash=credential_id_hash,
+        credential_id=credential_id,
         pubkey=pubkey,
         credential_public_key=credential_public_key,
         alg=alg,
@@ -68,6 +70,7 @@ async def upsert_passkey_vault_on_db(
         where=PasskeyVault.pubkey == values.excluded.pubkey,
     ).returning(
         PasskeyVault.credential_id_hash,
+        PasskeyVault.credential_id,
         PasskeyVault.label,
         PasskeyVault.created_at,
         PasskeyVault.last_used_at,

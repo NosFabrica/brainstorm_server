@@ -18,6 +18,7 @@ def upgrade() -> None:
     op.create_table(
         "passkey_vault",
         sa.Column("credential_id_hash", sa.String(length=64), nullable=False),
+        sa.Column("credential_id", sa.String(length=1024), nullable=False),
         sa.Column("pubkey", sa.String(length=64), nullable=False),
         sa.Column("credential_public_key", sa.Text(), nullable=False),
         sa.Column("alg", sa.Integer(), nullable=False),

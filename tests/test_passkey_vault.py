@@ -255,6 +255,7 @@ def blob_for(pubkey: str, credential_id: str = CREDENTIAL_ID) -> str:
 def row_for(pubkey: str, authenticator: Authenticator, **fields):
     return SimpleNamespace(
         credential_id_hash=CREDENTIAL_HASH,
+        credential_id=CREDENTIAL_ID,
         pubkey=pubkey,
         credential_public_key=authenticator.spki,
         alg=authenticator.alg,
@@ -298,6 +299,7 @@ def stored_entry() -> dict:
     """What the upsert's RETURNING hands back."""
     return {
         "credential_id_hash": CREDENTIAL_HASH,
+        "credential_id": CREDENTIAL_ID,
         "label": "iCloud Keychain",
         "created_at": datetime(2026, 10, 27, 12, 0, 0),
         "last_used_at": None,
@@ -317,6 +319,7 @@ def test_the_owner_stores_a_vault(api, caller, monkeypatch):
     assert response.status_code == 200, response.text
     assert response.json()["data"] == {
         "credentialIdHash": CREDENTIAL_HASH,
+        "credentialId": CREDENTIAL_ID,
         "label": "iCloud Keychain",
         "createdAt": "2026-10-27T12:00:00Z",
         "lastUsedAt": None,
@@ -408,6 +411,7 @@ def test_the_upsert_only_overwrites_the_owners_row_and_resets_the_counter():
         passkey_vault_repo.upsert_passkey_vault_on_db(
             Db(),
             credential_id_hash=CREDENTIAL_HASH,
+            credential_id=CREDENTIAL_ID,
             pubkey="ab" * 32,
             credential_public_key="k",
             alg=ALG_ES256,
@@ -494,6 +498,7 @@ def test_the_owner_lists_their_passkeys(api, caller, monkeypatch):
 
     assert response.status_code == 200
     assert [e["credentialIdHash"] for e in response.json()["data"]] == [CREDENTIAL_HASH]
+    assert response.json()["data"][0]["credentialId"] == CREDENTIAL_ID
     assert "blob" not in response.json()["data"][0]
     assert select.await_args.args[1] == caller.pubkey
 

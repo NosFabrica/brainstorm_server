@@ -117,6 +117,7 @@ def _not_found() -> HTTPException:
 def _entry(row) -> PasskeyVaultEntry:
     return PasskeyVaultEntry(
         credential_id_hash=row.credential_id_hash,
+        credential_id=row.credential_id,
         label=row.label,
         created_at=row.created_at,
         last_used_at=row.last_used_at,
@@ -170,6 +171,7 @@ async def store_vault(
     row = await upsert_passkey_vault_on_db(
         db,
         credential_id_hash=path_hash,
+        credential_id=credential_id,
         pubkey=caller_pubkey,
         credential_public_key=public_key,
         alg=alg,
@@ -182,6 +184,7 @@ async def store_vault(
         )
     return PasskeyVaultEntry(
         credential_id_hash=row["credential_id_hash"],
+        credential_id=row["credential_id"],
         label=row["label"],
         created_at=row["created_at"],
         last_used_at=row["last_used_at"],
