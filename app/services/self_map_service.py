@@ -21,14 +21,17 @@ press never connects to them: the caller writes their own Map, so a hint can
 name any host. A press that answers an error changes nothing, the choice
 included: it is saved with the request's transaction. Signing and sending are
 `assistant_publish`'s, shared with the Duty Menu.
+
+The UI waits 30 s. A press takes about 28 s at worst: the caller's Map and the
+versions are read in up to 6 s each, the connect takes up to 4 s and the send
+12 s. A second press for the same Assistant is refused while one is under way.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import time
-from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from fastapi import HTTPException, status
 from nostr_sdk import Event  # type: ignore
@@ -87,17 +90,31 @@ logger = loggr.get_logger(__name__)
 
 MAP = "Treasure Map"
 
-# One press at a time per Assistant: two at once could sign versions with the
-# same created_at, and a relay keeps either one (§ 9.2 "When it changes"). Held
-# in this process, like the nsec rotation flag; move it into Redis if the
-# server scales out.
-_presses: dict[str, asyncio.Lock] = {}
+# The Assistants with a press under way. One press at a time per Assistant: two
+# at once could sign versions with the same created_at, and a relay keeps either
+# one (§ 9.2 "When it changes"). A second is refused, not queued: queued, it
+# would answer only after both had run, past the UI's 30 s, holding a pooled
+# database connection all the while. An Assistant leaves the set when its press
+# ends. Held in this process, like the nsec rotation flag; move it into Redis if
+# the server scales out.
+_pressing: set[str] = set()
 
 
-@asynccontextmanager
-async def _one_press_at_a_time(assistant: str) -> AsyncIterator[None]:
-    async with _presses.setdefault(assistant, asyncio.Lock()):
+@contextmanager
+def _one_press_at_a_time(assistant: str) -> Iterator[None]:
+    if assistant in _pressing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Your Assistant's Treasure Map is already being published. "
+                "Try again in a moment."
+            ),
+        )
+    _pressing.add(assistant)
+    try:
         yield
+    finally:
+        _pressing.discard(assistant)
 
 
 async def _upkeep_interval(db: AsyncDBSession, pubkey: str) -> int | None:
@@ -228,7 +245,7 @@ async def publish_assistant_treasure_map(
 ) -> PublishedAssistantTreasureMap:
     row, keys = await assistant(db, user_pubkey)
     who = keys.public_key().to_hex()
-    async with _one_press_at_a_time(who):
+    with _one_press_at_a_time(who):
         try:
             map_event = await _read_reader_map(user_pubkey)
         except Exception as e:

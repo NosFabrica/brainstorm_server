@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag, Timestamp
 
@@ -1035,9 +1036,10 @@ def test_the_request_cannot_choose_whose_assistant_or_where(map_client, world):
     assert "wss://evil.example" not in urls
 
 
-def test_two_presses_at_once_publish_one_after_the_other(world):
-    """[L1] The second builds on the first's version and is dated later, so no
-    two versions share a created_at (§ 9.2 "When it changes")."""
+def test_a_second_press_while_one_is_under_way_is_refused(world):
+    """[L1] Two at once could sign versions with the same created_at (§ 9.2
+    "When it changes"). Queued, the second would answer only after both had run,
+    past the UI's 30 s, so it is refused, and the next press after goes ahead."""
 
     async def both():
         return await asyncio.gather(
@@ -1047,10 +1049,25 @@ def test_two_presses_at_once_publish_one_after_the_other(world):
             self_map_service.publish_assistant_treasure_map(
                 MagicMock(), world.user, False
             ),
+            return_exceptions=True,
         )
 
     first, second = asyncio.run(both())
 
-    assert second.event["created_at"] > first.event["created_at"]
     assert _self_entries(first.event, world.hex) == _five()
-    assert _self_entries(second.event, world.hex) == set()
+    assert isinstance(second, HTTPException) and second.status_code == 409
+    assert isinstance(second.detail, str)
+    assert len(world.sent) == 1
+    assert self_map_service._pressing == set()
+
+    after = asyncio.run(
+        self_map_service.publish_assistant_treasure_map(MagicMock(), world.user, False)
+    )
+    assert after.published and _self_entries(after.event, world.hex) == set()
+
+
+def test_a_press_that_errors_lets_the_next_one_go_ahead(map_client, world):
+    world.map_unreadable = True
+    assert map_client.post("/user/assistantTreasureMap", json={"on": True}).status_code == 502
+    world.map_unreadable = False
+    assert _post(map_client, True)["published"] is True
