@@ -16,8 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.core.config import settings
-
-TAGS_IN_30382 = ["rank", "followers", "reporters", "muters", "hops"]
+from app.message_queue_tasks.ta_signing import TA_METRIC_TAGS
 
 # Trusted Lists are designated by a BARE kind entry — "30392", no colon, no
 # metric — which delegates the whole kind: "this provider publishes all my
@@ -61,7 +60,7 @@ def designation_rows(assistant_pubkey: str) -> list[list[str]]:
     # unreachable relay. Unset is the safe default and the common case.
     trusted_list_relay = settings.trusted_list_relay or relay
 
-    rows = [[f"30382:{tag}", assistant_pubkey, relay] for tag in TAGS_IN_30382]
+    rows = [[f"30382:{tag}", assistant_pubkey, relay] for tag in TA_METRIC_TAGS]
     # Same assistant key as the 30382 rows: one identity signs both this
     # Observer's Trusted Assertions and their Trusted Lists.
     rows.append([TRUSTED_LIST_KIND_ROW, assistant_pubkey, trusted_list_relay])

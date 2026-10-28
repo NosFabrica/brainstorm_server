@@ -36,7 +36,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, TypeVar
 
-from app.services.duty_menu_build import TAGS_IN_30382, relay_key
+from app.message_queue_tasks.ta_signing import TA_METRIC_TAGS
+from app.services.duty_menu_build import relay_key
 
 SELF_MAP_KIND = 10040
 
@@ -47,9 +48,10 @@ HEX64 = re.compile(r"[0-9a-f]{64}", re.IGNORECASE)
 KIND_SLOT = re.compile(r"[0-9]{5}|3038x|3039x|\*")
 RELAY_URL = re.compile(r"wss?://\S+", re.IGNORECASE)
 
-# The metric tags every TA carries (`ta_signing.ta_tags`), read as the observer's
-# supported Scores here, as Tapestry reads its own published metrics.
-PUBLISHED_SCORE_METRICS: tuple[str, ...] = tuple(TAGS_IN_30382)
+# The metrics our TAs carry (`ta_signing.TA_METRIC_TAGS`; `hops` only for a
+# reachable Observee), read as the observer's supported Scores here, as Tapestry
+# reads its own published metrics.
+PUBLISHED_SCORE_METRICS = TA_METRIC_TAGS
 
 SCORE_KIND = 30382
 SCORE_KINDS = tuple(range(30380, 30390))
