@@ -170,7 +170,7 @@ The questions as they were asked:
 
 ## Implementation scope notes (J3 item 2)
 
-The diff stays inside ADR 0001's blast radius:
+The production diff stays inside ADR 0001's blast radius:
 
 - the three new services;
 - two routes in `app/routers/user/router.py`;
@@ -178,6 +178,17 @@ The diff stays inside ADR 0001's blast radius:
 - rows in `app/services/CLAUDE.md` and `app/routers/CLAUDE.md`;
 - the `BIBLE.md` §4 sentence;
 - the `self_map_build.py` docstring.
+
+**One test file is outside the blast radius's letter: `tests/test_dictionary_relay_reader.py`.** The ADR declares
+"the two test files", `tests/test_dictionary_copy_build.py` and `tests/test_assistant_dictionary.py`. The test plan
+added this third one, for the strict reader's W1–W8.
+
+- **Why a separate file:** these tests run the reader over a real local websocket, as `tests/test_designated_pubkeys.py`
+  runs `fetch_latest_designation`. The route tests fake the reader at the service's import site, so they can't see a
+  socket, a timeout or a close before EOSE.
+- **It's test-only.** The test plan declares it (its coverage map and error-path table).
+- **It came before the implementation:** it was committed in the test-design phase (`498fc5f`, `1e26204`, `c32c5b6`),
+  before the implementation commit.
 
 No test changed during implementation. Three choices go beyond the ADR's letter, inside its intent:
 
