@@ -58,6 +58,7 @@ from app.services.assistant_publish import (
 from app.services.designation_service import fetch_latest_designation
 from app.services.duty_menu_build import menu_created_at, offer_rows, publish_targets
 from app.services.self_map_build import (
+    MAX_MAP_KEYS,
     SELF_MAP_KIND,
     ScoresUpkeep,
     SelfMapCheck,
@@ -70,6 +71,7 @@ from app.services.self_map_build import (
     self_entry_relays,
     self_map_relays,
     self_map_tags,
+    too_big_to_check,
 )
 from app.utils.datetimes import as_naive_utc, utc_now
 
@@ -131,6 +133,16 @@ async def _read_reader_map(user_pubkey: str) -> dict[str, Any] | None:
     return event
 
 
+def _too_big(what_follows: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=(
+            f"Your Treasure Map names more than {MAX_MAP_KEYS} keys, too many to "
+            f"check, so {what_follows}."
+        ),
+    )
+
+
 def _relays(
     check: SelfMapCheck, map_event: dict[str, Any] | None, assistant: str
 ) -> list[str]:
@@ -167,6 +179,8 @@ async def read_assistant_treasure_map(
                 "couldn't be checked. Try again in a moment."
             ),
         )
+    if too_big_to_check(map_event):
+        raise _too_big("your Assistant's Treasure Map couldn't be checked")
     check = evaluate_self_map(
         map_event, offer_rows(who), who, await _scores_upkeep(db, row)
     )
@@ -208,6 +222,10 @@ async def publish_assistant_treasure_map(
                 )
             # Turning off lists nothing: the caller's Map only adds the relays
             # its live duties name.
+            map_event = None
+        if too_big_to_check(map_event):
+            if on:
+                raise _too_big("nothing was published")
             map_event = None
         check = evaluate_self_map(
             map_event, offer_rows(who), who, await _scores_upkeep(db, row)

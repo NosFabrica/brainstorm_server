@@ -322,6 +322,18 @@ def map_groups(event: Any) -> list[Group]:
     return list(by_norm.values())
 
 
+# A Map is checked whole or not at all: a check weighs each key against every
+# other, so its cost grows with the square of the keys. `/setup` writes eight;
+# at 64 the worst shape costs about 40 ms. Never truncated: a cut Map can give
+# the wrong self-entries.
+MAX_MAP_KEYS = 64
+
+
+def too_big_to_check(event: Any) -> bool:
+    """Does the Map name more keys than a check reads?"""
+    return len(map_groups(event)) > MAX_MAP_KEYS
+
+
 def in_supported_sets(probe: Probe) -> bool:
     """Can a probe hold an insight of the observer's supported sets (§ 8)? The
     published metrics for 30382; no Concept, since the Assistant curates none

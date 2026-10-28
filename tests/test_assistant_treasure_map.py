@@ -678,6 +678,41 @@ def test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map(map_client, worl
     assert isinstance(r.json()["detail"], str)
 
 
+def _map_with_keys(world, n: int) -> None:
+    """The caller's Map names the Assistant under `n` different keys."""
+    world.reader_map["tags"] = [[f"*:k{i}", world.hex, PUBLIC_TA] for i in range(n)]
+
+
+def test_a_map_of_64_keys_is_checked(map_client, world):
+    _map_with_keys(world, 64)
+    assert len(_get(map_client)["duties"]) > 0
+
+
+def test_a_map_too_big_to_check_is_a_422_not_a_truncated_check(map_client, world):
+    """A check weighs each key against every other: an 835-key Map took
+    seconds of the event loop's CPU per GET."""
+    _map_with_keys(world, 65)
+    r = map_client.get("/user/assistantTreasureMap")
+    assert r.status_code == 422
+    assert isinstance(r.json()["detail"], str)
+
+
+def test_turn_on_over_a_map_too_big_to_check_publishes_nothing(map_client, world):
+    _map_with_keys(world, 65)
+    r = map_client.post("/user/assistantTreasureMap", json={"on": True})
+    assert r.status_code == 422
+    assert world.sent == [] and world.choices == []
+
+
+def test_turn_off_needs_no_map_even_one_too_big(map_client, world):
+    tags = [[k, world.hex, PUBLIC_TA] for k in FIVE]
+    world.held[INTERNAL_TA] = [_version(world.assistant, tags, 1_700_000_000)]
+    _map_with_keys(world, 65)
+
+    event = _post(map_client, False)["event"]
+    assert _self_entries(event, world.hex) == set()
+
+
 @pytest.mark.parametrize(
     "change, status",
     [
