@@ -80,7 +80,8 @@ Testable from the outside. Each criterion gets at least one test handle.
 - [ ] **AC3 — the copy follows the community when asked.** After the community header changes, an add answers
       `updated` and republishes the same coordinate.
 - [ ] **AC4 — never re-points.** When the Assistant's header at that `d` points elsewhere or carries no `b`, nothing
-      is published. The answer is `conflict`, with a sentence.
+      is published, and the answer is `conflict`, with a sentence. The same holds for a second coordinate with the
+      same `d` in one request. *(The same-`d` case was added in design, 2026-10-27, ADR 0001 D4.)*
 - [ ] **AC5 — removing withdraws.** `POST /user/assistantDictionary/withdraw`:
       - when the Assistant's copy points at the concept, republishes the coordinate with `["b", "b-tag-deferred"]`
         and the withdrawn `alt`, and answers `withdrawn`;
@@ -89,14 +90,17 @@ Testable from the outside. Each criterion gets at least one test handle.
 - [ ] **AC6 — adding after a withdrawal** publishes a fresh copy (`published`).
 - [ ] **AC7 — an unknown concept.** A coordinate whose community header can't be found answers `not_found` and
       publishes nothing.
-- [ ] **AC8 — input.** A body naming anything other than kind-39998 coordinates answers 400. A `d` containing colons
-      is kept whole.
+- [ ] **AC8 — input.** A body naming anything other than kind-39998 coordinates answers 422 (the request schema), as
+      do an empty list and more than 10 coordinates. A `d` containing colons is kept whole. *(Amended in design, 2026-10-27: 400 became 422, this app's
+      request-schema convention, ADR 0001 D1.)*
 - [ ] **AC9 — routing.** `GET /user/{pubkey}` answers neither path, and both routes refuse a request without a
       session.
 - [ ] **AC10 — where it goes.** The event is published to `settings.dictionary_relay` and the Assistant's outbox
       relays, dated `max(now, newest version + 1)`. The answer is 502 when no relay took it.
-- [ ] **AC11 — it matches the UI.** For the fixture header in Brainstorm-UI's `lib/conceptCopy.test.ts`
-      (`exactCopyTemplate`), the server's copy has the same tags that test expects.
+- [ ] **AC11 — it matches the UI.** For the fixtures in Brainstorm-UI's `lib/conceptCopy.test.ts`, the server's copy
+      has the same tags `exactCopyTemplate`'s test expects, and its withdrawn copy the same tags `withdrawnTemplate`'s
+      test expects, apart from the client tag the server adds. *(Extended in design, 2026-10-27, to the withdrawn
+      form, also a cross-repo constant.)*
 
 ## Approach
 
@@ -140,7 +144,17 @@ This follows the precedent of the Trusted Lists story (Vinney, 2026-08-26). Brin
 - Treasure Map entries (`["39998:<d>", <Assistant>, <relay>]`) and the self-Map's Concepts line.
 - A `GET`: the UI reads the Assistant's copies from relays.
 
-## Open questions (to resolve during the ADR)
+## Open questions (resolved in ADR 0001)
+
+Where each is settled:
+
+1. Strict reads: D3.
+2. A per-concept relay report in the Duty Menu's shape: D6.
+3. The dictionary relay and the outbox only: D5.
+4. Read and sign everything, then send; a deadline on sends: D6.
+5. No `alt` on an added copy: D2.
+
+The questions as they were asked:
 
 1. **Strict or lenient reads.** If the dictionary relay doesn't answer, should the route refuse (502) rather than
    publish over a header it couldn't see? The self-Map reads strictly and the Duty Menu leniently. AC4 argues for
