@@ -117,10 +117,23 @@ def test_the_rebuild_covers_designations_and_zap_signers(monkeypatch):
     redis.set.assert_awaited_once_with(mod.DONE_MARKER_KEY, "1")
 
 
-def test_left_over_forward_keys_count_as_partial_state(monkeypatch):
+def test_forward_keys_alone_do_not_block_the_rebuild(monkeypatch):
+    # Regression: the resolver writes `zaps_via:` nightly, so after a Redis wipe those
+    # keys can exist before the server restarts; counting them as partial state made
+    # the rebuild skip and the follow graph never came back.
     async def scan_iter(match, count):
-        if match == "zaps_via:*":
-            yield f"zaps_via:{ALICE}"
+        if match in ("zaps_via:*", "designates:*"):
+            yield match.replace("*", ALICE)
+
+    redis = MagicMock()
+    redis.scan_iter = scan_iter
+    assert asyncio.run(mod._redis_has_relationship_data(redis)) is False
+
+
+def test_left_over_reverse_keys_count_as_partial_state(monkeypatch):
+    async def scan_iter(match, count):
+        if match == "followed_by:*":
+            yield f"followed_by:{ALICE}"
 
     redis = MagicMock()
     redis.scan_iter = scan_iter

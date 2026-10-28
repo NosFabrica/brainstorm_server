@@ -50,10 +50,11 @@ async def _is_graph_db_populated() -> bool:
 
 
 async def _redis_has_relationship_data(redis_client) -> bool:
-    for prefix in [
-        *_RELATIONSHIP_TO_PREFIX.values(),
-        *_FORWARD_RELATIONSHIP_TO_PREFIX.values(),
-    ]:
+    # The reverse sets only. Forward keys appear without this rebuild — the profile
+    # resolver writes `zaps_via:` nightly, the 10040 consumer `designates:` — so after
+    # a wipe they would make it skip, and the follow graph would never come back. A
+    # rebuild cut short leaves reverse keys anyway: the reverse sets go first.
+    for prefix in _RELATIONSHIP_TO_PREFIX.values():
         async for _ in redis_client.scan_iter(match=f"{prefix}*", count=1):
             return True
     return False

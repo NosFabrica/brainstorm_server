@@ -11,7 +11,7 @@ user, never for them:
 | The name belongs to **another key**, on two checks in a row (`IMPERSONATION`) | × 0, whatever the web of trust says |
 | The name is **not backed**: missing from the domain's `names`, or a 404 (`NOT_LISTED`) | × 0.5 |
 | The name maps to this key (`VERIFIED`) | none |
-| No NIP-05, not fetched yet, domain down (`PENDING`), first sighting (`SUSPECTED`), or no usable answer — a 403, a redirect, an unreadable body, a refused URL (`UNKNOWN`) | none |
+| No NIP-05, not fetched yet, domain down or a 5xx (`PENDING`), first sighting (`SUSPECTED`), or no usable answer — a 403, a redirect, an unreadable body, a non-key in `names`, a refused URL (`UNKNOWN`) | none |
 
 `NosFabrica/brainstorm_profile_resolver` checks every graph user's NIP-05 nightly and records the
 status on their `NostrUser` node; the GrapeRank worker (`NosFabrica/brainstorm_graperank_algorithm`)
@@ -35,14 +35,15 @@ accepted
   The factor multiplies Influence inside the sweep, so what a penalised user passes on shrinks too.
 - **Zero on the first contradicting answer.** Rejected: a zero overrides the whole web of trust, and
   NIP-05s are otherwise re-checked monthly, so one bad day at a domain would cost its users a month.
-  The first sighting is `SUSPECTED`, re-checked the next night, and only a second agreeing answer
-  makes it `IMPERSONATION`.
+  The first sighting is `SUSPECTED`, re-checked no sooner than 12 hours later (in practice the next
+  night), and only a second agreeing answer makes it `IMPERSONATION`.
 
 ## Consequences
 
 - **A broken domain is doubted, not believed.** If one domain names someone else for at least 10 of a
-  batch's checks and at least half of them, the resolver records `UNKNOWN` and logs the domain: that
-  is a domain fault, not a crowd of impersonators.
+  run's checks and at least half of them, the resolver records `UNKNOWN` for them — suspicions written
+  earlier in the run included — and logs the domain: that is a domain fault, not a crowd of
+  impersonators. The count spans the run because a full pass meets one domain's users a few at a time.
 - **Pinned users are exempt.** The Observer and the keys the Observer designated are the Observer's
   own choice and are never penalised.
 - **Look-alike domains are not caught.** Whoever controls `jackdorsey.co` can verify `jack@` there.

@@ -96,11 +96,23 @@ async def main() -> None:
         log(f"[dry-run] no writes. elapsed {time.monotonic() - t0:.2f}s")
         return
 
-    # Serial, one author per write — Neo4j fails under concurrent writers.
+    # Serial, one author per write — Neo4j fails under concurrent writers. One
+    # author's failure is logged and skipped, not the end of the replay; a re-run
+    # is idempotent.
+    failed = 0
     async with neo4j_driver.session() as session:
         for ev in events:
-            await process_event_kind_10040(session, ev)
-    log(f"[applied] {len(events)} authors. elapsed {time.monotonic() - t0:.2f}s")
+            try:
+                await process_event_kind_10040(session, ev)
+            except Exception as e:
+                failed += 1
+                log(f"[failed] {ev.get('pubkey')}: {e!r}")
+    log(
+        f"[applied] {len(events) - failed} authors, {failed} failed. "
+        f"elapsed {time.monotonic() - t0:.2f}s"
+    )
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
