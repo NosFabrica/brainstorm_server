@@ -442,3 +442,276 @@ Nothing else needs re-reading unless the fix spreads beyond those files.
 Not applicable to this verdict. Under the Light profile's Gate B, the operator gives the verdict. Flipping the story's
 `**Status:**` line and committing this review are left to the operator, as this run's instructions require; this file
 is uncommitted.
+
+## Re-review (2026-10-28)
+
+**Reviewer:** Claude (acting as Reviewer, independent of the authoring session and of the fix)
+**Fix:** `e9adf7c` ("fix: a coordinate is parsed whole"), on top of `6c0b9f7` and this review's commit `f2434f3`. In code
+and tests (`git diff 6c0b9f7 e9adf7c -- app tests`) it touches six files: the grammar in `dictionary_copy_build.py`, the
+check order in `dictionary_relay_reader.py`, the withdraw row in `app/routers/CLAUDE.md`, and three test files. The
+test files only add lines, apart from B4's rewritten comment.
+**Read:** the fix commit, the story's "Changes from the Gate B review", the test plan's "Added at the Gate B review",
+ADR D1 and the profile's Gate B section. The fix reaches past the re-review scope set above (the reader, the routers
+doc, the ADR), so I re-read those as well.
+**Environment:** the worktree's `.venv`: Python 3.12.12, nostr-sdk 0.41.0, websockets 16.0, pydantic 2.13.1, FastAPI
+0.128.8, Starlette 0.52.1.
+**Method:**
+
+- **The pre-fix code** is a `git archive 6c0b9f7 | tar -x` export in a scratch directory, with HEAD's three test files
+  copied in.
+- **The probes** ran in a second export, at `e9adf7c`. The worktree ran only the gate, and `git status` stayed clean.
+- **The probe sources** (`probe_grammar.py`, `test_rereview_*.py`) are in this session's scratchpad, uncommitted.
+
+### Quality gates (run by reviewer, not trusted)
+
+Each stage ran from the worktree root in the foreground, with its exit code captured by brace-redirect and never piped
+through `tail`.
+
+| Stage | Result |
+| --- | --- |
+| black | `black=0`, 195 files would be left unchanged |
+| isort | `isort=0` |
+| flake8 | `flake8=0` |
+| mypy | `mypy=0`, "Success: no issues found in 195 source files" (with the same `annotation-unchecked` notes in `nostr_event_transferer.py`) |
+| Fast suite | `pytest=0`: **1596 passed, 143 deselected, 8 warnings in 15.19s**. That's the earlier 1,591 plus B4's two new cases, R26, R27 and W9. No skip or xfail. The same 8 warnings, all in untouched suites. |
+| Integration, HEAD | exit 1: **47 failed, 96 errors** (1596 deselected) in 266.78s |
+| Integration, the `6c0b9f7` export | exit 1: **47 failed, 96 errors** in 238.44s |
+
+**Parity holds.**
+
+- The sorted FAILED/ERROR node ids of the two runs are identical, 143 and 143, all under `tests/integration/`.
+- Every error is a refused connection to Neo4j (7687), Postgres (5432) or Redis (6379), plus the one
+  `init_nostr_client` assertion on `try_connect`.
+- The earlier review showed `6c0b9f7` at parity with the base `e2ca872`, so HEAD is at parity with the base too.
+
+### Blocking 1: resolved
+
+`_COORDINATE` is now `39998:([0-9a-f]{64}):(.+)` with `re.DOTALL`, applied with `fullmatch`
+(`dictionary_copy_build.py:58,66`). A full match of a literal, a fixed 64-character group, a literal and the remainder
+makes the input exactly their concatenation. So an accepted coordinate always equals `39998:<pubkey>:<d>` as parsed. I
+checked that by probe rather than take it from the argument.
+
+**The grammar.** Probe G loads the pre-fix parser and the fixed one side by side.
+
+- **A generated corpus of 60,000 values,** biased to the grammar's edges.
+  - The alphabet: hex, colons, `\n`, `\r`, `\t`, `\v`, `\f`, NUL, `\x1c`–`\x1f`, NEL, U+2028/2029, ZWSP, BOM, an RTL
+    override, a combining mark, lone surrogates, an emoji, and fullwidth, Cyrillic and Arabic-Indic lookalikes. The
+    pubkeys have 63, 64 or 65 hex digits.
+  - All 35,443 values the fixed parser accepts round-trip exactly.
+  - The two parsers disagree on 2,774, and every one contains `\n`, so the fix changes nothing for a value without a
+    newline.
+  - The pre-fix parser also mis-split `…:x\r\n`, to `d` = `x\r`.
+- **39 named edges.** Anything after the second colon is kept whole. These are refused:
+  - an empty `d`;
+  - a newline before the second colon, or after the kind;
+  - a leading newline, space or BOM;
+  - uppercase hex, or 63 or 65 hex digits;
+  - lookalikes in the pubkey, fullwidth digits in the kind, or a fullwidth colon;
+  - `039998` and `399980` as the kind.
+- **Long input stays linear.** A 10 MB `d`, or 10 MB of newlines, parses in under 1 ms.
+
+**The schema and the service agree.**
+
+- On all 60,000 values, `AssistantDictionaryBody` accepts exactly what `parse_concept_coordinate` accepts, and hands
+  the string on unaltered (`type is str`, nothing stripped).
+- Both routes pass `body.concepts` straight to the service. Its `_named` (`assistant_dictionary_service.py:155–167`)
+  calls the same function.
+- Non-string elements (a number, `null`, `true`, a list, an object) are still a 422 on both routes, before any read
+  (P10).
+
+**What gets signed** (the story's fakes, real signing):
+
+- **P6.** With headers held at both `x\n` and `x`, adding both publishes two copies.
+  - Each copy's `d` is its header's, its only `b` is `39998:<header pubkey>:<header d>`, and it verifies.
+  - Re-adding both answers `unchanged`.
+  - Withdrawing `x\n` leaves the copy at `x` alone.
+- **P7** takes 15 more `d`s through add, re-add and withdraw, each kept exactly: an inner newline, a lone one, CRLF, CR,
+  tab, NUL, `\x1f`, NEL, U+2028, a combining mark, an RTL override, an emoji, a space, `::` and 5,000 characters.
+- **P9** does the same through raw JSON escapes.
+- **P12** puts 300 random `d`s through the real `_named` and `_decide_and_sign`, as an add and then a withdraw.
+  - The signed `b` is always `39998:<header pubkey>:<header d>`.
+  - The withdraw signs only the deferred `b`.
+- **Against `6c0b9f7`,** exactly the 8 probe tests that use a `d` with `\n` fail. In P8, `…:x` and `…:x\n` in one
+  request used to collide as one `d`; now they're two concepts.
+
+The one way I found to make the signed `b` name an address other than the copied header's predates the fix, and doesn't
+go through the grammar. It's a header whose first `d` tag has no value (Non-blocking 2).
+
+**The author's tests.** Against the pre-fix code exactly four fail, each for the defect's own reason:
+
+- B4 `…:github-accounts\n`: `'github-accounts' != 'github-accounts\n'`;
+- B4 `…:a\nb`: the parser returns `None`;
+- W9: `ValueError: invalid literal for int() with base 10: 'soon'` at `dictionary_relay_reader.py:47`;
+- R26: `'published' == 'not_found'`.
+
+R27 passes on both trees, as the test plan says. At HEAD all 102 pass (43 B, 10 W, 49 R).
+
+- B4's new round-trip assertion strengthens its two old cases.
+- R26 is the route case the review asked for, in a third shape: a negative case, showing the newline is no longer
+  dropped. A positive one like P6 would pin the exact copy for such a `d` through the route too. That's optional.
+- The optional `_check` hardening wasn't taken. It's moot while the grammar is total, but would still be cheap defence
+  in depth.
+
+### The non-blocking fixes
+
+- **The reader's check order** (`dictionary_relay_reader.py:82–83`) is correct.
+  - `_verified` and `_newer` are pure, so swapping them changes nothing when neither raises. These pass on both trees,
+    and so do W1–W8:
+    - RD1: keys are exact, including the `d`s `x` and `x\n`;
+    - RD2: NIP-01's tie rule (same `created_at`, lower id wins) holds in either order;
+    - RD3: a forged, later event after a valid one is skipped.
+  - A malformed `created_at` is now skipped: W9's string, and a list in RD4. Some other malformed shapes still fail the
+    read (Non-blocking 4).
+- **R27 is Brainstorm-UI's fixture.**
+  - I extracted its lists from the test's source. With only the coordinate substituted, its header equals B1's
+    `UI_COMMUNITY_TAGS`, and its expectation equals `UI_EXPECTED_COPY` plus the client tag.
+  - It asserts the tags of the event the route signed. It then asserts that a re-add is `unchanged` and sends nothing.
+- **The withdraw row** (`app/routers/CLAUDE.md:133`) matches the code.
+  - `withdrawn`, `unchanged` and `conflict` come from `_decide_and_sign`, and `failed` (out of time, or no relay took
+    it) from `_send`.
+  - The 502s come from `_read` and from `_press` (148–151).
+  - A withdraw never answers `not_found`, and the row doesn't claim it.
+- **ADR D1's correction** (lines 105–108) has the mechanism right.
+  - At `cea36065`, `extractApiError` returns pydantic's `detail` list (`core.ts:265–268`).
+  - `assistantJson` passes it to `new Error(…)` (`users.ts:160`).
+  - The new sentence's "never" is too strong, though (Non-blocking 4).
+
+### Collateral damage
+
+Outside the target, one behaviour changed: a `d` can now carry a newline into a log line (Non-blocking 1). Nothing else
+did:
+
+- `git diff 6c0b9f7 e9adf7c -- app tests` changes three code lines and their comments;
+- the only test line removed is B4's old comment;
+- no dependency file changed;
+- `parse_concept_coordinate`'s only callers are the schema and `_named`, and the reader's only caller is the service;
+- the story's `Status` line is untouched.
+
+**Gate A classification: unchanged.** The wider grammar is D1's own rule ("a `d` may contain colons and must be
+non-empty"), now applied to the whole string, so it adds no trigger.
+
+### Spec delta (the verdicts that move)
+
+| Criterion | Before | Now |
+| --- | --- | --- |
+| AC8 input | Not met (Blocking 1) | **Met** (B4, R26; probes G, P6–P10, P12). One pre-existing edge: a lone surrogate answers 500, not 422 (Non-blocking 3) |
+| AC1, AC11 | Met (on the composed tags; on the signed event by probe P2) | **Met**, now also pinned through signing by R27 |
+| AC4 | Met | **Met.** A coordinate and its trailing-newline sibling are now two concepts, not a same-`d` conflict (P8) |
+
+Every other criterion stands as the earlier table has it. The fix touches no code they rest on.
+
+### Evidence table
+
+| Claim | Evidence | Result |
+| --- | --- | --- |
+| Every accepted coordinate is exactly `39998:<pubkey>:<d>` | Probe G (60,000 values, 39 edges, up to 10 MB); P12 through `_named` | Holds |
+| The fix changes only values containing `\n` | G's differential, pre-fix against fixed | 2,774 differ, all with `\n` |
+| The schema and the parser agree | G over 60,000 values; P10 on both routes | Identical; strings unaltered; non-strings get 422 |
+| The signed `b` names the copied header's coordinate | P6, P7, P9, P12 (300 fuzzed `d`s, real signing) | Holds (one exception: Non-blocking 2) |
+| The new tests fail before the fix | The `6c0b9f7` export plus HEAD's three test files | 4 failed (B4 ×2, W9, R26); 98 passed, R27 among them |
+| …and pass after it | The same files at HEAD | 102 passed |
+| The reorder keeps behaviour for well-formed events | RD1–RD3 and W1–W9 on both trees | Same results |
+| R27 is the UI fixture | R27's lists extracted from the source (AST), compared with B1's constants | Equal |
+| The gate is green | The five stages above | All exit 0; 1,596 passed |
+| Integration parity | HEAD and the `6c0b9f7` export; sorted ids; `diff` | Identical 143; refused connections |
+| A `d` can forge a log line | Probe LG | HEAD: one forged line; `6c0b9f7`: 422 |
+| A lone surrogate in `d` | P11 on both routes and both trees | 500, nothing sent |
+| A first `d` tag with no value | Probe FD | Keyed `(P, "x")`; signed `b` = `39998:P:x`; nostr-sdk's `identifier()` is `None` |
+| Documented line counts | `wc -l` against `app/services/CLAUDE.md:25–26` | 135 and 95, documented as 132 and 93 |
+
+### Findings
+
+#### Blocking
+
+None.
+
+#### Non-blocking
+
+1. **`app/services/assistant_dictionary_service.py:309`: a caller-chosen `d` can now forge lines in the server's log.**
+   This is new with the fix.
+   - **Why it happens.** `_send` logs `f"dictionary copy {result.local} not on {line.url}: {line.message}"` for each
+     relay that didn't take a copy. `result.local` ends in the `d`, which may now hold `\n`.
+   - **Probe LG.**
+     - A header was held at `d` = `"x\n2026-10-28 00:00:00,000 - app.core.auth - ERROR - FORGED LINE"`, with one
+       outbox relay down.
+     - The answer was 200 `published`, and the log gained the line `2026-10-28 00:00:00,000 - app.core.auth - ERROR -
+       FORGED LINE not on wss://relay.primal.net: IO error: Connection refused`.
+     - At `6c0b9f7` the same body was a 422.
+   - **Who can do it.** Any signed-in customer. dcosl takes writes from any key (the earlier review's NIP-11 check).
+     Any target that doesn't take the copy triggers the line, so an unreachable public relay is enough.
+   - **Why it isn't blocking.**
+     - It's plain-text log forging; nothing is signed wrongly.
+     - `\r` and ANSI escapes already reached the same line before the fix.
+     - Relay-supplied text is logged raw the same way elsewhere (`duty_menu_service.py:239`,
+       `self_map_service.py:335`).
+   - **Suggested.** `{result.local!r}`, a one-token change, best taken before merge.
+2. **`app/services/dictionary_relay_reader.py:35–39` and `app/services/dictionary_copy_build.py:74`: a header whose
+   first `d` tag has no value is read as the header at its next `d`.** This predates the fix.
+   - **Two rules.**
+     - The server takes "the first `d` with a value".
+     - nostr-sdk (`Event.tags().identifier()` gives `None`) and the UI (`tagValue`, `dlistFields.ts:85–88` at
+       `cea36065`) take the first `d`, and none when it has no value.
+   - **Probe FD.**
+     - P's header `[["d"], ["d", "x"], …]` verifies, and the reader keys it `(P, "x")`.
+     - The Assistant then signs `["d", "x"]` with `b` = `39998:P:x`.
+     - By nostr-sdk's rule and the UI's, that header has no coordinate at all.
+   - **Why it isn't blocking.** Only the header's own author can make one. The copy carries that author's own
+     definition, and withdrawing `39998:P:x` still removes it.
+   - **Suggested.** Take the first `d` tag's value in both places, and skip a header whose first `d` has none.
+3. **`app/services/dictionary_copy_build.py:58,66`: a `d` holding a lone surrogate passes the schema, and the route
+   answers 500.** This predates the fix.
+   - **Reach.** It can only arrive as a JSON `\ud800` escape.
+   - **What happens** (with the story's fakes; it's the same at `6c0b9f7`).
+     - Nothing is signed or sent: the service answers `not_found` (add) or `unchanged` (withdraw).
+     - Starlette then can't encode the echoed `community` as UTF-8 (`starlette/responses.py:198`,
+       `UnicodeEncodeError`).
+   - **Why it matters at all.** No event can carry such a `d`, and AC8 asks for a 422.
+   - **Suggested.** Have `parse_concept_coordinate` refuse a value that doesn't encode as UTF-8.
+4. **Four claims in the docs are broader than the code.**
+   - **"A malformed event is skipped"** (story line 230, test plan line 163, the commit message).
+     - It's true of a malformed `created_at`.
+     - A `tags` that isn't a list still raises at `dictionary_relay_reader.py:36`.
+     - A `d` value that's a list or an object still raises at `:79` (RD4: `TypeError`, on both trees).
+     - Both fail closed, as a 502, and strfry validates events on ingest. Either narrow the sentence or guard `_d_of`.
+   - **"The UI never sends a bad body"** (ADR line 107).
+     - `definitionOf` (`conceptResolution.ts:134` at `cea36065`) sends `coordinateOf(header) ?? header.id`.
+     - So a community header with an empty or missing `d` sends `39998:<pk>:` or an event id. That's a 422, shown as
+       "[object Object]".
+     - It's rare; "only for a header without a `d`" would be accurate.
+   - **Line counts.** `app/services/CLAUDE.md:25–26` still say 132 and 93. The fix made the files 135 and 95 lines.
+   - **The story's gate table** (line 216) still records the pre-fix 1,591. The post-fix run appears only in the commit
+     message.
+
+**The earlier non-blocking items:**
+
+- **Fixed:** 3 (`_newer`), this side of 5 (D1's sentence) and 6 (the withdraw row).
+- **Fixed as a test:** 2, by R27. `_check` still compares only `d` and `b`.
+- **Follow-ups, as the story says:** 1, 4, 7 and 8, and the UI side of 5.
+
+### Harness friction
+
+1. **The pre-fix recipe.** What worked was the whole-tree archive at the pre-fix commit, with the fix's test files
+   copied over. That way the copied tests keep `tests/conftest.py`'s settings bootstrap and `pyproject.toml`'s pytest
+   settings. It's worth recording beside friction 2's parity recipe.
+2. **A fix round has no rule for what to refresh in the story.** The light profile could ask it to re-record the gate
+   results and any line counts the fix moves.
+
+### Verdict
+
+**PASS** (mergeable as-is)
+
+Blocking 1 is resolved:
+
+- every coordinate the schema and the service accept is exactly `39998:<pubkey>:<d>`, and the two agree;
+- for every `d` I tried, the signed `b` names the coordinate of the header copied;
+- the new tests fail before the fix for the defect's own reasons, and pass after it.
+
+Everything else holds:
+
+- the gate is green under the approved deviation (1,596 passed), with integration parity id for id;
+- the non-blocking fixes are correct;
+- no other behaviour changed, apart from the newline that can now reach one log line (Non-blocking 1).
+
+The four new findings are non-blocking, and nothing holds the gate. I'd take Non-blocking 1 (one token) before merge.
+As before, the operator gives Gate B's verdict. This section is uncommitted, and the story's `Status` line is
+untouched.
