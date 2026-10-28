@@ -64,10 +64,13 @@ def designation_rows(assistant_pubkey: str) -> list[list[str]]:
     # Same assistant key as the 30382 rows: one identity signs both this
     # Observer's Trusted Assertions and their Trusted Lists.
     rows.append([TRUSTED_LIST_KIND_ROW, assistant_pubkey, trusted_list_relay])
-    rows.extend(
-        [kind, assistant_pubkey, settings.dictionary_relay]
-        for kind in DICTIONARY_KIND_ROWS
-    )
+    # No Dictionary relay, no Dictionary rows: a row without a relay names
+    # nowhere to find what it designates.
+    if settings.dictionary_relay:
+        rows.extend(
+            [kind, assistant_pubkey, settings.dictionary_relay]
+            for kind in DICTIONARY_KIND_ROWS
+        )
     return rows
 
 

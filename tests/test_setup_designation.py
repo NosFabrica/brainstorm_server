@@ -133,6 +133,14 @@ def test_dictionary_rows_follow_the_trusted_list_row(setup_client):
         assert row[1] == assistant_pubkey
 
 
+def test_no_dictionary_rows_without_a_dictionary_relay(setup_client, monkeypatch):
+    from app.core.config import settings
+
+    client, _ = setup_client
+    monkeypatch.setattr(settings, "dictionary_relay", "")
+    assert [r[0] for r in _rows(client)][-1] == "30392"
+
+
 def test_dictionary_rows_name_the_dictionary_relay(setup_client, monkeypatch):
     from app.core.config import Settings, settings
 
