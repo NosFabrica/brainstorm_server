@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import cast
 
 from sqlalchemy import CursorResult, RowMapping, delete, func, select, update
@@ -80,7 +79,7 @@ async def upsert_passkey_vault_on_db(
 
 
 async def mark_passkey_vault_used_on_db(
-    db: AsyncDBSession, credential_id_hash: str, sign_count: int, used_at: datetime
+    db: AsyncDBSession, credential_id_hash: str, sign_count: int
 ) -> bool:
     """Record an open, only if the counter moves forward — or both sides keep none.
 
@@ -94,9 +93,12 @@ async def mark_passkey_vault_used_on_db(
         else PasskeyVault.sign_count < sign_count
     )
     result = await db.execute(
-        update(PasskeyVault)
-        .where(PasskeyVault.credential_id_hash == credential_id_hash, advanced)
-        .values(sign_count=sign_count, last_used_at=used_at)
+        update(PasskeyVault).where(
+            PasskeyVault.credential_id_hash == credential_id_hash, advanced
+        )
+        # The database's clock, as for created_at: a Python-side utc_now() beside a
+        # now()-filled column only agrees while the server runs in UTC.
+        .values(sign_count=sign_count, last_used_at=func.now())
     )
     # DML results are CursorResult at runtime; the base Result stub lacks rowcount.
     return cast(CursorResult, result).rowcount == 1

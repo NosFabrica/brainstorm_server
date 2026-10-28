@@ -176,7 +176,7 @@ at all: [ADR 0005](../../docs/adr/0005-passkey-vault.md).
 | `blob` | text | the client's sealed record (≤4KB), checked for owner + credential, never decrypted |
 | `label` | str(64), nullable | the passkey's provider as the client named it ("iCloud Keychain") |
 | `sign_count` | bigint | the authenticator's counter; synced passkeys stay 0. Reset when the public key changes |
-| `last_used_at` | DateTime, nullable | last successful open |
+| `last_used_at` | DateTime, nullable | last successful open, stamped with the database's `now()` like `created_at` (one clock) |
 
 ### `SupportTicket` — `support_ticket`
 

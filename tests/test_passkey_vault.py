@@ -518,3 +518,35 @@ def test_writes_need_a_session():
 
     anonymous = TestClient(fastapi_app)
     assert anonymous.get("/passkeyVault").status_code in (401, 403)
+
+
+@pytest.mark.parametrize(
+    "sign_count, condition",
+    [
+        (0, "passkey_vault.sign_count = %(sign_count_1)s"),
+        (7, "passkey_vault.sign_count < %(sign_count_1)s"),
+    ],
+)
+def test_marking_an_open_only_moves_the_counter_forward_on_the_databases_clock(
+    sign_count, condition
+):
+    from sqlalchemy.dialects import postgresql
+
+    from app.repos import passkey_vault_repo
+
+    captured = {}
+
+    class Db:
+        async def execute(self, stmt):
+            captured["sql"] = str(stmt.compile(dialect=postgresql.dialect()))
+            return SimpleNamespace(rowcount=1)
+
+    assert asyncio.run(
+        passkey_vault_repo.mark_passkey_vault_used_on_db(
+            Db(), CREDENTIAL_HASH, sign_count
+        )
+    )
+    sql = captured["sql"]
+    assert condition in sql
+    # created_at is the database's now(); last_used_at must be the same clock.
+    assert "last_used_at=now()" in sql

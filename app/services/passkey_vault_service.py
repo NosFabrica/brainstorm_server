@@ -32,7 +32,6 @@ from app.repos.passkey_vault_repo import (
     upsert_passkey_vault_on_db,
 )
 from app.schemas.schemas import PasskeyVaultEntry
-from app.utils.datetimes import utc_now
 from app.utils.webauthn import (
     SUPPORTED_ALGS,
     AssertionInvalid,
@@ -235,9 +234,7 @@ async def open_vault(
         # Spent after the signature, so a forged assertion can't burn someone
         # else's challenge.
         await spend_challenge(check_challenge(verified.challenge))
-        if not await mark_passkey_vault_used_on_db(
-            db, path_hash, verified.sign_count, utc_now()
-        ):
+        if not await mark_passkey_vault_used_on_db(db, path_hash, verified.sign_count):
             raise AssertionInvalid("signature counter did not advance (raced)")
     except AssertionInvalid as error:
         logger.info("passkey vault open refused: %s", error)
