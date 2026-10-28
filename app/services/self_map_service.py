@@ -12,13 +12,15 @@ the § numbers are Tapestry's `protocols/drafts/treasure-maps.md`.
 
 A press reads the newest version strictly and publishes the self-entries the
 GET says, with the `client` tag and empty content: only this server signs the
-Assistant's kind 10040, so a version holds nothing else to keep. It goes where
-§ 9.2 "Finding a self-Map" says: the GET's `relays` (the Assistant's outbox, the
-relays its self-entries name, the caller's hints for it), and every relay an
-earlier version's self-entries named, written at the internal TA relay for its
-public URL, as scores are. A press that answers an error changes nothing, the
-choice included: it is saved with the request's transaction. Signing and
-sending are `assistant_publish`'s, shared with the Duty Menu.
+Assistant's kind 10040, so a version holds nothing else to keep. It reads and
+sends only where § 9.2 "Finding a self-Map" sends a writer: the Assistant's
+outbox, the relays its self-entries name, and every relay an earlier version's
+self-entries named, the TA relay at its internal URL, as scores are. The
+caller's hints for the Assistant are in the GET's `relays`, for readers, and a
+press never connects to them: the caller writes their own Map, so a hint can
+name any host. A press that answers an error changes nothing, the choice
+included: it is saved with the request's transaction. Signing and sending are
+`assistant_publish`'s, shared with the Duty Menu.
 """
 from __future__ import annotations
 
@@ -132,11 +134,19 @@ async def _read_reader_map(user_pubkey: str) -> dict[str, Any] | None:
 def _relays(
     check: SelfMapCheck, map_event: dict[str, Any] | None, assistant: str
 ) -> list[str]:
+    """Where a reader looks for the Map (§ 9.2): the writer's relays, then the
+    caller's hints for the Assistant."""
     return self_map_relays(
         assistant_relay_list(),
         check.should_say,
         self_entry_relays([map_event], assistant),
     )
+
+
+def _writer_relays(check: SelfMapCheck) -> list[str]:
+    """Where a press reads and sends, before the relays earlier versions name:
+    the Assistant's outbox and the relays its self-entries name."""
+    return self_map_relays(assistant_relay_list(), check.should_say, [])
 
 
 async def read_assistant_treasure_map(
@@ -196,13 +206,14 @@ async def publish_assistant_treasure_map(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail="Couldn't read your Treasure Map, so nothing was published.",
                 )
-            # Turning off lists nothing: the caller's Map only adds places to send it.
+            # Turning off lists nothing: the caller's Map only adds the relays
+            # its live duties name.
             map_event = None
         check = evaluate_self_map(
             map_event, offer_rows(who), who, await _scores_upkeep(db, row)
         )
         target = check.should_say if on else []
-        relays = _relays(check, map_event, who)
+        relays = _writer_relays(check)
         held = await read_newest(
             publish_targets(relays),
             {"kinds": [SELF_MAP_KIND], "authors": [who], "limit": 1},

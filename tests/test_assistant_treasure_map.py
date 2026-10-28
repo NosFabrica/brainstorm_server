@@ -911,9 +911,28 @@ def test_it_is_sent_to_the_relays_and_every_relay_an_earlier_version_named(
 
     ((urls, _),) = world.sent
     assert INTERNAL_TA in urls and PUBLIC_TA not in urls
-    assert {*OUTBOX, DICTIONARY, "wss://old-scores.example"} <= set(urls)
+    assert {*OUTBOX, "wss://old-scores.example"} <= set(urls)
     assert len(urls) == len(set(urls))
-    assert set(world.read_from) == {INTERNAL_TA, *OUTBOX, DICTIONARY}
+    assert set(world.read_from) == {INTERNAL_TA, *OUTBOX}
+
+
+def test_a_press_never_connects_where_the_callers_map_points(map_client, world):
+    """The caller writes their own Map, so a hint for the Assistant can name any
+    host. The GET lists the hints for readers; a press reads and sends only
+    where § 9.2 sends a writer. The Dictionary relay, a hint from `/setup`'s
+    Concept rows, refuses a kind 10040 anyway."""
+    internal = "ws://10.0.0.5:6379"
+    world.reader_map["tags"] = [
+        *designation_rows(world.hex),
+        ["30382:rank", world.hex, internal],
+    ]
+    assert {internal, DICTIONARY} <= set(_get(map_client)["relays"])
+
+    _post(map_client, True)
+
+    assert {internal, DICTIONARY}.isdisjoint(world.read_from)
+    ((urls, _),) = world.sent
+    assert {internal, DICTIONARY}.isdisjoint(urls)
 
 
 def test_the_report_names_public_addresses_one_line_per_relay(map_client, world):
@@ -922,7 +941,7 @@ def test_the_report_names_public_addresses_one_line_per_relay(map_client, world)
 
     report = {r["url"]: r for r in _post(map_client, True)["relays"]}
 
-    assert set(report) == {PUBLIC_TA, *OUTBOX, DICTIONARY}
+    assert set(report) == {PUBLIC_TA, *OUTBOX}
     assert report[PUBLIC_TA]["ok"] is True
     # The transport's own error is logged, not answered.
     assert report[OUTBOX[1]] == {
