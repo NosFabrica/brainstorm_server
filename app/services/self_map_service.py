@@ -71,7 +71,6 @@ from app.services.self_map_build import (
     content_of,
     evaluate_self_map,
     is_next_version,
-    map_hints,
     newest,
     nothing_to_change,
     scores_upkeep,
@@ -150,7 +149,9 @@ def _relays(
     check: SelfMapCheck, map_event: dict[str, Any] | None, assistant: str
 ) -> list[str]:
     return self_map_relays(
-        assistant_relay_list(), check.should_say, map_hints(map_event, assistant)
+        assistant_relay_list(),
+        check.should_say,
+        self_entry_relays([map_event], assistant),
     )
 
 

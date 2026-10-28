@@ -171,13 +171,11 @@ def parse_key(key: Any) -> Key | None:
     return Key(norm, slot, kinds, segs, rank, scope)
 
 
-def compare_keys(a: Key | None, b: Key | None) -> int:
+def compare_keys(a: Key, b: Key) -> int:
     """§ 6 as a comparator: negative when `a` is the more specific, so sorting
     with it puts the most specific first. The kind slot first, then each later
     segment, where a value beats an empty or omitted one. Keys that never overlap
     order by spelling, so the order is total."""
-    if a is None or b is None:
-        return (-1 if a else 0) - (-1 if b else 0)
     if a.rank != b.rank:
         return b.rank - a.rank
     if a.slot != b.slot:
@@ -198,9 +196,9 @@ def compare_keys(a: Key | None, b: Key | None) -> int:
 most_specific_first = functools.cmp_to_key(compare_keys)
 
 
-def matches(key: Key | None, probe: Probe | None) -> bool:
+def matches(key: Key, probe: Probe) -> bool:
     """Does a key match a probe insight?"""
-    if key is None or probe is None or probe.kind not in key.kinds:
+    if probe.kind not in key.kinds:
         return False
     if key.scope.type == "all":
         return True
@@ -225,10 +223,6 @@ def covers(row: Key, key: Key) -> bool:
 def _meet_of(key: Key, kind: int) -> Key | None:
     """A key narrowed to one kind (a meet): the kind in its slot, its later
     segments kept."""
-    if len(key.kinds) == 1 and key.slot == str(kind):
-        return key
-    if key.slot == "39998" and kind == 39998 and key.scope.type == "all":
-        return key
     return parse_key(":".join([str(kind), *key.segs]))
 
 
@@ -247,7 +241,7 @@ T = TypeVar("T")
 
 
 def winner_of(
-    candidates: Iterable[T], probe: Probe, key_of: Callable[[T], Key | None]
+    candidates: Iterable[T], probe: Probe, key_of: Callable[[T], Key]
 ) -> T | None:
     """The most specific of `candidates` matching the probe, or None."""
     best: T | None = None
@@ -260,12 +254,12 @@ def winner_of(
     return best
 
 
-def build_probes(keys: Iterable[Key | None]) -> list[Probe]:
+def build_probes(keys: Iterable[Key]) -> list[Probe]:
     """The finite set of probes for the keys given: per metric named, and the
     published ones, for each Score kind; one per List kind; per `d` named, and
     one other, for each Concept kind; one per unchecked key and kind it covers;
     and one for any other kind a key names."""
-    parsed = [k for k in keys if k is not None]
+    parsed = list(keys)
     out: dict[Probe, None] = {}
     for kind in SCORE_KINDS:
         metrics = list(PUBLISHED_SCORE_METRICS) if kind == SCORE_KIND else []
@@ -328,25 +322,6 @@ def map_groups(event: Any) -> list[Group]:
     return list(by_norm.values())
 
 
-def map_hints(event: Any, assistant: str) -> list[str]:
-    """The relays the Map names for the Assistant: element 3 of its entries
-    naming it, whose key parses (an entry with no key is absent, § 4.5)."""
-    who = assistant.lower()
-    hints: list[str] = []
-    for tag in _tags_of(event):
-        if (
-            isinstance(tag, list)
-            and len(tag) >= 3
-            and parse_key(tag[0]) is not None
-            and isinstance(tag[1], str)
-            and tag[1].lower() == who
-            and isinstance(tag[2], str)
-            and RELAY_URL.fullmatch(tag[2].strip())
-        ):
-            hints.append(tag[2].strip())
-    return hints
-
-
 def in_supported_sets(probe: Probe) -> bool:
     """Can a probe hold an insight of the observer's supported sets (§ 8)? The
     published metrics for 30382; no Concept, since the Assistant curates none
@@ -400,25 +375,16 @@ class OfferRow:
 
 class Offer:
     """The Duty Menu's offer (`duty_menu_build.offer_rows`, `[key, relay]` per
-    row, every one a `duty` row), read by Duty Menus § 6.2. The first row per
-    key wins (§ 5.3)."""
+    row, every one a `duty` row with a relay and a key of its own), read by Duty
+    Menus § 6.2."""
 
-    def __init__(self, rows: Iterable[Any]):
+    def __init__(self, rows: Iterable[list[str]]):
         self.rows: list[OfferRow] = []
-        seen: set[str] = set()
-        for row in rows:
-            if not isinstance(row, (list, tuple)) or len(row) < 2:
-                continue
-            key = parse_key(row[0])
-            if (
-                key is None
-                or not isinstance(row[1], str)
-                or not row[1]
-                or key.norm in seen
-            ):
-                continue
-            seen.add(key.norm)
-            self.rows.append(OfferRow(key, row[1]))
+        for key, relay in rows:
+            parsed = parse_key(key)
+            if parsed is None:
+                raise ValueError(f"an offer row's key doesn't parse: {key!r}")
+            self.rows.append(OfferRow(parsed, relay))
         self.kinds = {kind for row in self.rows for kind in row.key.kinds}
 
     def answer(self, probe: Probe) -> OfferRow | None:
@@ -447,8 +413,8 @@ class Offer:
 @dataclass(frozen=True)
 class ScoresUpkeep:
     """Whether the Assistant's Scores have landed and are kept up to date:
-    `live`, `not-landed`, `not-scheduled` or `upkeep-stopped`, with the last
-    publish in seconds when there is one."""
+    `live`, `not-landed`, `not-scheduled` or `upkeep-stopped`, and, when they
+    have stopped, the last publish in seconds."""
 
     status: str
     last_landed_at: int | None = None
@@ -461,23 +427,18 @@ def scores_upkeep(
     event of a run) is no older than two schedule intervals: one missed run is a
     brief gap, two in a row is a stop. `interval_seconds` is None when nothing
     keeps them up to date."""
-    landed = (
-        int(last_published.replace(tzinfo=timezone.utc).timestamp())
-        if last_published is not None
-        else None
-    )
     if not interval_seconds or interval_seconds <= 0:
-        return ScoresUpkeep("not-scheduled", landed)
+        return ScoresUpkeep("not-scheduled")
     if last_published is None:
         return ScoresUpkeep("not-landed")
     if (now - last_published).total_seconds() > 2 * interval_seconds:
+        landed = int(last_published.replace(tzinfo=timezone.utc).timestamp())
         return ScoresUpkeep("upkeep-stopped", landed)
-    return ScoresUpkeep("live", landed)
+    return ScoresUpkeep("live")
 
 
 @dataclass(frozen=True)
 class Live:
-    offered: bool
     live: bool
     relay: str | None = None
     # Why an offered part isn't live.
@@ -489,14 +450,15 @@ def evaluate_live(probe: Probe, offer: Offer, scores: ScoresUpkeep) -> Live:
     """Is a probe live, and if not why? Not offered when no offer row answers it."""
     row = offer.answer(probe)
     if row is None:
-        return Live(offered=False, live=False)
+        return Live(live=False)
 
     def no(reason: str, last_landed_at: int | None = None) -> Live:
-        return Live(True, False, row.relay, reason, last_landed_at)
+        return Live(False, row.relay, reason, last_landed_at)
 
     if probe.scope.type == "unchecked":
         return no("unchecked")
     if is_score_kind(probe.kind):
+        # The one guard against claiming a Score Brainstorm doesn't publish.
         if (
             probe.kind != SCORE_KIND
             or probe.scope.type != "metric"
@@ -504,9 +466,8 @@ def evaluate_live(probe: Probe, offer: Offer, scores: ScoresUpkeep) -> Live:
         ):
             return no("not-published-here")
         if scores.status == "live":
-            return Live(True, True, row.relay)
-        stopped = scores.status == "upkeep-stopped"
-        return no(scores.status, scores.last_landed_at if stopped else None)
+            return Live(True, row.relay)
+        return no(scores.status, scores.last_landed_at)
     if is_list_kind(probe.kind):
         # Published only when an admin runs POST /admin/trustedLists.
         return no("not-scheduled")
@@ -522,14 +483,18 @@ def build_should_say(
     duties: dict[Probe, Duty],
     live: dict[Probe, Live],
     offer: Offer,
-) -> list[tuple[str, str]]:
+) -> list[tuple[Key, str]]:
     """The self-entries, `(key, relay)` (ADR 0001 sub-decision 2): deterministic
     and greedy, most specific first. Each of the reader's keys naming the
     Assistant is tried verbatim, then its meets with each offered kind it
     covers, then, for a `30382` meet, one `30382:<metric>` per published metric
     that is a duty under it. A candidate at relay R is valid when every duty it
     would win among the self-entries chosen so far is live at R, and it wins one.
-    Nothing else is copied from the reader's Map (§ 9.2 "No order, no copies")."""
+    Nothing else is copied from the reader's Map (§ 9.2 "No order, no copies").
+
+    Under today's `offer_rows`, only Scores are ever live, so this can list only
+    the five `30382:<metric>` keys. It stays general for when Lists and Concepts
+    become live duties (NosFabrica/brainstorm_server#112)."""
     who = assistant.lower()
     mine = sorted(
         (g.key for g in groups if who in g.providers), key=most_specific_first
@@ -589,7 +554,7 @@ def build_should_say(
                     try_key(parse_key(f"{SCORE_KIND}:{metric}"))
     # Listed in the offer's order; order never counts (§ 9.2).
     chosen.sort(key=lambda c: offer.order_of(c[0]))
-    return [(key.norm, relay) for key, relay in chosen]
+    return chosen
 
 
 @dataclass(frozen=True)
@@ -637,13 +602,8 @@ def _part_line(
         return DutyLine(line_key, "offered", row.relay, reason)
     down = next((live[p] for p in on_duty if not live[p].live), None)
     if down is not None:
-        stopped = down.reason == "upkeep-stopped"
         return DutyLine(
-            line_key,
-            "offered",
-            row.relay,
-            down.reason,
-            down.last_landed_at if stopped else None,
+            line_key, "offered", row.relay, down.reason, down.last_landed_at
         )
     entries: list[tuple[str, str]] = []
     for probe in on_duty:
@@ -663,7 +623,7 @@ def duty_lines(
     duties: dict[Probe, Duty],
     live: dict[Probe, Live],
     offer: Offer,
-    should_say: list[tuple[str, str]],
+    should: list[tuple[Key, str]],
 ) -> list[DutyLine]:
     """The duties lines (ADR 0001 sub-decision 7), flat: for each of the
     reader's keys naming the Assistant, in Map order, a line per offer row that
@@ -672,11 +632,6 @@ def duty_lines(
     specific key naming only others that wins some of it."""
     who = assistant.lower()
     every = list(duties.values())
-    should = [
-        (parsed, relay)
-        for parsed, relay in ((parse_key(key), relay) for key, relay in should_say)
-        if parsed is not None
-    ]
     lines: list[DutyLine] = []
     for group in groups:
         if who not in group.providers:
@@ -725,9 +680,10 @@ def evaluate_self_map(
     probes = build_probes(g.key for g in groups)
     duties = duties_of(groups, assistant, probes)
     live = {probe: evaluate_live(probe, offer, scores) for probe in probes}
-    should_say = build_should_say(groups, assistant, duties, live, offer)
+    should = build_should_say(groups, assistant, duties, live, offer)
     return SelfMapCheck(
-        duty_lines(groups, assistant, duties, live, offer, should_say), should_say
+        duty_lines(groups, assistant, duties, live, offer, should),
+        [(key.norm, relay) for key, relay in should],
     )
 
 
@@ -800,13 +756,14 @@ def same_self_entries(a: list[tuple[str, str]], b: list[tuple[str, str]]) -> boo
     return {(k, relay_key(r)) for k, r in a} == {(k, relay_key(r)) for k, r in b}
 
 
-def self_entry_relays(versions: list[dict[str, Any]], author: str) -> list[str]:
-    """Every relay a self-entry of a version found names, so a new version
-    replaces it there too (§ 9.2 "Finding a self-Map")."""
+def self_entry_relays(events: list[Any], author: str) -> list[str]:
+    """Every relay that the entries naming `author` in `events` give (element 3):
+    a version's self-entries, so a new version replaces it there too (§ 9.2
+    "Finding a self-Map"), or a reader's hints for its Assistant."""
     return [
         relay
-        for version in versions
-        for _, relay in read_self_entries(version, author)
+        for event in events
+        for _, relay in read_self_entries(event, author)
         if RELAY_URL.fullmatch(relay)
     ]
 

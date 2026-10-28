@@ -61,7 +61,7 @@ FIVE = [
 
 A = "a" * 64  # an Assistant, for the pure cases
 B = "b" * 64  # another provider
-LIVE = ScoresUpkeep("live", 1_700_000_000)
+LIVE = ScoresUpkeep("live")
 
 
 @pytest.fixture(autouse=True)
@@ -130,7 +130,7 @@ def test_setup_s_map_with_scores_live_lists_exactly_the_five_score_rows():
 )
 def test_scores_that_are_not_live_are_listed_nowhere(status, last_landed_at):
     """[U6, U8, U7] A self-Map says less rather than more (§ 9.2)."""
-    check = _check(designation_rows(A), ScoresUpkeep(status, 1_700_000_000))
+    check = _check(designation_rows(A), ScoresUpkeep(status, last_landed_at))
 
     assert check.should_say == []
     for line in check.duties[:5]:
