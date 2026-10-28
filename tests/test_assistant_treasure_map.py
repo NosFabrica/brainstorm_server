@@ -24,7 +24,7 @@ from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag, Timestamp
 from app.api import app
 from app.core.config import settings
 from app.core.database import get_db
-from app.services import self_map_service
+from app.services import assistant_publish, self_map_service
 from app.services.duty_menu_build import designation_rows, offer_rows
 from app.services.self_map_build import (
     ScoresUpkeep,
@@ -500,12 +500,14 @@ class World:
             "tags": designation_rows(self.hex),
         }
 
-    async def fetch_latest(self, relay: str, author: str):
-        if author == self.user:
-            assert relay == OUR_RELAY
-            if self.map_unreadable:
-                raise ConnectionError("down")
-            return self.reader_map
+    async def fetch_reader_map(self, relay: str, author: str):
+        assert relay == OUR_RELAY and author == self.user
+        if self.map_unreadable:
+            raise ConnectionError("down")
+        return self.reader_map
+
+    async def fetch_latest(self, relay: str, flt: dict):
+        assert flt["kinds"] == [10040] and flt["authors"] == [self.hex]
         self.read_from.append(relay)
         if relay in self.silent:
             raise TimeoutError()
@@ -562,10 +564,13 @@ def assistant() -> Keys:
 def world(monkeypatch, caller, assistant) -> World:
     w = World(caller.pubkey, assistant)
     w.setup_map()
-    monkeypatch.setattr(self_map_service, "fetch_latest_designation", w.fetch_latest)
-    monkeypatch.setattr(self_map_service, "Client", w.client)
     monkeypatch.setattr(
-        self_map_service,
+        self_map_service, "fetch_latest_designation", w.fetch_reader_map
+    )
+    monkeypatch.setattr(assistant_publish, "fetch_latest", w.fetch_latest)
+    monkeypatch.setattr(assistant_publish, "Client", w.client)
+    monkeypatch.setattr(
+        assistant_publish,
         "get_or_create_brainstorm_observer_nsec_by_pubkey_on_db",
         AsyncMock(side_effect=lambda db, pubkey: (w.row, False)),
     )
@@ -919,10 +924,11 @@ def test_the_report_names_public_addresses_one_line_per_relay(map_client, world)
 
     assert set(report) == {PUBLIC_TA, *OUTBOX, DICTIONARY}
     assert report[PUBLIC_TA]["ok"] is True
+    # The transport's own error is logged, not answered.
     assert report[OUTBOX[1]] == {
         "url": OUTBOX[1],
         "ok": False,
-        "message": "IO error: Connection refused",
+        "message": "couldn't connect",
     }
     assert report[OUTBOX[0]]["message"] == "blocked: rate-limited"
 

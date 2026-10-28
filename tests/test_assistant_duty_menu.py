@@ -84,8 +84,9 @@ class Relays:
     are down, and what each publish was sent to."""
 
     def __init__(self) -> None:
-        self.held: list[Event] = []
+        self.held: list[Event | dict] = []
         self.down: set[str] = set()
+        self.silent: set[str] = set()
         self.refusing: dict[str, str] = {}
         self.added: list[str] = []
         self.read_from: list[str] = []
@@ -114,10 +115,6 @@ class Relays:
                     },
                 )
 
-            async def fetch_events_from(self, urls, _flt, _timeout):
-                relays.read_from.extend(urls)
-                return SimpleNamespace(to_vec=lambda: list(relays.held))
-
             async def send_event_to(self, urls, event):
                 relays.sent.append((list(urls), event))
                 relays.held.append(event)
@@ -133,11 +130,25 @@ class Relays:
 
         return _FakeClient()
 
+    async def fetch_latest(self, relay: str, flt: dict):
+        """The strict reader: what `relay` answers, every relay holding all."""
+        self.read_from.append(relay)
+        if relay in self.silent:
+            raise TimeoutError()
+        found = [e if isinstance(e, dict) else json.loads(e.as_json()) for e in self.held]
+        found = [
+            e
+            for e in found
+            if e["kind"] in flt["kinds"] and e["pubkey"] in flt["authors"]
+        ]
+        return max(found, key=lambda e: e["created_at"], default=None)
+
 
 @pytest.fixture
 def relays(monkeypatch) -> Relays:
     fake = Relays()
-    monkeypatch.setattr("app.services.duty_menu_service.Client", fake.client)
+    monkeypatch.setattr("app.services.assistant_publish.Client", fake.client)
+    monkeypatch.setattr("app.services.assistant_publish.fetch_latest", fake.fetch_latest)
     return fake
 
 
@@ -146,7 +157,7 @@ def menu_client(client, monkeypatch, assistant):
     """The duty-menu routes with the Assistant key read stubbed to `assistant`."""
     row = SimpleNamespace(nsec=assistant.secret_key().to_bech32())
     monkeypatch.setattr(
-        "app.services.duty_menu_service.get_or_create_brainstorm_observer_nsec_by_pubkey_on_db",
+        "app.services.assistant_publish.get_or_create_brainstorm_observer_nsec_by_pubkey_on_db",
         AsyncMock(return_value=(row, False)),
     )
 
@@ -338,10 +349,11 @@ def test_the_report_names_public_addresses_one_line_per_relay(menu_client, relay
     assert report[PUBLIC_TA]["ok"] is True
     assert report[DICTIONARY]["ok"] is True
     assert report[NOUS]["ok"] is True
+    # The transport's own error is logged, not answered.
     assert report["wss://relay.primal.net"] == {
         "url": "wss://relay.primal.net",
         "ok": False,
-        "message": "IO error: Connection refused",
+        "message": "couldn't connect",
     }
     assert report["wss://relay.damus.io"]["message"] == "blocked: rate-limited"
 
@@ -359,6 +371,44 @@ def test_a_relay_spelled_with_its_default_port_is_sent_to(
     assert report[spelled]["ok"] is True
     ((urls, _),) = relays.sent
     assert spelled in urls
+
+
+def test_when_no_relay_answers_the_read_nothing_is_published(menu_client, relays):
+    """An unread earlier version could be dated ahead of now, or name relays
+    the publish would then miss."""
+    relays.silent.update([INTERNAL_TA, DICTIONARY, NOUS, *OUTBOX])
+    r = menu_client.post("/user/assistantDutyMenu")
+    assert r.status_code == 502
+    assert (
+        r.json()["detail"]
+        == "Couldn't read your Assistant's Duty Menu, so nothing was published."
+    )
+    assert relays.sent == []
+
+
+def test_one_relay_answering_the_read_is_enough(menu_client, relays, assistant):
+    ahead = int(time.time()) + 1000
+    relays.held.append(_menu(assistant, ahead, []))
+    relays.silent.update([DICTIONARY, NOUS, *OUTBOX])
+    assert _publish(menu_client)["event"]["created_at"] == ahead + 1
+
+
+def test_an_earlier_menu_that_does_not_verify_is_ignored(
+    menu_client, relays, assistant
+):
+    """Neither dated after nor followed to the relays it names."""
+    ahead = int(time.time()) + 1000
+    forged = dict(
+        json.loads(_menu(assistant, ahead, []).as_json()),
+        tags=[["d", "duty-menu"], ["duty", "30382:rank", "wss://forged.example"]],
+    )
+    relays.held.append(forged)
+
+    event = _publish(menu_client)["event"]
+
+    assert event["created_at"] <= int(time.time())
+    ((urls, _),) = relays.sent
+    assert "wss://forged.example" not in urls
 
 
 def test_a_menu_no_relay_took_is_an_error(menu_client, relays):
