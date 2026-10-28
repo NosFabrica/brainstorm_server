@@ -6,6 +6,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.core.config import settings
 from app.services.designation_service import parse_designated_pubkeys
 from app.services.scheduler_lanes import enqueue_calc_request
@@ -77,7 +79,7 @@ def test_reads_only_our_relay(monkeypatch):
         asked.append(relay)
         return None
 
-    monkeypatch.setattr(designation_service, "_fetch_latest_designation", fake_fetch)
+    monkeypatch.setattr(designation_service, "fetch_latest_designation", fake_fetch)
     assert asyncio.run(designation_service.fetch_designated_pubkeys(OBSERVER)) == []
     assert asked == [settings.nostr_transfer_to_relay]
 
@@ -88,7 +90,7 @@ def test_a_relay_error_means_no_designation(monkeypatch):
     async def boom(relay, observer):
         raise ConnectionError("down")
 
-    monkeypatch.setattr(designation_service, "_fetch_latest_designation", boom)
+    monkeypatch.setattr(designation_service, "fetch_latest_designation", boom)
     assert asyncio.run(designation_service.fetch_designated_pubkeys(OBSERVER)) == []
 
 
@@ -116,7 +118,7 @@ def _fetch_from(handler):
     async def run():
         url, server = await _serve(handler)()
         try:
-            return await designation_service._fetch_latest_designation(url, OBSERVER)
+            return await designation_service.fetch_latest_designation(url, OBSERVER)
         finally:
             server.close()
             await server.wait_closed()
@@ -150,3 +152,17 @@ def test_fetch_returns_none_when_the_relay_has_no_designation():
             pass
 
     assert _fetch_from(relay) is None
+
+
+def test_a_closed_request_is_no_answer():
+    """A refusal never reads as "no designation": the Assistant's Treasure Map
+    reads its own kind 10040 strictly through this reader."""
+
+    async def relay(ws):
+        _, sub_id, _ = json.loads(await ws.recv())
+        await ws.send(json.dumps(["CLOSED", sub_id, "auth-required: sign in first"]))
+        async for _ in ws:
+            pass
+
+    with pytest.raises(RuntimeError, match="auth-required"):
+        _fetch_from(relay)

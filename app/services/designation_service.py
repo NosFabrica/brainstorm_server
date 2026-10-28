@@ -54,9 +54,11 @@ def parse_designated_pubkeys(tags: list[list[str]], observer: str) -> list[str]:
     return out
 
 
-async def _fetch_latest_designation(relay: str, observer: str) -> dict | None:
-    """The latest kind-10040 `relay` holds for `observer`, or None. Raises on
-    transport errors and timeouts.
+async def fetch_latest_designation(relay: str, observer: str) -> dict | None:
+    """The latest kind-10040 `relay` holds for `observer`, or None when it
+    answers with none. Raises on transport errors, timeouts and a `CLOSED`, so a
+    relay that didn't answer never reads as one holding nothing (the Assistant's
+    Treasure Map reads its own kind 10040 strictly through this).
 
     A plain REQ-until-EOSE over one websocket, like `report_relay_service`: the
     nostr_sdk `Client` returns before its socket is open, so an immediate
@@ -84,8 +86,11 @@ async def _fetch_latest_designation(relay: str, observer: str) -> dict | None:
                         "created_at", 0
                     ):
                         latest = event
-                elif msg[0] in ("EOSE", "CLOSED"):
+                elif msg[0] == "EOSE":
                     break
+                elif msg[0] == "CLOSED":
+                    reason = msg[2] if len(msg) > 2 else ""
+                    raise RuntimeError(f"relay closed the request: {reason}")
             try:
                 await ws.send(json.dumps(["CLOSE", sub_id]))
             except Exception:
@@ -104,7 +109,7 @@ async def fetch_designated_pubkeys(observer: str) -> list[str]:
     """
     relay = settings.nostr_transfer_to_relay
     try:
-        event = await _fetch_latest_designation(relay, observer)
+        event = await fetch_latest_designation(relay, observer)
     except Exception as e:
         logger.warning(f"kind-10040 lookup on {relay} failed for {observer}: {e!r}")
         return []

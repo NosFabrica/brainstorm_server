@@ -64,6 +64,7 @@ Per-user state. Pubkey is the PK (one row per user).
 | `graperank_custom_params` | JSONB | the user's CUSTOM params (used only if `graperank_preset == "CUSTOM"`) |
 | `last_published_pubkeys` | bytes (LargeBinary) | concatenated 32-byte hex pubkeys, no separator — see [../repos/CLAUDE.md](../repos/CLAUDE.md) for the safe accessors |
 | `last_published_graperank_request_id` | int FK → `brainstorm_request.private_id` | back-link to the latest publishing job |
+| `treasure_map_on` | bool, default false | the customer's choice for their Assistant's Treasure Map (its own kind 10040): list its live duties, or none. Written only by `POST /user/assistantTreasureMap` |
 
 **Watch out**: the `nsec` *vs* `encrypted_nsec` duality is a migration artefact. New code should write `encrypted_nsec` and ignore `nsec`. The repo helpers handle the fallback for old rows.
 

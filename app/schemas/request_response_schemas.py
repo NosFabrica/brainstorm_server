@@ -11,6 +11,7 @@ from app.schemas.graperank_schemas import (
 from app.schemas.schemas import (
     AdminStats,
     AssistantDutyMenuOffer,
+    AssistantTreasureMapCheck,
     AuthSuccessfulToken,
     BillingPlansData,
     BrainstormPubkeyInstance,
@@ -20,6 +21,7 @@ from app.schemas.schemas import (
     OwnUserData,
     PaginatedUserConnections,
     PublishedAssistantDutyMenu,
+    PublishedAssistantTreasureMap,
     RefreshedSubscriptionView,
     RelayAudit,
     ShortUrlEntity,
@@ -152,6 +154,14 @@ class GetAssistantDutyMenuResponse(SuccessfulResponseDataSchema):
 
 class PublishAssistantDutyMenuResponse(SuccessfulResponseDataSchema):
     data: PublishedAssistantDutyMenu
+
+
+class GetAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
+    data: AssistantTreasureMapCheck
+
+
+class PublishAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
+    data: PublishedAssistantTreasureMap
 
 
 class AdminStatsResponse(SuccessfulResponseDataSchema):

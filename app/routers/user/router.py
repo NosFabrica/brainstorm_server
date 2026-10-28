@@ -14,11 +14,13 @@ from app.routers.user.dependencies import get_verified_cutoffs, resolve_observer
 from app.schemas.request_body_schemas import (
     GetTrustSignalsBody,
     RefreshSubscriptionBody,
+    SetAssistantTreasureMapBody,
     SubmitFollowListBody,
 )
 from app.schemas.request_response_schemas import (
     ErrorResponseSchema,
     GetAssistantDutyMenuResponse,
+    GetAssistantTreasureMapResponse,
     GetOwnLatestGraperankResponse,
     GetOwnUserDataResponse,
     GetSubscriptionResponse,
@@ -31,6 +33,7 @@ from app.schemas.request_response_schemas import (
     PublishAssistantDutyMenuResponse,
     PublishAssistantProfileData,
     PublishAssistantProfileResponse,
+    PublishAssistantTreasureMapResponse,
     RefreshSubscriptionResponse,
     SubmitFollowListResponse,
 )
@@ -44,6 +47,10 @@ from app.services.duty_menu_service import (
 )
 from app.services.manual_quota import enforce_manual_quota
 from app.services.onboarding_service import ingest_follow_list
+from app.services.self_map_service import (
+    publish_assistant_treasure_map,
+    read_assistant_treasure_map,
+)
 from app.services.session_service import revoke_sessions
 from app.services.subscription_view_service import (
     read_refreshed_subscription_view,
@@ -341,6 +348,39 @@ async def publish_assistant_duty_menu_endpoint(
     jwt_data: JWTData = request.state.jwt_data
     published = await publish_assistant_duty_menu(db, jwt_data.nostr_pubkey)
     return PublishAssistantDutyMenuResponse(data=published)
+
+
+# On the authenticated router for the same reason as the Duty Menu's: the UI
+# reads any 200 that isn't a check as "not on this server yet".
+@router.get(
+    path="/assistantTreasureMap",
+    tags=[],
+    dependencies=[],
+    summary="What the user's brainstorm assistant's Treasure Map (its kind 10040) should list now",
+)
+async def get_assistant_treasure_map_endpoint(
+    request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> GetAssistantTreasureMapResponse:
+    jwt_data: JWTData = request.state.jwt_data
+    check = await read_assistant_treasure_map(db, jwt_data.nostr_pubkey)
+    return GetAssistantTreasureMapResponse(data=check)
+
+
+@router.post(
+    path="/assistantTreasureMap",
+    tags=[],
+    dependencies=[],
+    summary="Turn the user's brainstorm assistant's Treasure Map on or off, and publish it",
+)
+async def publish_assistant_treasure_map_endpoint(
+    request: Request,
+    body: SetAssistantTreasureMapBody,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> PublishAssistantTreasureMapResponse:
+    jwt_data: JWTData = request.state.jwt_data
+    published = await publish_assistant_treasure_map(db, jwt_data.nostr_pubkey, body.on)
+    return PublishAssistantTreasureMapResponse(data=published)
 
 
 @public_router.post(

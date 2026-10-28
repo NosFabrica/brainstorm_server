@@ -41,7 +41,7 @@ from app.repos.brainstorm_nsec import (
 )
 from app.schemas.schemas import (
     AssistantDutyMenuOffer,
-    DutyMenuRelayResult,
+    AssistantRelayResult,
     PublishedAssistantDutyMenu,
 )
 from app.services.assistant_profile_service import assistant_relay_list
@@ -82,7 +82,7 @@ async def read_assistant_duty_menu_offer(
     return AssistantDutyMenuOffer(assistant=assistant, rows=offer_rows(assistant))
 
 
-async def _connect(
+async def connect_targets(
     client: Client, targets: list[RelayTarget], failures: dict[str, str]
 ) -> set[str]:
     """Add and connect to `targets`; the `relay_key`s that connected. Each that
@@ -129,7 +129,7 @@ async def _fetch_earlier(
     ]
 
 
-async def _send(
+async def send_event(
     client: Client, event, urls: list[str]
 ) -> tuple[set[str], dict[str, str]]:
     """The `relay_key`s that took the event, and why each other one didn't."""
@@ -149,6 +149,26 @@ async def _send(
     )
 
 
+def relay_report(
+    targets: list[RelayTarget],
+    accepted: set[str],
+    refused: dict[str, str],
+    failures: dict[str, str],
+) -> list[AssistantRelayResult]:
+    """One line per target, by its public address: took it, or why not."""
+    report: list[AssistantRelayResult] = []
+    for target in targets:
+        key = relay_key(target.write_url)
+        if key in accepted:
+            report.append(AssistantRelayResult(url=target.url, ok=True))
+        else:
+            reason = refused.get(key) or failures.get(key) or "not sent"
+            report.append(
+                AssistantRelayResult(url=target.url, ok=False, message=reason)
+            )
+    return report
+
+
 async def publish_assistant_duty_menu(
     db: AsyncDBSession, user_pubkey: str
 ) -> PublishedAssistantDutyMenu:
@@ -163,7 +183,7 @@ async def publish_assistant_duty_menu(
     try:
         # The places known before reading: where to look for earlier versions.
         known = publish_targets(row_relays, outbox, NOUS_MENU_RELAYS)
-        connected = await _connect(client, known, failures)
+        connected = await connect_targets(client, known, failures)
         earlier = await _fetch_earlier(
             client,
             [t.write_url for t in known if relay_key(t.write_url) in connected],
@@ -175,7 +195,7 @@ async def publish_assistant_duty_menu(
         )
         named_before = [t for t in targets if t not in known]
         if named_before:
-            connected |= await _connect(client, named_before, failures)
+            connected |= await connect_targets(client, named_before, failures)
 
         builder = (
             EventBuilder(kind=Kind(DUTY_MENU_KIND), content="")
@@ -204,7 +224,7 @@ async def publish_assistant_duty_menu(
                 ),
             )
 
-        accepted, refused = await _send(
+        accepted, refused = await send_event(
             client,
             event,
             [t.write_url for t in targets if relay_key(t.write_url) in connected],
@@ -212,15 +232,12 @@ async def publish_assistant_duty_menu(
     finally:
         await client.disconnect()
 
-    report: list[DutyMenuRelayResult] = []
-    for target in targets:
-        key = relay_key(target.write_url)
-        if key in accepted:
-            report.append(DutyMenuRelayResult(url=target.url, ok=True))
-        else:
-            reason = refused.get(key) or failures.get(key) or "not sent"
-            report.append(DutyMenuRelayResult(url=target.url, ok=False, message=reason))
-            logger.warning(f"duty menu for {assistant} not on {target.url}: {reason}")
+    report = relay_report(targets, accepted, refused, failures)
+    for line in report:
+        if not line.ok:
+            logger.warning(
+                f"duty menu for {assistant} not on {line.url}: {line.message}"
+            )
 
     if not accepted:
         raise HTTPException(

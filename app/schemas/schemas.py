@@ -800,7 +800,9 @@ class AssistantDutyMenuOffer(BaseModel):
     rows: list[list[str]]
 
 
-class DutyMenuRelayResult(BaseModel):
+class AssistantRelayResult(BaseModel):
+    """How one relay took an event the Assistant signed."""
+
     url: str
     ok: bool
     message: str | None = None
@@ -811,4 +813,53 @@ class PublishedAssistantDutyMenu(BaseModel):
 
     # The signed kind-39999 event, as relays received it.
     event: dict[str, Any]
-    relays: list[DutyMenuRelayResult]
+    relays: list[AssistantRelayResult]
+
+
+# Your Assistant's Treasure Map. camelCase, as Brainstorm-UI's
+# `lib/assistantTreasureMap.ts` reads it.
+
+
+class TreasureMapDutyLine(BaseModel):
+    """One part of one of the caller's Treasure Map entries naming their Assistant."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    key: str
+    status: Literal["live", "offered", "not-offered", "elsewhere"]
+    # Where the offer publishes it; None when it isn't offered here.
+    relay: str | None
+    # Why an offered part isn't live.
+    reason: str | None
+    # `upkeep-stopped`'s last publish, in seconds.
+    last_landed_at: int | None = Field(serialization_alias="lastLandedAt")
+    # `[key, relay]`, the `shouldSay` entries that list this part: empty unless it's live.
+    entries: list[list[str]]
+
+
+class AssistantTreasureMapCheck(BaseModel):
+    """What the caller's Assistant's Treasure Map should list now, and why
+    (`GET /user/assistantTreasureMap`)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    assistant: str
+    # The remembered choice: list the live duties, or none.
+    on: bool
+    duties: list[TreasureMapDutyLine]
+    # `[key, relay]`, the self-entries it should carry, whether `on` or not.
+    should_say: list[list[str]] = Field(serialization_alias="shouldSay")
+    # Where a version is sent, and where to look for one.
+    relays: list[str]
+
+
+class PublishedAssistantTreasureMap(BaseModel):
+    """What `POST /user/assistantTreasureMap` did: the choice, and the version
+    signed, if one was, with how each relay took it."""
+
+    on: bool
+    # False when nothing would change, so nothing was signed.
+    published: bool
+    # The signed kind-10040 event, as relays received it.
+    event: dict[str, Any] | None
+    relays: list[AssistantRelayResult]
