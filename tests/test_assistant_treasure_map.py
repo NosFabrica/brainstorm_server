@@ -477,6 +477,9 @@ class World:
         self.refusing: dict[str, str] = {}
         self.sent: list[tuple[list[str], dict]] = []
         self.choices: list[bool] = []
+        # What happened, in order: "sent", "saved", "committed".
+        self.log: list[str] = []
+        self.db = MagicMock(commit=AsyncMock(side_effect=lambda: self.log.append("committed")))
         self.row = SimpleNamespace(
             pubkey=user,
             nsec=assistant.secret_key().to_bech32(),
@@ -539,6 +542,7 @@ class World:
             async def send_event_to(self, urls, event):
                 signed = json.loads(event.as_json())
                 world.sent.append((list(urls), signed))
+                world.log.append("sent")
                 await asyncio.sleep(0)
                 for url in urls:
                     if url not in world.refusing:
@@ -587,8 +591,9 @@ def world(monkeypatch, caller, assistant) -> World:
     )
 
     async def remember(db, pubkey, on):
-        assert pubkey == w.user
+        assert pubkey == w.user and db is w.db
         w.choices.append(on)
+        w.log.append("saved")
 
     monkeypatch.setattr(
         self_map_service, "set_treasure_map_on_by_pubkey_on_db", remember
@@ -599,7 +604,7 @@ def world(monkeypatch, caller, assistant) -> World:
 @pytest.fixture
 def map_client(client, world):
     async def _fake_db():
-        yield MagicMock()
+        yield world.db
 
     app.dependency_overrides[get_db] = _fake_db
     yield client
@@ -897,6 +902,26 @@ def test_turn_off_lists_none_of_its_duties(map_client, world):
     assert world.choices == [False]
 
 
+def test_the_choice_is_saved_after_the_publish_and_committed_before_the_answer(
+    map_client, world
+):
+    """Saved before the publish, the caller's row stayed locked through the
+    sign, connect and send; and `get_db` commits only after the response."""
+    _post(map_client, True)
+    assert world.log == ["sent", "saved", "committed"]
+
+    world.log.clear()
+    _post(map_client, True)
+    assert world.log == ["saved", "committed"]
+
+
+def test_a_press_that_errors_saves_nothing(map_client, world):
+    world.down.update([INTERNAL_TA, *OUTBOX])
+    r = map_client.post("/user/assistantTreasureMap", json={"on": True})
+    assert r.status_code == 502
+    assert world.log == [] and world.choices == []
+
+
 def test_turn_on_with_nothing_live_takes_the_stale_entries_off(map_client, world):
     """[E5] Turn on publishes what the Map should say when that differs, and
     that can be nothing."""
@@ -1044,10 +1069,10 @@ def test_a_second_press_while_one_is_under_way_is_refused(world):
     async def both():
         return await asyncio.gather(
             self_map_service.publish_assistant_treasure_map(
-                MagicMock(), world.user, True
+                world.db, world.user, True
             ),
             self_map_service.publish_assistant_treasure_map(
-                MagicMock(), world.user, False
+                world.db, world.user, False
             ),
             return_exceptions=True,
         )
@@ -1061,7 +1086,7 @@ def test_a_second_press_while_one_is_under_way_is_refused(world):
     assert self_map_service._pressing == set()
 
     after = asyncio.run(
-        self_map_service.publish_assistant_treasure_map(MagicMock(), world.user, False)
+        self_map_service.publish_assistant_treasure_map(world.db, world.user, False)
     )
     assert after.published and _self_entries(after.event, world.hex) == set()
 

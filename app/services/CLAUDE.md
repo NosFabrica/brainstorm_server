@@ -99,6 +99,12 @@ reasons, both structural rather than stylistic:
 written through to the Redis cache, and that write must follow the commit — cached
 before it, a rolled-back bump would leave the cache ahead of the database.
 
+**Also the Treasure Map press** (`self_map_service._save_choice`), for the webhook's
+reason: its 200 reports the customer's choice as saved, so the choice is written
+only once the publish has succeeded and is committed before the answer. Left to
+`get_db`, which commits only after the response is sent, a failed commit would follow
+a 200.
+
 Don't extend this to new subsystems without the same kind of reason.
 
 **Retrying a write that may violate a unique constraint** goes inside a

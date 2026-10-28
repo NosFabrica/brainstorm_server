@@ -18,9 +18,12 @@ outbox, the relays its self-entries name, and every relay an earlier version's
 self-entries named, the TA relay at its internal URL, as scores are. The
 caller's hints for the Assistant are in the GET's `relays`, for readers, and a
 press never connects to them: the caller writes their own Map, so a hint can
-name any host. A press that answers an error changes nothing, the choice
-included: it is saved with the request's transaction. Signing and sending are
-`assistant_publish`'s, shared with the Duty Menu.
+name any host. Signing and sending are `assistant_publish`'s, shared with the
+Duty Menu.
+
+The choice (`brainstorm_nsec.treasure_map_on`) is saved only by a press that
+succeeds, after its publish, and committed before the answer reports it. A
+press that answers an error writes nothing.
 
 The UI waits 30 s. A press takes about 28 s at worst: the caller's Map and the
 versions are read in up to 6 s each, the connect takes up to 4 s and the send
@@ -198,6 +201,14 @@ def _missing(
     ]
 
 
+async def _save_choice(db: AsyncDBSession, user_pubkey: str, on: bool) -> None:
+    """Remember the choice, committed here: `get_db` commits only after the
+    response is sent, which would answer 200 before the choice was durable and
+    keep the caller's row locked while it went out."""
+    await set_treasure_map_on_by_pubkey_on_db(db, user_pubkey, on)
+    await db.commit()
+
+
 async def read_assistant_treasure_map(
     db: AsyncDBSession, user_pubkey: str
 ) -> AssistantTreasureMapCheck:
@@ -279,10 +290,10 @@ async def publish_assistant_treasure_map(
         versions = [e for e in held.values() if e is not None]
         latest = newest(versions)
 
-        await set_treasure_map_on_by_pubkey_on_db(db, user_pubkey, on)
         if nothing_to_change(latest, who, target):
             missing = _missing(read, held, latest) if latest is not None else []
             if not missing:
+                await _save_choice(db, user_pubkey, on)
                 return PublishedAssistantTreasureMap(
                     on=on, published=False, event=None, relays=[]
                 )
@@ -291,6 +302,7 @@ async def publish_assistant_treasure_map(
             report = await send_to(
                 Event.from_json(json.dumps(latest)), missing, MAP, who
             )
+            await _save_choice(db, user_pubkey, on)
             return PublishedAssistantTreasureMap(
                 on=on, published=True, event=latest, relays=report
             )
@@ -305,7 +317,8 @@ async def publish_assistant_treasure_map(
             MAP,
         )
         targets = publish_targets(relays, self_entry_relays(versions, who))
-        report = await send_to(event, targets, MAP, who)
+        report = reached_some(await send_to(event, targets, MAP, who), MAP)
+        await _save_choice(db, user_pubkey, on)
     return PublishedAssistantTreasureMap(
-        on=on, published=True, event=signed, relays=reached_some(report, MAP)
+        on=on, published=True, event=signed, relays=report
     )
