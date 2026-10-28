@@ -716,21 +716,6 @@ def newest(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     )
 
 
-def owns_tag(tag: Any, author: str) -> bool:
-    """Is this tag one of the author's self-entries, as the writer owns them (ADR
-    0002 sub-decision 4)? Element 1 has a kind slot, so spellings readers ignore
-    and unchecked keys count, and element 2 is the author, in any case."""
-    if not isinstance(tag, list) or len(tag) < 2 or not isinstance(tag[0], str):
-        return False
-    return bool(KIND_SLOT.fullmatch(tag[0].split(":", 1)[0])) and (
-        isinstance(tag[1], str) and tag[1].lower() == author.lower()
-    )
-
-
-def _named(tag: Any, name: str) -> bool:
-    return isinstance(tag, list) and len(tag) > 0 and tag[0] == name
-
-
 def read_self_entries(event: Any, author: str) -> list[tuple[str, str]]:
     """A version's self-entries, `(key, relay)`: its tags whose key parses and
     whose element 2 is the author, each once. The relay is element 3 as written
@@ -771,83 +756,16 @@ def self_entry_relays(events: list[Any], author: str) -> list[str]:
 def nothing_to_change(
     latest: dict[str, Any] | None, author: str, target: list[tuple[str, str]]
 ) -> bool:
-    """Would a new version change nothing? Its self-entries already are the
-    target, and, for a target that isn't empty, no `expiration` and no other tag
-    the writer owns (a duplicate, or a spelling readers ignore) sits beside them."""
-    found = read_self_entries(latest, author)
-    if not same_self_entries(found, target):
-        return False
-    if not target:
-        return True
-    tags = _tags_of(latest)
-    if any(_named(tag, "expiration") for tag in tags):
-        return False
-    return sum(owns_tag(tag, author) for tag in tags) == len(found)
+    """Would a new version change nothing? Its self-entries already are the target."""
+    return same_self_entries(read_self_entries(latest, author), target)
 
 
-def kept_tags(event: Any, author: str, drop_expiration: bool = False) -> list[Any]:
-    """Every tag of `event` the writer doesn't own, in order and as written,
-    except its `client` tag, which the server stamps anew; with
-    `drop_expiration`, its `expiration` tags go too."""
-    return [
-        tag
-        for tag in _tags_of(event)
-        if not owns_tag(tag, author)
-        and not _named(tag, "client")
-        and not (drop_expiration and _named(tag, "expiration"))
-    ]
-
-
-def build_self_map_tags(
-    latest: dict[str, Any] | None, author: str, entries: list[tuple[str, str]]
-) -> list[Any]:
-    """The next version's tags, before the server's `client` tag (ADR 0002
-    sub-decision 4): the newest version's kept tags, with the new self-entries
-    `[key, author, relay]` as one block where its first owned tag stood, else
-    after the last. A version that carries a self-entry carries no `expiration`
-    (§ 9.2 "No expiration")."""
+def self_map_tags(author: str, entries: list[tuple[str, str]]) -> list[list[str]]:
+    """A version's tags, before the server's `client` tag: the self-entries,
+    `[key, author, relay]`, and nothing else. Only this server signs the
+    Assistant's kind 10040 (no route exports its key), so a version holds no
+    other tag to keep, and its content is empty. Should the key ever be
+    exported, Tapestry's merge (ADR `assistant-self-map/0002` sub-decision 4)
+    comes back: every other tag and the content kept as found."""
     who = author.lower()
-    kept: list[Any] = []
-    at = -1
-    for tag in _tags_of(latest):
-        if owns_tag(tag, who):
-            if at < 0:
-                at = len(kept)
-            continue
-        if _named(tag, "client") or (entries and _named(tag, "expiration")):
-            continue
-        kept.append(tag)
-    if at < 0:
-        at = len(kept)
-    block = [[key, who, relay] for key, relay in entries]
-    return [*kept[:at], *block, *kept[at:]]
-
-
-def content_of(event: Any) -> str:
-    """A version's content, kept unchanged in the next; `""` with no version."""
-    content = event.get("content") if isinstance(event, dict) else None
-    return content if isinstance(content, str) else ""
-
-
-def is_next_version(
-    signed: Any,
-    latest: dict[str, Any] | None,
-    author: str,
-    target: list[tuple[str, str]],
-) -> bool:
-    """Is `signed` the next version built from `latest`, so nothing else is lost
-    (Tapestry's preservation check)? The author's kind 10040 with `latest`'s
-    content, the target as its self-entries, each once, and every other tag of
-    `latest` as written and in order, bar the `client` tag and, beside a
-    self-entry, an `expiration`."""
-    if not isinstance(signed, dict):
-        return False
-    return (
-        signed.get("kind") == SELF_MAP_KIND
-        and str(signed.get("pubkey") or "").lower() == author.lower()
-        and signed.get("content") == content_of(latest)
-        and same_self_entries(read_self_entries(signed, author), target)
-        and sum(owns_tag(tag, author) for tag in _tags_of(signed)) == len(target)
-        and kept_tags(signed, author)
-        == kept_tags(latest, author, drop_expiration=bool(target))
-    )
+    return [[key, who, relay] for key, relay in entries]

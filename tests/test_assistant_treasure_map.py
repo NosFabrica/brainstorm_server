@@ -28,20 +28,17 @@ from app.services import self_map_service
 from app.services.duty_menu_build import designation_rows, offer_rows
 from app.services.self_map_build import (
     ScoresUpkeep,
-    build_self_map_tags,
     compare_keys,
     evaluate_self_map,
-    is_next_version,
-    kept_tags,
     most_specific_first,
     newest,
     nothing_to_change,
-    owns_tag,
     parse_key,
     read_self_entries,
     same_self_entries,
     scores_upkeep,
     self_map_relays,
+    self_map_tags,
 )
 from app.utils.datetimes import utc_now
 
@@ -380,62 +377,17 @@ def test_same_self_entries_is_a_set_of_key_and_relay():
     assert same_self_entries([], [])
 
 
-def test_owns_tag_and_kept_tags():
-    """[M2, M3] The writer owns every key-shaped tag naming the author, in any
-    case; it keeps every other tag as written, bar its `client` tag."""
-    tags = [
-        ["30382:rank", A.upper(), PUBLIC_TA],
-        ["39998:", A, ""],
-        ["30382:tag", A],
-        ["p", A],
-        ["30382:rank", B, PUBLIC_TA, "extra"],
-        ["expiration", "1"],
-        ["client", "Brainstorm"],
-    ]
-    assert [owns_tag(t, A) for t in tags] == [
-        True,
-        True,
-        True,
-        False,
-        False,
-        False,
-        False,
-    ]
-    assert kept_tags({"tags": tags}, A) == [tags[3], tags[4], tags[5]]
-    assert kept_tags({"tags": tags}, A, drop_expiration=True) == [tags[3], tags[4]]
-
-
-def test_the_next_version_s_tags():
-    """[M4, M5] The new self-entries as one block where the first owned tag
-    stood; no `expiration` beside a self-entry; with none, it stays."""
-    latest = {
-        "tags": [
-            ["t", "first"],
-            ["30392", A, PUBLIC_TA],
-            ["expiration", "1"],
-            ["30382:rank", A, PUBLIC_TA],
-            ["t", "last"],
-            ["client", "Brainstorm"],
-        ]
-    }
-    on = build_self_map_tags(
-        latest, A, [("30382:rank", PUBLIC_TA), ("30382:hops", PUBLIC_TA)]
-    )
-    assert on == [
-        ["t", "first"],
-        ["30382:rank", A, PUBLIC_TA],
-        ["30382:hops", A, PUBLIC_TA],
-        ["t", "last"],
-    ]
-    off = build_self_map_tags(latest, A, [])
-    assert off == [["t", "first"], ["expiration", "1"], ["t", "last"]]
-    assert build_self_map_tags(None, A, [("30382:rank", PUBLIC_TA)]) == [
+def test_a_version_s_tags_are_its_self_entries_alone():
+    """Only this server signs the Assistant's kind 10040, so there is nothing
+    else to keep."""
+    assert self_map_tags(A.upper(), [("30382:rank", PUBLIC_TA)]) == [
         ["30382:rank", A, PUBLIC_TA]
     ]
+    assert self_map_tags(A, []) == []
 
 
 def test_nothing_to_change():
-    """[E3, E11–E15] The same self-entries in any order, and nothing stale beside them."""
+    """[E3] The same self-entries, in any order."""
     target = [("30382:rank", PUBLIC_TA), ("30382:hops", PUBLIC_TA)]
     same = {"tags": [["30382:hops", A, PUBLIC_TA], ["30382:rank", A, PUBLIC_TA]]}
 
@@ -443,13 +395,6 @@ def test_nothing_to_change():
     assert nothing_to_change(None, A, [])
     assert not nothing_to_change(None, A, target)
     assert not nothing_to_change(same, A, [])
-    assert not nothing_to_change(
-        {"tags": same["tags"] + [["expiration", "1"]]}, A, target
-    )
-    assert not nothing_to_change(
-        {"tags": same["tags"] + [["39998:", A, ""]]}, A, target
-    )
-    assert not nothing_to_change({"tags": same["tags"] + same["tags"][:1]}, A, target)
     # Off, with only a spelling readers ignore: it claims nothing.
     assert nothing_to_change({"tags": [["39998:", A, ""]]}, A, [])
 
@@ -485,29 +430,6 @@ def test_newest_is_nip_01_s():
     ]
     assert newest(events)["id"] == "a"
     assert newest([]) is None
-
-
-def test_the_preservation_check_refuses_anything_but_the_next_version():
-    """[E10]"""
-    latest = {"tags": [["t", "kept"], ["30382:rank", A, PUBLIC_TA]], "content": "hi"}
-    target = [("30382:rank", PUBLIC_TA)]
-    good = {
-        "kind": 10040,
-        "pubkey": A,
-        "content": "hi",
-        "tags": [["t", "kept"], ["30382:rank", A, PUBLIC_TA], ["client", "Brainstorm"]],
-    }
-
-    assert is_next_version(good, latest, A, target)
-    assert not is_next_version(dict(good, content=""), latest, A, target)
-    assert not is_next_version(dict(good, tags=good["tags"][1:]), latest, A, target)
-    assert not is_next_version(
-        dict(good, tags=[*good["tags"], ["30382:hops", A, PUBLIC_TA]]),
-        latest,
-        A,
-        target,
-    )
-    assert not is_next_version(dict(good, pubkey=B), latest, A, target)
 
 
 # --- The routes ----------------------------------------------------------------
@@ -823,18 +745,15 @@ def test_turn_on_publishes_what_the_get_says_signed_by_the_assistant(map_client,
     assert world.choices == [True]
 
 
-def test_turn_on_over_a_version_keeps_its_other_tags_and_content(map_client, world):
-    """[E1, E2] Only the self-entries change: a stale one and a spelling readers
-    ignore go, the `expiration` beside them goes, the rest stays as written."""
+def test_a_version_is_the_self_entries_and_the_client_tag(map_client, world):
+    """Only this server signs the Assistant's kind 10040, so a press keeps
+    nothing of the version it replaces: not a stale self-entry, not a tag a
+    version could carry, not its content."""
     found = _version(
         world.assistant,
         [
-            ["p", world.hex],
             ["30392", world.hex, PUBLIC_TA],
-            ["39998:", world.hex, ""],
-            ["30382:rank", B, "wss://b.example", "note"],
             ["expiration", "4000000000"],
-            ["client", "Brainstorm"],
             ["t", "x"],
         ],
         created_at=1_700_000_000,
@@ -844,14 +763,10 @@ def test_turn_on_over_a_version_keeps_its_other_tags_and_content(map_client, wor
 
     event = _post(map_client, True)["event"]
 
-    assert event["content"] == "hello"
+    assert event["content"] == ""
     assert event["created_at"] > found["created_at"]
-    tags = event["tags"]
-    assert tags[0] == ["p", world.hex]
-    assert {tuple(t) for t in tags[1:6]} == {(k, world.hex, PUBLIC_TA) for k in FIVE}
-    assert tags[6:] == [
-        ["30382:rank", B, "wss://b.example", "note"],
-        ["t", "x"],
+    assert event["tags"] == [
+        *([key, world.hex, PUBLIC_TA] for key in FIVE),
         ["client", "Brainstorm"],
     ]
 
@@ -864,29 +779,31 @@ def test_a_new_version_is_dated_after_the_newest_found(map_client, world):
     assert _post(map_client, True)["event"]["created_at"] == ahead + 1
 
 
-def test_the_newest_version_across_relays_is_the_one_built_on(map_client, world):
-    """[R5]"""
-    world.held[INTERNAL_TA] = [
-        _version(world.assistant, [["t", "older"]], 1_700_000_000)
-    ]
-    world.held[OUTBOX[1]] = [_version(world.assistant, [["t", "newer"]], 1_700_000_100)]
+def test_the_newest_version_across_relays_is_the_one_compared(map_client, world):
+    """[R5] An older version that already says it all is not the newest."""
+    says_it_all = [[key, world.hex, PUBLIC_TA] for key in FIVE]
+    world.held[INTERNAL_TA] = [_version(world.assistant, says_it_all, 1_700_000_000)]
+    world.held[OUTBOX[1]] = [_version(world.assistant, [], 1_700_000_100)]
 
-    tags = _post(map_client, True)["event"]["tags"]
-    assert ["t", "newer"] in tags and ["t", "older"] not in tags
+    published = _post(map_client, True)
+    assert published["published"] is True
+    assert published["event"]["created_at"] > 1_700_000_100
 
 
-def test_a_version_that_does_not_verify_is_never_built_on(map_client, world):
-    """[R6] The other tags of what a press builds on are signed as the Assistant's."""
-    good = _version(world.assistant, [["t", "good"]], 1_700_000_000)
+def test_a_version_that_does_not_verify_is_never_the_newest(map_client, world):
+    """[R6] Nor is it dated after, or followed to the relays it names."""
+    says_it_all = [[key, world.hex, PUBLIC_TA] for key in FIVE]
+    good = _version(world.assistant, says_it_all, 1_700_000_000)
     forged = dict(
-        _version(world.assistant, [["t", "good"]], 1_700_000_100),
-        tags=[["t", "forged"]],
+        _version(world.assistant, [], 1_700_000_100),
+        tags=[["30382:rank", world.hex, "wss://forged.example"]],
     )
     world.held[INTERNAL_TA] = [good]
     world.held[OUTBOX[0]] = [forged]
 
-    tags = _post(map_client, True)["event"]["tags"]
-    assert ["t", "good"] in tags and ["t", "forged"] not in tags
+    published = _post(map_client, True)
+    assert published["published"] is False
+    assert all("wss://forged.example" not in urls for urls, _ in world.sent)
 
 
 def test_nothing_to_change_publishes_nothing_and_remembers_the_choice(
@@ -905,24 +822,17 @@ def test_nothing_to_change_publishes_nothing_and_remembers_the_choice(
     assert _post(map_client, False)["published"] is False
 
 
-def test_turn_off_lists_none_of_its_duties_and_keeps_everything_else(map_client, world):
-    """[E6, E8] The `expiration` stays: no self-entry sits beside it."""
-    tags = [[k, world.hex, PUBLIC_TA] for k in FIVE] + [
-        ["expiration", "4000000000"],
-        ["t", "x"],
-    ]
-    world.held[INTERNAL_TA] = [_version(world.assistant, tags, 1_700_000_000, "kept")]
+def test_turn_off_lists_none_of_its_duties(map_client, world):
+    """[E6]"""
+    tags = [[k, world.hex, PUBLIC_TA] for k in FIVE]
+    world.held[INTERNAL_TA] = [_version(world.assistant, tags, 1_700_000_000)]
 
     published = _post(map_client, False)
     event = published["event"]
 
     assert published["on"] is False and published["published"] is True
-    assert event["tags"] == [
-        ["expiration", "4000000000"],
-        ["t", "x"],
-        ["client", "Brainstorm"],
-    ]
-    assert event["content"] == "kept"
+    assert event["tags"] == [["client", "Brainstorm"]]
+    assert event["content"] == ""
     assert world.choices == [False]
 
 
@@ -938,7 +848,8 @@ def test_turn_on_with_nothing_live_takes_the_stale_entries_off(map_client, world
 
 
 def test_when_no_relay_answers_nothing_is_published_or_remembered(map_client, world):
-    """[R3] Building on nothing could drop what a version holds."""
+    """[R3] An unread version could be dated ahead of now, or name relays the
+    press would then miss."""
     world.silent.update([INTERNAL_TA, *OUTBOX, DICTIONARY])
 
     r = map_client.post("/user/assistantTreasureMap", json={"on": True})

@@ -10,9 +10,10 @@ what is live changes, the UI shows the Map as out of date and the customer
 presses Update now. Spec: Brainstorm-UI `docs/assistant/TREASURE-MAP-ASK.md`;
 the § numbers are Tapestry's `protocols/drafts/treasure-maps.md`.
 
-A press reads the newest version strictly and replaces only its self-entries:
-every other tag and the content stay as found. It goes where § 9.2 "Finding a
-self-Map" says: the GET's `relays` (the Assistant's outbox, the relays its
+A press reads the newest version strictly and publishes the self-entries the
+GET says, with the `client` tag and empty content: only this server signs the
+Assistant's kind 10040, so a version holds nothing else to keep. It goes where
+§ 9.2 "Finding a self-Map" says: the GET's `relays` (the Assistant's outbox, the relays its
 self-entries name, the caller's hints for it), and every relay an earlier
 version's self-entries named, written at the internal TA relay for its public
 URL, as scores are. A press that answers an error changes nothing, the choice
@@ -67,15 +68,15 @@ from app.services.self_map_build import (
     SELF_MAP_KIND,
     ScoresUpkeep,
     SelfMapCheck,
-    build_self_map_tags,
-    content_of,
     evaluate_self_map,
-    is_next_version,
     newest,
     nothing_to_change,
+    read_self_entries,
+    same_self_entries,
     scores_upkeep,
     self_entry_relays,
     self_map_relays,
+    self_map_tags,
 )
 from app.utils.client_tag import CLIENT_TAG, client_tag
 from app.utils.datetimes import as_naive_utc, utc_now
@@ -196,8 +197,8 @@ async def read_assistant_treasure_map(
 
 
 def _is_own_version(event: Any, assistant: str) -> bool:
-    """The Assistant's own kind 10040, validly signed: a press signs the other
-    tags of what it builds on as the Assistant's."""
+    """The Assistant's own kind 10040, validly signed: a press dates its version
+    after it, compares against it and sends where its self-entries point."""
     if (
         not isinstance(event, dict)
         or event.get("kind") != SELF_MAP_KIND
@@ -212,8 +213,8 @@ def _is_own_version(event: Any, assistant: str) -> bool:
 
 async def _read_versions(relays: list[str], assistant: str) -> list[dict[str, Any]]:
     """Every version of the Assistant's kind 10040 the relays answer with.
-    Strict: when no relay answers, nothing is published, since building on
-    nothing could drop what a version holds."""
+    Strict: when no relay answers, nothing is published, since a version that
+    went unread could be dated ahead of now or name relays the press would miss."""
     targets = publish_targets(relays)
     answers = await asyncio.gather(
         *(fetch_latest_designation(t.write_url, assistant) for t in targets),
@@ -241,37 +242,31 @@ async def _read_versions(relays: list[str], assistant: str) -> list[dict[str, An
 def _sign(
     keys: Keys,
     assistant: str,
-    latest: dict[str, Any] | None,
     target: list[tuple[str, str]],
     versions: list[dict[str, Any]],
 ) -> tuple[Event, dict[str, Any]]:
     """The next version, signed and checked before anything is sent."""
-    tags = build_self_map_tags(latest, assistant, target)
+    tags = self_map_tags(assistant, target)
     try:
         event = (
-            EventBuilder(kind=Kind(SELF_MAP_KIND), content=content_of(latest))
+            EventBuilder(kind=Kind(SELF_MAP_KIND), content="")
             .tags([Tag.parse(t) for t in tags] + [client_tag()])
             .custom_created_at(
                 Timestamp.from_secs(menu_created_at(int(time.time()), versions))
             )
-            # nostr-sdk drops a `p` naming the signer unless told otherwise, and
-            # a tag kept from the version found may be one.
-            .allow_self_tagging()
             .sign_with_keys(keys)
         )
         signed = json.loads(event.as_json())
         ok = (
             event.verify()
             and signed.get("tags") == [*tags, CLIENT_TAG]
-            and is_next_version(signed, latest, assistant, target)
+            and same_self_entries(read_self_entries(signed, assistant), target)
         )
     except Exception as e:
         logger.error(f"treasure map for {assistant} could not be signed: {e!r}")
         ok = False
     if not ok:
-        logger.error(
-            f"treasure map for {assistant} failed its own check, over {latest}"
-        )
+        logger.error(f"treasure map for {assistant} failed its own check")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
@@ -315,7 +310,7 @@ async def publish_assistant_treasure_map(
                 on=on, published=False, event=None, relays=[]
             )
 
-        event, signed = _sign(keys, assistant, latest, target, versions)
+        event, signed = _sign(keys, assistant, target, versions)
         targets = publish_targets(relays, self_entry_relays(versions, assistant))
         client = Client()
         failures: dict[str, str] = {}
