@@ -210,12 +210,14 @@ def _writer_relays(check: SelfMapCheck) -> list[str]:
 def _missing(
     targets: list[RelayTarget], held: dict[str, dict | None], latest: dict[str, Any]
 ) -> list[RelayTarget]:
-    """The targets read that don't hold `latest`: no answer, none, or another
-    version."""
+    """The targets that answered the read without `latest`: with none, or with
+    another version. One that didn't answer is left alone: it is likely down,
+    and would otherwise be sent to, and reported, on every press."""
     return [
         t
         for t in targets
-        if (held.get(relay_key(t.write_url)) or {}).get("id") != latest.get("id")
+        if relay_key(t.write_url) in held
+        and (held[relay_key(t.write_url)] or {}).get("id") != latest.get("id")
     ]
 
 

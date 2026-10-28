@@ -223,8 +223,9 @@ press never connects to them.
 
 **When nothing would change, a relay that missed the newest version gets it.** The read keeps each relay's answer.
 A press whose target is already the newest version's self-entries sends that version, already signed and unchanged,
-to every relay it read that answered nothing, none, or another version. It answers `published: true` with that event
-and those relays' report. So the press after one whose TA relay was down repairs it; as first built, every later
+to every relay that answered the read without it: with none, or with another version. It answers `published: true`
+with that event and those relays' report. A relay that didn't answer is left alone: it is likely down, and would
+otherwise be sent to, and reported, on every press. So the press after one whose TA relay was down repairs it; as first built, every later
 press answered "nothing changed". Only when every relay holds it is the answer `published: false`.
 
 Signing and sending are `assistant_publish`'s, shared with the Duty Menu. Tapestry left that sharing for later (its
@@ -284,9 +285,9 @@ which no version this server signs carries, so the two agree on every version th
   - 500 when the signed event fails its own check.
 - **`reason` uses only the words the UI has:** `not-landed`, `not-scheduled`, `upkeep-stopped`,
   `not-published-here`, `nothing-to-publish`, `unchecked`.
-- **Nothing to change** answers `{on, published: false, event: null, relays: []}` when every relay read holds the
-  newest version. When one doesn't, the press sends it there and answers `{on, published: true, event, relays}`,
-  with that version and those relays (D4).
+- **Nothing to change** answers `{on, published: false, event: null, relays: []}` when every relay that answered the
+  read holds the newest version. When one doesn't, the press sends it there and answers
+  `{on, published: true, event, relays}`, with that version and those relays (D4).
 - **A relay that couldn't be reached** is reported as `couldn't connect`. The transport's own error is logged, not
   answered: it can describe a host the caller can't see.
 

@@ -925,6 +925,17 @@ def test_nothing_to_change_still_sends_the_version_where_it_is_missing(
     assert _post(map_client, True)["published"] is False
 
 
+def test_a_relay_that_does_not_answer_is_not_sent_the_version_again(map_client, world):
+    """It is likely down: sent to on every press, it would be reported on every
+    press that has nothing to change."""
+    _post(map_client, True)
+    world.held.pop(OUTBOX[1])
+    world.silent.add(OUTBOX[1])
+
+    assert _post(map_client, True)["published"] is False
+    assert len(world.sent) == 1
+
+
 def test_turn_off_lists_none_of_its_duties(map_client, world):
     """[E6]"""
     tags = [[k, world.hex, PUBLIC_TA] for k in FIVE]
