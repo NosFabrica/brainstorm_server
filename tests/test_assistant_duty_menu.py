@@ -7,14 +7,16 @@ the service's import site; signing is real, with a generated Assistant key.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from fastapi.testclient import TestClient
-from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag, Timestamp
+from nostr_sdk import Client, Event, EventBuilder, Keys, Kind, Tag, Timestamp
 
 from app.api import app
 from app.core.config import settings
@@ -26,6 +28,8 @@ from app.services.duty_menu_build import (
     is_duty_menu,
     menu_created_at,
     publish_targets,
+    relay_key,
+    write_url,
 )
 
 PUBLIC_TA = "wss://scores.example"
@@ -63,6 +67,16 @@ def relay_settings(monkeypatch):
     )
 
 
+def _sdk(url: str) -> str:
+    """A relay as nostr-sdk reports it: the scheme and host lowercased, a default
+    port dropped, the path as given."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if parts.port and parts.port != {"ws": 80, "wss": 443}[parts.scheme.lower()]:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme.lower(), host, parts.path, parts.query, ""))
+
+
 class Relays:
     """Every relay the service talks to, faked as one: what they hold, which
     are down, and what each publish was sent to."""
@@ -90,9 +104,9 @@ class Relays:
             async def try_connect(self, _timeout):
                 tried, self.pending = self.pending, []
                 return SimpleNamespace(
-                    success=[u for u in tried if u not in relays.down],
+                    success=[_sdk(u) for u in tried if u not in relays.down],
                     failed={
-                        u: "IO error: Connection refused"
+                        _sdk(u): "IO error: Connection refused"
                         for u in tried
                         if u in relays.down
                     },
@@ -106,8 +120,10 @@ class Relays:
                 relays.sent.append((list(urls), event))
                 relays.held.append(event)
                 return SimpleNamespace(
-                    success=[u for u in urls if u not in relays.refusing],
-                    failed={u: m for u, m in relays.refusing.items() if u in urls},
+                    success=[_sdk(u) for u in urls if u not in relays.refusing],
+                    failed={
+                        _sdk(u): m for u, m in relays.refusing.items() if u in urls
+                    },
                 )
 
             async def disconnect(self):
@@ -327,6 +343,21 @@ def test_the_report_names_public_addresses_one_line_per_relay(menu_client, relay
     assert report["wss://relay.damus.io"]["message"] == "blocked: rate-limited"
 
 
+def test_a_relay_spelled_with_its_default_port_is_sent_to(
+    menu_client, relays, monkeypatch
+):
+    """nostr-sdk reports `wss://Relay.Example:443` as `wss://relay.example`."""
+    spelled = "wss://Relay.Example:443"
+    monkeypatch.setattr(
+        "app.services.duty_menu_service.assistant_relay_list",
+        lambda: [PUBLIC_TA, spelled],
+    )
+    report = {r["url"]: r for r in _publish(menu_client)["relays"]}
+    assert report[spelled]["ok"] is True
+    ((urls, _),) = relays.sent
+    assert spelled in urls
+
+
 def test_a_menu_no_relay_took_is_an_error(menu_client, relays):
     relays.down.update([INTERNAL_TA, DICTIONARY, *OUTBOX])
     r = menu_client.post("/user/assistantDutyMenu")
@@ -420,3 +451,38 @@ def test_publish_targets_are_each_relay_once():
         (DICTIONARY, DICTIONARY),
         ("wss://relay.damus.io", "wss://relay.damus.io"),
     ]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "wss://R.Example:443",
+        "wss://r.example:443/",
+        "ws://r.example:80/x/",
+        "wss://r.example/Path/?q=1",
+        "wss://r.example:8443/",
+        "WSS://r.example",
+        "ws://127.0.0.1:7777/",
+    ],
+)
+def test_relay_key_matches_nostr_sdk_s_spelling(url):
+    """nostr-sdk reports a relay as the url crate spells it, and the key has to
+    match that to know which targets connected."""
+
+    async def sdk_spelling() -> str:
+        client = Client()
+        await client.add_relay(url)
+        return list((await client.relays()).keys())[0]
+
+    assert relay_key(asyncio.run(sdk_spelling())) == relay_key(url)
+
+
+def test_relay_key_keeps_what_tells_relays_apart():
+    assert relay_key("wss://r.example:8443") != relay_key("wss://r.example")
+    assert relay_key("wss://r.example/a") != relay_key("wss://r.example/A")
+    assert relay_key("wss://r.example/?a=1") != relay_key("wss://r.example")
+    assert relay_key("ws://r.example") != relay_key("wss://r.example")
+
+
+def test_the_public_ta_relay_with_its_default_port_is_written_internally():
+    assert write_url(PUBLIC_TA + ":443/") == INTERNAL_TA

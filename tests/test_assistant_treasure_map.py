@@ -15,6 +15,7 @@ import time
 from datetime import timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -526,6 +527,16 @@ def _version(
     return json.loads(event.as_json())
 
 
+def _sdk(url: str) -> str:
+    """A relay as nostr-sdk reports it: the scheme and host lowercased, a default
+    port dropped, the path as given."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if parts.port and parts.port != {"ws": 80, "wss": 443}[parts.scheme.lower()]:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme.lower(), host, parts.path, parts.query, ""))
+
+
 class World:
     """The caller's records and every relay the service talks to, faked: the
     caller's Map on our relay, what each relay holds of the Assistant's kind
@@ -592,9 +603,9 @@ class World:
             async def try_connect(self, _timeout):
                 tried, self.pending = self.pending, []
                 return SimpleNamespace(
-                    success=[u for u in tried if u not in world.down],
+                    success=[_sdk(u) for u in tried if u not in world.down],
                     failed={
-                        u: "IO error: Connection refused"
+                        _sdk(u): "IO error: Connection refused"
                         for u in tried
                         if u in world.down
                     },
@@ -608,8 +619,10 @@ class World:
                     if url not in world.refusing:
                         world.held.setdefault(url, []).append(signed)
                 return SimpleNamespace(
-                    success=[u for u in urls if u not in world.refusing],
-                    failed={u: m for u, m in world.refusing.items() if u in urls},
+                    success=[_sdk(u) for u in urls if u not in world.refusing],
+                    failed={
+                        _sdk(u): m for u, m in world.refusing.items() if u in urls
+                    },
                 )
 
             async def disconnect(self):

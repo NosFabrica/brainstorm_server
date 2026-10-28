@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.core.config import settings
 
@@ -140,9 +141,28 @@ def earlier_relays(earlier: list[dict[str, Any]]) -> list[str]:
     return relays
 
 
+_DEFAULT_PORTS = {"ws": 80, "wss": 443}
+
+
 def relay_key(url: str) -> str:
-    """A relay in one spelling, to tell two spellings of one relay apart from two relays."""
-    return url.strip().lower().rstrip("/")
+    """A relay in one spelling, to tell two spellings of one relay apart from two
+    relays. nostr-sdk reports relays as the url crate spells them, with the scheme
+    and host lowercased and a default port dropped, so the key does the same; it
+    also trims a trailing `/` from the path, and keeps the path's case and the query."""
+    raw = url.strip()
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        return raw.lower().rstrip("/")
+    if not parts.scheme or not parts.hostname:
+        return raw.lower().rstrip("/")
+    scheme = parts.scheme.lower()
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    if port is not None and port != _DEFAULT_PORTS.get(scheme):
+        host = f"{host}:{port}"
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{scheme}://{host}{parts.path.rstrip('/')}{query}"
 
 
 @dataclass(frozen=True)
