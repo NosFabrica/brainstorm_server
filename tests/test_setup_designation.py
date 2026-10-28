@@ -134,12 +134,15 @@ def test_dictionary_rows_follow_the_trusted_list_row(setup_client):
 
 
 def test_dictionary_rows_name_the_dictionary_relay(setup_client, monkeypatch):
-    from app.core.config import settings
+    from app.core.config import Settings, settings
 
     client, _ = setup_client
-    assert {r[2] for r in _rows(client) if r[0] in ("39998", "39999")} == {
-        "wss://dcosl.brainstorm.world"
-    }
+    # The default as the field declares it: conftest loads `.env` first, and it
+    # may set its own.
+    default = Settings.model_fields["dictionary_relay"].default
+    assert default == "wss://dcosl.brainstorm.world"
+    monkeypatch.setattr(settings, "dictionary_relay", default)
+    assert {r[2] for r in _rows(client) if r[0] in ("39998", "39999")} == {default}
     monkeypatch.setattr(settings, "dictionary_relay", "wss://dictionary.example")
     assert {r[2] for r in _rows(client) if r[0] in ("39998", "39999")} == {
         "wss://dictionary.example"
