@@ -50,7 +50,9 @@ SEND_TIMEOUT_SECONDS = 12
 NOT_REACHED = "couldn't connect"
 
 
-async def assistant(db: AsyncDBSession, user_pubkey: str) -> tuple[BrainstormNsec, Keys]:
+async def assistant(
+    db: AsyncDBSession, user_pubkey: str
+) -> tuple[BrainstormNsec, Keys]:
     """The caller's Assistant: its row, and the key it signs with."""
     row, _ = await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
         db, pubkey=user_pubkey
@@ -196,9 +198,7 @@ def relay_report(
         if key in accepted:
             report.append(AssistantRelayResult(url=target.url, ok=True))
             continue
-        reason = (
-            NOT_REACHED if key not in connected else refused.get(key) or "not sent"
-        )
+        reason = NOT_REACHED if key not in connected else refused.get(key) or "not sent"
         report.append(AssistantRelayResult(url=target.url, ok=False, message=reason))
     return report
 

@@ -241,6 +241,9 @@ def test_ta_tags_writes_the_metric_tags_in_ta_metric_tags():
 
     reachable = ta_tags(TaInput("a" * 64, 50, 1, 2, 3, 4))
     unreachable = ta_tags(TaInput("a" * 64, 50, 1, 2, 3, UNREACHABLE_HOPS))
-    metrics = lambda tags: [t[0] for t in tags if t[0] not in ("d", "client")]  # noqa: E731
+
+    def metrics(tags):
+        return [t[0] for t in tags if t[0] not in ("d", "client")]
+
     assert metrics(reachable) == list(TA_METRIC_TAGS)
     assert metrics(unreachable) == [m for m in TA_METRIC_TAGS if m != "hops"]

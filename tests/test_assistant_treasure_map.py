@@ -479,7 +479,9 @@ class World:
         self.choices: list[bool] = []
         # What happened, in order: "sent", "saved", "committed".
         self.log: list[str] = []
-        self.db = MagicMock(commit=AsyncMock(side_effect=lambda: self.log.append("committed")))
+        self.db = MagicMock(
+            commit=AsyncMock(side_effect=lambda: self.log.append("committed"))
+        )
         self.row = SimpleNamespace(
             pubkey=user,
             nsec=assistant.secret_key().to_bech32(),
@@ -552,9 +554,7 @@ class World:
                         world.held.setdefault(url, []).append(signed)
                 return SimpleNamespace(
                     success=[_sdk(u) for u in urls if u not in world.refusing],
-                    failed={
-                        _sdk(u): m for u, m in world.refusing.items() if u in urls
-                    },
+                    failed={_sdk(u): m for u, m in world.refusing.items() if u in urls},
                 )
 
             async def disconnect(self):
@@ -1105,9 +1105,7 @@ def test_a_second_press_while_one_is_under_way_is_refused(world):
 
     async def both():
         return await asyncio.gather(
-            self_map_service.publish_assistant_treasure_map(
-                world.db, world.user, True
-            ),
+            self_map_service.publish_assistant_treasure_map(world.db, world.user, True),
             self_map_service.publish_assistant_treasure_map(
                 world.db, world.user, False
             ),
@@ -1130,6 +1128,9 @@ def test_a_second_press_while_one_is_under_way_is_refused(world):
 
 def test_a_press_that_errors_lets_the_next_one_go_ahead(map_client, world):
     world.map_unreadable = True
-    assert map_client.post("/user/assistantTreasureMap", json={"on": True}).status_code == 502
+    assert (
+        map_client.post("/user/assistantTreasureMap", json={"on": True}).status_code
+        == 502
+    )
     world.map_unreadable = False
     assert _post(map_client, True)["published"] is True

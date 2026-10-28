@@ -135,7 +135,9 @@ class Relays:
         self.read_from.append(relay)
         if relay in self.silent:
             raise TimeoutError()
-        found = [e if isinstance(e, dict) else json.loads(e.as_json()) for e in self.held]
+        found = [
+            e if isinstance(e, dict) else json.loads(e.as_json()) for e in self.held
+        ]
         found = [
             e
             for e in found
@@ -148,7 +150,9 @@ class Relays:
 def relays(monkeypatch) -> Relays:
     fake = Relays()
     monkeypatch.setattr("app.services.assistant_publish.Client", fake.client)
-    monkeypatch.setattr("app.services.assistant_publish.fetch_latest", fake.fetch_latest)
+    monkeypatch.setattr(
+        "app.services.assistant_publish.fetch_latest", fake.fetch_latest
+    )
     return fake
 
 

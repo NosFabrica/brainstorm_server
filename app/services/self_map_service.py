@@ -46,10 +46,7 @@ from app.cronjobs.periodic_graperank_trigger import PERIOD_HOURS
 from app.cronjobs.scheduler import has_grapevine
 from app.db_models import BrainstormNsec
 from app.repos.brainstorm_nsec import set_treasure_map_on_by_pubkey_on_db
-from app.repos.scheduling_repo import (
-    get_default_scheduling_on_db,
-    get_scheduling_on_db,
-)
+from app.repos.scheduling_repo import get_default_scheduling_on_db, get_scheduling_on_db
 from app.schemas.schemas import (
     AssistantTreasureMapCheck,
     PublishedAssistantTreasureMap,
