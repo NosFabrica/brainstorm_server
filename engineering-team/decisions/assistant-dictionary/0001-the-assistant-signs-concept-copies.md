@@ -97,15 +97,19 @@ outcome rules (D4) need anyway.
 - **The body:** `{ "concepts": [<coordinate>, …] }`, 1 to 10 coordinates, validated by the request schema
   `AssistantDictionaryBody`.
   - A coordinate is `39998:<64 lowercase hex>:<d>`, split at the first two colons only, so a `d` may contain colons
-    and must be non-empty (`parse_concept_coordinate`).
+    and must be non-empty (`parse_concept_coordinate`). *(Since the Gate B re-review it must also be valid UTF-8: a
+    lone surrogate, which only a JSON `\ud800` escape can bring, is no coordinate.)*
   - A body that fails the schema answers **422**, before any work. That covers a missing or non-list `concepts`, an
     empty list, more than 10 coordinates, and any coordinate that doesn't parse. 422 is this app's convention for
     request-schema errors (`app/routers/shorturl/CLAUDE.md`; `tests/test_assistant_treasure_map.py` asserts it for a
-    `/user` sibling).
+    `/user` sibling). *(Found at the Gate B re-review: for a lone surrogate the 422 can't be written, since FastAPI's
+    default handler echoes the input and Starlette won't encode it, so that body answers 500, still before any work.
+    The same holds for every route in the app; the fix is the app's `RequestValidationError` handler, a follow-up.)*
   - The ask and AC8 said 400, and AC8 is amended to 422. *(Corrected at Gate B review: Brainstorm-UI's
     `extractApiError` passes a 422's `detail` list through as the message, so it would show "[object Object]"
-    where a 400's string would read. The UI never sends a bad body, so the path is unreached; a UI-side fix to
-    `extractApiError` is a follow-up.)*
+    where a 400's string would read. The UI sends a bad body only for a community header without a `d` value:
+    `definitionOf` sends `coordinateOf(header) ?? header.id`, which is `39998:<pk>:` or an event id. That's rare,
+    and a UI-side fix to `extractApiError` is a follow-up.)*
   - Duplicates are folded after validation, keeping the first.
   - The cap of 10 bounds how many concepts one request can leave `failed`. The send deadline is what bounds the
     time (D6).

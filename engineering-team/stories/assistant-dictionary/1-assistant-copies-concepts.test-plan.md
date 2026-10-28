@@ -71,12 +71,16 @@ These come from the ADR's decisions, not from any acceptance criterion:
 | Dictionary relay (strict read) | closes the socket before EOSE | W8 | the reader raises, never returns a partial read as if the relay held nothing |
 | Dictionary relay (strict read) | holds nothing | W4, R10 | `{}`; `not_found` for an add |
 | Dictionary relay (strict read) | invalid event | W3 | skipped |
+| Dictionary relay (strict read) | malformed event (`created_at`, `tags`, `d`) | W9 | skipped; the read still answers |
+| Dictionary relay (strict read) | a header whose first `d` has no value | W10 | at no `d`; never read as its next `d`'s |
 | Publish relays (nostr-sdk `Client`) | one can't be reached (connect fails) | R23 | its line has `ok: false` and the reason; the others still take it |
 | Publish relays (nostr-sdk `Client`) | none can be reached | R24 | 502, with a string `detail` |
 | Publish relays (nostr-sdk `Client`) | every relay refuses | R15 | 502, with a string `detail` |
 | Publish relays | one relay refuses | R16 | that line has `ok: false` and the relay's message |
 | Publish relays | slow | R20 | the deadline: later concepts `failed`, out of time |
 | Request body | malformed | R11 | 422, before any work |
+| Request body | a `d` that isn't UTF-8 (a lone surrogate) | R29, B5 | refused by the schema, before any work; answered 500, because the 422 can't be written (framework-wide) |
+| Publish relays | a relay's message, or the `d`, holds a newline | R28 | quoted in the log, so it stays on one line |
 | Session | none | R13 | 401 or 403 |
 | Postgres (the Assistant key lookup) | the lookup raises | **not covered** | It surfaces as the app's generic 500, the path the Duty Menu's identical lookup already takes. The story adds no handling for it. |
 | Neo4j, Redis | — | not touched | No path in this story reads or writes them (ADR blast radius). |
@@ -160,8 +164,24 @@ named another coordinate. These handles pin the fixes. The first three fail agai
 | --- | --- | --- |
 | B4 (two more cases) | `test_a_concept_coordinate_splits_at_its_first_two_colons` | a coordinate is parsed whole: `…:x\n` is `d` `x\n`, and the coordinate always equals `39998:<pubkey>:<d>` |
 | R26 | `test_a_coordinate_with_a_trailing_newline_names_another_d_and_is_never_mispointed` | through the route, such a coordinate names a `d` nobody holds: `not_found`, nothing signed |
-| W9 | `test_a_malformed_event_is_skipped_and_the_read_still_answers` | a malformed event after a valid one is skipped, not a `ValueError` and a 502 |
+| W9 | `test_a_malformed_event_is_skipped_and_the_read_still_answers` | an event with a malformed `created_at` after a valid one is skipped, not a `ValueError` and a 502 (the `tags` and `d` cases came at the re-review) |
 | R27 | `test_every_definition_tag_survives_signing_verbatim` | the UI's full fixture (display hints, image, link) survives signing verbatim, and a re-add is `unchanged` |
+
+## Added at the Gate B re-review
+
+The re-review passed, with four non-blocking findings. These handles pin the fixes, and every one fails against
+`43e51cf`, the whole tree with these test files copied over. B19 ran there against the old reader's `_d_of`, since
+`d_of` is new; B5b passes on both, as it guards real Unicode against the new check.
+
+| Handle | Test | Pins |
+| --- | --- | --- |
+| R28 | `test_a_newline_in_the_d_or_a_relays_message_never_forges_a_log_line` | the `_send` warning quotes the `d` and the relay's message, so a newline in either stays on one log line |
+| B19 | `test_a_headers_d_is_its_first_d_tags_value` | a header's `d` is its first `d` tag's value, as nostr-sdk and the UI read it: a later `d` never stands in, and malformed `tags` or `d` values give none rather than raising |
+| W10 | `test_a_header_whose_first_d_has_no_value_isnt_read_as_its_next_ds` | a newer header `[["d"], ["d", "x"]]` is at no `d`, so the reader keeps the real header at `x` |
+| W9 (three more cases) | `test_a_malformed_event_is_skipped_and_the_read_still_answers` | a `tags` that isn't a list, and a `d` that's a list or an object, are skipped too, not a `TypeError` and a 502 |
+| B5 (one more case) | `test_anything_else_is_not_a_concept_coordinate` | a `d` holding a lone surrogate isn't a coordinate |
+| B5b | `test_a_d_beyond_the_basic_plane_is_still_a_concept_coordinate` | an emoji `d` still parses: the check refuses only what isn't UTF-8 |
+| R29 | `test_a_coordinate_that_isnt_valid_utf8_is_refused_by_the_schema` | the schema refuses it, so no work is done. Its 422 can't be written (FastAPI echoes the input, and Starlette won't encode it), so the route answers 500, as every route does for such a body |
 
 ## Verification
 

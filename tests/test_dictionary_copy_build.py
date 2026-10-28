@@ -15,6 +15,7 @@ import pytest
 from app.services.dictionary_copy_build import (
     add_outcome,
     copy_tags,
+    d_of,
     next_created_at,
     parse_concept_coordinate,
     points_at,
@@ -169,10 +170,18 @@ def test_a_concept_coordinate_splits_at_its_first_two_colons(value, expected):
         f"39998:{AVI.upper()}:x",
         f"39998:{AVI}0:x",
         f" 39998:{AVI}:x",
+        # Since the Gate B re-review: a lone surrogate isn't UTF-8, so no event
+        # could carry this `d`.
+        f"39998:{AVI}:x\ud800",
     ],
 )
 def test_anything_else_is_not_a_concept_coordinate(value):
     assert parse_concept_coordinate(value) is None
+
+
+# B5b (AC8): the surrogate check refuses only what isn't UTF-8
+def test_a_d_beyond_the_basic_plane_is_still_a_concept_coordinate():
+    assert parse_concept_coordinate(f"39998:{AVI}:books-📚") == (AVI, "books-📚")
 
 
 # B6 (D4)
@@ -292,3 +301,26 @@ def test_withdrawing_never_touches_a_header_that_isnt_this_copy(tags):
 def test_a_new_version_is_dated_after_the_newest(now, newest_at, expected):
     newest = None if newest_at is None else held(COMPOSED, created_at=newest_at)
     assert next_created_at(now, newest) == expected
+
+
+# B19 (Gate B re-review): a header's `d` is its first `d` tag's value, as
+# nostr-sdk's `identifier()` and the UI's `tagValue` read it. A later `d` never
+# stands in, and nothing malformed raises: the reader and `copy_tags` use it.
+@pytest.mark.parametrize(
+    "tags, expected",
+    [
+        ([["d", "x"]], "x"),
+        ([["d", "x"], ["d", "y"]], "x"),
+        ([["d", ""]], ""),
+        ([[], ["name", "X"], ["d", "x"]], "x"),
+        ([["d"], ["d", "x"]], None),
+        ([["name", "X"]], None),
+        ([["d", ["x"]]], None),
+        ([["d", {"x": 1}]], None),
+        ("d", None),
+        (5, None),
+        (None, None),
+    ],
+)
+def test_a_headers_d_is_its_first_d_tags_value(tags, expected):
+    assert d_of({"tags": tags}) == expected

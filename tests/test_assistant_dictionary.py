@@ -20,11 +20,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag, Timestamp
+from pydantic import ValidationError
 from websockets.exceptions import ConnectionClosedOK
 
 from app.api import app
 from app.core.config import settings
 from app.core.database import get_db
+from app.schemas.request_body_schemas import AssistantDictionaryBody
 
 SERVICE = "app.services.assistant_dictionary_service"
 ADD = "/user/assistantDictionary"
@@ -394,6 +396,16 @@ def test_a_body_that_isnt_1_to_10_concept_coordinates_is_a_422(client, path, bod
     assert client.post(path, json=body).status_code == 422
 
 
+# R29 (Gate B re-review: a `d` no event could carry is refused by the schema, so
+# nothing is read for it). Only a JSON `\ud800` escape brings one, and the 422
+# for it can't be written: FastAPI's default handler echoes the input, and
+# Starlette won't encode a lone surrogate. That holds for every route's 422.
+def test_a_coordinate_that_isnt_valid_utf8_is_refused_by_the_schema():
+    body = json.loads('{"concepts": ["39998:' + "a" * 64 + ':x\\ud800"]}')
+    with pytest.raises(ValidationError):
+        AssistantDictionaryBody.model_validate(body)
+
+
 # R12 (AC8)
 def test_a_d_with_colons_is_kept_whole(dict_client, relays, assistant, curator):
     d = "lists:github:accounts"
@@ -596,6 +608,23 @@ def test_a_coordinate_with_a_trailing_newline_names_another_d_and_is_never_mispo
     assert result["status"] == "not_found"
     assert result["community"] == concept(curator) + "\n"
     assert relays.sent == []
+
+
+# R28 (Gate B re-review: the `d` and a relay's message are the caller's and the
+# relay's text, so neither can start a line of its own in the log)
+def test_a_newline_in_the_d_or_a_relays_message_never_forges_a_log_line(
+    dict_client, relays, curator, monkeypatch
+):
+    d = "x\n2026-10-28 00:00:00,000 - app.core.auth - ERROR - FORGED LINE"
+    relays.held.append(community(curator, d=d))
+    relays.refusing = {OUTBOX[0]: "blocked\n2026-10-28 00:00:00,000 - FORGED LINE"}
+    warnings = MagicMock()
+    monkeypatch.setattr(f"{SERVICE}.logger.warning", warnings)
+    [result] = results(post(dict_client, ADD, concept(curator, d)))
+    assert result["status"] == "published"
+    [line] = [call.args[0] for call in warnings.call_args_list]
+    assert "FORGED LINE" in line
+    assert "\n" not in line and "\r" not in line
 
 
 # R27 (AC1, AC11 through signing: the UI's full fixture survives verbatim)

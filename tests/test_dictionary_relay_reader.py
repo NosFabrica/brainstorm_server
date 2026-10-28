@@ -28,10 +28,13 @@ class GuardTimeout(Exception):
 def signed(
     keys: Keys, d: str, created_at: int, extra: list[list[str]] | None = None
 ) -> dict:
-    tags = [Tag.parse(["d", d])] + [Tag.parse(t) for t in extra or []]
+    return signed_tags(keys, [["d", d], *(extra or [])], created_at)
+
+
+def signed_tags(keys: Keys, tags: list[list[str]], created_at: int) -> dict:
     event = (
         EventBuilder(kind=Kind(39998), content="")
-        .tags(tags)
+        .tags([Tag.parse(t) for t in tags])
         .custom_created_at(Timestamp.from_secs(created_at))
         .sign_with_keys(keys)
     )
@@ -182,13 +185,34 @@ def test_a_relay_that_closes_before_eose_raises_rather_than_reading_as_partial()
     assert not isinstance(raised.value, GuardTimeout)
 
 
-# W9 (Gate B review: a malformed event is skipped, never fails the read)
-def test_a_malformed_event_is_skipped_and_the_read_still_answers():
+# W9 (Gate B review: a malformed event is skipped, never fails the read; the
+# `tags` and `d` shapes since the re-review)
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("created_at", "soon"),
+        ("tags", 5),
+        ("tags", [["d", ["x"]]]),
+        ("tags", [["d", {"x": 1}]]),
+    ],
+    ids=["created_at-not-a-number", "tags-not-a-list", "d-a-list", "d-an-object"],
+)
+def test_a_malformed_event_is_skipped_and_the_read_still_answers(field, value):
     a = Keys.generate()
     good = signed(a, "x", 1)
-    malformed = dict(signed(a, "x", 2))
-    malformed["created_at"] = "soon"
+    malformed = {**signed(a, "x", 2), field: value}
     # The valid event first: comparing the malformed one against it is what
     # used to raise, before the signature check came first.
     found = _read(_relay_sending(good, malformed), [hexkey(a)], ["x"], guard=3.0)
+    assert found == {(hexkey(a), "x"): good}
+
+
+# W10 (Gate B re-review): a header's `d` is its first `d` tag's value, as
+# nostr-sdk and the UI read it. One whose first `d` has none has no coordinate,
+# so it's never read as the header at its next `d`, however new it is.
+def test_a_header_whose_first_d_has_no_value_isnt_read_as_its_next_ds():
+    a = Keys.generate()
+    good = signed(a, "x", 1)
+    no_coordinate = signed_tags(a, [["d"], ["d", "x"]], 2)
+    found = _read(_relay_sending(good, no_coordinate), [hexkey(a)], ["x"])
     assert found == {(hexkey(a), "x"): good}

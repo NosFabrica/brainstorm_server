@@ -62,16 +62,37 @@ WithdrawOutcome = Literal["withdrawn", "unchanged", "conflict"]
 
 
 def parse_concept_coordinate(value: str) -> tuple[str, str] | None:
-    """`(pubkey, d)` for a kind-39998 coordinate, else None."""
+    """`(pubkey, d)` for a kind-39998 coordinate, else None. A string that
+    isn't valid UTF-8 (a lone surrogate) is no coordinate: it couldn't be
+    signed or answered."""
     match = _COORDINATE.fullmatch(value) if isinstance(value, str) else None
-    return (match.group(1), match.group(2)) if match else None
+    if not match:
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return match.group(1), match.group(2)
+
+
+def d_of(event: dict[str, Any]) -> str | None:
+    """A header's identifier: the value of its first `d` tag, as nostr-sdk and
+    Brainstorm-UI read it. None when it has no `d` tag, or its first one has no
+    string value: a later `d` never stands in."""
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return None
+    for tag in tags:
+        if isinstance(tag, list) and tag and tag[0] == "d":
+            return tag[1] if len(tag) > 1 and isinstance(tag[1], str) else None
+    return None
 
 
 def copy_tags(community: dict[str, Any], coordinate: str) -> list[list[str]]:
     """The Assistant's copy of `community`: its `d`, its definition tags
     verbatim and in order, a pointer back, and the client tag."""
     tags = [t for t in community.get("tags") or [] if isinstance(t, list) and t]
-    d = next((t[1] for t in tags if t[0] == "d" and len(t) > 1), "")
+    d = d_of(community) or ""
     definition = [list(t) for t in tags if t[0] in COPIED_TAGS]
     return [["d", d], *definition, ["b", coordinate, "pointer"], list(CLIENT_TAG)]
 

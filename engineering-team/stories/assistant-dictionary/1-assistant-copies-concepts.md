@@ -205,7 +205,8 @@ No test changed during implementation. Three choices go beyond the ADR's letter,
 
 ## Gate results (the approved deviation)
 
-Run 2026-10-27 in the foreground, each stage's exit code captured by brace-redirect:
+Last run 2026-10-28, after the Gate B re-review's fixes, in the foreground, each stage's exit code captured by
+brace-redirect:
 
 | Stage | Result |
 | --- | --- |
@@ -213,8 +214,10 @@ Run 2026-10-27 in the foreground, each stage's exit code captured by brace-redir
 | `isort --check ./app` | 0 |
 | `flake8 ./app --max-line-length 100 --extend-ignore E203` | 0 |
 | `mypy ./app` | 0 (no issues in 195 source files) |
-| `pytest -m "not integration" ./tests` | 0: 1,591 passed (the base's 1,494 plus this story's 97), 143 deselected |
+| `pytest -m "not integration" ./tests` | 0: 1,615 passed (the base's 1,494 plus this story's 121), 143 deselected |
 | `pytest -m integration ./tests` (parity) | 47 failed, 96 errors: the same 143 node ids as the base `e2ca872`, compared line for line |
+
+Earlier runs: 1,591 passed at Gate B (this story's 97), and 1,596 after the review's fixes (102).
 
 ## Changes from the Gate B review
 
@@ -227,9 +230,36 @@ The review (`reviews/assistant-dictionary/1-assistant-copies-concepts.md`) asked
 
 Non-blocking fixes made too:
 
-- **The reader verifies a signature before comparing dates,** so a malformed event is skipped (W9).
+- **The reader verifies a signature before comparing dates,** so an event with a malformed `created_at` is skipped
+  (W9). A malformed `tags` or `d` still failed the read until the re-review's fixes, below.
 - **R27** pins the UI's full fixture through signing.
 - **The withdraw row in `app/routers/CLAUDE.md`** names `failed` and the 502s.
 - **ADR D1's claim about how the UI shows a 422 is corrected.**
 
 The review's other non-blocking findings are follow-ups for the operator.
+
+## Changes from the Gate B re-review
+
+The re-review passed, with four non-blocking findings. All four are fixed, each with tests that fail on `43e51cf` for
+the defect's own reason. The proof was run on the whole tree at that commit, with these test files copied over. Since
+`d_of` is new, B19 ran there against the old reader's `_d_of`.
+
+- **The `_send` warning quotes what it logs.** It logs `{result.local!r}`, `{line.url!r}` and `{line.message!r}`, so a
+  newline in a caller's `d` or a relay's message can't start a forged line (R28). Relay text is logged raw elsewhere
+  (`duty_menu_service.py`, `self_map_service.py`); that's outside this story.
+- **A header's `d` is its first `d` tag's value.** This is how nostr-sdk's `identifier()` and the UI's `tagValue`
+  read it. The rule is `dictionary_copy_build.d_of`, which the reader and `copy_tags` both use (B19).
+  - A header whose first `d` has no value is at no `d`. It's never read as the header at its next `d` (W10).
+  - A `tags` that isn't a list, or a `d` that's a list or an object, is skipped and no longer fails the read (W9's
+    new cases).
+- **A coordinate must be valid UTF-8.** `parse_concept_coordinate` refuses a lone surrogate (B5; B5b keeps real
+  Unicode), so the schema refuses it and no work is done (R29). Its 422 still can't be written:
+  - FastAPI's default handler echoes each error's input;
+  - Starlette encodes a response without ASCII escapes;
+  - so the route answers 500, as every route in the app does for a lone surrogate in a field that fails validation.
+
+  Fixing that means changing the app's `RequestValidationError` handler, which is a follow-up beyond this story.
+- **The docs say what the code does.**
+  - The note above on W9 is narrowed.
+  - ADR D1 now says when the UI can send a bad body, and what a lone surrogate gets.
+  - The line counts in `app/services/CLAUDE.md` and the gate table are current.

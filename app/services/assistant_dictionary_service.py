@@ -305,8 +305,11 @@ async def _send(
             report = relay_report(targets, accepted, refused, failures)
             for line in report:
                 if not line.ok:
+                    # Quoted: the `d` is the caller's text and the message the
+                    # relay's, and either may hold a newline.
                     logger.warning(
-                        f"dictionary copy {result.local} not on {line.url}: {line.message}"
+                        f"dictionary copy {result.local!r} not on {line.url!r}: "
+                        f"{line.message!r}"
                     )
             if accepted:
                 results[index] = result.model_copy(
