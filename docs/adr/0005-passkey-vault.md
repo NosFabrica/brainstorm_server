@@ -47,5 +47,11 @@ passkeys.
 - `PASSKEY_ORIGINS` must list every UI origin whose passkeys should work. Each
   origin's host is its passkeys' relying party, so staging and production
   passkeys never open each other's rows.
+- A stolen Session can replace or delete its owner's rows — locking them out of
+  signing in on a new device, never reading their key. Their own devices, their
+  key and their Backup file are untouched.
+- A UI pointed at another environment's API (the admin API switcher) makes
+  passkeys for its own host, which that API honours only if its
+  `PASSKEY_ORIGINS` lists that origin.
 - The real trust point is unchanged: whoever serves the UI's JavaScript could
   read a key after it is unlocked, as they can for every local-key login today.

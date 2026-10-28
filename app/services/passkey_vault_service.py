@@ -38,14 +38,15 @@ from app.utils.webauthn import (
     AssertionInvalid,
     b64url_decode,
     credential_id_hash,
+    is_canonical_b64url,
     load_public_key,
     verify_assertion,
 )
 
 logger = loggr.get_logger(__name__)
 
-MAX_BLOB_BYTES = 4096
 CHALLENGE_TTL_SECONDS = 120
+CLOCK_SKEW_SECONDS = 5
 _NONCE_BYTES = 16
 _USED_PREFIX = "passkey_challenge_used:"
 
@@ -70,8 +71,8 @@ def issue_challenge(now: float | None = None) -> str:
     return _b64url(nonce + issued + mac)
 
 
-async def redeem_challenge(challenge: str, now: float | None = None) -> None:
-    """Ours, unexpired and unspent — then spent. Raises ``AssertionInvalid`` otherwise."""
+def check_challenge(challenge: str, now: float | None = None) -> bytes:
+    """Ours and unexpired: its nonce, or ``AssertionInvalid``. Reads nothing, writes nothing."""
     raw = b64url_decode(challenge)
     if len(raw) != _NONCE_BYTES + 8 + 32:
         raise AssertionInvalid("challenge has the wrong shape")
@@ -80,13 +81,25 @@ async def redeem_challenge(challenge: str, now: float | None = None) -> None:
     if not hmac.compare_digest(mac, expected):
         raise AssertionInvalid("challenge is not ours")
     age = (now if now is not None else time.time()) - int.from_bytes(issued, "big")
-    if age < 0 or age > CHALLENGE_TTL_SECONDS:
+    # Issued by one replica and redeemed by another: a clock a little behind
+    # must not refuse a challenge that is seconds old.
+    if age < -CLOCK_SKEW_SECONDS or age > CHALLENGE_TTL_SECONDS:
         raise AssertionInvalid("challenge expired")
+    return nonce
+
+
+async def spend_challenge(nonce: bytes) -> None:
+    """Spend a checked challenge. ``SET NX`` makes the first spend the only one."""
     spent = await get_redis_client().set(
         f"{_USED_PREFIX}{nonce.hex()}", "1", nx=True, ex=CHALLENGE_TTL_SECONDS + 60
     )
     if not spent:
         raise AssertionInvalid("challenge already used")
+
+
+async def redeem_challenge(challenge: str, now: float | None = None) -> None:
+    """Ours, unexpired and unspent — then spent. Raises ``AssertionInvalid`` otherwise."""
+    await spend_challenge(check_challenge(challenge, now))
 
 
 def allowed_origins() -> list[str]:
@@ -111,9 +124,8 @@ def _entry(row) -> PasskeyVaultEntry:
 
 
 def _validate_blob(blob: str, pubkey: str, credential_id: str) -> None:
-    """Shape and ownership only. The contents are the client's, and stay sealed."""
-    if len(blob.encode()) > MAX_BLOB_BYTES:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "blob too large")
+    """Shape and ownership only (size is the request schema's). The contents are
+    the client's, and stay sealed."""
     try:
         record = json.loads(blob)
     except ValueError:
@@ -142,28 +154,21 @@ async def store_vault(
     label: str | None,
 ) -> PasskeyVaultEntry:
     try:
+        # Canonical, because the blob's credentialId is compared as a string
+        # while the row key hashes the bytes: two spellings, one passkey.
+        if not is_canonical_b64url(credential_id):
+            raise AssertionInvalid("credentialId is not canonical base64url")
         if credential_id_hash(credential_id) != path_hash:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                "credentialId does not match the path",
-            )
+            raise AssertionInvalid("credentialId does not match the path")
         if alg not in SUPPORTED_ALGS:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT, "unsupported alg"
-            )
+            raise AssertionInvalid("unsupported alg")
         load_public_key(public_key, alg)
     except AssertionInvalid as error:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error))
     _validate_blob(blob, caller_pubkey, credential_id)
 
-    existing = await select_passkey_vault_by_hash_on_db(db, path_hash)
-    if existing is not None and existing.pubkey != caller_pubkey:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "This passkey belongs to another account"
-        )
     row = await upsert_passkey_vault_on_db(
         db,
-        existing=existing,
         credential_id_hash=path_hash,
         pubkey=caller_pubkey,
         credential_public_key=public_key,
@@ -171,9 +176,16 @@ async def store_vault(
         blob=blob,
         label=label,
     )
-    # created_at/updated_at are server defaults: load them before reading.
-    await db.refresh(row)
-    return _entry(row)
+    if row is None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This passkey belongs to another account"
+        )
+    return PasskeyVaultEntry(
+        credential_id_hash=row["credential_id_hash"],
+        label=row["label"],
+        created_at=row["created_at"],
+        last_used_at=row["last_used_at"],
+    )
 
 
 async def list_vaults(
@@ -207,20 +219,27 @@ async def open_vault(
             public_key=row.credential_public_key,
             alg=row.alg,
             allowed_origins=allowed_origins(),
+            check_challenge=check_challenge,
         )
         # Counters only mean anything when the authenticator keeps one; synced
         # passkeys report 0 forever. A counter that went backwards is a clone.
+        # Checked here to fail before spending anything; enforced again, race-free,
+        # by the conditional update below.
         if (
             verified.sign_count or row.sign_count
         ) and verified.sign_count <= row.sign_count:
             raise AssertionInvalid("signature counter did not advance")
-        # Last, so a forged assertion can't burn someone else's challenge.
-        await redeem_challenge(verified.challenge)
+        # Spent after the signature, so a forged assertion can't burn someone
+        # else's challenge.
+        await spend_challenge(check_challenge(verified.challenge))
+        if not await mark_passkey_vault_used_on_db(
+            db, path_hash, verified.sign_count, utc_now()
+        ):
+            raise AssertionInvalid("signature counter did not advance (raced)")
     except AssertionInvalid as error:
         logger.info("passkey vault open refused: %s", error)
         raise _not_found()
 
-    await mark_passkey_vault_used_on_db(db, row, verified.sign_count, utc_now())
     return row.blob
 
 

@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, Path, Request
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.request_body_schemas import OpenPasskeyVaultBody, PutPasskeyVaultBody
 from app.schemas.request_response_schemas import (
@@ -19,7 +18,10 @@ from app.services.passkey_vault_service import (
     open_vault,
     store_vault,
 )
-from app.utils.rate_limiting.rate_limiting import rate_limit_per_ip
+from app.utils.rate_limiting.rate_limiting import (
+    rate_limit_passkey_challenge,
+    rate_limit_passkey_open,
+)
 
 # The owner's half: writing, listing and removing their own rows. Session-gated.
 router = APIRouter()
@@ -27,13 +29,6 @@ router = APIRouter()
 public_router = APIRouter()
 
 CREDENTIAL_ID_HASH = Path(pattern=r"^[0-9a-f]{64}$")
-
-rate_limit_passkey_challenge = rate_limit_per_ip(
-    "passkey_challenge", lambda: settings.passkey_challenge_rate_limit_per_minute, 60
-)
-rate_limit_passkey_open = rate_limit_per_ip(
-    "passkey_open", lambda: settings.passkey_open_rate_limit_per_minute, 60
-)
 
 
 def _caller(request: Request) -> str:

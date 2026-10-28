@@ -199,8 +199,18 @@ class PutPasskeyVaultBody(BaseModel):
     # SPKI DER of the credential's public key, base64url — getPublicKey().
     public_key: str = Field(alias="publicKey", max_length=2048, pattern=_B64URL)
     alg: int
-    blob: str = Field(max_length=8192)
+    blob: str
     label: str | None = Field(default=None, max_length=64)
+
+    # A sealed 32-byte key is ~250 bytes; this bounds the row, not the format.
+    MAX_BLOB_BYTES: ClassVar[int] = 4096
+
+    @field_validator("blob")
+    @classmethod
+    def _blob_fits(cls, blob: str) -> str:
+        if len(blob.encode()) > cls.MAX_BLOB_BYTES:
+            raise ValueError(f"blob exceeds {cls.MAX_BLOB_BYTES} bytes")
+        return blob
 
 
 class PasskeyAssertion(BaseModel):

@@ -18,6 +18,7 @@ app/utils/
 ├── neo4j_values.py          # safe_float / safe_int — inf/nan coercion on graph reads
 ├── nostr.py                 # Tiny Nostr helpers (constants, format conversions)
 ├── shorturl_entities.py     # Short-link entity kinds: key normalisation + on-site path (pure)
+├── webauthn.py              # WebAuthn get() assertion verification for the passkey vault (pure)
 ├── rate_limiting/
 │   └── rate_limiting.py     # Redis-backed rate limiter + trusted-proxy client IP
 ├── datetimes.py             # utc_now() for the naive timestamp columns
@@ -89,7 +90,9 @@ check in `user_service.py`.
   for verifies that would create an Observer row), all built by
   `rate_limit_per_ip(key_prefix, limit, window)`. Limits are settings
   (`LOGIN_*_RATE_LIMIT_*`), read per request; never per pubkey, or an attacker
-  could spend a victim's bucket.
+  could spend a victim's bucket. The passkey vault's public half has the same
+  shape: `rate_limit_passkey_challenge` / `rate_limit_passkey_open`
+  (`PASSKEY_*_RATE_LIMIT_PER_MINUTE`).
 - `validate_subscription_refresh_allowed(pubkey)` (12 / 60s) and
   `validate_flash_record_read_allowed(operator_pubkey)` (30 / 60s) — per-pubkey
   billing throttles. All limiters share `_enforce_window`.

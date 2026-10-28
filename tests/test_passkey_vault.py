@@ -200,6 +200,34 @@ def test_an_expired_challenge_is_refused(redis):
         )
 
 
+def test_a_challenge_from_a_replica_slightly_ahead_still_redeems(redis):
+    challenge = service.issue_challenge(now=1_000_003)
+    asyncio.run(service.redeem_challenge(challenge, now=1_000_000))
+
+
+def test_a_cross_origin_ceremony_is_refused():
+    authenticator = Authenticator()
+    assertion = authenticator.assert_("abc")
+    client_data = json.loads(
+        base64.urlsafe_b64decode(assertion["clientDataJSON"] + "==")
+    )
+    client_data["crossOrigin"] = True
+    raw = json.dumps(client_data).encode()
+    auth_data = base64.urlsafe_b64decode(assertion["authenticatorData"] + "==")
+    signature = authenticator.key.sign(
+        auth_data + hashlib.sha256(raw).digest(), ec.ECDSA(hashes.SHA256())
+    )
+    with pytest.raises(AssertionInvalid):
+        verify(
+            authenticator,
+            {
+                **assertion,
+                "clientDataJSON": b64url(raw),
+                "signature": b64url(signature),
+            },
+        )
+
+
 def test_a_forged_challenge_is_refused(redis):
     raw = bytearray(base64.urlsafe_b64decode(service.issue_challenge() + "=="))
     raw[0] ^= 0xFF
@@ -266,13 +294,20 @@ def put_body(authenticator: Authenticator, pubkey: str, **overrides) -> dict:
     }
 
 
+def stored_entry() -> dict:
+    """What the upsert's RETURNING hands back."""
+    return {
+        "credential_id_hash": CREDENTIAL_HASH,
+        "label": "iCloud Keychain",
+        "created_at": datetime(2026, 10, 27, 12, 0, 0),
+        "last_used_at": None,
+    }
+
+
 def test_the_owner_stores_a_vault(api, caller, monkeypatch):
     client, _ = api
     authenticator = Authenticator()
-    upsert = AsyncMock(return_value=row_for(caller.pubkey, authenticator))
-    monkeypatch.setattr(
-        service, "select_passkey_vault_by_hash_on_db", AsyncMock(return_value=None)
-    )
+    upsert = AsyncMock(return_value=stored_entry())
     monkeypatch.setattr(service, "upsert_passkey_vault_on_db", upsert)
 
     response = client.put(
@@ -289,11 +324,8 @@ def test_the_owner_stores_a_vault(api, caller, monkeypatch):
     assert upsert.await_args.kwargs["pubkey"] == caller.pubkey
 
 
-def test_a_vault_carrying_someone_elses_key_is_refused(api, caller, monkeypatch):
+def test_a_vault_carrying_someone_elses_key_is_refused(api, caller):
     client, _ = api
-    monkeypatch.setattr(
-        service, "select_passkey_vault_by_hash_on_db", AsyncMock(return_value=None)
-    )
     body = put_body(Authenticator(), "ab" * 32)
     assert client.put(f"/passkeyVault/{CREDENTIAL_HASH}", json=body).status_code == 422
 
@@ -314,14 +346,79 @@ def test_a_credential_id_that_does_not_hash_to_the_path_is_refused(api, caller):
 
 def test_another_accounts_passkey_row_cannot_be_overwritten(api, caller, monkeypatch):
     client, _ = api
-    authenticator = Authenticator()
+    # The conditional upsert writes nothing when the row is someone else's.
     monkeypatch.setattr(
-        service,
-        "select_passkey_vault_by_hash_on_db",
-        AsyncMock(return_value=row_for("cd" * 32, authenticator)),
+        service, "upsert_passkey_vault_on_db", AsyncMock(return_value=None)
     )
-    body = put_body(authenticator, caller.pubkey)
+    body = put_body(Authenticator(), caller.pubkey)
     assert client.put(f"/passkeyVault/{CREDENTIAL_HASH}", json=body).status_code == 403
+
+
+def test_a_non_canonical_credential_id_is_refused(api, caller):
+    client, _ = api
+    # Four bytes leave four unused bits in the last character, so "YWJjZB"
+    # decodes to the same bytes as the canonical "YWJjZA".
+    canonical, sloppy = "YWJjZA", "YWJjZB"
+    assert base64.urlsafe_b64decode(sloppy + "==") == base64.urlsafe_b64decode(
+        canonical + "=="
+    )
+    path = hashlib.sha256(b"abcd").hexdigest()
+    body = put_body(Authenticator(), caller.pubkey, credentialId=sloppy)
+    body["blob"] = blob_for(caller.pubkey, sloppy)
+    assert client.put(f"/passkeyVault/{path}", json=body).status_code == 422
+
+
+def test_an_oversized_blob_is_refused_by_the_schema(api, caller):
+    client, _ = api
+    body = put_body(Authenticator(), caller.pubkey, blob="x" * 4097)
+    assert client.put(f"/passkeyVault/{CREDENTIAL_HASH}", json=body).status_code == 422
+
+
+def test_a_weak_rsa_key_is_refused(api, caller):
+    from cryptography.hazmat.primitives.asymmetric import rsa as rsa_keys
+
+    client, _ = api
+    weak = rsa_keys.generate_private_key(public_exponent=3, key_size=1024)
+    spki = b64url(
+        weak.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    body = put_body(Authenticator(), caller.pubkey, publicKey=spki, alg=ALG_RS256)
+    assert client.put(f"/passkeyVault/{CREDENTIAL_HASH}", json=body).status_code == 422
+
+
+def test_the_upsert_only_overwrites_the_owners_row_and_resets_the_counter():
+    from sqlalchemy.dialects import postgresql
+
+    from app.repos import passkey_vault_repo
+
+    captured = {}
+
+    class Db:
+        async def execute(self, stmt):
+            captured["sql"] = str(stmt.compile(dialect=postgresql.dialect())).replace(
+                "\n", " "
+            )
+            return SimpleNamespace(
+                mappings=lambda: SimpleNamespace(one_or_none=lambda: None)
+            )
+
+    asyncio.run(
+        passkey_vault_repo.upsert_passkey_vault_on_db(
+            Db(),
+            credential_id_hash=CREDENTIAL_HASH,
+            pubkey="ab" * 32,
+            credential_public_key="k",
+            alg=ALG_ES256,
+            blob="{}",
+            label=None,
+        )
+    )
+    sql = captured["sql"]
+    assert "ON CONFLICT (credential_id_hash) DO UPDATE" in sql
+    assert "WHERE passkey_vault.pubkey = excluded.pubkey" in sql
+    assert "sign_count" in sql.split("DO UPDATE")[1]
 
 
 def test_a_new_device_opens_the_vault_with_the_passkey(api, caller, monkeypatch):
@@ -331,7 +428,7 @@ def test_a_new_device_opens_the_vault_with_the_passkey(api, caller, monkeypatch)
     monkeypatch.setattr(
         service, "select_passkey_vault_by_hash_on_db", AsyncMock(return_value=row)
     )
-    mark = AsyncMock()
+    mark = AsyncMock(return_value=True)
     monkeypatch.setattr(service, "mark_passkey_vault_used_on_db", mark)
 
     challenge = client.post("/passkeyVault/challenge").json()["data"]["challenge"]
@@ -349,7 +446,8 @@ def test_a_new_device_opens_the_vault_with_the_passkey(api, caller, monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "case", ["no-row", "wrong-key", "foreign-challenge", "counter-went-back"]
+    "case",
+    ["no-row", "wrong-key", "foreign-challenge", "counter-went-back", "counter-raced"],
 )
 def test_every_failed_open_looks_the_same(api, caller, monkeypatch, case):
     client, _ = api
@@ -358,6 +456,12 @@ def test_every_failed_open_looks_the_same(api, caller, monkeypatch, case):
     row = row_for(caller.pubkey, stored)
     if case == "counter-went-back":
         row.sign_count = 9
+    # Another open advanced the counter between our read and our write.
+    monkeypatch.setattr(
+        service,
+        "mark_passkey_vault_used_on_db",
+        AsyncMock(return_value=case != "counter-raced"),
+    )
     monkeypatch.setattr(
         service,
         "select_passkey_vault_by_hash_on_db",
