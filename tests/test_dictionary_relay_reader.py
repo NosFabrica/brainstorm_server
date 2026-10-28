@@ -81,12 +81,16 @@ def _relay_sending(*events: dict, filters: list | None = None):
     return relay
 
 
-# W1 (D3)
-def test_returns_the_newest_verified_header_for_each_author_and_d():
+# W1 (D3): newest by created_at, whichever the relay sends first
+@pytest.mark.parametrize(
+    "newer_first", [True, False], ids=["newer-first", "older-first"]
+)
+def test_returns_the_newest_verified_header_for_each_author_and_d(newer_first):
     a, b = Keys.generate(), Keys.generate()
     a_old, a_new = signed(a, "x", 1), signed(a, "x", 2)
     b_y = signed(b, "y", 5)
-    found = _read(_relay_sending(a_new, a_old, b_y), [hexkey(a), hexkey(b)], ["x", "y"])
+    order = (a_new, a_old) if newer_first else (a_old, a_new)
+    found = _read(_relay_sending(*order, b_y), [hexkey(a), hexkey(b)], ["x", "y"])
     assert found == {(hexkey(a), "x"): a_new, (hexkey(b), "y"): b_y}
 
 

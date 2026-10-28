@@ -42,6 +42,9 @@ These come from the ADR's decisions, not from any acceptance criterion:
 - [ ] **Withdrawing needs only the Assistant's header** (R22). A copy whose community header has disappeared can
   still be removed.
 - [ ] **An event whose signature doesn't verify is skipped, not trusted** (W3; ADR D3).
+- [ ] **Reads go to the dictionary relay, never the outbox** (R25; ADR D3). The dictionary relay's state alone
+  decides, and the fake records each relay read.
+- [ ] **"Newest" means by `created_at`, whichever order the relay sends** (W1, run in both orders).
 - [ ] **One unknown concept doesn't stop the others** (R19; ADR D6). The request answers 200 with each status.
 - [ ] **A concept not sent by the deadline is `failed`, "not sent: out of time", with no event** (R20; ADR D6).
 - [ ] **Two presses for one Assistant never send at once** (R21; ADR D7). The service is called concurrently with
@@ -52,15 +55,17 @@ These come from the ADR's decisions, not from any acceptance criterion:
 - [ ] **Regression sentinel S2:** the rest of the fast suite stays green: 1,494 passed on the base (`e2ca872`).
 - [ ] **Regression sentinel S3:** the AC11 fixtures are the UI's, copied verbatim. B1 and B3 catch the server side
   drifting from them. They can't see the UI: nothing here reads that repo, so a change on the UI side alone leaves them
-  green. The UI side's counterpart is its own test on the same fixtures, `describe("exactCopyTemplate")` in
-  Brainstorm-UI's `client/src/lib/conceptCopy.test.ts`. A change to `COPIED_TAGS`, the fixture or the withdrawn `alt`
-  belongs in both repos in the same round, as ADR 0001's Consequences say.
+  green. The UI side's counterparts are its own tests on the same fixtures, `describe("exactCopyTemplate")` and
+  `describe("withdrawnTemplate")` in Brainstorm-UI's `client/src/lib/conceptCopy.test.ts`. Both now assert the full
+  tags, the withdrawn `alt` sentence included (Brainstorm-UI#299). A change to `COPIED_TAGS`, the fixture or the
+  withdrawn `alt` belongs in both repos in the same round, as ADR 0001's Consequences say.
 
 ## Error paths, one per external dependency
 
 | Dependency | Failure | Handle | Expected |
 | --- | --- | --- | --- |
 | Dictionary relay (strict read) | unreachable | W6, R17 | the reader raises; the request answers 502 with nothing sent (both routes) |
+| Dictionary relay (strict read) | any error the reader raises | R17 | 502 with nothing sent, for each of `ConnectionError`, `TimeoutError`, `RuntimeError` (a `CLOSED`) and `ConnectionClosedOK` (closed before EOSE), on both routes |
 | Dictionary relay (strict read) | `CLOSED` | W5 | the reader raises |
 | Dictionary relay (strict read) | takes the REQ, then says nothing | W7 | the reader raises within its bound, not hanging and not returning what it has |
 | Dictionary relay (strict read) | closes the socket before EOSE | W8 | the reader raises, never returns a partial read as if the relay held nothing |
@@ -89,7 +94,7 @@ not import errors. R13 fails the same way (`assert 405 in (401, 403)`).
 
 - `dictionary_copy_build`: B1–B18, at collection;
 - `dictionary_relay_reader`: W1–W8, at collection (`cannot import name 'dictionary_relay_reader'`);
-- `assistant_dictionary_service`: R1–R10, R12, R14–R24, at fixture setup, where the fakes are installed at its import
+- `assistant_dictionary_service`: R1–R10, R12, R14–R25, at fixture setup, where the fakes are installed at its import
   site.
 
 None fails for a typo. Each import names a module the ADR plans and the tree doesn't have.
@@ -153,8 +158,8 @@ test files added. Each file was run on its own, since a collection error stops a
 ```text
 tests/test_dictionary_copy_build.py   exit 2, 1 error: ModuleNotFoundError: No module named 'app.services.dictionary_copy_build'
 tests/test_dictionary_relay_reader.py exit 2, 1 error: ImportError: cannot import name 'dictionary_relay_reader' from 'app.services'
-tests/test_assistant_dictionary.py    exit 1, 16 failed, 24 errors in 0.45s
+tests/test_assistant_dictionary.py    exit 1, 16 failed, 31 errors in 0.58s
   FAILED test_a_body_that_isnt_1_to_10_concept_coordinates_is_a_422 (14 cases): assert 405 == 422 / assert 404 == 422
   FAILED test_both_routes_refuse_a_request_without_a_session (2 cases): assert 405 in (401, 403) / assert 404 in (401, 403)
-  ERROR  (24 at setup): ModuleNotFoundError: No module named 'app.services.assistant_dictionary_service'
+  ERROR  (31 at setup): ModuleNotFoundError: No module named 'app.services.assistant_dictionary_service'
 ```

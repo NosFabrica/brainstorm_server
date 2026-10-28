@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag, Timestamp
+from websockets.exceptions import ConnectionClosedOK
 
 from app.api import app
 from app.core.config import settings
@@ -103,7 +104,8 @@ class Relays:
 
     def __init__(self) -> None:
         self.held: list[dict] = []
-        self.read_fails = False
+        self.read_error: BaseException | None = None
+        self.read_from: list[str] = []
         self.down: set[str] = set()
         self.refusing: dict[str, str] = {}
         self.sent: list[tuple[list[str], dict]] = []
@@ -112,8 +114,9 @@ class Relays:
         self.max_in_flight = 0
 
     async def fetch_newest_headers(self, relay, authors, ds):
-        if self.read_fails:
-            raise ConnectionError("the dictionary relay didn't answer")
+        self.read_from.append(relay)
+        if self.read_error is not None:
+            raise self.read_error
         newest: dict[tuple[str, str], dict] = {}
         for event in self.held:
             d = next((t[1] for t in event["tags"] if t[0] == "d"), None)
@@ -449,16 +452,36 @@ def test_the_relay_report_is_per_concept_and_names_a_relay_that_refused(
     assert lines[OUTBOX[0]]["message"] == "rate-limited: slow down"
 
 
-# R17 (D3)
+# R17 (D3): whatever the strict reader raises, as W5–W8 make it raise
 @pytest.mark.parametrize("path", [ADD, WITHDRAW])
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionError("unreachable"),
+        TimeoutError(),
+        RuntimeError("relay closed the request: auth-required: sign in"),
+        ConnectionClosedOK(None, None),
+    ],
+    ids=["unreachable", "quiet", "closed-request", "closed-before-eose"],
+)
 def test_when_the_dictionary_relay_cant_be_read_nothing_is_published_and_the_answer_is_502(
-    dict_client, relays, curator, path
+    dict_client, relays, curator, path, error
 ):
     relays.held.append(community(curator))
-    relays.read_fails = True
+    relays.read_error = error
     response = post(dict_client, path, concept(curator))
     assert response.status_code == 502
     assert relays.sent == []
+
+
+# R25 (D3): only the dictionary relay's state decides
+def test_reads_go_to_the_dictionary_relay_and_never_the_outbox(
+    dict_client, relays, curator
+):
+    relays.held.append(community(curator))
+    assert results(post(dict_client, ADD, concept(curator)))[0]["status"] == "published"
+    assert relays.read_from
+    assert set(relays.read_from) == {DICTIONARY}
 
 
 # R18 (D4)
