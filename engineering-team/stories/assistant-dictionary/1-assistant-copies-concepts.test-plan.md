@@ -25,7 +25,7 @@ Every handle is in the fast suite, which needs no services.
 | AC7 unknown concept | R10 | `test_a_concept_that_cant_be_found_is_not_found_and_nothing_is_published` | `tests/test_assistant_dictionary.py` |
 | AC8 input: 422, `d` with colons kept whole | B4, B5, R11, R12 | `test_a_concept_coordinate_splits_at_its_first_two_colons`, `test_anything_else_is_not_a_concept_coordinate`, `test_a_body_that_isnt_1_to_10_concept_coordinates_is_a_422` (7 bodies × 2 routes), `test_a_d_with_colons_is_kept_whole` | both |
 | AC9 routing and session | R1, R13 | R1 is answered by the new route (200, not `/{pubkey}`'s 405); `test_both_routes_refuse_a_request_without_a_session` (2 routes) | `tests/test_assistant_dictionary.py` |
-| AC10 targets, date, 502 | B18, R14, R15 | `test_a_new_version_is_dated_after_the_newest`, `test_the_copy_goes_to_the_dictionary_relay_and_the_outbox_dated_after_the_newest`, `test_when_no_relay_takes_it_the_answer_is_502` | both |
+| AC10 targets, date, 502 | B18, R14, R15, R24 | `test_a_new_version_is_dated_after_the_newest`, `test_the_copy_goes_to_the_dictionary_relay_and_the_outbox_dated_after_the_newest`, `test_when_no_relay_takes_it_the_answer_is_502`, `test_when_no_publish_relay_can_be_reached_the_answer_is_502` | both |
 | AC11 matches the UI (added and withdrawn) | B1, B3 | the UI's `lib/conceptCopy.test.ts` fixtures, verbatim | `tests/test_dictionary_copy_build.py` |
 
 ## Edge cases and regression sentinels
@@ -50,8 +50,11 @@ These come from the ADR's decisions, not from any acceptance criterion:
   green unchanged. Their relay I/O (`connect_targets`, `send_event`, `relay_report`) is what this story imports,
   untouched.
 - [ ] **Regression sentinel S2:** the rest of the fast suite stays green: 1,494 passed on the base (`e2ca872`).
-- [ ] **Regression sentinel S3:** the AC11 fixtures are the UI's, verbatim, so the cross-repo constant can't drift
-  silently. B1 and B3 fail the moment either side changes alone.
+- [ ] **Regression sentinel S3:** the AC11 fixtures are the UI's, copied verbatim. B1 and B3 catch the server side
+  drifting from them. They can't see the UI: nothing here reads that repo, so a change on the UI side alone leaves them
+  green. The UI side's counterpart is its own test on the same fixtures, `describe("exactCopyTemplate")` in
+  Brainstorm-UI's `client/src/lib/conceptCopy.test.ts`. A change to `COPIED_TAGS`, the fixture or the withdrawn `alt`
+  belongs in both repos in the same round, as ADR 0001's Consequences say.
 
 ## Error paths, one per external dependency
 
@@ -59,8 +62,12 @@ These come from the ADR's decisions, not from any acceptance criterion:
 | --- | --- | --- | --- |
 | Dictionary relay (strict read) | unreachable | W6, R17 | the reader raises; the request answers 502 with nothing sent (both routes) |
 | Dictionary relay (strict read) | `CLOSED` | W5 | the reader raises |
+| Dictionary relay (strict read) | takes the REQ, then says nothing | W7 | the reader raises within its bound, not hanging and not returning what it has |
+| Dictionary relay (strict read) | closes the socket before EOSE | W8 | the reader raises, never returns a partial read as if the relay held nothing |
 | Dictionary relay (strict read) | holds nothing | W4, R10 | `{}`; `not_found` for an add |
 | Dictionary relay (strict read) | invalid event | W3 | skipped |
+| Publish relays (nostr-sdk `Client`) | one can't be reached (connect fails) | R23 | its line has `ok: false` and the reason; the others still take it |
+| Publish relays (nostr-sdk `Client`) | none can be reached | R24 | 502, with a string `detail` |
 | Publish relays (nostr-sdk `Client`) | every relay refuses | R15 | 502, with a string `detail` |
 | Publish relays | one relay refuses | R16 | that line has `ok: false` and the relay's message |
 | Publish relays | slow | R20 | the deadline: later concepts `failed`, out of time |
@@ -81,8 +88,8 @@ not import errors. R13 fails the same way (`assert 405 in (401, 403)`).
 **Every other handle** fails with a `ModuleNotFoundError` that names exactly one of the three planned modules:
 
 - `dictionary_copy_build`: B1–B18, at collection;
-- `dictionary_relay_reader`: W1–W6, at collection;
-- `assistant_dictionary_service`: R1–R10, R12, R14–R22, at fixture setup, where the fakes are installed at its import
+- `dictionary_relay_reader`: W1–W8, at collection (`cannot import name 'dictionary_relay_reader'`);
+- `assistant_dictionary_service`: R1–R10, R12, R14–R24, at fixture setup, where the fakes are installed at its import
   site.
 
 None fails for a typo. Each import names a module the ADR plans and the tree doesn't have.
@@ -100,12 +107,18 @@ None fails for a typo. Each import names a module the ADR plans and the tree doe
 - **Signing is real:** `nostr_sdk` `EventBuilder` and generated `Keys`, and R1 checks `Event.verify()`.
 - **The reader runs over a real socket:** `websockets.serve` on `127.0.0.1:0`, as `tests/test_designated_pubkeys.py`
   runs `fetch_latest_designation`.
+  - Each read runs under the test's own **guard**, 3 s for W7 and W8. A read still going then raises `GuardTimeout`,
+    never the reader's own error, so W7 and W8 tell a reader that gives up apart from one that hangs.
+  - W7 sets the reader's bound, `READ_TIMEOUT_SECONDS`, to 0.3 s. It asserts the reader raised by itself, within
+    2 s.
 - **R20 is timed.** It sets `SEND_DEADLINE_SECONDS = 0.5` and a 1.0 s send delay: the first send starts at about 0
   s, the second at about 1.0 s, so there's 0.5 s of margin on each side.
-- **The implementation must expose these seams** (named in the ADR):
+- **The implementation must expose these seams** (the ADR names the modules and their roles):
   - module-level `Client`, `fetch_newest_headers`, `assistant_relay_list`,
     `get_or_create_brainstorm_observer_nsec_by_pubkey_on_db` and `SEND_DEADLINE_SECONDS` in
     `assistant_dictionary_service`;
+  - a module-level `READ_TIMEOUT_SECONDS` (5.0, D3's bound) in `dictionary_relay_reader`, read when a read starts so a
+    test can shrink it;
   - `add_to_assistant_dictionary(db, user_pubkey, concepts)` returning `AssistantDictionaryResult`, whose
     `concepts[i].status` R21 reads.
 - **The fixtures are the UI's:** B1 and B3 copy Brainstorm-UI's `client/src/lib/conceptCopy.test.ts` and
@@ -135,13 +148,13 @@ Parity evidence for the 143 deselected integration tests is the same set failing
 ## Verification
 
 The new tests fail with the current code. Confirmed 2026-10-27 against the tree at `1914e2a`, with only these three
-test files added:
+test files added. Each file was run on its own, since a collection error stops a combined run:
 
 ```text
-tests/test_dictionary_copy_build.py   ERROR at collection: ModuleNotFoundError: No module named 'app.services.dictionary_copy_build'
-tests/test_dictionary_relay_reader.py ERROR at collection: ModuleNotFoundError: No module named 'app.services.dictionary_relay_reader'
-tests/test_assistant_dictionary.py    16 failed, 22 errors in 0.40s
+tests/test_dictionary_copy_build.py   exit 2, 1 error: ModuleNotFoundError: No module named 'app.services.dictionary_copy_build'
+tests/test_dictionary_relay_reader.py exit 2, 1 error: ImportError: cannot import name 'dictionary_relay_reader' from 'app.services'
+tests/test_assistant_dictionary.py    exit 1, 16 failed, 24 errors in 0.45s
   FAILED test_a_body_that_isnt_1_to_10_concept_coordinates_is_a_422 (14 cases): assert 405 == 422 / assert 404 == 422
   FAILED test_both_routes_refuse_a_request_without_a_session (2 cases): assert 405 in (401, 403) / assert 404 in (401, 403)
-  ERROR  (22 at setup): ModuleNotFoundError: No module named 'app.services.assistant_dictionary_service'
+  ERROR  (24 at setup): ModuleNotFoundError: No module named 'app.services.assistant_dictionary_service'
 ```

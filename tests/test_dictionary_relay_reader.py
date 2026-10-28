@@ -12,11 +12,17 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import time
 
 import pytest
 from nostr_sdk import EventBuilder, Keys, Kind, Tag, Timestamp
 
+from app.services import dictionary_relay_reader
 from app.services.dictionary_relay_reader import fetch_newest_headers
+
+
+class GuardTimeout(Exception):
+    """The test's own limit ran out: the reader didn't give up by itself."""
 
 
 def signed(
@@ -36,15 +42,24 @@ def hexkey(keys: Keys) -> str:
     return keys.public_key().to_hex()
 
 
-def _read(handler, authors: list[str], ds: list[str]):
-    """Serve `handler` as a one-shot local relay and read from it."""
+def _read(handler, authors: list[str], ds: list[str], guard: float = 10.0):
+    """Serve `handler` as a one-shot local relay and read from it. A read still
+    going after `guard` seconds raises `GuardTimeout`, never the reader's own
+    error, so a test can tell the reader timing out from the reader hanging."""
     import websockets
 
     async def run():
         server = await websockets.serve(handler, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
+        read = asyncio.ensure_future(
+            fetch_newest_headers(f"ws://127.0.0.1:{port}", authors, ds)
+        )
         try:
-            return await fetch_newest_headers(f"ws://127.0.0.1:{port}", authors, ds)
+            done, _ = await asyncio.wait({read}, timeout=guard)
+            if not done:
+                read.cancel()
+                raise GuardTimeout()
+            return read.result()
         finally:
             server.close()
             await server.wait_closed()
@@ -127,3 +142,37 @@ def test_a_relay_that_cant_be_reached_raises():
                 f"ws://127.0.0.1:{port}", [hexkey(Keys.generate())], ["x"]
             )
         )
+
+
+# W7 (D3: strict, the read's bound)
+def test_a_relay_that_takes_the_request_and_goes_quiet_raises_within_the_bound(
+    monkeypatch,
+):
+    monkeypatch.setattr(dictionary_relay_reader, "READ_TIMEOUT_SECONDS", 0.3)
+    a = Keys.generate()
+
+    async def relay(ws):
+        await ws.recv()  # the REQ, never answered: no EVENT, no EOSE
+        async for _ in ws:
+            pass
+
+    started = time.monotonic()
+    with pytest.raises(Exception) as raised:
+        _read(relay, [hexkey(a)], ["x"], guard=3.0)
+    assert not isinstance(raised.value, GuardTimeout)
+    assert time.monotonic() - started < 2.0
+
+
+# W8 (D3: strict, a transport error mid-read)
+def test_a_relay_that_closes_before_eose_raises_rather_than_reading_as_partial():
+    a = Keys.generate()
+    event = signed(a, "x", 1)
+
+    async def relay(ws):
+        _, sub_id, _ = json.loads(await ws.recv())
+        await ws.send(json.dumps(["EVENT", sub_id, event]))
+        await ws.close()
+
+    with pytest.raises(Exception) as raised:
+        _read(relay, [hexkey(a)], ["x"], guard=3.0)
+    assert not isinstance(raised.value, GuardTimeout)

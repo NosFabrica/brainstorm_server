@@ -98,11 +98,13 @@ def local(assistant: Keys, d: str = "github-accounts") -> str:
 
 class Relays:
     """The dictionary relay and the Assistant's outbox, faked as one: what they
-    hold, whether the strict read fails, which refuse, and every send."""
+    hold, whether the strict read fails, which can't be reached, which refuse,
+    and every send."""
 
     def __init__(self) -> None:
         self.held: list[dict] = []
         self.read_fails = False
+        self.down: set[str] = set()
         self.refusing: dict[str, str] = {}
         self.sent: list[tuple[list[str], dict]] = []
         self.send_delay = 0.0
@@ -135,7 +137,14 @@ class Relays:
 
             async def try_connect(self, _timeout):
                 tried, self.pending = self.pending, []
-                return SimpleNamespace(success=tried, failed={})
+                return SimpleNamespace(
+                    success=[u for u in tried if u not in relays.down],
+                    failed={
+                        u: "IO error: Connection refused"
+                        for u in tried
+                        if u in relays.down
+                    },
+                )
 
             async def send_event_to(self, urls, event):
                 relays.in_flight += 1
@@ -527,3 +536,29 @@ def test_removing_a_copy_works_even_when_the_community_header_is_gone(
     [result] = results(post(dict_client, WITHDRAW, concept(curator)))
     assert result["status"] == "withdrawn"
     assert len(relays.sent) == 1
+
+
+# R23 (D5, publish relays: one unreachable)
+def test_a_publish_relay_that_cant_be_reached_is_reported_and_the_rest_still_take_it(
+    dict_client, relays, curator
+):
+    relays.held.append(community(curator))
+    relays.down = {OUTBOX[1]}
+    [result] = results(post(dict_client, ADD, concept(curator)))
+    assert result["status"] == "published"
+    lines = {line["url"]: line for line in result["relays"]}
+    assert lines[DICTIONARY]["ok"] is True
+    assert lines[OUTBOX[1]]["ok"] is False
+    assert lines[OUTBOX[1]]["message"]
+    assert OUTBOX[1] not in relays.sent[0][0]
+
+
+# R24 (AC10, publish relays: none reachable)
+def test_when_no_publish_relay_can_be_reached_the_answer_is_502(
+    dict_client, relays, curator
+):
+    relays.held.append(community(curator))
+    relays.down = {DICTIONARY, *OUTBOX}
+    response = post(dict_client, ADD, concept(curator))
+    assert response.status_code == 502
+    assert isinstance(response.json()["detail"], str)
