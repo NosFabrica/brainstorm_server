@@ -43,12 +43,13 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.config import settings
 from app.core.loggr import loggr
 from app.cronjobs.periodic_graperank_trigger import PERIOD_HOURS
+from app.cronjobs.scheduler import has_grapevine
 from app.db_models import BrainstormNsec
-from app.repos.brainstorm_nsec import (
-    get_scheduling_for_pubkey_on_db,
-    set_treasure_map_on_by_pubkey_on_db,
+from app.repos.brainstorm_nsec import set_treasure_map_on_by_pubkey_on_db
+from app.repos.scheduling_repo import (
+    get_default_scheduling_on_db,
+    get_scheduling_on_db,
 )
-from app.repos.scheduling_repo import get_default_scheduling_on_db
 from app.schemas.schemas import (
     AssistantTreasureMapCheck,
     PublishedAssistantTreasureMap,
@@ -120,27 +121,47 @@ def _one_press_at_a_time(assistant: str) -> Iterator[None]:
         _pressing.discard(assistant)
 
 
-async def _upkeep_interval(db: AsyncDBSession, pubkey: str) -> int | None:
+async def _upkeep_interval(db: AsyncDBSession, row: BrainstormNsec) -> int | None:
     """How often the caller's Scores are re-published, in seconds; None when
-    nothing re-publishes them. Read as the scheduler reads it
-    (`cronjobs/scheduler.py`): its switch, a default policy to run at all, and
-    the caller's policy or the default."""
+    nothing re-publishes them. Read as the scheduler admits a run
+    (`cronjobs/scheduler.py`): its switch, a default policy to run at all, the
+    caller's policy or the default, enabled, and a grapevine to score, by the
+    scheduler's own `has_grapevine`."""
     house = (settings.periodic_graperank_pubkey or "").strip()
-    if house and pubkey == house:
+    if house and row.pubkey == house:
         # The scheduler leaves the House Observer to the periodic trigger.
         return PERIOD_HOURS * 3600
-    if not settings.scheduler_enabled or await get_default_scheduling_on_db(db) is None:
+    if not settings.scheduler_enabled:
         return None
-    policy = await get_scheduling_for_pubkey_on_db(db, pubkey)
-    if policy is None or not policy.enabled:
+    default = await get_default_scheduling_on_db(db)
+    if default is None:
         return None
-    return policy.schedule_interval_seconds
+    own = (
+        await get_scheduling_on_db(db, row.scheduling_id)
+        if row.scheduling_id is not None
+        else None
+    )
+    policy = own or default
+    if not policy.enabled:
+        return None
+    try:
+        grapevine = await has_grapevine(row.pubkey)
+    except Exception as e:
+        logger.warning(f"follow count for {row.pubkey} unread: {e!r}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Couldn't check whether your Scores are kept up to date. "
+                "Try again in a moment."
+            ),
+        )
+    return policy.schedule_interval_seconds if grapevine else None
 
 
 async def _scores_upkeep(db: AsyncDBSession, row: BrainstormNsec) -> ScoresUpkeep:
     return scores_upkeep(
         as_naive_utc(row.last_time_published_graperank),
-        await _upkeep_interval(db, row.pubkey),
+        await _upkeep_interval(db, row),
         utc_now(),
     )
 

@@ -489,6 +489,9 @@ class World:
         )
         self.policy = SimpleNamespace(enabled=True, schedule_interval_seconds=12 * 3600)
         self.default_policy: SimpleNamespace | None = self.policy
+        # The caller's own policy, when `row.scheduling_id` names one.
+        self.own_policy: SimpleNamespace | None = None
+        self.follows = 3
 
     @property
     def hex(self) -> str:
@@ -586,9 +589,21 @@ def world(monkeypatch, caller, assistant) -> World:
     )
     monkeypatch.setattr(
         self_map_service,
-        "get_scheduling_for_pubkey_on_db",
-        AsyncMock(side_effect=lambda db, pubkey: w.policy),
+        "get_scheduling_on_db",
+        AsyncMock(
+            side_effect=lambda db, scheduling_id: (
+                w.own_policy if scheduling_id == w.row.scheduling_id else None
+            )
+        ),
     )
+
+    async def grapevine(pubkey):
+        assert pubkey == w.user
+        if w.follows is None:
+            raise ConnectionError("neo4j down")
+        return w.follows > 0
+
+    monkeypatch.setattr(self_map_service, "has_grapevine", grapevine)
 
     async def remember(db, pubkey, on):
         assert pubkey == w.user and db is w.db
@@ -725,6 +740,8 @@ def test_turn_off_needs_no_map_even_one_too_big(map_client, world):
         (lambda w: setattr(settings, "scheduler_enabled", False), "not-scheduled"),
         (lambda w: setattr(w.policy, "enabled", False), "not-scheduled"),
         (lambda w: setattr(w, "default_policy", None), "not-scheduled"),
+        # The scheduler skips a customer who follows no one (`has_grapevine`).
+        (lambda w: setattr(w, "follows", 0), "not-scheduled"),
         (lambda w: setattr(w.row, "last_time_published_graperank", None), "not-landed"),
         (
             lambda w: setattr(
@@ -743,6 +760,7 @@ def test_turn_off_needs_no_map_even_one_too_big(map_client, world):
         "scheduler-off",
         "policy-off",
         "no-default-policy",
+        "no-follows",
         "never-published",
         "25h",
         "23h",
@@ -758,6 +776,25 @@ def test_scores_are_live_only_while_the_scheduler_keeps_them_up_to_date(
     landed = world.row.last_time_published_graperank
     expected = _seconds(landed) if status == "upkeep-stopped" else None
     assert rank["lastLandedAt"] == expected
+
+
+def test_the_callers_own_policy_wins_over_the_default(map_client, world):
+    world.row.scheduling_id = 7
+    world.own_policy = SimpleNamespace(enabled=True, schedule_interval_seconds=3600)
+    world.row.last_time_published_graperank = utc_now() - timedelta(hours=3)
+    assert _get(map_client)["duties"][0]["reason"] == "upkeep-stopped"
+
+    world.own_policy.enabled = False
+    assert _get(map_client)["duties"][0]["reason"] == "not-scheduled"
+
+
+def test_a_follow_count_that_cannot_be_read_is_an_error(map_client, world):
+    """Read as none, it would make Turn on take the Scores entries off."""
+    world.follows = None
+    assert map_client.get("/user/assistantTreasureMap").status_code == 502
+    r = map_client.post("/user/assistantTreasureMap", json={"on": True})
+    assert r.status_code == 502 and isinstance(r.json()["detail"], str)
+    assert world.sent == [] and world.choices == []
 
 
 def test_the_house_observer_is_kept_up_to_date_by_the_periodic_trigger(

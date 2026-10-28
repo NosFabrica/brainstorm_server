@@ -150,3 +150,24 @@ def test_two_jobs_on_different_keys_do_not_lock_each_other_out():
         return scheduler, billing
 
     assert asyncio.run(_run()) == (True, True)
+
+
+def test_has_grapevine_is_whether_the_user_follows_someone(monkeypatch):
+    """The scheduler's no-follows rule, which the Treasure Map's check shares."""
+    from contextlib import asynccontextmanager
+
+    from app.cronjobs import scheduler as loop
+
+    follows = {"a": 2, "b": 0}
+
+    @asynccontextmanager
+    async def session():
+        yield None
+
+    async def count(_session, pubkey):
+        return follows[pubkey]
+
+    monkeypatch.setattr(loop.neo4j_driver, "session", session)
+    monkeypatch.setattr(loop, "count_user_follows", count)
+    assert asyncio.run(loop.has_grapevine("a")) is True
+    assert asyncio.run(loop.has_grapevine("b")) is False
