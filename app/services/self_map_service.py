@@ -118,12 +118,15 @@ def _one_press_at_a_time(assistant: str) -> Iterator[None]:
         _pressing.discard(assistant)
 
 
-async def _upkeep_interval(db: AsyncDBSession, row: BrainstormNsec) -> int | None:
+async def _upkeep_interval(
+    db: AsyncDBSession, row: BrainstormNsec, *, strict: bool = True
+) -> int | None:
     """How often the caller's Scores are re-published, in seconds; None when
     nothing re-publishes them. Read as the scheduler admits a run
     (`cronjobs/scheduler.py`): its switch, a default policy to run at all, the
     caller's policy or the default, enabled, and a grapevine to score, by the
-    scheduler's own `has_grapevine`."""
+    scheduler's own `has_grapevine`. A follow count that can't be read is a 502,
+    or, when not `strict`, no grapevine."""
     house = (settings.periodic_graperank_pubkey or "").strip()
     if house and row.pubkey == house:
         # The scheduler leaves the House Observer to the periodic trigger.
@@ -145,6 +148,8 @@ async def _upkeep_interval(db: AsyncDBSession, row: BrainstormNsec) -> int | Non
         grapevine = await has_grapevine(row.pubkey)
     except Exception as e:
         logger.warning(f"follow count for {row.pubkey} unread: {e!r}")
+        if not strict:
+            return None
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
@@ -155,10 +160,12 @@ async def _upkeep_interval(db: AsyncDBSession, row: BrainstormNsec) -> int | Non
     return policy.schedule_interval_seconds if grapevine else None
 
 
-async def _scores_upkeep(db: AsyncDBSession, row: BrainstormNsec) -> ScoresUpkeep:
+async def _scores_upkeep(
+    db: AsyncDBSession, row: BrainstormNsec, *, strict: bool = True
+) -> ScoresUpkeep:
     return scores_upkeep(
         as_naive_utc(row.last_time_published_graperank),
-        await _upkeep_interval(db, row),
+        await _upkeep_interval(db, row, strict=strict),
         utc_now(),
     )
 
@@ -295,9 +302,10 @@ async def publish_assistant_treasure_map(
             if on:
                 raise _too_big("nothing was published")
             map_event = None
-        check = evaluate_self_map(
-            map_event, offer_rows(who), who, await _scores_upkeep(db, row)
-        )
+        # Turning off goes ahead without the follow count too: it lists nothing,
+        # and live Scores would only add the TA relay, which the outbox names.
+        upkeep = await _scores_upkeep(db, row, strict=on)
+        check = evaluate_self_map(map_event, offer_rows(who), who, upkeep)
         target = check.should_say if on else []
         relays = _writer_relays(check)
         read = publish_targets(relays)

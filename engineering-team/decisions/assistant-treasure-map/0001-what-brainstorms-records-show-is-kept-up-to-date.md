@@ -4,7 +4,8 @@
 [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110) (commit `e2ca872`). No
 Gate A was held. It's for David to accept and for the Gate B reviewer to ratify, together with this ADR's
 classification. Revised 2026-10-28 for the PR 110 audit: D2 (follows), D3 (when the choice is saved), D4 (no merge,
-the writer's relays only, the repair, the 64-key cap), D5 (refuse, not queue), D6, D7 and the Debt.
+the writer's relays only, the repair, the 64-key cap, Turn off without the follow count), D5 (refuse, not queue), D6,
+D7 and the Debt.
 **Date:** 2026-10-27
 **Story:** none written (see Consequences, "Owed")
 **Ask:** Brainstorm-UI `docs/assistant/TREASURE-MAP-ASK.md`, corrected by NosFabrica/Brainstorm-UI#301; the UI is
@@ -175,6 +176,9 @@ the response, a failed commit would have followed a 200.
   goes ahead without it. A check weighs each key against every other, so its cost grows with the square of the keys:
   an 835-key Map took seconds of the event loop's CPU per GET. It is never truncated, which could give the wrong
   self-entries. `/setup` writes eight keys.
+- The follow count (D2) is read strictly for the GET and Turn on: 502 when it can't be read, because read as none it
+  would take the Scores entries off. Turn off reads it as none: it lists nothing, and live Scores would only add the
+  TA relay, which the outbox names first.
 - Then the writer's relays (below) are asked for the Assistant's kind 10040, the TA relay at its internal URL:
   - only versions validly signed by the Assistant count;
   - the newest by NIP-01 is the one compared and dated after;

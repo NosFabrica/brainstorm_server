@@ -797,6 +797,26 @@ def test_a_follow_count_that_cannot_be_read_is_an_error(map_client, world):
     assert world.sent == [] and world.choices == []
 
 
+@pytest.mark.parametrize("follows", [3, None], ids=["readable", "unreadable"])
+def test_turn_off_goes_ahead_whatever_the_follow_count(map_client, world, follows):
+    """Turning off lists nothing, so the follow count can't change what's signed
+    or where it goes: live Scores would only add the TA relay, which the outbox
+    names first."""
+    tags = [[k, world.hex, PUBLIC_TA] for k in FIVE]
+    world.held[INTERNAL_TA] = [_version(world.assistant, tags, 1_700_000_000)]
+    world.follows = follows
+
+    published = _post(map_client, False)
+
+    assert published["published"] is True
+    assert published["event"]["tags"] == [["client", "Brainstorm"]]
+    assert sorted(world.read_from) == sorted([INTERNAL_TA, *OUTBOX])
+    assert published["relays"] == [
+        {"url": url, "ok": True, "message": None} for url in [PUBLIC_TA, *OUTBOX]
+    ]
+    assert world.choices == [False]
+
+
 def test_the_house_observer_is_kept_up_to_date_by_the_periodic_trigger(
     map_client, world, monkeypatch, caller
 ):
