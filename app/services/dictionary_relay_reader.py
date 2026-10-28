@@ -77,8 +77,10 @@ async def fetch_newest_headers(
                         event.get("kind") == HEADER_KIND
                         and key[0] in wanted_authors
                         and d in wanted_ds
-                        and _newer(event, newest.get(key))
+                        # Verified before compared: a malformed event can't
+                        # verify, and must be skipped, not fail the read.
                         and _verified(event)
+                        and _newer(event, newest.get(key))
                     ):
                         newest[key] = event
                 elif msg[0] == "EOSE":

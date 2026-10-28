@@ -215,3 +215,21 @@ Run 2026-10-27 in the foreground, each stage's exit code captured by brace-redir
 | `mypy ./app` | 0 (no issues in 195 source files) |
 | `pytest -m "not integration" ./tests` | 0: 1,591 passed (the base's 1,494 plus this story's 97), 143 deselected |
 | `pytest -m integration ./tests` (parity) | 47 failed, 96 errors: the same 143 node ids as the base `e2ca872`, compared line for line |
+
+## Changes from the Gate B review
+
+The review (`reviews/assistant-dictionary/1-assistant-copies-concepts.md`) asked for one change.
+
+- **Blocking: the coordinate is parsed whole.** `dictionary_copy_build._COORDINATE` used `re.match` with `$`, which
+  also took a trailing newline and dropped it from the `d`. The copy's `b` then named a coordinate other than the one
+  copied, and the UI couldn't repair it. It now uses `fullmatch` with `DOTALL`. Regression tests are B4's newline
+  cases and R26.
+
+Non-blocking fixes made too:
+
+- **The reader verifies a signature before comparing dates,** so a malformed event is skipped (W9).
+- **R27** pins the UI's full fixture through signing.
+- **The withdraw row in `app/routers/CLAUDE.md`** names `failed` and the 502s.
+- **ADR D1's claim about how the UI shows a 422 is corrected.**
+
+The review's other non-blocking findings are follow-ups for the operator.

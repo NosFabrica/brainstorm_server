@@ -150,6 +150,19 @@ the foreground, with its exit code captured by brace-redirect, never piped throu
 Parity evidence for the 143 deselected integration tests is the same set failing before and after, under
 `pytest -m integration ./tests`.
 
+## Added at the Gate B review
+
+The review found that the coordinate pattern took a trailing newline and dropped it from the `d`, so the copy's `b`
+named another coordinate. These handles pin the fixes. The first three fail against the pre-fix code (`6c0b9f7`'s
+`app/`); R27 passes on both, as it guards a later nostr-sdk upgrade, not a current bug.
+
+| Handle | Test | Pins |
+| --- | --- | --- |
+| B4 (two more cases) | `test_a_concept_coordinate_splits_at_its_first_two_colons` | a coordinate is parsed whole: `…:x\n` is `d` `x\n`, and the coordinate always equals `39998:<pubkey>:<d>` |
+| R26 | `test_a_coordinate_with_a_trailing_newline_names_another_d_and_is_never_mispointed` | through the route, such a coordinate names a `d` nobody holds: `not_found`, nothing signed |
+| W9 | `test_a_malformed_event_is_skipped_and_the_read_still_answers` | a malformed event after a valid one is skipped, not a `ValueError` and a 502 |
+| R27 | `test_every_definition_tag_survives_signing_verbatim` | the UI's full fixture (display hints, image, link) survives signing verbatim, and a re-add is `unchanged` |
+
 ## Verification
 
 The new tests fail with the current code. Confirmed 2026-10-27 against the tree at `1914e2a`, with only these three

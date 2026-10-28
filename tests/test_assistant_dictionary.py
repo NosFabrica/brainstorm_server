@@ -585,3 +585,59 @@ def test_when_no_publish_relay_can_be_reached_the_answer_is_502(
     response = post(dict_client, ADD, concept(curator))
     assert response.status_code == 502
     assert isinstance(response.json()["detail"], str)
+
+
+# R26 (Gate B review: a trailing newline is part of the `d`, never dropped)
+def test_a_coordinate_with_a_trailing_newline_names_another_d_and_is_never_mispointed(
+    dict_client, relays, curator
+):
+    relays.held.append(community(curator))
+    [result] = results(post(dict_client, ADD, concept(curator) + "\n"))
+    assert result["status"] == "not_found"
+    assert result["community"] == concept(curator) + "\n"
+    assert relays.sent == []
+
+
+# R27 (AC1, AC11 through signing: the UI's full fixture survives verbatim)
+def test_every_definition_tag_survives_signing_verbatim(dict_client, relays, curator):
+    coordinate = concept(curator)
+    link = ["link", "f" * 64, DICTIONARY, "username", "github-username"]
+    relays.held.append(
+        signed(
+            curator,
+            [
+                ["d", "github-accounts"],
+                ["names", "GitHub Account", "GitHub Accounts"],
+                ["json", "{}"],
+                ["description", "A list of github handles/accounts"],
+                ["concept-graph", "x"],
+                ["required", "github-username"],
+                ["field-type", "github-username", "text"],
+                ["optional", "description", "Who it belongs to"],
+                ["display", "title", "github-username"],
+                ["image", "https://example.com/gh.png"],
+                link,
+                ["license", "CC0"],
+                ["alt", "GitHub accounts"],
+                ["client", "Tapestry"],
+                ["b", coordinate, "pointer"],
+            ],
+        )
+    )
+    [result] = results(post(dict_client, ADD, coordinate))
+    assert result["event"]["tags"] == [
+        ["d", "github-accounts"],
+        ["names", "GitHub Account", "GitHub Accounts"],
+        ["description", "A list of github handles/accounts"],
+        ["required", "github-username"],
+        ["field-type", "github-username", "text"],
+        ["optional", "description", "Who it belongs to"],
+        ["display", "title", "github-username"],
+        ["image", "https://example.com/gh.png"],
+        link,
+        ["b", coordinate, "pointer"],
+        CLIENT,
+    ]
+    relays.sent.clear()
+    assert results(post(dict_client, ADD, coordinate))[0]["status"] == "unchanged"
+    assert relays.sent == []

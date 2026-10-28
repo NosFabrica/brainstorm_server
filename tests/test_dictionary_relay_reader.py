@@ -180,3 +180,15 @@ def test_a_relay_that_closes_before_eose_raises_rather_than_reading_as_partial()
     with pytest.raises(Exception) as raised:
         _read(relay, [hexkey(a)], ["x"], guard=3.0)
     assert not isinstance(raised.value, GuardTimeout)
+
+
+# W9 (Gate B review: a malformed event is skipped, never fails the read)
+def test_a_malformed_event_is_skipped_and_the_read_still_answers():
+    a = Keys.generate()
+    good = signed(a, "x", 1)
+    malformed = dict(signed(a, "x", 2))
+    malformed["created_at"] = "soon"
+    # The valid event first: comparing the malformed one against it is what
+    # used to raise, before the signature check came first.
+    found = _read(_relay_sending(good, malformed), [hexkey(a)], ["x"], guard=3.0)
+    assert found == {(hexkey(a), "x"): good}

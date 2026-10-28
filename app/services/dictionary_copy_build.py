@@ -51,8 +51,11 @@ COPIED_TAGS = (
 )
 
 # `39998:<64 lowercase hex>:<d>`, split at the first two colons only: a `d` may
-# contain colons.
-_COORDINATE = re.compile(r"^39998:([0-9a-f]{64}):(.+)$")
+# contain colons, or anything else. Matched whole (`fullmatch`, `DOTALL`), so a
+# coordinate always equals `39998:<pubkey>:<d>` as parsed: `re.match` with `$`
+# would also take a trailing newline and drop it from the `d`, and the copy's
+# `b` would then name a coordinate other than the one it copied.
+_COORDINATE = re.compile(r"39998:([0-9a-f]{64}):(.+)", re.DOTALL)
 
 AddOutcome = Literal["published", "updated", "unchanged", "conflict"]
 WithdrawOutcome = Literal["withdrawn", "unchanged", "conflict"]
@@ -60,7 +63,7 @@ WithdrawOutcome = Literal["withdrawn", "unchanged", "conflict"]
 
 def parse_concept_coordinate(value: str) -> tuple[str, str] | None:
     """`(pubkey, d)` for a kind-39998 coordinate, else None."""
-    match = _COORDINATE.match(value) if isinstance(value, str) else None
+    match = _COORDINATE.fullmatch(value) if isinstance(value, str) else None
     return (match.group(1), match.group(2)) if match else None
 
 

@@ -137,16 +137,22 @@ def test_the_withdrawn_form_is_the_uis_then_the_client_tag():
     assert tags[-1] == CLIENT
 
 
-# B4 (AC8)
+# B4 (AC8); the newline cases since the Gate B review: a coordinate is parsed
+# whole, so the `d` is everything after the second colon and the coordinate
+# always equals 39998:<pubkey>:<d>.
 @pytest.mark.parametrize(
     "value, expected",
     [
         (COMMUNITY, (AVI, "github-accounts")),
         (f"39998:{AVI}:lists:github:accounts", (AVI, "lists:github:accounts")),
+        (f"39998:{AVI}:github-accounts\n", (AVI, "github-accounts\n")),
+        (f"39998:{AVI}:a\nb", (AVI, "a\nb")),
     ],
 )
 def test_a_concept_coordinate_splits_at_its_first_two_colons(value, expected):
     assert parse_concept_coordinate(value) == expected
+    pubkey, d = expected
+    assert value == f"39998:{pubkey}:{d}"
 
 
 # B5 (AC8)

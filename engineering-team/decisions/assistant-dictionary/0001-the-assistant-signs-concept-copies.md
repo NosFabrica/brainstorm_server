@@ -102,8 +102,10 @@ outcome rules (D4) need anyway.
     empty list, more than 10 coordinates, and any coordinate that doesn't parse. 422 is this app's convention for
     request-schema errors (`app/routers/shorturl/CLAUDE.md`; `tests/test_assistant_treasure_map.py` asserts it for a
     `/user` sibling).
-  - The ask and AC8 said 400, and AC8 is amended to 422. Brainstorm-UI shows any non-2xx other than 401, 404 and 405
-    as the request's error, so it reads 422 as it would have read 400.
+  - The ask and AC8 said 400, and AC8 is amended to 422. *(Corrected at Gate B review: Brainstorm-UI's
+    `extractApiError` passes a 422's `detail` list through as the message, so it would show "[object Object]"
+    where a 400's string would read. The UI never sends a bad body, so the path is unreached; a UI-side fix to
+    `extractApiError` is a follow-up.)*
   - Duplicates are folded after validation, keeping the first.
   - The cap of 10 bounds how many concepts one request can leave `failed`. The send deadline is what bounds the
     time (D6).
