@@ -2,7 +2,10 @@
 `designated_pubkeys`, which the GrapeRank worker scores at a fixed 95."""
 
 import asyncio
+import base64
+import hashlib
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -166,3 +169,66 @@ def test_a_closed_request_is_no_answer():
 
     with pytest.raises(RuntimeError, match="auth-required"):
         _fetch_from(relay)
+
+
+def _ws_frame(text: str) -> bytes:
+    """One unmasked text frame, as a server sends it."""
+    data = text.encode()
+    n = len(data)
+    head = bytes([0x81, n]) if n < 126 else bytes([0x81, 126]) + n.to_bytes(2, "big")
+    return head + data
+
+
+async def _read_ws_frame(reader: asyncio.StreamReader) -> str:
+    b1, b2 = await reader.readexactly(2)
+    n = b2 & 0x7F
+    if n == 126:
+        n = int.from_bytes(await reader.readexactly(2), "big")
+    elif n == 127:
+        n = int.from_bytes(await reader.readexactly(8), "big")
+    mask = await reader.readexactly(4) if b2 & 0x80 else bytes(4)
+    data = await reader.readexactly(n)
+    return bytes(c ^ mask[i % 4] for i, c in enumerate(data)).decode()
+
+
+def test_a_relay_that_stalls_the_close_keeps_its_answer_and_costs_a_second():
+    """A relay that answers and then never acknowledges the close: websockets
+    would wait 10 s for it, and the answer, read in time, used to be lost to
+    the deadline."""
+    from app.services import designation_service
+
+    newer = {"created_at": 2, "tags": [["30382:rank", PROVIDER]]}
+
+    async def stalled(reader, writer):
+        head = await reader.readuntil(b"\r\n\r\n")
+        key = next(
+            line.split(b":", 1)[1].strip()
+            for line in head.split(b"\r\n")
+            if line.lower().startswith(b"sec-websocket-key:")
+        )
+        accept = base64.b64encode(
+            hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest()
+        )
+        writer.write(
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+            b"Connection: Upgrade\r\nSec-WebSocket-Accept: " + accept + b"\r\n\r\n"
+        )
+        _, sub_id, _ = json.loads(await _read_ws_frame(reader))
+        writer.write(_ws_frame(json.dumps(["EVENT", sub_id, newer])))
+        writer.write(_ws_frame(json.dumps(["EOSE", sub_id])))
+        await writer.drain()
+        await asyncio.sleep(30)  # never answers the close
+
+    async def run():
+        server = await asyncio.start_server(stalled, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            return await designation_service.fetch_latest_designation(
+                f"ws://127.0.0.1:{port}", OBSERVER
+            )
+        finally:
+            server.close()
+
+    started = time.monotonic()
+    assert asyncio.run(run()) == newer
+    assert time.monotonic() - started < 3
