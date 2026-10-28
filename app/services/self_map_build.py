@@ -42,7 +42,9 @@ SELF_MAP_KIND = 10040
 
 HEX64 = re.compile(r"[0-9a-f]{64}", re.IGNORECASE)
 # The kind slots the engine reads (§ 4.2): an exact kind, a family, or everything.
-KIND_SLOT = re.compile(r"\d{5}|3038x|3039x|\*")
+# ASCII digits only: `\d` takes any Unicode digit, and `int()` reads them, so a
+# fullwidth `３０３８２` would pass for 30382 and be signed as written.
+KIND_SLOT = re.compile(r"[0-9]{5}|3038x|3039x|\*")
 RELAY_URL = re.compile(r"wss?://\S+", re.IGNORECASE)
 
 # The metric tags every TA carries (`ta_signing.ta_tags`), read as the observer's

@@ -338,6 +338,15 @@ def test_parse_key_reads_the_nameless_and_concept_spellings():
     assert parse_key("*:rank").scope.type == "unchecked"
 
 
+def test_a_kind_slot_is_ascii_digits():
+    """`\\d` and `int()` read fullwidth digits, so `３０３８２` would pass for 30382."""
+    fullwidth = "３０３８２:rank"
+    assert parse_key(fullwidth) is None
+    assert read_self_entries({"tags": [[fullwidth, A, PUBLIC_TA]]}, A) == []
+    check = _check([[fullwidth, A, PUBLIC_TA]])
+    assert check.duties == [] and check.should_say == []
+
+
 def test_read_self_entries():
     """[L4, L6, L8] Entries naming the author whose key parses, normalized, each
     once; element 3 missing or empty is `""`."""
