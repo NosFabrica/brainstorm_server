@@ -12,12 +12,14 @@ from app.repos.brainstorm_nsec import update_assistant_kind0_published_at_on_db
 from app.routers.open_ranking.common import enforce_batch_size, validate_pubkey_list
 from app.routers.user.dependencies import get_verified_cutoffs, resolve_observer
 from app.schemas.request_body_schemas import (
+    AssistantDictionaryBody,
     GetTrustSignalsBody,
     RefreshSubscriptionBody,
     SetAssistantTreasureMapBody,
     SubmitFollowListBody,
 )
 from app.schemas.request_response_schemas import (
+    AssistantDictionaryResponse,
     ErrorResponseSchema,
     GetAssistantDutyMenuResponse,
     GetAssistantTreasureMapResponse,
@@ -38,6 +40,10 @@ from app.schemas.request_response_schemas import (
     SubmitFollowListResponse,
 )
 from app.schemas.schemas import FollowListIngestResult, OwnUserData, TrustSignalsData
+from app.services.assistant_dictionary_service import (
+    add_to_assistant_dictionary,
+    withdraw_from_assistant_dictionary,
+)
 from app.services.assistant_profile_service import publish_assistant_kind0_for_user
 from app.services.billing_service import apply_entitlement
 from app.services.brainstorm_request_service import create_brainstorm_request
@@ -381,6 +387,43 @@ async def publish_assistant_treasure_map_endpoint(
     jwt_data: JWTData = request.state.jwt_data
     published = await publish_assistant_treasure_map(db, jwt_data.nostr_pubkey, body.on)
     return PublishAssistantTreasureMapResponse(data=published)
+
+
+# On the authenticated router for the same reason as the Duty Menu's: on
+# `public_router`, `/{pubkey}` would answer these paths with a 405, which
+# Brainstorm-UI reads as "not on this server yet".
+@router.post(
+    path="/assistantDictionary",
+    tags=[],
+    dependencies=[],
+    summary="Have the user's brainstorm assistant copy community concepts into its Dictionary",
+)
+async def add_to_assistant_dictionary_endpoint(
+    request: Request,
+    body: AssistantDictionaryBody,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> AssistantDictionaryResponse:
+    jwt_data: JWTData = request.state.jwt_data
+    result = await add_to_assistant_dictionary(db, jwt_data.nostr_pubkey, body.concepts)
+    return AssistantDictionaryResponse(data=result)
+
+
+@router.post(
+    path="/assistantDictionary/withdraw",
+    tags=[],
+    dependencies=[],
+    summary="Have the user's brainstorm assistant withdraw concept copies from its Dictionary",
+)
+async def withdraw_from_assistant_dictionary_endpoint(
+    request: Request,
+    body: AssistantDictionaryBody,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> AssistantDictionaryResponse:
+    jwt_data: JWTData = request.state.jwt_data
+    result = await withdraw_from_assistant_dictionary(
+        db, jwt_data.nostr_pubkey, body.concepts
+    )
+    return AssistantDictionaryResponse(data=result)
 
 
 @public_router.post(

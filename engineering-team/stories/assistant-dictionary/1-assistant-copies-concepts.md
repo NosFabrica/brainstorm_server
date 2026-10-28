@@ -167,3 +167,39 @@ The questions as they were asked:
    nothing was published?
 5. **`alt` on an added copy.** The withdrawn copy carries one. Should an added copy describe itself too, or carry
    none, as the UI's own copy does today?
+
+## Implementation scope notes (J3 item 2)
+
+The diff stays inside ADR 0001's blast radius:
+
+- the three new services;
+- two routes in `app/routers/user/router.py`;
+- models added to the three schema files;
+- rows in `app/services/CLAUDE.md` and `app/routers/CLAUDE.md`;
+- the `BIBLE.md` §4 sentence;
+- the `self_map_build.py` docstring.
+
+No test changed during implementation. Three choices go beyond the ADR's letter, inside its intent:
+
+- **A withdraw makes one read, not two.** D3 says "two reads per request". A withdraw needs only the Assistant's own
+  headers, since removing a copy doesn't depend on the community header it points at. R22 pins that a copy whose
+  community header is gone can still be removed. The one read is still strict, and still on the dictionary relay only.
+- **The self-authored rule also covers a withdraw.** D4 states it under "For an add". Withdrawing the Assistant's own
+  coordinate would republish a self-declared header as deferred, so it answers `conflict` instead.
+- **A schema imports from `app/services/`.** `request_body_schemas.AssistantDictionaryBody` validates with
+  `dictionary_copy_build.parse_concept_coordinate`, as the ADR's Implementation notes say. It's the first schema to do
+  so. No cycle results: that module is pure, imports only `app/utils/client_tag`, and `app/services/__init__.py` is
+  empty.
+
+## Gate results (the approved deviation)
+
+Run 2026-10-27 in the foreground, each stage's exit code captured by brace-redirect:
+
+| Stage | Result |
+| --- | --- |
+| `black --check ./app` | 0 |
+| `isort --check ./app` | 0 |
+| `flake8 ./app --max-line-length 100 --extend-ignore E203` | 0 |
+| `mypy ./app` | 0 (no issues in 195 source files) |
+| `pytest -m "not integration" ./tests` | 0: 1,591 passed (the base's 1,494 plus this story's 97), 143 deselected |
+| `pytest -m integration ./tests` (parity) | 47 failed, 96 errors: the same 143 node ids as the base `e2ca872`, compared line for line |
