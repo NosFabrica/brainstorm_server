@@ -46,11 +46,19 @@ sidecar before the server starts. Locally, run them by hand.
   `upgrade head` there finds itself at head and never applies the revision it skipped. Re-pointing is safe only for a
   revision no persistent database has applied.
   - **The merge revision a persistent database applies has to be the one that lands.** A branch tried on staging
-    before it merges runs there through a branch that joins it to staging's code, with a merge revision of its own.
-    If `main` later joins the same heads with another, staging's next image stops in `start.sh` with "Can't locate
-    revision identified by" the join's. So that merge revision goes into the branch that merges second and lands
-    with it, or staging is stamped to `main`'s before that image starts: `alembic stamp --purge <revision>`, since a
-    merge revision applies nothing, and without `--purge` the stamp stops on the same error.
+    before it merges runs there through a branch that joins it to staging's code, with a merge revision of its own,
+    Mj. If `main` later joins those heads with another, staging's next image stops in `start.sh` with "Can't locate
+    revision identified by" Mj. So Mj, with the same revision id, goes into whichever of the two joined branches
+    merges later, since only that one holds both of Mj's parents. If a third branch with a migration of its own
+    merged in between, that later branch also adds a merge revision over Mj and `main`'s head. Or, before that image
+    starts, staging is stamped to Mj's parents (`alembic stamp --purge <parent> <parent>`), and its `upgrade head`
+    applies the rest. Stamped to `main`'s merge revision instead, it would silently skip any migration of `main`'s
+    it lacks, and without `--purge` a stamp stops on the same error.
+  - **Until `main` carries Mj, every image staging runs has to.** One without it stops the same way, the joined
+    branch's own image included. To go back to an image without one of Mj's parents, downgrade first with the
+    join's image: `alembic downgrade <the other parent>` takes Mj off, and `alembic downgrade <that parent>@-1` then
+    undoes that migration. A stamp alone leaves what the migration made, and the next upgrade that makes it again
+    fails.
 
 ## Migration history (oldest → newest)
 

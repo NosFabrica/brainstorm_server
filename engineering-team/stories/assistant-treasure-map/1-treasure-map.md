@@ -181,9 +181,12 @@ Checked items have a handle. The rest are not covered, each with a reason.
       make `alembic upgrade head` there find itself at head and never add `treasure_map_on`. So whichever PR merges
       second adds an `alembic merge` revision over the two heads, and the third does the same. Tried on staging
       first, this PR runs there through a branch joining it to PR 113's code, with a merge revision of its own. That
-      one has to land on `main`, in the PR that merges second, or staging is stamped to `main`'s before its next
-      image starts; otherwise `start.sh` stops with "Can't locate revision identified by" the join's. A local alembic
-      run showed all three outcomes.
+      one has to land on `main`, in whichever of PR 110 and PR 113 merges later (only that one holds both parents),
+      or staging is stamped to the join's parents before `main`'s next image starts; otherwise `start.sh` stops with
+      "Can't locate revision identified by" the join's. Stamped to `main`'s merge revision instead, staging would
+      skip PR 111's migration whenever it merged before the later of the two. Until `main` has the join's revision,
+      every image staging runs needs it, PR 113's own included, and the way back is two downgrades with the join's
+      image. A local alembic run showed each outcome, in all six merge orders.
       `tests/test_alembic_heads.py::test_the_migrations_have_one_head` fails until then: copying PR 113's migration
       in made it fail.
 - [x] **The 500 when the signed event fails its own check** (D4).
