@@ -14,7 +14,8 @@ NosFabrica/Brainstorm-UI#307, which offers the repair and Turn off while the GET
 D4 (Turn off reads no caller's Map; when the follow count counts; what the cap's check costs), D5 (Turn off's 22 s),
 D6 and D7 (`writerRelays`, the relays read by the press that keeps the current choice, David's decisions), the Debt
 and the implementation notes, and the Debt and Out of scope for NosFabrica/Brainstorm-UI#306, which took the UI's fix
-to production.
+to production. Revised for the review of that round: D4 and the Debt (an Update now that drops a duty live at a relay
+outside the outbox leaves a miss there unmended too; a refused removal), D6, the Debt and Out of scope (wording).
 **Date:** 2026-10-27
 **Story:** [`stories/assistant-treasure-map/1-treasure-map.md`](../../stories/assistant-treasure-map/1-treasure-map.md),
 written after the build (2026-10-28)

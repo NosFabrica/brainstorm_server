@@ -1,7 +1,7 @@
 # Story 1: Your Assistant's Treasure Map
 
 **Status:** Built on [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110), at
-`98ec893`, after the audit's fourth round; waiting for Gate B
+`d3eeabb`, after the review of the audit's fourth round; waiting for Gate B
 **Created:** 2026-10-28, after the build
 **Type:** Feature
 **Source spec:** the UI's ask, Brainstorm-UI `docs/assistant/TREASURE-MAP-ASK.md`, corrected by
@@ -17,14 +17,15 @@ phases.
 
 - **Built first, recorded after.** No Gate A was held, the ADR was written after the build (2026-10-27), and no J1, J2
   or J3 judge ran. This file is the story the ADR's "Owed" list asks for, written from the code and tests at `50443af`
-  and brought up to date at `98ec893`. Its test plan is the edge-case list, the error paths and the AC→handle lines
+  and brought up to date at `d3eeabb`. Its test plan is the edge-case list, the error paths and the AC→handle lines
   below, in this one file, as the Light profile's § Artifacts has it.
 - **An audit stood where the interior gates would have.** An independent audit of PR 110 (2026-10-28, 27 findings)
   was fixed in `6cc74ca..28175d2` and `50443af`. Its second round (2026-10-29) re-checked `aa4d516` by reverting
   each fix; what it found is in `aa4d516..20b3679`. Its third round re-checked `562110f`; what it found is in
-  `562110f..c04f607`. Its fourth round re-checked `1779d70`; what it found is in `1779d70..98ec893`. The PR body's
-  "What changed after the audit" lists the fixes, and its Evidence records the mutation checks and a run against six
-  throwaway local relays.
+  `562110f..c04f607`. Its fourth round re-checked `1779d70`; what it found is in `1779d70..98ec893`. Its review of
+  that round re-checked `065619b`; what it found is in `065619b..d3eeabb`. The PR body's "What changed after the
+  audit" lists the fixes, and its Evidence records the mutation checks and a run against six throwaway local
+  relays.
 - **Tapestry's ids.** The tests ported from Tapestry's two self-map suites carry those suites' ids in their
   docstrings (`[U14]`, `[R5]`, …), for cross-reference. The handles here are test names.
 - **Still owed:** David's acceptance of the ADR, and Gate B. Its reviewer ratifies the classification and writes the
@@ -108,7 +109,8 @@ Testable from the outside. Each criterion has at least one handle below.
       read of the Assistant's versions, a press is a 502, with nothing published or saved, and a relay that sends
       `CLOSED` hasn't answered. One relay answering with none is a finished read.
 - [x] **AC13 — the 64-key cap.** A Map naming more than 64 keys is a 422 for the GET and Turn on, never a truncated
-      check, and is never checked at all; Turn on publishes nothing. A Map of 64 keys is checked.
+      check, and is never checked at all. The cap comes before the follow count, so it is a 422 even while Neo4j is
+      down. Turn on publishes nothing. A Map of 64 keys is checked.
 - [x] **AC14 — the choice.** `on` is saved to `brainstorm_nsec.treasure_map_on` only at a press's success exits,
       after the send, and committed before the answer. A press that errors saves nothing.
 - [x] **AC15 — the body.** It is `{on: <boolean>}` and nothing else: `{}`, `"true"`, `1` and `null` are 422s. The
@@ -228,7 +230,7 @@ Checked items have a handle. The rest are not covered, each with a reason.
 | Neo4j, the follow count (`has_grapevine`) | unreadable | a 502 for the GET and Turn on, when the caller's Map asks the Assistant for Scores and the scheduler would otherwise run the caller; Turn off doesn't read it | `test_a_follow_count_that_cannot_be_read_is_an_error`; `test_the_follow_count_counts_only_when_the_map_asks_for_scores`; `test_the_follow_count_counts_only_when_the_scheduler_would_run_the_caller`; `test_turn_off_reads_neither_the_callers_map_nor_the_follow_count` |
 | Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | given up within 5 s of the read's start, alongside the caller's Map, so the 502 for the GET and Turn on comes once that Map is read (within its 6 s), when the Map asks the Assistant for Scores and the scheduler would otherwise run the caller, with nothing published or saved; otherwise nothing waits for it, and the read has stopped before the answer; Turn off doesn't read it | `test_the_follow_counts_bound_runs_while_the_callers_map_is_read`; `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`; `test_a_follow_count_that_doesnt_count_isnt_waited_for` |
 | Our relay, the caller's Map | unreadable | a 502 for the GET and Turn on; Turn off doesn't read it | `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`; `test_turn_on_needs_the_callers_map`; `test_turn_off_needs_only_the_assistants_map` |
-| Our relay, the caller's Map | more than 64 keys | a 422 for the GET and Turn on, with no check made; Turn off doesn't read it | AC13's handles; `test_turn_off_needs_no_map_even_one_too_big` |
+| Our relay, the caller's Map | more than 64 keys | a 422 for the GET and Turn on, with no check made and before the follow count is awaited; Turn off doesn't read it | AC13's handles; `test_turn_off_needs_no_map_even_one_too_big` |
 | Writer relays, reading the Assistant's versions | none answers (one that sends `CLOSED` hasn't answered, and is left out) | a 502, with nothing published or saved | `test_when_no_relay_answers_nothing_is_published_or_remembered`; `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer` |
 | Writer relays, reading | a version whose signature doesn't verify | ignored | `test_a_version_that_does_not_verify_is_never_the_newest` |
 | Writer relays, reading | one stalls its close | its answer is kept, and the close costs at most 1 s | `tests/test_designated_pubkeys.py::test_a_relay_that_stalls_the_close_keeps_its_answer_and_costs_a_second` |
@@ -252,6 +254,7 @@ is named.
   `test_3038x_narrows_to_the_score_rows_and_says_the_rest_is_not_offered`, `test_a_bare_star_is_never_claimed_verbatim`,
   `test_a_30382_metric_brainstorm_does_not_publish_is_not_offered`,
   `test_a_kind_the_offer_has_no_row_for_is_not_offered` (2 cases), `test_an_alternate_has_the_duty_too`,
+  `test_the_assistant_named_in_upper_case_has_its_duties`,
   `test_a_more_specific_entry_for_another_key_is_elsewhere_and_never_listed`
 - AC4 → `test_scores_are_live_only_while_the_scheduler_keeps_them_up_to_date` (7 cases),
   `test_one_missed_run_is_a_brief_gap_and_two_a_stop`, `test_the_callers_own_policy_wins_over_the_default`,
@@ -271,9 +274,10 @@ is named.
 - AC9 → `test_nothing_to_change`, `test_same_self_entries_is_a_set_of_key_and_relay`,
   `test_nothing_to_change_publishes_nothing_and_remembers_the_choice`,
   `test_nothing_to_change_still_sends_the_version_where_it_is_missing`,
+  `test_turn_off_still_sends_its_version_where_it_is_missing`,
   `test_a_relay_holding_an_older_version_is_sent_the_newest`,
   `test_a_relay_that_does_not_answer_is_not_sent_the_version_again`
-- AC10 → `test_it_is_sent_to_the_relays_and_every_relay_an_earlier_version_named`,
+- AC10 → `test_it_is_sent_to_the_relays_and_every_relay_an_earlier_version_named` (Turn on, Turn off),
   `test_a_press_never_connects_where_the_callers_map_points`,
   `test_the_relays_are_the_outbox_then_should_say_then_hints_each_once`,
   `test_while_on_the_get_names_the_relays_update_now_reads`,
@@ -296,7 +300,8 @@ is named.
   `test_one_relay_answering_with_none_is_a_finished_read`,
   `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer`
 - AC13 → `test_a_map_of_64_keys_is_checked`, `test_a_map_too_big_to_check_is_a_422_not_a_truncated_check`,
-  `test_a_map_too_big_to_check_is_never_checked`, `test_turn_on_over_a_map_too_big_to_check_publishes_nothing`
+  `test_a_map_too_big_to_check_is_never_checked` (with Neo4j down),
+  `test_turn_on_over_a_map_too_big_to_check_publishes_nothing`
 - AC14 → `test_the_choice_is_saved_after_the_publish_and_committed_before_the_answer` (a publish, nothing to change
   and a repair),
   `test_a_press_that_errors_saves_nothing`, `test_nothing_to_change_publishes_nothing_and_remembers_the_choice`
