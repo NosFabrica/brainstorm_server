@@ -7,7 +7,8 @@ classification. Revised 2026-10-28 for the PR 110 audit: D2 (follows), D3 (when 
 the writer's relays only, the repair, the 64-key cap, Turn off without the follow count), D5 (refuse, not queue), D6,
 D7 and the Debt.
 **Date:** 2026-10-27
-**Story:** none written (see Consequences, "Owed")
+**Story:** [`stories/assistant-treasure-map/1-treasure-map.md`](../../stories/assistant-treasure-map/1-treasure-map.md),
+written after the build (2026-10-28)
 **Ask:** Brainstorm-UI `docs/assistant/TREASURE-MAP-ASK.md`, corrected by NosFabrica/Brainstorm-UI#301; the UI is
 NosFabrica/Brainstorm-UI#297
 
@@ -329,7 +330,8 @@ which no version this server signs carries, so the two agree on every version th
 - **Owed under the Light profile:**
   - this ADR's acceptance;
   - Gate B's ratification of its classification;
-  - a story file and a review file (`../../workflows/light-profile.md` § Artifacts). None was written while building.
+  - a review file, Gate B's (`../../workflows/light-profile.md` § Artifacts). The story file was written after the
+    build, on 2026-10-28.
 
 ## Implementation notes
 

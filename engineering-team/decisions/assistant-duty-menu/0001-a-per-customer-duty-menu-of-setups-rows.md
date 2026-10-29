@@ -6,7 +6,8 @@ Gate A was held. It's for David to accept and for the Gate B reviewer to ratify,
 classification. Revised 2026-10-28 for the PR 110 audit: D4's premise (what the UI copies from `/setup`), D5's read
 (now strict) and D6's check.
 **Date:** 2026-10-27
-**Story:** none written (see Consequences, "Owed")
+**Story:** [`stories/assistant-duty-menu/1-duty-menu.md`](../../stories/assistant-duty-menu/1-duty-menu.md), written
+after the build (2026-10-28)
 **Issue:** [NosFabrica/brainstorm_server#108](https://github.com/NosFabrica/brainstorm_server/issues/108)
 
 ## Context
@@ -214,7 +215,8 @@ error is logged, not answered.
 - **Owed under the Light profile:**
   - this ADR's acceptance;
   - Gate B's ratification of its classification;
-  - a story file and a review file (`../../workflows/light-profile.md` § Artifacts). None was written while building.
+  - a review file, Gate B's (`../../workflows/light-profile.md` § Artifacts). The story file was written after the
+    build, on 2026-10-28.
 
 ## Implementation notes
 
