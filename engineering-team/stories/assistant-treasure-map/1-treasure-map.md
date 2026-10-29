@@ -76,8 +76,8 @@ Testable from the outside. Each criterion has at least one handle below.
       content. Nothing of the version it replaces is kept. With nothing live, it takes the stale entries off.
 - [x] **AC7 — Turn off.** `{on: false}` publishes a version that lists none of the Assistant's duties. It needs only
       the Assistant's own versions: it goes ahead when the caller's Map can't be read or names more than 64 keys, and
-      it reads no follow count. Those fallbacks are the API's: the GET fails in the same states, and the UI shows no
-      buttons until a GET succeeds (ADR D4).
+      it reads no follow count. The GET fails in the same states. NosFabrica/Brainstorm-UI#307 (open) offers Turn
+      off beneath that error; until it lands, those fallbacks go through the API alone (ADR D4).
 - [x] **AC8 — the newest version, and dating after it.** The version compared is the newest by NIP-01 (the latest
       `created_at`, then the lowest id) across every relay read. A version whose signature doesn't verify is never
       the newest: the new one isn't dated after it, and the relays it names aren't followed. A new version is dated
@@ -139,9 +139,10 @@ The ADR is the design and stands in for the Design note. In brief:
       NosFabrica/Brainstorm-UI#302, is on UI staging, and has to reach UI production before any server publishes a
       self-Map, staging's included: an Assistant's outbox names public relays, so a staging Assistant's self-Map
       reaches production readers too.
-    - The UI can't send the repair (AC9). It reads the newest version found on any relay, so after a press that
-      missed a relay it disables Update now, and after a Turn off it hides Turn off once that version lists nothing
-      (ADR D6). Nor can it send Turn off while the GET fails (AC7). Both need a UI follow-up.
+    - The repair (AC9) and Turn off while the GET fails (AC7) reach the UI with NosFabrica/Brainstorm-UI#307 (open),
+      which asks the relays a press reads that it can tell apart whether they hold the newest version. Until it lands,
+      both go through the API alone. After it, a version missed only by an outbox relay other than the TA relay waits
+      for the next press that signs one (ADR D6).
 
 ## Out of scope
 

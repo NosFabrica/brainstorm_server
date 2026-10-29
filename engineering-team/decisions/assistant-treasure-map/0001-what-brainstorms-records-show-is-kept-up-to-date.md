@@ -6,9 +6,10 @@ Gate A was held. It's for David to accept and for the Gate B reviewer to ratify,
 classification. Revised 2026-10-28 for the PR 110 audit: D2 (follows), D3 (when the choice is saved), D4 (no merge,
 the writer's relays only, the repair, the 64-key cap, Turn off without the follow count), D5 (refuse, not queue), D6,
 D7 and the Debt. Revised 2026-10-29 for the audit's second round: D4 (the follow count bounded and read only when it
-counts; Turn off's fallbacks are the API's alone), D5 (the time a press takes), D6 (the UI's rule, and the repair it
-can't send), D7, the Debt and Out of scope (when the UI's fix must reach production). Revised again for its third
-round: D4 (the follow count read alongside the caller's Map, and the Map read once) and D5 (28 s).
+counts; Turn off's fallbacks, which the UI couldn't send), D5 (the time a press takes), D6 (the UI's rule, and the
+repair it couldn't send), D7, the Debt and Out of scope (when the UI's fix must reach production). Revised again for
+its third round: D4 (the follow count read alongside the caller's Map, and the Map read once), D5 (28 s), and D4, D6
+and the Debt for NosFabrica/Brainstorm-UI#307, which offers the repair and Turn off while the GET fails.
 **Date:** 2026-10-27
 **Story:** [`stories/assistant-treasure-map/1-treasure-map.md`](../../stories/assistant-treasure-map/1-treasure-map.md),
 written after the build (2026-10-28)
@@ -193,9 +194,10 @@ the response, a failed commit would have followed a 200.
     Neo4j gave at once. Read alongside, and bounded under the Map read's 6 s, it adds nothing to a press.
   - Turn off doesn't read it: it lists nothing, and live Scores would only add the TA relay, which the outbox names
     first.
-- **Turn off's fallbacks are the API's alone.** It goes ahead without the caller's Map, past 64 keys and without the
-  follow count. But in those same states the GET answers 422 or 502, and Brainstorm-UI shows no buttons until a GET
-  succeeds, so the UI can't send that Turn off (Debt).
+- **Turn off's fallbacks.** It goes ahead without the caller's Map, past 64 keys and without the follow count. In
+  those same states the GET answers 422 or 502. NosFabrica/Brainstorm-UI#307 (open) offers Turn off beneath that
+  error. Until it lands, the UI shows no buttons until a GET succeeds, and that Turn off goes through the API alone
+  (Debt).
 - Then the writer's relays (below) are asked for the Assistant's kind 10040, the TA relay at its internal URL:
   - only versions validly signed by the Assistant count;
   - the newest by NIP-01 is the one compared and dated after;
@@ -249,7 +251,7 @@ with that event and those relays' report, even when none of them takes it: the v
 was read from, and the report shows each failed line. A relay that didn't answer is left alone: it is likely down,
 and would otherwise be sent to, and reported, on every press. So the press after one whose TA relay was down repairs
 it; as first built, every later press answered "nothing changed". Only when every relay holds it is the answer
-`published: false`. Brainstorm-UI can't send that press yet (D6).
+`published: false`. NosFabrica/Brainstorm-UI#307 (open) offers that press for the relays it can tell apart (D6).
 
 Signing and sending are `assistant_publish`'s, shared with the Duty Menu. Tapestry left that sharing for later (its
 S2) because its Duty Menu route had shipped. Neither route had shipped here.
@@ -293,10 +295,15 @@ slots the writer owns, each key and relay once, and the `expiration` and stray-t
 self-entries alone (D4), and NosFabrica/Brainstorm-UI#302 made the UI's the same: its `selfMapStatus` compares the
 self-entries alone, and `nothingStale` is gone.
 
-**What they don't share: the repair** (D4). The UI reads the newest version found on any of the relays it's given.
-So after a press that missed a relay, it shows the Map up to date and disables Update now; after a Turn off, it hides
-Turn off once the newest version found lists nothing. The press that would send the version to that relay then goes
-only through the API. NosFabrica/Brainstorm-UI#302 records the gap; closing it is a UI follow-up (Debt).
+**What they don't share: the repair** (D4). The UI reads the newest version found on any of the relays it's given,
+so that alone can't show a relay that missed it: after such a press, the Map reads up to date.
+NosFabrica/Brainstorm-UI#307 (open) also asks the relays a press reads that the UI can tell apart, by id, whether
+they hold the newest version: the relays `shouldSay` names, and the TA relay when `relays` names it. One that answers
+without it is named on the page, and Update now stays enabled, or while off Turn off stays offered, so the press
+repairs it. Until #307 lands, that press goes through the API alone. Its limit: the rest of `relays` are the
+outbox's other relays and the caller's hints, which the answer doesn't tell apart, and a hint must never be asked,
+since a press never sends there. So a version missed only by another outbox relay waits for the next press that
+signs one. The GET naming the relays a press reads would close that (Debt).
 
 ### D7 — The wire: camelCase, plain sentences, nothing changed on an error
 
@@ -348,8 +355,11 @@ only through the API. NosFabrica/Brainstorm-UI#302 records the gap; closing it i
   self-Map is one. NosFabrica/Brainstorm-UI#302 fixes it, on UI staging. **It must reach UI production before any
   server publishes a self-Map, staging's included:** an Assistant's outbox names public relays, so a staging
   Assistant's self-Map reaches production readers too (Out of scope).
-- **Brainstorm-UI can't send the repair** (D6), nor Turn off while the GET fails (D4). Both need a UI follow-up: the
-  first, a way to see that a relay the GET names answered without the newest version.
+- **The repair and Turn off while the GET fails reach the UI with NosFabrica/Brainstorm-UI#307** (open; D6, D4).
+  Until it lands, both go through the API alone. After it, a version missed only by an outbox relay other than the TA
+  relay still waits for the next press that signs one, since the UI can't tell the outbox's other relays from the
+  caller's hints in `relays`. The GET naming the relays a press reads, beside `relays`, would close that; #307's ask
+  doc lists it under "Not asked for (yet)".
 - **One press at a time is held in-process** (D5).
 - **No rate limit on the POST**, like the Duty Menu's.
 - **Trusted Lists and Concepts become claimable** once something publishes and keeps them up to date, starting with
