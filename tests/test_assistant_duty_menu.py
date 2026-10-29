@@ -422,6 +422,20 @@ def test_a_menu_no_relay_took_is_an_error(menu_client, relays):
     assert isinstance(r.json()["detail"], str)
 
 
+def test_a_menu_that_fails_6_1_is_never_sent(menu_client, relays, monkeypatch):
+    """`sign_checked` holds the signed menu to § 6.1 before anything is sent:
+    here one built without its `p`."""
+    monkeypatch.setattr(
+        "app.services.duty_menu_service.build_menu_tags",
+        lambda who, rows: [t for t in build_menu_tags(who, rows) if t[0] != "p"],
+    )
+
+    r = menu_client.post("/user/assistantDutyMenu")
+
+    assert r.status_code == 500 and isinstance(r.json()["detail"], str)
+    assert relays.sent == []
+
+
 # --- The pure pieces ----------------------------------------------------------
 
 

@@ -102,7 +102,9 @@ Checked items have a handle. The rest are not covered, each with a reason.
 
 - [x] **The `p` survives signing.** nostr-sdk drops a `p` naming the signer unless `allow_self_tagging()` is set.
       `test_the_menu_is_signed_by_the_assistant_and_shaped_exactly` asserts the one `p`. Without `self_tagging=True`
-      the check refuses the event and the test fails. No AC says how the `p` survives signing.
+      the check refuses the event and the test fails;
+      `tests/test_assistant_publish.py::test_a_tag_the_signer_drops_is_a_500` checks that refusal itself. No AC says
+      how the `p` survives signing.
 - [x] **A relay spelled with its default port.** nostr-sdk reports `wss://Relay.Example:443` as
       `wss://relay.example`, and a publish has to match that spelling to know which targets connected. Handles:
       - `test_a_relay_spelled_with_its_default_port_is_sent_to`;
@@ -114,9 +116,10 @@ Checked items have a handle. The rest are not covered, each with a reason.
 - [x] **The route order.** `/user/{pubkey}` is a single-segment catch-all under the same prefix, and the UI reads any
       200 that isn't `{assistant, rows}` as "not on this server yet". `test_get_is_the_offer_not_a_user_profile`
       fails if the menu routes are mounted after it.
-- [ ] **Not covered: the 500 when the signed event fails its own check** (D6). No test makes nostr-sdk sign something
-      other than what was built. If it did, the shape tests would fail, but nothing asserts that the answer is a 500
-      with nothing sent. A test that patches the signer would close this.
+- [x] **The 500 when the signed event fails its own check** (D6). `test_a_menu_that_fails_6_1_is_never_sent` builds
+      a menu without its `p`: the answer is a 500 and nothing is sent. `tests/test_assistant_publish.py` checks each of
+      `sign_checked`'s three checks on its own: the event verifies, carries exactly the tags built, and passes the
+      caller's check. Before these, removing the checks left the suite green.
 - [ ] **Not covered: an earlier version that is validly signed but fails § 6.1.** `_is_own_menu` reads it anyway, so
       a broken menu is still replaced, but no test publishes over one.
 - [ ] **Not covered: two publishes at once.** No lock is needed. Both build the same rows from the same settings, so
@@ -133,7 +136,7 @@ Checked items have a handle. The rest are not covered, each with a reason.
 | Relays, sending | one can't be reached | its line reads `couldn't connect`; the rest are sent to | `test_the_report_names_public_addresses_one_line_per_relay` |
 | Relays, sending | none takes the event | a 502 | `test_a_menu_no_relay_took_is_an_error` |
 | Settings | `dictionary_relay` empty, or a row with no relay | the row isn't served or offered | `tests/test_setup_designation.py::test_no_dictionary_rows_without_a_dictionary_relay`; `test_a_row_with_no_relay_is_not_offered` |
-| nostr-sdk, signing | the signed event isn't what was built | a 500, nothing sent | not covered (above) |
+| nostr-sdk, signing | the signed event isn't what was built, or fails § 6.1 | a 500, nothing sent | `test_a_menu_that_fails_6_1_is_never_sent`; `tests/test_assistant_publish.py` (4 tests) |
 
 ## AC→handle lines
 
@@ -149,7 +152,7 @@ named.
   `test_dictionary_rows_name_the_dictionary_relay`, `test_no_dictionary_rows_without_a_dictionary_relay`
 - AC4 → `test_the_menu_is_signed_by_the_assistant_and_shaped_exactly`, `test_the_published_rows_are_the_offer`,
   `test_no_menu_semantics_beyond_rows`
-- AC5 → `test_6_1_accepts_a_menu`, `test_6_1_rejects` (9 cases)
+- AC5 → `test_6_1_accepts_a_menu`, `test_6_1_rejects` (9 cases), `test_a_menu_that_fails_6_1_is_never_sent`
 - AC6 → `test_created_at_is_now_when_nothing_newer_is_out`, `test_created_at_is_bumped_past_the_newest_menu_found`,
   `test_a_second_publish_replaces_the_first`, `test_created_at_rule`
 - AC7 → `test_it_is_sent_to_every_place_8_1_names`, `test_publish_targets_are_each_relay_once`,
