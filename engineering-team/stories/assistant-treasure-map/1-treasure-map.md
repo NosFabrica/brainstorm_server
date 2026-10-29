@@ -77,7 +77,8 @@ Testable from the outside. Each criterion has at least one handle below.
       content. Nothing of the version it replaces is kept. With nothing live, it takes the stale entries off.
 - [x] **AC7 — Turn off.** `{on: false}` publishes a version that lists none of the Assistant's duties. It needs only
       the Assistant's own versions: it reads neither the caller's Map nor the follow count, so it goes ahead when the
-      Map can't be read or names more than 64 keys, or Neo4j is down. The GET fails in those states.
+      Map can't be read or names more than 64 keys, or Neo4j is down. The GET fails in the first two states, and in
+      the third when the Map asks the Assistant for Scores and the scheduler would otherwise run the caller (AC12).
       NosFabrica/Brainstorm-UI#307 (open) offers Turn off beneath that error; until it lands, that Turn off goes
       through the API alone (ADR D4).
 - [x] **AC8 — the newest version, and dating after it.** The version compared is the newest by NIP-01 (the latest
@@ -149,7 +150,7 @@ The ADR is the design and stands in for the Design note. In brief:
       Until it lands, both go through the API alone. The GET now names the relays read by the press that keeps the
       current choice (`writerRelays`, AC10), and #307's probe is to move to it. Until then, a version missed only by
       an outbox relay other than the TA relay waits for the next press, and if it withdrew a claim, that relay serves
-      the withdrawn self-entries meanwhile, with no press on offer (ADR D6).
+      the withdrawn self-entries meanwhile, and the UI offers no press that repairs it (ADR D6).
 
 ## Out of scope
 
@@ -222,7 +223,7 @@ Checked items have a handle. The rest are not covered, each with a reason.
 | PostgreSQL (the Assistant's row, the scheduling policies, the choice) | unreachable | a 500, before any relay is read or sent to | not covered: shared by every `/user` route; a commit failing after the send is above |
 | PostgreSQL | no default scheduling policy | the Score lines read `not-scheduled` | `test_scores_are_live_only_while_the_scheduler_keeps_them_up_to_date` (no-default-policy) |
 | Neo4j, the follow count (`has_grapevine`) | unreadable | a 502 for the GET and Turn on, when the caller's Map asks the Assistant for Scores and the scheduler would otherwise run the caller; Turn off doesn't read it | `test_a_follow_count_that_cannot_be_read_is_an_error`; `test_the_follow_count_counts_only_when_the_map_asks_for_scores`; `test_the_follow_count_counts_only_when_the_scheduler_would_run_the_caller`; `test_turn_off_reads_neither_the_callers_map_nor_the_follow_count` |
-| Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | a 502 within 5 s of the read's start, alongside the caller's Map, with nothing published or saved; a Map that asks for no Scores doesn't wait for it, and the read has stopped before the answer | `test_the_follow_counts_bound_runs_while_the_callers_map_is_read`; `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`; `test_a_follow_count_that_doesnt_count_isnt_waited_for` |
+| Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | given up within 5 s of the read's start, alongside the caller's Map, so the 502 for the GET and Turn on comes once that Map is read (within its 6 s), when the Map asks the Assistant for Scores and the scheduler would otherwise run the caller, with nothing published or saved; otherwise nothing waits for it, and the read has stopped before the answer; Turn off doesn't read it | `test_the_follow_counts_bound_runs_while_the_callers_map_is_read`; `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`; `test_a_follow_count_that_doesnt_count_isnt_waited_for` |
 | Our relay, the caller's Map | unreadable | a 502 for the GET and Turn on; Turn off doesn't read it | `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`; `test_turn_on_needs_the_callers_map`; `test_turn_off_needs_only_the_assistants_map` |
 | Our relay, the caller's Map | more than 64 keys | a 422 for the GET and Turn on, with no check made; Turn off doesn't read it | AC13's handles; `test_turn_off_needs_no_map_even_one_too_big` |
 | Writer relays, reading the Assistant's versions | none answers (one that sends `CLOSED` hasn't answered, and is left out) | a 502, with nothing published or saved | `test_when_no_relay_answers_nothing_is_published_or_remembered`; `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer` |

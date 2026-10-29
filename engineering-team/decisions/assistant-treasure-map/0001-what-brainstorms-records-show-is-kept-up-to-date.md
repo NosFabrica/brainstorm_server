@@ -332,7 +332,7 @@ NosFabrica/Brainstorm-UI#307 (open) asks the relays it can tell apart in `relays
 Turn off offered, so the press repairs it. Until it lands, that press goes through the API alone. Its probe is to
 move to `writerRelays`, which closes its limit. Until then, a version missed only by an outbox relay other than the TA
 relay waits for the next press. When that version withdraws a claim (a Turn off, or an Update that drops a duty),
-the relay keeps serving the withdrawn self-entries meanwhile, and the UI offers no press for it.
+the relay keeps serving the withdrawn self-entries meanwhile, and the UI offers no press that repairs it.
 
 ### D7 — The wire: camelCase, plain sentences, nothing changed on an error
 
@@ -392,7 +392,7 @@ the relay keeps serving the withdrawn self-entries meanwhile, and the UI offers 
   Until it lands, both go through the API alone. The GET now names the relays read by the press that keeps the
   current choice (`writerRelays`), so the UI can ask each one; until #307's probe uses it, a version missed only by
   an outbox relay other than the TA relay waits for the next press, and if it withdrew a claim, that relay serves the
-  withdrawn self-entries meanwhile, with no press on offer.
+  withdrawn self-entries meanwhile, and the UI offers no press that repairs it.
 - **One press at a time is held in-process** (D5).
 - **No rate limit on the POST**, like the Duty Menu's.
 - **Trusted Lists and Concepts become claimable** once something publishes and keeps them up to date, starting with
@@ -448,10 +448,11 @@ As built in commit `e2ca872`, with the PR 110 audit's fixes after it:
 ## Out of scope
 
 - Keeping the self-Map true on its own (above).
-- Counting or describing Maps (§ 9.2): anything that counts kind-10040 adopters, or describes a kind 10040 to
-  people, should skip a Map whose public entries all name its author. Brainstorm-UI's `describeDesignation` does, on
-  UI staging (NosFabrica/Brainstorm-UI#302) and UI production (NosFabrica/Brainstorm-UI#306), which it had to reach
-  before any server published a self-Map (Debt).
+- Counting or describing Maps (§ 9.2): anything that counts kind-10040 adopters should skip a Map whose public
+  entries all name its author, and anything that describes a kind 10040 to people should never describe one as
+  entrusting anyone. Brainstorm-UI's `describeDesignation` describes it as what its author publishes ("Publishes and
+  keeps up to date"), on UI staging (NosFabrica/Brainstorm-UI#302) and UI production (NosFabrica/Brainstorm-UI#306),
+  which it had to reach before any server published a self-Map (Debt).
 - Private duties, NIP-85's encrypted `.content`, which never go in a self-Map's public tags.
 - Trusted Lists and Concepts as live duties.
 - Dictionary management
