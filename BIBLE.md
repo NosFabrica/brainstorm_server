@@ -84,7 +84,7 @@ Route families, one line each — the OpenAPI page (`/docs`) is the contract, [`
 - **Verified counts are preset-relative with no validity floor** ([`docs/adr/0001`](docs/adr/0001-verified-counts-preset-relative.md)) — a verified rater need not itself be publish-worthy. The one rule behind all three counts lives in the Java worker; the spec carries the semantics.
 - **Deletions are computed from a local diff, never a relay read.** The persisted baseline (plus its dirty-run union rule) exists so the server never has to ask a relay what it previously published — and so a failed delete self-heals instead of orphaning.
 - **Full-sync and deletion are deliberately orthogonal.** Re-assertion repairs drift; the delete set comes from the diff regardless. Coupling them was rejected because a full-sync that also deleted would turn a drift-repair tool into a data-loss tool.
-- **The engineering process is tapestry's harness, run by reference** — book-of-work artifacts land in [`engineering-team/`](engineering-team/), workflows followed from [tapestry's `engineering-team/`](https://github.com/nous-clawds4/tapestry/tree/main/engineering-team). One book (`shortest-path`) has run through it end-to-end.
+- **The engineering process is tapestry's harness, run by reference** — book-of-work artifacts land in [`engineering-team/`](engineering-team/), workflows followed from [tapestry's `engineering-team/`](https://github.com/nousclawds4/tapestry/tree/main/engineering-team). One book (`shortest-path`) has run through it end-to-end.
 
 ## 9. Working on this codebase
 
