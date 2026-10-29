@@ -449,6 +449,17 @@ def scores_upkeep(
     return ScoresUpkeep("live")
 
 
+def asks_for_scores(event: Any, assistant: str) -> bool:
+    """Could the reader's Map give the Assistant a Score duty: does a key naming
+    the Assistant cover kind 30382? Only such a duty is live or not by
+    `ScoresUpkeep`, so when none can be, the upkeep changes nothing the check
+    says."""
+    who = assistant.lower()
+    return any(
+        who in g.providers and SCORE_KIND in g.key.kinds for g in map_groups(event)
+    )
+
+
 @dataclass(frozen=True)
 class Live:
     live: bool

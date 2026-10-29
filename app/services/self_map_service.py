@@ -25,12 +25,15 @@ The choice (`brainstorm_nsec.treasure_map_on`) is saved only by a press that
 succeeds, after its publish, and committed before the answer reports it. A
 press that answers an error writes nothing.
 
-The UI waits 30 s. A press takes about 28 s at worst: the caller's Map and the
-versions are read in up to 6 s each, the connect takes up to 4 s and the send
-12 s. A second press for the same Assistant is refused while one is under way.
+The UI waits 30 s. A press takes about 29 s at worst: the caller's Map and the
+versions are read in up to 6 s each, the follow count in 1 s, the connect takes
+up to 4 s and the send 12 s. The follow count is read only when the caller's
+Map asks the Assistant for Scores, and never to turn off. A second press for
+the same Assistant is refused while one is under way.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from contextlib import contextmanager
@@ -74,6 +77,7 @@ from app.services.self_map_build import (
     SELF_MAP_KIND,
     ScoresUpkeep,
     SelfMapCheck,
+    asks_for_scores,
     evaluate_self_map,
     newest,
     nothing_to_change,
@@ -90,6 +94,11 @@ from app.utils.datetimes import as_naive_utc, utc_now
 logger = loggr.get_logger(__name__)
 
 MAP = "Treasure Map"
+
+# The follow count is one Neo4j COUNT in the cluster, milliseconds while Neo4j
+# is up. The driver has no query timeout and waits 30 s to connect, and a press
+# already spends up to 28 s of the UI's 30 reading and sending.
+FOLLOWS_TIMEOUT_SECONDS = 1
 
 # The Assistants with a press under way. One press at a time per Assistant: two
 # at once could sign versions with the same created_at, and a relay keeps either
@@ -118,15 +127,13 @@ def _one_press_at_a_time(assistant: str) -> Iterator[None]:
         _pressing.discard(assistant)
 
 
-async def _upkeep_interval(
-    db: AsyncDBSession, row: BrainstormNsec, *, strict: bool = True
-) -> int | None:
+async def _upkeep_interval(db: AsyncDBSession, row: BrainstormNsec) -> int | None:
     """How often the caller's Scores are re-published, in seconds; None when
     nothing re-publishes them. Read as the scheduler admits a run
     (`cronjobs/scheduler.py`): its switch, a default policy to run at all, the
     caller's policy or the default, enabled, and a grapevine to score, by the
-    scheduler's own `has_grapevine`. A follow count that can't be read is a 502,
-    or, when not `strict`, no grapevine."""
+    scheduler's own `has_grapevine`. A follow count not read within
+    FOLLOWS_TIMEOUT_SECONDS is a 502."""
     house = (settings.periodic_graperank_pubkey or "").strip()
     if house and row.pubkey == house:
         # The scheduler leaves the House Observer to the periodic trigger.
@@ -145,11 +152,11 @@ async def _upkeep_interval(
     if not policy.enabled:
         return None
     try:
-        grapevine = await has_grapevine(row.pubkey)
+        grapevine = await asyncio.wait_for(
+            has_grapevine(row.pubkey), FOLLOWS_TIMEOUT_SECONDS
+        )
     except Exception as e:
         logger.warning(f"follow count for {row.pubkey} unread: {e!r}")
-        if not strict:
-            return None
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
@@ -161,11 +168,16 @@ async def _upkeep_interval(
 
 
 async def _scores_upkeep(
-    db: AsyncDBSession, row: BrainstormNsec, *, strict: bool = True
+    db: AsyncDBSession, row: BrainstormNsec, needed: bool
 ) -> ScoresUpkeep:
+    """Whether the caller's Scores have landed and are kept up to date, read
+    only when `needed`. Unread, they count as not scheduled, which changes
+    nothing when no Score can be a duty or nothing is listed."""
+    if not needed:
+        return ScoresUpkeep("not-scheduled")
     return scores_upkeep(
         as_naive_utc(row.last_time_published_graperank),
-        await _upkeep_interval(db, row, strict=strict),
+        await _upkeep_interval(db, row),
         utc_now(),
     )
 
@@ -256,9 +268,8 @@ async def read_assistant_treasure_map(
         )
     if too_big_to_check(map_event):
         raise _too_big("your Assistant's Treasure Map couldn't be checked")
-    check = evaluate_self_map(
-        map_event, offer_rows(who), who, await _scores_upkeep(db, row)
-    )
+    upkeep = await _scores_upkeep(db, row, asks_for_scores(map_event, who))
+    check = evaluate_self_map(map_event, offer_rows(who), who, upkeep)
     return AssistantTreasureMapCheck(
         assistant=who,
         on=bool(row.treasure_map_on),
@@ -302,9 +313,9 @@ async def publish_assistant_treasure_map(
             if on:
                 raise _too_big("nothing was published")
             map_event = None
-        # Turning off goes ahead without the follow count too: it lists nothing,
-        # and live Scores would only add the TA relay, which the outbox names.
-        upkeep = await _scores_upkeep(db, row, strict=on)
+        # Turning off reads no follow count: it lists nothing, and live Scores
+        # would only add the TA relay, which the outbox names.
+        upkeep = await _scores_upkeep(db, row, on and asks_for_scores(map_event, who))
         check = evaluate_self_map(map_event, offer_rows(who), who, upkeep)
         target = check.should_say if on else []
         relays = _writer_relays(check)

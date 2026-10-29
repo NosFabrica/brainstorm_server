@@ -74,7 +74,7 @@ Testable from the outside. Each criterion has at least one handle below.
       content. Nothing of the version it replaces is kept. With nothing live, it takes the stale entries off.
 - [x] **AC7 — Turn off.** `{on: false}` publishes a version that lists none of the Assistant's duties. It needs only
       the Assistant's own versions: it goes ahead when the caller's Map can't be read or names more than 64 keys, and
-      when the follow count can't be read.
+      it reads no follow count.
 - [x] **AC8 — the newest version, and dating after it.** The version compared is the newest by NIP-01 (the latest
       `created_at`, then the lowest id) across every relay read. A version whose signature doesn't verify is never
       the newest: the new one isn't dated after it, and the relays it names aren't followed. A new version is dated
@@ -91,7 +91,8 @@ Testable from the outside. Each criterion has at least one handle below.
       relay, at public addresses. A relay that couldn't be reached reads `couldn't connect`. When no relay took the
       version, the answer is a 502 and the choice isn't saved.
 - [x] **AC12 — strict reads.** A caller's Map that can't be read is a 502 for the GET and Turn on, never an empty
-      Map. So is a follow count that can't be read. When no relay answers the read of the Assistant's versions, a
+      Map. So is a follow count not read within 1 s. It is read only when the caller's Map asks the Assistant for
+      Scores, since otherwise it changes nothing. When no relay answers the read of the Assistant's versions, a
       press is a 502, with nothing published or saved, and a relay that sends `CLOSED` hasn't answered. One relay
       answering with none is a finished read.
 - [x] **AC13 — the 64-key cap.** A Map naming more than 64 keys is a 422 for the GET and Turn on, never a truncated
@@ -182,7 +183,8 @@ Checked items have a handle. The rest are not covered, each with a reason.
 |---|---|---|---|
 | PostgreSQL (the Assistant's row, the scheduling policies, the choice) | unreachable | a 500, before any relay is read or sent to | not covered: shared by every `/user` route; a commit failing after the send is above |
 | PostgreSQL | no default scheduling policy | the Score lines read `not-scheduled` | `test_scores_are_live_only_while_the_scheduler_keeps_them_up_to_date` (no-default-policy) |
-| Neo4j, the follow count (`has_grapevine`) | unreadable | a 502 for the GET and Turn on; Turn off goes ahead | `test_a_follow_count_that_cannot_be_read_is_an_error`; `test_turn_off_goes_ahead_whatever_the_follow_count` (unreadable) |
+| Neo4j, the follow count (`has_grapevine`) | unreadable | a 502 for the GET and Turn on, when the caller's Map asks the Assistant for Scores; Turn off doesn't read it | `test_a_follow_count_that_cannot_be_read_is_an_error`; `test_the_follow_count_is_read_only_when_the_map_asks_for_scores`; `test_turn_off_reads_no_follow_count` |
+| Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | a 502 after 1 s, with nothing published or saved | `test_a_follow_count_neo4j_never_answers_is_an_error_at_once` |
 | Our relay, the caller's Map | unreadable | a 502 for the GET and Turn on; Turn off goes ahead | `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`; `test_turn_on_needs_the_callers_map`; `test_turn_off_needs_only_the_assistants_map` |
 | Our relay, the caller's Map | more than 64 keys | a 422 for the GET and Turn on; Turn off goes ahead | AC13's handles; `test_turn_off_needs_no_map_even_one_too_big` |
 | Writer relays, reading the Assistant's versions | none answers, or one sends `CLOSED` | a 502, with nothing published or saved | `test_when_no_relay_answers_nothing_is_published_or_remembered`; `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer` |
@@ -219,8 +221,7 @@ is named.
   `test_a_version_is_the_self_entries_and_the_client_tag`, `test_a_version_s_tags_are_its_self_entries_alone`,
   `test_turn_on_with_nothing_live_takes_the_stale_entries_off`
 - AC7 → `test_turn_off_lists_none_of_its_duties`, `test_turn_off_needs_only_the_assistants_map`,
-  `test_turn_off_needs_no_map_even_one_too_big`, `test_turn_off_goes_ahead_whatever_the_follow_count` (readable,
-  unreadable)
+  `test_turn_off_needs_no_map_even_one_too_big`, `test_turn_off_reads_no_follow_count`
 - AC8 → `test_newest_is_nip_01_s`, `test_the_newest_version_across_relays_is_the_one_compared`,
   `test_a_version_that_does_not_verify_is_never_the_newest`, `test_a_new_version_is_dated_after_the_newest_found`
 - AC9 → `test_nothing_to_change`, `test_same_self_entries_is_a_set_of_key_and_relay`,
@@ -233,7 +234,10 @@ is named.
 - AC11 → `test_the_report_names_public_addresses_one_line_per_relay`, `test_a_version_no_relay_took_is_an_error`,
   `test_a_press_that_errors_saves_nothing`
 - AC12 → `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`, `test_turn_on_needs_the_callers_map`,
-  `test_a_follow_count_that_cannot_be_read_is_an_error`, `test_when_no_relay_answers_nothing_is_published_or_remembered`,
+  `test_a_follow_count_that_cannot_be_read_is_an_error`, `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`,
+  `test_the_follow_count_is_read_only_when_the_map_asks_for_scores`,
+  `test_the_upkeep_counts_only_when_the_map_asks_for_scores` (7 cases),
+  `test_when_no_relay_answers_nothing_is_published_or_remembered`,
   `test_one_relay_answering_with_none_is_a_finished_read`,
   `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer`
 - AC13 → `test_a_map_of_64_keys_is_checked`, `test_a_map_too_big_to_check_is_a_422_not_a_truncated_check`,

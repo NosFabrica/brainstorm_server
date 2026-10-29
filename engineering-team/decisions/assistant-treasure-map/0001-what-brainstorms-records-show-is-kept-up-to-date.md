@@ -177,9 +177,12 @@ the response, a failed commit would have followed a 200.
   goes ahead without it. A check weighs each key against every other, so its cost grows with the square of the keys:
   an 835-key Map took seconds of the event loop's CPU per GET. It is never truncated, which could give the wrong
   self-entries. `/setup` writes eight keys.
-- The follow count (D2) is read strictly for the GET and Turn on: 502 when it can't be read, because read as none it
-  would take the Scores entries off. Turn off reads it as none: it lists nothing, and live Scores would only add the
-  TA relay, which the outbox names first.
+- The follow count (D2) is read only when the caller's Map asks the Assistant for Scores: a key naming it covers kind
+  30382 (`self_map_build.asks_for_scores`). Otherwise no Score is its duty, and the upkeep changes nothing the check
+  says. When it is read, for the GET and Turn on, it's strict: a 502 when it can't be read within 1 s, because read
+  as none it would take the Scores entries off. The Neo4j driver has no query timeout and waits 30 s to connect, so
+  unbounded, a press outlasted the UI's 30 s, holding its slot (D5), and then published. Turn off doesn't read it:
+  it lists nothing, and live Scores would only add the TA relay, which the outbox names first.
 - Then the writer's relays (below) are asked for the Assistant's kind 10040, the TA relay at its internal URL:
   - only versions validly signed by the Assistant count;
   - the newest by NIP-01 is the one compared and dated after;
@@ -251,8 +254,8 @@ S2) because its Duty Menu route had shipped. Neither route had shipped here.
   NIP-01 keeps the lower id, so a Turn off racing a Turn on would leave either one (§ 9.2 "When it changes"). A test
   runs two at once.
 
-A press takes about 28 s of the UI's 30 at worst: the caller's Map and the versions are read in up to 6 s each, the
-connect takes up to 4 s and the send 12 s.
+A press takes about 29 s of the UI's 30 at worst: the caller's Map and the versions are read in up to 6 s each, the
+follow count in 1 s (D4), the connect takes up to 4 s and the send 12 s.
 
 ### D6 — The server answers what to list; the UI reads the published version itself
 
@@ -283,8 +286,8 @@ which no version this server signs carries, so the two agree on every version th
 - **On the authenticated `/user` router**, as the Duty Menu's (its D7).
 - **The body** is `{on: StrictBool}`; anything else is a 422.
 - **Errors are plain sentences** in `detail` (`app/services/CLAUDE.md` § Errors):
-  - 502 when the caller's Map or follow count can't be read (the GET, and Turn on), when no relay answers the read,
-    or when no relay takes the new version;
+  - 502 when the caller's Map can't be read or, when it is read (D4), the follow count (the GET, and Turn on), when
+    no relay answers the read, or when no relay takes a new version;
   - 422 when the Map names more than 64 keys (the GET, and Turn on);
   - 409 while another press for the same Assistant is under way;
   - 500 when the signed event fails its own check.
@@ -339,13 +342,14 @@ As built in commit `e2ca872`, with the PR 110 audit's fixes after it:
 - `app/services/self_map_build.py` (pure, no I/O):
   - the grammar: `parse_key`, `compare_keys`, `matches`, `covers`, `build_probes`;
   - the caller's Map: `map_groups`, `too_big_to_check` (`MAX_MAP_KEYS`), `duties_of`;
-  - the offer and liveness: `Offer`, `scores_upkeep`, `evaluate_live`;
+  - the offer and liveness: `Offer`, `scores_upkeep`, `asks_for_scores`, `evaluate_live`;
   - what to list: `build_should_say`, `duty_lines`, `evaluate_self_map`;
   - the writer's side: `self_map_tags`, `read_self_entries`, `nothing_to_change`, `self_map_relays`,
     `self_entry_relays`, `newest`.
 - `app/services/self_map_service.py`:
   - the routes' logic: `read_assistant_treasure_map`, `publish_assistant_treasure_map`;
-  - the upkeep inputs: `_upkeep_interval`, with `cronjobs.scheduler.has_grapevine`;
+  - the upkeep inputs: `_scores_upkeep` and `_upkeep_interval`, with `cronjobs.scheduler.has_grapevine` bounded by
+    `FOLLOWS_TIMEOUT_SECONDS`;
   - the relays: `_relays` (the GET's, with the hints) and `_writer_relays` (a press's);
   - the repair: `_missing`;
   - the choice: `_save_choice`;

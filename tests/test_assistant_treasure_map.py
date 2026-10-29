@@ -29,6 +29,7 @@ from app.services import assistant_publish, self_map_service
 from app.services.duty_menu_build import designation_rows, offer_rows
 from app.services.self_map_build import (
     ScoresUpkeep,
+    asks_for_scores,
     compare_keys,
     evaluate_self_map,
     most_specific_first,
@@ -413,6 +414,28 @@ def test_one_missed_run_is_a_brief_gap_and_two_a_stop():
     assert scores_upkeep(now, None, now).status == "not-scheduled"
 
 
+@pytest.mark.parametrize(
+    "tags, asks",
+    [
+        (None, False),
+        ([["30382:rank", B, PUBLIC_TA]], False),
+        ([["30392", A, PUBLIC_TA], ["39998", A, DICTIONARY]], False),
+        ([["30383:rank", A, PUBLIC_TA]], False),
+        ([["30382:rank", A, PUBLIC_TA]], True),
+        ([["3038x", A, PUBLIC_TA]], True),
+        ([["*", A, PUBLIC_TA]], True),
+    ],
+    ids=["no-map", "others", "no-score-kind", "30383", "30382", "3038x", "star"],
+)
+def test_the_upkeep_counts_only_when_the_map_asks_for_scores(tags, asks):
+    """So the follow count is read only then: when no key naming the Assistant
+    covers 30382, no Score is its duty, and the check is the same live or not."""
+    event = {"kind": 10040, "tags": tags} if tags is not None else None
+    assert asks_for_scores(event, A) is asks
+    stopped = ScoresUpkeep("upkeep-stopped", 1_700_000_000)
+    assert (_check(tags, LIVE) == _check(tags, stopped)) is not asks
+
+
 def test_the_relays_are_the_outbox_then_should_say_then_hints_each_once():
     relays = self_map_relays(
         [PUBLIC_TA, *OUTBOX],
@@ -493,7 +516,10 @@ class World:
         self.default_policy: SimpleNamespace | None = self.policy
         # The caller's own policy, when `row.scheduling_id` names one.
         self.own_policy: SimpleNamespace | None = None
-        self.follows = 3
+        # The follow count: None when Neo4j fails it, and whether Neo4j stalls.
+        self.follows: int | None = 3
+        self.neo4j_stalls = False
+        self.follow_reads = 0
 
     @property
     def hex(self) -> str:
@@ -599,6 +625,9 @@ def world(monkeypatch, caller, assistant) -> World:
 
     async def grapevine(pubkey):
         assert pubkey == w.user
+        w.follow_reads += 1
+        if w.neo4j_stalls:
+            await asyncio.sleep(3)
         if w.follows is None:
             raise ConnectionError("neo4j down")
         return w.follows > 0
@@ -797,17 +826,54 @@ def test_a_follow_count_that_cannot_be_read_is_an_error(map_client, world):
     assert world.sent == [] and world.choices == []
 
 
-@pytest.mark.parametrize("follows", [3, None], ids=["readable", "unreadable"])
-def test_turn_off_goes_ahead_whatever_the_follow_count(map_client, world, follows):
+def test_a_follow_count_neo4j_never_answers_is_an_error_at_once(
+    map_client, world, monkeypatch
+):
+    """The driver has no query timeout and waits 30 s to connect. Unbounded, a
+    press would outlast the UI's 30 s, holding its slot, and then publish."""
+    monkeypatch.setattr(self_map_service, "FOLLOWS_TIMEOUT_SECONDS", 0.05)
+    world.neo4j_stalls = True
+    start = time.monotonic()
+
+    assert map_client.get("/user/assistantTreasureMap").status_code == 502
+    r = map_client.post("/user/assistantTreasureMap", json={"on": True})
+
+    assert r.status_code == 502 and isinstance(r.json()["detail"], str)
+    assert time.monotonic() - start < 1
+    assert world.sent == [] and world.choices == []
+
+
+def test_the_follow_count_is_read_only_when_the_map_asks_for_scores(map_client, world):
+    """Otherwise it changes nothing the check says, so Neo4j being down doesn't
+    stop a customer whose Map asks their Assistant for no Scores."""
+    world.follows = None
+    world.reader_map["tags"] = [
+        ["30392", world.hex, PUBLIC_TA],
+        ["30382", B, PUBLIC_TA],
+    ]
+    _get(map_client)
+    world.reader_map = None
+    _get(map_client)
+    _post(map_client, True)
+    assert world.follow_reads == 0
+
+    world.setup_map()
+    world.follows = 3
+    _get(map_client)
+    assert world.follow_reads == 1
+
+
+def test_turn_off_reads_no_follow_count(map_client, world):
     """Turning off lists nothing, so the follow count can't change what's signed
     or where it goes: live Scores would only add the TA relay, which the outbox
     names first."""
     tags = [[k, world.hex, PUBLIC_TA] for k in FIVE]
     world.held[INTERNAL_TA] = [_version(world.assistant, tags, 1_700_000_000)]
-    world.follows = follows
+    world.follows = None
 
     published = _post(map_client, False)
 
+    assert world.follow_reads == 0
     assert published["published"] is True
     assert published["event"]["tags"] == [["client", "Brainstorm"]]
     assert sorted(world.read_from) == sorted([INTERNAL_TA, *OUTBOX])
