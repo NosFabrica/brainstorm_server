@@ -95,10 +95,11 @@ Testable from the outside. Each criterion has at least one handle below.
       its relays take it: the version is already on the relay it was read from, and the report shows each failed
       line.
 - [x] **AC12 — strict reads.** A caller's Map that can't be read is a 502 for the GET and Turn on, never an empty
-      Map. So is a follow count not read within 1 s. It is read only when the caller's Map asks the Assistant for
-      Scores, since otherwise it changes nothing. When no relay answers the read of the Assistant's versions, a
-      press is a 502, with nothing published or saved, and a relay that sends `CLOSED` hasn't answered. One relay
-      answering with none is a finished read.
+      Map. So is a follow count that failed or wasn't read within 5 s, when the caller's Map asks the Assistant for
+      Scores. It's read alongside that Map, and awaited only then, since otherwise it changes nothing: with Neo4j
+      down, a Map that asks for no Scores still gets its GET and its Turn on. When no relay answers the read of the
+      Assistant's versions, a press is a 502, with nothing published or saved, and a relay that sends `CLOSED`
+      hasn't answered. One relay answering with none is a finished read.
 - [x] **AC13 — the 64-key cap.** A Map naming more than 64 keys is a 422 for the GET and Turn on, never a truncated
       check, and Turn on publishes nothing. A Map of 64 keys is checked.
 - [x] **AC14 — the choice.** `on` is saved to `brainstorm_nsec.treasure_map_on` only at a press's success exits,
@@ -197,8 +198,8 @@ Checked items have a handle. The rest are not covered, each with a reason.
 |---|---|---|---|
 | PostgreSQL (the Assistant's row, the scheduling policies, the choice) | unreachable | a 500, before any relay is read or sent to | not covered: shared by every `/user` route; a commit failing after the send is above |
 | PostgreSQL | no default scheduling policy | the Score lines read `not-scheduled` | `test_scores_are_live_only_while_the_scheduler_keeps_them_up_to_date` (no-default-policy) |
-| Neo4j, the follow count (`has_grapevine`) | unreadable | a 502 for the GET and Turn on, when the caller's Map asks the Assistant for Scores; Turn off doesn't read it | `test_a_follow_count_that_cannot_be_read_is_an_error`; `test_the_follow_count_is_read_only_when_the_map_asks_for_scores`; `test_turn_off_reads_no_follow_count` |
-| Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | a 502 after 1 s, with nothing published or saved | `test_a_follow_count_neo4j_never_answers_is_an_error_at_once` |
+| Neo4j, the follow count (`has_grapevine`) | unreadable | a 502 for the GET and Turn on, when the caller's Map asks the Assistant for Scores; Turn off doesn't read it | `test_a_follow_count_that_cannot_be_read_is_an_error`; `test_the_follow_count_counts_only_when_the_map_asks_for_scores`; `test_turn_off_reads_no_follow_count` |
+| Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | a 502 within 5 s of the read's start, alongside the caller's Map, with nothing published or saved; a Map that asks for no Scores doesn't wait for it | `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`; `test_a_follow_count_that_doesnt_count_isnt_waited_for` |
 | Our relay, the caller's Map | unreadable | a 502 for the GET and Turn on; Turn off goes ahead | `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`; `test_turn_on_needs_the_callers_map`; `test_turn_off_needs_only_the_assistants_map` |
 | Our relay, the caller's Map | more than 64 keys | a 422 for the GET and Turn on; Turn off goes ahead | AC13's handles; `test_turn_off_needs_no_map_even_one_too_big` |
 | Writer relays, reading the Assistant's versions | none answers (one that sends `CLOSED` hasn't answered, and is left out) | a 502, with nothing published or saved | `test_when_no_relay_answers_nothing_is_published_or_remembered`; `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer` |
@@ -254,7 +255,9 @@ is named.
 - AC12 → `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`, `test_turn_on_needs_the_callers_map`,
   `test_a_follow_count_that_cannot_be_read_is_an_error`,
   `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`,
-  `test_the_follow_count_is_read_only_when_the_map_asks_for_scores`,
+  `test_the_follow_count_is_read_alongside_the_callers_map`,
+  `test_the_follow_count_counts_only_when_the_map_asks_for_scores`,
+  `test_a_follow_count_that_doesnt_count_isnt_waited_for`,
   `test_the_upkeep_counts_only_when_the_map_asks_for_scores` (7 cases),
   `test_when_no_relay_answers_nothing_is_published_or_remembered`,
   `test_one_relay_answering_with_none_is_a_finished_read`,

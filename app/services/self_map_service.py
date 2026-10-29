@@ -25,19 +25,20 @@ The choice (`brainstorm_nsec.treasure_map_on`) is saved only by a press that
 succeeds, after its publish, and committed before the answer reports it. A
 press that answers an error writes nothing.
 
-The UI waits 30 s. A press takes about 29 s at worst: the caller's Map and the
-versions are read in up to 6 s each, the follow count in 1 s, the connect takes
-up to 4 s and the send 12 s. The follow count is read only when the caller's
-Map asks the Assistant for Scores, and never to turn off. A second press for
-the same Assistant is refused while one is under way.
+The UI waits 30 s. A press takes about 28 s at worst: the caller's Map and the
+versions are read in up to 6 s each, the connect takes up to 4 s and the send
+12 s. The follow count is read alongside the caller's Map, in up to 5 s, and
+counts only when that Map asks the Assistant for Scores; turning off never
+reads it. A second press for the same Assistant is refused while one is under
+way.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import time
-from contextlib import contextmanager
-from typing import Any, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from typing import Any, AsyncIterator, Awaitable, Iterator
 
 from fastapi import HTTPException, status
 from nostr_sdk import Event  # type: ignore
@@ -97,9 +98,11 @@ logger = loggr.get_logger(__name__)
 MAP = "Treasure Map"
 
 # The follow count is one Neo4j COUNT in the cluster, milliseconds while Neo4j
-# is up. The driver has no query timeout and waits 30 s to connect, and a press
-# already spends up to 28 s of the UI's 30 reading and sending.
-FOLLOWS_TIMEOUT_SECONDS = 1
+# is up. The driver has no query timeout and waits 30 s to connect, so it is
+# bounded, and read alongside the caller's Map, which takes up to 6 s. Bounded
+# below that, it adds nothing to a press, and a stall of this process's event
+# loop, such as a GrapeRank result being read, doesn't fail it.
+FOLLOWS_TIMEOUT_SECONDS = 5
 
 # The Assistants with a press under way. One press at a time per Assistant: two
 # at once could sign versions with the same created_at, and a relay keeps either
@@ -128,13 +131,41 @@ def _one_press_at_a_time(assistant: str) -> Iterator[None]:
         _pressing.discard(assistant)
 
 
-async def _upkeep_interval(db: AsyncDBSession, row: BrainstormNsec) -> int | None:
+@asynccontextmanager
+async def _follow_count(
+    pubkey: str, wanted: bool = True
+) -> AsyncIterator[asyncio.Task[bool] | None]:
+    """Whether the caller follows someone, by the scheduler's own
+    `has_grapevine`: read alongside the caller's Map when `wanted` (None
+    otherwise), within FOLLOWS_TIMEOUT_SECONDS. The upkeep awaits it only when
+    that Map asks the Assistant for Scores, and it is cancelled on the way out."""
+    if not wanted:
+        yield None
+        return
+
+    async def read() -> bool:
+        return await asyncio.wait_for(has_grapevine(pubkey), FOLLOWS_TIMEOUT_SECONDS)
+
+    # The read starts in the task, so a task cancelled before it runs leaves no
+    # coroutine unawaited.
+    task = asyncio.create_task(read())
+    try:
+        yield task
+    finally:
+        task.cancel()
+        # Awaited, or a read that failed unawaited is logged as an exception
+        # never retrieved.
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def _upkeep_interval(
+    db: AsyncDBSession, row: BrainstormNsec, follows: Awaitable[bool]
+) -> int | None:
     """How often the caller's Scores are re-published, in seconds; None when
     nothing re-publishes them. Read as the scheduler admits a run
     (`cronjobs/scheduler.py`): its switch, a default policy to run at all, the
-    caller's policy or the default, enabled, and a grapevine to score, by the
-    scheduler's own `has_grapevine`. A follow count not read within
-    FOLLOWS_TIMEOUT_SECONDS is a 502."""
+    caller's policy or the default, enabled, and a grapevine to score
+    (`follows`). A follow count that failed or wasn't read in time is a 502."""
     house = (settings.periodic_graperank_pubkey or "").strip()
     if house and row.pubkey == house:
         # The scheduler leaves the House Observer to the periodic trigger.
@@ -153,9 +184,7 @@ async def _upkeep_interval(db: AsyncDBSession, row: BrainstormNsec) -> int | Non
     if not policy.enabled:
         return None
     try:
-        grapevine = await asyncio.wait_for(
-            has_grapevine(row.pubkey), FOLLOWS_TIMEOUT_SECONDS
-        )
+        grapevine = await follows
     except Exception as e:
         logger.warning(f"follow count for {row.pubkey} unread: {e!r}")
         raise HTTPException(
@@ -169,16 +198,17 @@ async def _upkeep_interval(db: AsyncDBSession, row: BrainstormNsec) -> int | Non
 
 
 async def _scores_upkeep(
-    db: AsyncDBSession, row: BrainstormNsec, needed: bool
+    db: AsyncDBSession, row: BrainstormNsec, follows: Awaitable[bool] | None
 ) -> ScoresUpkeep:
-    """Whether the caller's Scores have landed and are kept up to date, read
-    only when `needed`. Unread, they count as not scheduled, which changes
-    nothing when no Score can be a duty or nothing is listed."""
-    if not needed:
+    """Whether the caller's Scores have landed and are kept up to date.
+    `follows` is the follow count being read (`_follow_count`), None when no
+    Score can be a duty or nothing is listed: they then count as not scheduled,
+    which changes nothing the check says."""
+    if follows is None:
         return ScoresUpkeep("not-scheduled")
     return scores_upkeep(
         as_naive_utc(row.last_time_published_graperank),
-        await _upkeep_interval(db, row),
+        await _upkeep_interval(db, row, follows),
         utc_now(),
     )
 
@@ -254,23 +284,26 @@ async def read_assistant_treasure_map(
 ) -> AssistantTreasureMapCheck:
     row, keys = await assistant(db, user_pubkey)
     who = keys.public_key().to_hex()
-    try:
-        map_event = await _read_reader_map(user_pubkey)
-    except Exception as e:
-        logger.warning(
-            f"treasure map check for {user_pubkey}: their kind 10040 unread: {e!r}"
+    async with _follow_count(row.pubkey) as follows:
+        try:
+            map_event = await _read_reader_map(user_pubkey)
+        except Exception as e:
+            logger.warning(
+                f"treasure map check for {user_pubkey}: their kind 10040 unread: {e!r}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Couldn't read your Treasure Map, so your Assistant's Treasure "
+                    "Map couldn't be checked. Try again in a moment."
+                ),
+            )
+        groups = map_groups(map_event)
+        if too_big_to_check(groups):
+            raise _too_big("your Assistant's Treasure Map couldn't be checked")
+        upkeep = await _scores_upkeep(
+            db, row, follows if asks_for_scores(groups, who) else None
         )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Couldn't read your Treasure Map, so your Assistant's Treasure Map "
-                "couldn't be checked. Try again in a moment."
-            ),
-        )
-    groups = map_groups(map_event)
-    if too_big_to_check(groups):
-        raise _too_big("your Assistant's Treasure Map couldn't be checked")
-    upkeep = await _scores_upkeep(db, row, asks_for_scores(groups, who))
     check = evaluate_self_map(groups, offer_rows(who), who, upkeep)
     return AssistantTreasureMapCheck(
         assistant=who,
@@ -297,28 +330,35 @@ async def publish_assistant_treasure_map(
     row, keys = await assistant(db, user_pubkey)
     who = keys.public_key().to_hex()
     with _one_press_at_a_time(who):
-        try:
-            map_event = await _read_reader_map(user_pubkey)
-        except Exception as e:
-            logger.warning(
-                f"treasure map press for {user_pubkey}: their kind 10040 unread: {e!r}"
-            )
-            if on:
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Couldn't read your Treasure Map, so nothing was published.",
-                )
-            # Turning off lists nothing: the caller's Map only adds the relays
-            # its live duties name.
-            map_event = None
-        groups = map_groups(map_event)
-        if too_big_to_check(groups):
-            if on:
-                raise _too_big("nothing was published")
-            groups = []
         # Turning off reads no follow count: it lists nothing, and live Scores
         # would only add the TA relay, which the outbox names.
-        upkeep = await _scores_upkeep(db, row, on and asks_for_scores(groups, who))
+        async with _follow_count(row.pubkey, wanted=on) as follows:
+            try:
+                map_event = await _read_reader_map(user_pubkey)
+            except Exception as e:
+                logger.warning(
+                    f"treasure map press for {user_pubkey}: "
+                    f"their kind 10040 unread: {e!r}"
+                )
+                if on:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=(
+                            "Couldn't read your Treasure Map, so nothing was "
+                            "published."
+                        ),
+                    )
+                # Turning off lists nothing: the caller's Map only adds the
+                # relays its live duties name.
+                map_event = None
+            groups = map_groups(map_event)
+            if too_big_to_check(groups):
+                if on:
+                    raise _too_big("nothing was published")
+                groups = []
+            upkeep = await _scores_upkeep(
+                db, row, follows if asks_for_scores(groups, who) else None
+            )
         check = evaluate_self_map(groups, offer_rows(who), who, upkeep)
         target = check.should_say if on else []
         relays = _writer_relays(check)

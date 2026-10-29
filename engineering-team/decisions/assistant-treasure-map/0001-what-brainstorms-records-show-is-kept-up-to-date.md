@@ -7,7 +7,8 @@ classification. Revised 2026-10-28 for the PR 110 audit: D2 (follows), D3 (when 
 the writer's relays only, the repair, the 64-key cap, Turn off without the follow count), D5 (refuse, not queue), D6,
 D7 and the Debt. Revised 2026-10-29 for the audit's second round: D4 (the follow count bounded and read only when it
 counts; Turn off's fallbacks are the API's alone), D5 (the time a press takes), D6 (the UI's rule, and the repair it
-can't send), D7, the Debt and Out of scope (when the UI's fix must reach production).
+can't send), D7, the Debt and Out of scope (when the UI's fix must reach production). Revised again for its third
+round: D4 (the follow count read alongside the caller's Map, and the Map read once) and D5 (28 s).
 **Date:** 2026-10-27
 **Story:** [`stories/assistant-treasure-map/1-treasure-map.md`](../../stories/assistant-treasure-map/1-treasure-map.md),
 written after the build (2026-10-28)
@@ -178,13 +179,20 @@ the response, a failed commit would have followed a 200.
 - A Map naming more than 64 keys (`self_map_build.MAX_MAP_KEYS`) is a 422 for the GET and for Turn on, and Turn off
   goes ahead without it. A check weighs each key against every other, so its cost grows with the square of the keys:
   an 835-key Map took seconds of the event loop's CPU per GET. It is never truncated, which could give the wrong
-  self-entries. `/setup` writes eight keys.
-- The follow count (D2) is read only when the caller's Map asks the Assistant for Scores: a key naming it covers kind
+  self-entries. `/setup` writes eight keys. The Map is read once per request (`map_groups`), and the worst Map found
+  under the cap, 64 keys naming the Assistant and 12,000 others in 0.9 MiB, costs a request about 65 ms.
+- The follow count (D2) counts only when the caller's Map asks the Assistant for Scores: a key naming it covers kind
   30382 (`self_map_build.asks_for_scores`). Otherwise no Score is its duty, and the upkeep changes nothing the check
-  says. When it is read, for the GET and Turn on, it's strict: a 502 when it can't be read within 1 s, because read
-  as none it would take the Scores entries off. The Neo4j driver has no query timeout and waits 30 s to connect, so
-  unbounded, a press outlasted the UI's 30 s, holding its slot (D5), and then published. Turn off doesn't read it:
-  it lists nothing, and live Scores would only add the TA relay, which the outbox names first.
+  says. The GET and Turn on read it alongside the caller's Map, within 5 s, and await it only when it counts. Then
+  it's strict: a 502 when it failed or wasn't read in time, because read as none it would take the Scores entries
+  off. Otherwise it's cancelled, so Neo4j being down stops no one whose Map asks for no Scores.
+  - Bounded: the Neo4j driver has no query timeout and waits 30 s to connect, so unbounded, a press outlasted the
+    UI's 30 s, holding its slot (D5), and then published.
+  - Alongside the Map: the second round read it after the Map, within 1 s, to keep a press inside the UI's 30 s. A
+    stall of this process's event loop, which the GrapeRank result consumers share, could then fail an answer
+    Neo4j gave at once. Read alongside, and bounded under the Map read's 6 s, it adds nothing to a press.
+  - Turn off doesn't read it: it lists nothing, and live Scores would only add the TA relay, which the outbox names
+    first.
 - **Turn off's fallbacks are the API's alone.** It goes ahead without the caller's Map, past 64 keys and without the
   follow count. But in those same states the GET answers 422 or 502, and Brainstorm-UI shows no buttons until a GET
   succeeds, so the UI can't send that Turn off (Debt).
@@ -261,8 +269,9 @@ S2) because its Duty Menu route had shipped. Neither route had shipped here.
   NIP-01 keeps the lower id, so a Turn off racing a Turn on would leave either one (§ 9.2 "When it changes"). A test
   runs two at once.
 
-A press takes about 29 s of the UI's 30 at worst: the caller's Map and the versions are read in up to 6 s each, the
-follow count in 1 s (D4), the connect takes up to 4 s and the send 12 s.
+A press takes about 28 s of the UI's 30 at worst: the caller's Map and the versions are read in up to 6 s each, the
+connect takes up to 4 s and the send 12 s. The follow count is read alongside the caller's Map, within 5 s (D4), so it
+adds nothing.
 
 ### D6 — The server answers what to list; the UI reads the published version itself
 
@@ -298,7 +307,7 @@ only through the API. NosFabrica/Brainstorm-UI#302 records the gap; closing it i
 - **On the authenticated `/user` router**, as the Duty Menu's (its D7).
 - **The body** is `{on: StrictBool}`; anything else is a 422.
 - **Errors are plain sentences** in `detail` (`app/services/CLAUDE.md` § Errors):
-  - 502 when the caller's Map can't be read or, when it is read (D4), the follow count (the GET, and Turn on), when
+  - 502 when the caller's Map can't be read or, when it counts (D4), the follow count (the GET, and Turn on), when
     no relay answers the read, or when no relay takes a new version;
   - 422 when the Map names more than 64 keys (the GET, and Turn on);
   - 409 while another press for the same Assistant is under way;
@@ -364,8 +373,8 @@ As built in commit `e2ca872`, with the PR 110 audit's fixes after it:
     `self_entry_relays`, `newest`.
 - `app/services/self_map_service.py`:
   - the routes' logic: `read_assistant_treasure_map`, `publish_assistant_treasure_map`;
-  - the upkeep inputs: `_scores_upkeep` and `_upkeep_interval`, with `cronjobs.scheduler.has_grapevine` bounded by
-    `FOLLOWS_TIMEOUT_SECONDS`;
+  - the upkeep inputs: `_follow_count` (`cronjobs.scheduler.has_grapevine`, read alongside the caller's Map and
+    bounded by `FOLLOWS_TIMEOUT_SECONDS`), `_scores_upkeep` and `_upkeep_interval`;
   - the relays: `_relays` (the GET's, with the hints) and `_writer_relays` (a press's);
   - the repair: `_missing`;
   - the choice: `_save_choice`;

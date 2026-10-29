@@ -429,7 +429,7 @@ def test_one_missed_run_is_a_brief_gap_and_two_a_stop():
     ids=["no-map", "others", "no-score-kind", "30383", "30382", "3038x", "star"],
 )
 def test_the_upkeep_counts_only_when_the_map_asks_for_scores(tags, asks):
-    """So the follow count is read only then: when no key naming the Assistant
+    """So the follow count counts only then: when no key naming the Assistant
     covers 30382, no Score is its duty, and the check is the same live or not."""
     event = {"kind": 10040, "tags": tags} if tags is not None else None
     assert asks_for_scores(map_groups(event), A) is asks
@@ -521,6 +521,8 @@ class World:
         self.follows: int | None = 3
         self.neo4j_stalls = False
         self.follow_reads = 0
+        # For each read of the caller's Map: was a follow count read meanwhile?
+        self.follows_read_alongside: list[bool] = []
 
     @property
     def hex(self) -> str:
@@ -538,6 +540,10 @@ class World:
 
     async def fetch_reader_map(self, relay: str, author: str):
         assert relay == OUR_RELAY and author == self.user
+        reads = self.follow_reads
+        # A relay read waits on the network, and what was started alongside runs.
+        await asyncio.sleep(0)
+        self.follows_read_alongside.append(self.follow_reads > reads)
         if self.map_unreadable:
             raise ConnectionError("down")
         return self.reader_map
@@ -844,24 +850,50 @@ def test_a_follow_count_neo4j_never_answers_is_an_error_at_once(
     assert world.sent == [] and world.choices == []
 
 
-def test_the_follow_count_is_read_only_when_the_map_asks_for_scores(map_client, world):
+def test_the_follow_count_is_read_alongside_the_callers_map(map_client, world):
+    """So its bound adds nothing to a press, and a stall of this process's event
+    loop while the Map is read doesn't fail it. Turning off reads none."""
+    _get(map_client)
+    _post(map_client, True)
+    _post(map_client, False)
+    assert world.follows_read_alongside == [True, True, False]
+
+
+def test_the_follow_count_counts_only_when_the_map_asks_for_scores(map_client, world):
     """Otherwise it changes nothing the check says, so Neo4j being down doesn't
-    stop a customer whose Map asks their Assistant for no Scores."""
+    stop a customer whose Map asks their Assistant for no Scores: not the GET,
+    and not Turn on."""
     world.follows = None
     world.reader_map["tags"] = [
         ["30392", world.hex, PUBLIC_TA],
         ["30382", B, PUBLIC_TA],
     ]
     _get(map_client)
+    assert _post(map_client, True)["published"] is False
     world.reader_map = None
     _get(map_client)
     _post(map_client, True)
-    assert world.follow_reads == 0
+    assert world.choices == [True, True]
 
     world.setup_map()
-    world.follows = 3
+    assert map_client.get("/user/assistantTreasureMap").status_code == 502
+
+
+def test_a_follow_count_that_doesnt_count_isnt_waited_for(
+    map_client, world, monkeypatch
+):
+    """With Neo4j stalled, a Map that asks the Assistant for no Scores is
+    answered at once: the read is cancelled, not awaited to its bound."""
+    monkeypatch.setattr(self_map_service, "FOLLOWS_TIMEOUT_SECONDS", 2)
+    world.neo4j_stalls = True
+    world.reader_map["tags"] = [["30392", world.hex, PUBLIC_TA]]
+    start = time.monotonic()
+
     _get(map_client)
-    assert world.follow_reads == 1
+    _post(map_client, True)
+
+    assert time.monotonic() - start < 1
+    assert world.follows_read_alongside == [True, True]
 
 
 def test_turn_off_reads_no_follow_count(map_client, world):
