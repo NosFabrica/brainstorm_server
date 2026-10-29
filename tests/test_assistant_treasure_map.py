@@ -201,6 +201,15 @@ def test_an_alternate_has_the_duty_too():
     assert check.should_say == [("30382:rank", PUBLIC_TA)]
 
 
+def test_the_assistant_named_in_upper_case_has_its_duties():
+    """A pubkey's hex is read in either case, as `read_self_entries` reads the
+    author: otherwise such a Map gives the Assistant nothing, and Turn on takes
+    its Score entries off."""
+    check = _check([["30382:rank", A.upper(), PUBLIC_TA]])
+
+    assert check.should_say == [("30382:rank", PUBLIC_TA)]
+
+
 def test_a_more_specific_entry_for_another_key_is_elsewhere_and_never_listed():
     check = _check([["*", A, PUBLIC_TA], ["30382:rank", B, "wss://b.example"]])
 
@@ -779,8 +788,10 @@ def test_a_map_too_big_to_check_is_a_422_not_a_truncated_check(map_client, world
 
 def test_a_map_too_big_to_check_is_never_checked(map_client, world, monkeypatch):
     """The cap comes before the check, the cost it is there to save: checked
-    whole, an 835-key Map took 5.6 s of the event loop. Turn off checks none of
-    the caller's Map."""
+    whole, an 835-key Map took 5.6 s of the event loop. It comes before the
+    follow count too, so with Neo4j down a Map too big to check is still a 422,
+    never a 502 that says to try again. Turn off checks none of the caller's
+    Map."""
     checked: list[int] = []
     real = self_map_service.evaluate_self_map
 
@@ -790,6 +801,7 @@ def test_a_map_too_big_to_check_is_never_checked(map_client, world, monkeypatch)
 
     monkeypatch.setattr(self_map_service, "evaluate_self_map", check)
     _map_with_keys(world, 65)
+    world.follows = None
 
     assert map_client.get("/user/assistantTreasureMap").status_code == 422
     r = map_client.post("/user/assistantTreasureMap", json={"on": True})
