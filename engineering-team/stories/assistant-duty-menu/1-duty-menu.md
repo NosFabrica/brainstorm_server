@@ -1,7 +1,7 @@
 # Story 1: The Assistant's Duty Menu
 
 **Status:** Built on [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110), at
-`20b3679`, after the audit's second round; waiting for Gate B
+`c04f607`, after the audit's third round; waiting for Gate B
 **Created:** 2026-10-28, after the build
 **Type:** Feature
 **Source spec:** [NosFabrica/brainstorm_server#108](https://github.com/NosFabrica/brainstorm_server/issues/108). The
@@ -16,11 +16,12 @@ story to the Standard phases.
 
 - **Built first, recorded after.** No Gate A was held, the ADR was written after the build (2026-10-27), and no J1, J2
   or J3 judge ran. This file is the story the ADR's "Owed" list asks for, written from the code and tests at `50443af`
-  and brought up to date at `20b3679`. Its test plan is the edge-case list, the error paths and the AC→handle lines
+  and brought up to date at `c04f607`. Its test plan is the edge-case list, the error paths and the AC→handle lines
   below, in this one file, as the Light profile's § Artifacts has it.
 - **An audit stood where the interior gates would have.** An independent audit of PR 110 (2026-10-28, 27 findings)
   was fixed in `6cc74ca..28175d2` and `50443af`. Its second round (2026-10-29) re-checked `aa4d516` by reverting
-  each fix; what it found is in `aa4d516..20b3679`. The PR body's "What changed after the audit" lists the fixes.
+  each fix; what it found is in `aa4d516..20b3679`. Its third round re-checked `562110f`; what it found is in
+  `562110f..c04f607`. The PR body's "What changed after the audit" lists the fixes.
 - **Still owed:** David's acceptance of the ADR, and Gate B. Its reviewer ratifies the classification and writes the
   review file, `../../reviews/assistant-duty-menu/1-duty-menu.md`.
 
@@ -167,7 +168,7 @@ named.
 
 ## Checks
 
-Run 2026-10-29 at `20b3679` (this file's last commit changes only docs). Each stage ran in the foreground, with its
+Run 2026-10-29 at `c04f607` (this file's last commit changes only docs). Each stage ran in the foreground, with its
 exit code captured by brace-redirect, never piped through `tail`.
 
 | Stage | Command | Exit | Result |
@@ -176,8 +177,11 @@ exit code captured by brace-redirect, never piped through `tail`.
 | `check_imports` | `isort --check ./app` (5.13.2) | 0 | clean |
 | `check_lint` | `flake8 ./app --max-line-length 100 --extend-ignore E203` (7.3.0) | 0 | clean |
 | `check_types` | `mypy ./app` (1.20.1) | 0 | no issues in 193 source files |
-| `test` | `pytest ./tests` with CI's `PYTEST_ADDOPTS="-m 'not integration'"` (7.4.4) | 0 | 1544 passed, 143 deselected, none skipped |
+| `test` | `pytest ./tests` with CI's `PYTEST_ADDOPTS="-m 'not integration'"` (7.4.4) | 0 | 1548 passed, 143 deselected, none skipped |
 
-**Deviation:** poe itself didn't run, because poetry isn't installed here. The five stages of `poe check_all` ran
-directly with its arguments, as CI's `build.yml` runs them. The 143 deselected tests are the integration suite, which
-needs the live stack and wasn't run. None of this story's tests is integration-marked.
+`poe check_all` itself then ran too, and exited 0 with the same results. poetry isn't installed here, and poe 0.18
+runs each task through it, so a stand-in answered poe's one call (`poetry env info -p`) with a virtualenv whose
+black, isort and flake8 are `poetry.lock`'s and whose mypy and pytest are the project's. The project's own virtualenv
+has flake8 5.0.4, whose pycodestyle misreads Python 3.12 f-strings: it fails `check_lint` with 121 findings inside
+f-strings across 27 files, the same at `562110f` as at `c04f607`. The 143 deselected tests are the integration suite,
+which needs the live stack and wasn't run. None of this story's tests is integration-marked.
