@@ -202,9 +202,10 @@ async def _scores_upkeep(
     db: AsyncDBSession, row: BrainstormNsec, follows: Awaitable[bool] | None
 ) -> ScoresUpkeep:
     """Whether the caller's Scores have landed and are kept up to date.
-    `follows` is the follow count being read (`_follow_count`), None when the
-    caller's Map gives the Assistant no Score duty (turning off reads no Map):
-    they then count as not scheduled, which changes nothing the check says."""
+    `follows` is the follow count being read (`_follow_count`), None when no
+    key of the caller's Map naming the Assistant covers kind 30382
+    (`asks_for_scores`; turning off reads no Map): they then count as not
+    scheduled, which changes nothing the check says."""
     if follows is None:
         return ScoresUpkeep("not-scheduled")
     return scores_upkeep(
