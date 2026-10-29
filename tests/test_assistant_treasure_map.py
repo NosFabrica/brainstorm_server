@@ -1185,6 +1185,24 @@ def test_nothing_to_change_still_sends_the_version_where_it_is_missing(
     assert _post(map_client, True)["published"] is False
 
 
+def test_turn_off_still_sends_its_version_where_it_is_missing(map_client, world):
+    """While off, `writerRelays` is Turn off's, and Turn off is the press that
+    mends a relay that missed one: the TA relay, down for the first Turn off,
+    kept the version listing the duties until the second."""
+    _post(map_client, True)
+    world.down.add(INTERNAL_TA)
+    first = _post(map_client, False)
+    assert {r["url"]: r["ok"] for r in first["relays"]}[PUBLIC_TA] is False
+    world.down.clear()
+
+    again = _post(map_client, False)
+
+    assert again["published"] is True and again["event"] == first["event"]
+    assert again["relays"] == [{"url": PUBLIC_TA, "ok": True, "message": None}]
+    assert world.held[INTERNAL_TA][-1] == first["event"]
+    assert _post(map_client, False)["published"] is False
+
+
 def test_a_relay_holding_an_older_version_is_sent_the_newest(map_client, world):
     """Not only a relay with none: one that answered with an earlier version,
     such as the one before a press it missed, gets the newest too."""
@@ -1322,10 +1340,12 @@ def test_turn_off_needs_only_the_assistants_map(map_client, world):
     assert _self_entries(event, world.hex) == set()
 
 
+@pytest.mark.parametrize("on", [True, False], ids=["turn-on", "turn-off"])
 def test_it_is_sent_to_the_relays_and_every_relay_an_earlier_version_named(
-    map_client, world
+    map_client, world, on
 ):
-    """[W2, W3] § 9.2 "Finding a self-Map": the TA relay at its internal address."""
+    """[W2, W3] § 9.2 "Finding a self-Map": the TA relay at its internal address.
+    Turn off too, though it reads at the outbox alone."""
     world.held[OUTBOX[0]] = [
         _version(
             world.assistant,
@@ -1334,7 +1354,7 @@ def test_it_is_sent_to_the_relays_and_every_relay_an_earlier_version_named(
         )
     ]
 
-    _post(map_client, True)
+    _post(map_client, on)
 
     ((urls, _),) = world.sent
     assert INTERNAL_TA in urls and PUBLIC_TA not in urls
