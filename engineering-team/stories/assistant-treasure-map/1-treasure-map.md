@@ -168,9 +168,12 @@ Checked items have a handle. The rest are not covered, each with a reason.
       is bounded at 1 s. A real-socket test:
       `tests/test_designated_pubkeys.py::test_a_relay_that_stalls_the_close_keeps_its_answer_and_costs_a_second`.
 - [x] **Open migrations on the same parent.** PR 111 (`d8f2a1c4e6b9`) and PR 113 (`a7c2e9f1d4b3`) add migrations on
-      this one's parent, `b4e8d2a6f0c1`. Whichever merges later has to re-point its `down_revision`.
-      `tests/test_alembic_heads.py::test_the_migrations_have_one_head` fails until it does: copying PR 113's
-      migration in made it fail.
+      this one's parent, `b4e8d2a6f0c1`. Staging runs PR 113's code, so its database is almost certainly at
+      `a7c2e9f1d4b3` (its `alembic_version` would confirm it). Re-pointed onto `c5f1d7a9e2b4`, that revision would
+      make `alembic upgrade head` there find itself at head and never add `treasure_map_on`. So whichever PR merges
+      second adds an `alembic merge` revision over the two heads, and the third does the same.
+      `tests/test_alembic_heads.py::test_the_migrations_have_one_head` fails until then: copying PR 113's migration
+      in made it fail.
 - [x] **The 500 when the signed event fails its own check** (D4). `test_a_version_that_fails_its_own_check_is_never_sent`
       builds a version one self-entry short: the answer is a 500, with nothing sent or saved.
       `tests/test_assistant_publish.py` checks each of `sign_checked`'s three checks on its own. Before these, removing

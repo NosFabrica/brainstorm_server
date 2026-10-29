@@ -39,6 +39,12 @@ sidecar before the server starts. Locally, run them by hand.
 - Set `server_default` on every NOT NULL column you add to an existing table. Otherwise the migration fails on rows that pre-existed.
 - Custom data backfills go inline in the migration (`op.execute("UPDATE ... ")`) — keep them idempotent so re-running doesn't double-apply.
 - Filenames are `<hash>_<slug>.py`. Don't rename them after they've shipped — the hash is the migration's identity.
+- **Two branches that each add a migration on the same parent** leave two heads, and `start.sh`'s
+  `alembic upgrade head` stops on two (`tests/test_alembic_heads.py` fails first). Join them with `alembic merge`, a
+  revision whose `down_revision` names both heads, not by re-pointing one's `down_revision` onto the other. A database
+  that has applied a revision (staging runs open branches) is at that head: re-point it onto the other, and
+  `upgrade head` there finds itself at head and never applies the revision it skipped. Re-pointing is safe only for a
+  revision no persistent database has applied.
 
 ## Migration history (oldest → newest)
 
