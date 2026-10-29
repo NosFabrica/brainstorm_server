@@ -368,6 +368,10 @@ def test_read_self_entries():
         ("30382:rank", "wss://scores.example"),
         ("39998", ""),
     ]
+    # The author in any case: above, the upper-case tag has a lower-case twin.
+    assert read_self_entries({"tags": [["30382:rank", A.upper(), PUBLIC_TA]]}, A) == [
+        ("30382:rank", PUBLIC_TA)
+    ]
 
 
 def test_same_self_entries_is_a_set_of_key_and_relay():
@@ -763,6 +767,28 @@ def test_a_map_too_big_to_check_is_a_422_not_a_truncated_check(map_client, world
     r = map_client.get("/user/assistantTreasureMap")
     assert r.status_code == 422
     assert isinstance(r.json()["detail"], str)
+
+
+def test_a_map_too_big_to_check_is_never_checked(map_client, world, monkeypatch):
+    """The cap comes before the check, the cost it is there to save: checked
+    whole, an 835-key Map took 5.6 s of the event loop. Turn off checks none of
+    the caller's Map."""
+    checked: list[int] = []
+    real = self_map_service.evaluate_self_map
+
+    def check(groups, *args):
+        checked.append(len(groups))
+        return real(groups, *args)
+
+    monkeypatch.setattr(self_map_service, "evaluate_self_map", check)
+    _map_with_keys(world, 65)
+
+    assert map_client.get("/user/assistantTreasureMap").status_code == 422
+    r = map_client.post("/user/assistantTreasureMap", json={"on": True})
+    assert r.status_code == 422
+    _post(map_client, False)
+
+    assert checked == [0]
 
 
 def test_turn_on_over_a_map_too_big_to_check_publishes_nothing(map_client, world):
