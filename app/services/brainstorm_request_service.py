@@ -157,6 +157,9 @@ async def create_brainstorm_request(
         )
 
     await update_last_time_triggered_graperank_on_db(db, parameters)
+    # Before the enqueue: an idle worker can finish and post results before the
+    # caller's own commit, and the row must exist by then.
+    await db.commit()
 
     await enqueue_calc_request(
         db, instance, parameters, trigger_source, designated_pubkeys
