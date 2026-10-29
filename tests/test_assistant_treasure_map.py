@@ -1268,7 +1268,9 @@ def test_a_refused_press_leaves_the_running_one_its_slot(world):
     assert self_map_service._pressing == set()
 
 
-def test_a_version_that_fails_its_own_check_is_never_sent(map_client, world, monkeypatch):
+def test_a_version_that_fails_its_own_check_is_never_sent(
+    map_client, world, monkeypatch
+):
     """`sign_checked` reads the signed version back before anything is sent:
     here one short of a self-entry it should carry."""
     monkeypatch.setattr(
