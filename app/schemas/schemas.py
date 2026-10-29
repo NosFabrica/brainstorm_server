@@ -849,7 +849,9 @@ class AssistantTreasureMapCheck(BaseModel):
     duties: list[TreasureMapDutyLine]
     # `[key, relay]`, the self-entries it should carry, whether `on` or not.
     should_say: list[list[str]] = Field(serialization_alias="shouldSay")
-    # Where a version is sent, and where to look for one.
+    # Where a reader looks for a version (§ 9.2): the outbox, the relays
+    # `should_say` names, then the caller's hints for the Assistant. A press
+    # never connects to the hints.
     relays: list[str]
 
 

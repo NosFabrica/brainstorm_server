@@ -719,9 +719,10 @@ def evaluate_self_map(
 def self_map_relays(
     outbox: list[str], should_say: list[tuple[str, str]], hints: list[str]
 ) -> list[str]:
-    """Where a version is sent and looked for (§ 9.2 "Finding a self-Map"): the
+    """Where a version is looked for (§ 9.2 "Finding a self-Map"): the
     Assistant's kind-10002 write relays, every relay a should-say entry names,
-    and the reader's hints for the Assistant; each once, in that order."""
+    and `hints`, a reader's hints for the Assistant; each once, in that order. A
+    press passes none: it never connects to the hints."""
     out: list[str] = []
     seen: set[str] = set()
     for url in [*outbox, *(relay for _, relay in should_say), *hints]:
