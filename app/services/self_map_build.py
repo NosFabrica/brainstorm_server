@@ -300,10 +300,12 @@ def _tags_of(event: Any) -> list:
 
 @dataclass(eq=False)
 class Group:
-    """One key of a Map, with its providers in Map order, each once."""
+    """One key of a Map, with the providers it names. A set: Preferred and
+    Alternate carry the same duty (§ 9), so their order isn't kept, and one key
+    of a 1 MiB Map can name some 12,000, too many to scan per tag or probe."""
 
     key: Key
-    providers: list[str] = field(default_factory=list)
+    providers: set[str] = field(default_factory=set)
 
 
 def map_groups(event: Any) -> list[Group]:
@@ -316,9 +318,7 @@ def map_groups(event: Any) -> list[Group]:
         parsed = parse_key(tag[0])
         if parsed is None or not HEX64.fullmatch(tag[1]):
             continue
-        group = by_norm.setdefault(parsed.norm, Group(parsed))
-        if tag[1].lower() not in group.providers:
-            group.providers.append(tag[1].lower())
+        by_norm.setdefault(parsed.norm, Group(parsed)).providers.add(tag[1].lower())
     return list(by_norm.values())
 
 
