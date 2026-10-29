@@ -1,7 +1,7 @@
 # Story 1: Your Assistant's Treasure Map
 
 **Status:** Built on [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110), at
-`c04f607`, after the audit's third round; waiting for Gate B
+`3eca0f8`, after the audit's fourth round; waiting for Gate B
 **Created:** 2026-10-28, after the build
 **Type:** Feature
 **Source spec:** the UI's ask, Brainstorm-UI `docs/assistant/TREASURE-MAP-ASK.md`, corrected by
@@ -17,13 +17,14 @@ phases.
 
 - **Built first, recorded after.** No Gate A was held, the ADR was written after the build (2026-10-27), and no J1, J2
   or J3 judge ran. This file is the story the ADR's "Owed" list asks for, written from the code and tests at `50443af`
-  and brought up to date at `c04f607`. Its test plan is the edge-case list, the error paths and the AC→handle lines
+  and brought up to date at `3eca0f8`. Its test plan is the edge-case list, the error paths and the AC→handle lines
   below, in this one file, as the Light profile's § Artifacts has it.
 - **An audit stood where the interior gates would have.** An independent audit of PR 110 (2026-10-28, 27 findings)
   was fixed in `6cc74ca..28175d2` and `50443af`. Its second round (2026-10-29) re-checked `aa4d516` by reverting
   each fix; what it found is in `aa4d516..20b3679`. Its third round re-checked `562110f`; what it found is in
-  `562110f..c04f607`. The PR body's "What changed after the audit" lists the fixes, and its Evidence records the
-  mutation checks and a run against six throwaway local relays.
+  `562110f..c04f607`. Its fourth round re-checked `1779d70`; what it found is in `1779d70..3eca0f8`. The PR body's
+  "What changed after the audit" lists the fixes, and its Evidence records the mutation checks and a run against six
+  throwaway local relays.
 - **Tapestry's ids.** The tests ported from Tapestry's two self-map suites carry those suites' ids in their
   docstrings (`[U14]`, `[R5]`, …), for cross-reference. The handles here are test names.
 - **Still owed:** David's acceptance of the ADR, and Gate B. Its reviewer ratifies the classification and writes the
@@ -54,9 +55,9 @@ Testable from the outside. Each criterion has at least one handle below.
 
 - [x] **AC1 — two authenticated routes.** `GET` and `POST /user/assistantTreasureMap` refuse a caller without a
       token. They are answered by these routes, not by the `/user/{pubkey}` catch-all.
-- [x] **AC2 — the GET's answer.** `{data: {assistant, on, duties, shouldSay, relays}}`, camelCase, in the shape the
-      UI parses. `on` is the remembered choice. With no Map, or a Map naming only others, there are no duties. With
-      no Map, `relays` is the Assistant's outbox.
+- [x] **AC2 — the GET's answer.** `{data: {assistant, on, duties, shouldSay, relays, writerRelays}}`, camelCase, in
+      the shape the UI parses. `on` is the remembered choice. With no Map, or a Map naming only others, there are no
+      duties. With no Map, `relays` and `writerRelays` are the Assistant's outbox.
 - [x] **AC3 — the offer is read per key, by § 6.2 covering.** A Map of `/setup`'s rows, with Scores live, gets
       exactly the five Score rows, entry for entry. A bare `30382`, `3038x` or `*` narrows to the five metric keys,
       and is never claimed as written. A `30382` metric Brainstorm doesn't publish, and a kind the offer has no row
@@ -75,9 +76,10 @@ Testable from the outside. Each criterion has at least one handle below.
       Assistant's key a kind 10040 whose tags are the `shouldSay` self-entries and our `client` tag, with empty
       content. Nothing of the version it replaces is kept. With nothing live, it takes the stale entries off.
 - [x] **AC7 — Turn off.** `{on: false}` publishes a version that lists none of the Assistant's duties. It needs only
-      the Assistant's own versions: it goes ahead when the caller's Map can't be read or names more than 64 keys, and
-      it reads no follow count. The GET fails in the same states. NosFabrica/Brainstorm-UI#307 (open) offers Turn
-      off beneath that error; until it lands, those fallbacks go through the API alone (ADR D4).
+      the Assistant's own versions: it reads neither the caller's Map nor the follow count, so it goes ahead when the
+      Map can't be read or names more than 64 keys, or Neo4j is down. The GET fails in those states.
+      NosFabrica/Brainstorm-UI#307 (open) offers Turn off beneath that error; until it lands, that Turn off goes
+      through the API alone (ADR D4).
 - [x] **AC8 — the newest version, and dating after it.** The version compared is the newest by NIP-01 (the latest
       `created_at`, then the lowest id) across every relay read. A version whose signature doesn't verify is never
       the newest: the new one isn't dated after it, and the relays it names aren't followed. A new version is dated
@@ -89,20 +91,22 @@ Testable from the outside. Each criterion has at least one handle below.
 - [x] **AC10 — where a version goes.** § 9.2's writer relays, each once: the Assistant's outbox, every relay its
       self-entries name, and every relay a self-entry of a version found named, with the TA relay at its internal
       URL. A press never connects to the caller's hints. The GET lists them in `relays`, after the outbox and the
-      `shouldSay` relays, for readers.
+      `shouldSay` relays, for readers, and names the relays a press reads in `writerRelays`: the outbox and the
+      `shouldSay` relays, at public URLs, never a hint.
 - [x] **AC11 — the report.** The POST answers `{on, published, event, relays: [{url, ok, message}]}`, one line per
       relay, at public addresses. A relay that couldn't be reached reads `couldn't connect`. When no relay took a new
       version, the answer is a 502 and the choice isn't saved. A repair (AC9) answers `published: true` whether or not
       its relays take it: the version is already on the relay it was read from, and the report shows each failed
       line.
 - [x] **AC12 — strict reads.** A caller's Map that can't be read is a 502 for the GET and Turn on, never an empty
-      Map. So is a follow count that failed or wasn't read within 5 s, when the caller's Map asks the Assistant for
-      Scores. It's read alongside that Map, and awaited only then, since otherwise it changes nothing: with Neo4j
-      down, a Map that asks for no Scores still gets its GET and its Turn on. When no relay answers the read of the
-      Assistant's versions, a press is a 502, with nothing published or saved, and a relay that sends `CLOSED`
-      hasn't answered. One relay answering with none is a finished read.
+      Map. So is a follow count that failed or wasn't read within 5 s of its start, when the caller's Map asks the
+      Assistant for Scores and the scheduler would otherwise run the caller. It's read alongside that Map, and
+      awaited only then, since otherwise it changes nothing: with Neo4j down, a Map that asks for no Scores still gets
+      its GET and its Turn on, and a read that isn't awaited has stopped before the answer. When no relay answers the
+      read of the Assistant's versions, a press is a 502, with nothing published or saved, and a relay that sends
+      `CLOSED` hasn't answered. One relay answering with none is a finished read.
 - [x] **AC13 — the 64-key cap.** A Map naming more than 64 keys is a 422 for the GET and Turn on, never a truncated
-      check, and Turn on publishes nothing. A Map of 64 keys is checked.
+      check, and is never checked at all; Turn on publishes nothing. A Map of 64 keys is checked.
 - [x] **AC14 — the choice.** `on` is saved to `brainstorm_nsec.treasure_map_on` only at a press's success exits,
       after the send, and committed before the answer. A press that errors saves nothing.
 - [x] **AC15 — the body.** It is `{on: <boolean>}` and nothing else: `{}`, `"true"`, `1` and `null` are 422s. The
@@ -140,9 +144,11 @@ The ADR is the design and stands in for the Design note. In brief:
       self-Map, staging's included: an Assistant's outbox names public relays, so a staging Assistant's self-Map
       reaches production readers too.
     - The repair (AC9) and Turn off while the GET fails (AC7) reach the UI with NosFabrica/Brainstorm-UI#307 (open),
-      which asks the relays a press reads that it can tell apart whether they hold the newest version. Until it lands,
-      both go through the API alone. After it, a version missed only by an outbox relay other than the TA relay waits
-      for the next press that signs one (ADR D6).
+      which asks the relays a press reads that it can tell apart in `relays` whether they hold the newest version.
+      Until it lands, both go through the API alone. The GET now names every relay a press reads (`writerRelays`,
+      AC10), and #307's probe is to move to it. Until then, a version missed only by an outbox relay other than the
+      TA relay waits for the next press, and if it withdrew a claim, that relay serves the withdrawn self-entries
+      meanwhile, with no press on offer (ADR D6).
 
 ## Out of scope
 
@@ -166,15 +172,17 @@ Checked items have a handle. The rest are not covered, each with a reason.
       - the most specific key first (an exact kind, then a family, then `*`; a value before an empty segment):
         `test_compare_keys_puts_the_most_specific_first`;
       - the nameless and Concept spellings: `test_parse_key_reads_the_nameless_and_concept_spellings`;
-      - self-entries read back normalized, each once, with a missing or empty relay as `""`:
+      - self-entries read back normalized, each once, the author in any case, with a missing or empty relay as `""`:
         `test_read_self_entries`.
 - [x] **A relay that stalls its close.** The read's 5 s deadline covers the open and the answer, not the close, which
       is bounded at 1 s. A real-socket test:
       `tests/test_designated_pubkeys.py::test_a_relay_that_stalls_the_close_keeps_its_answer_and_costs_a_second`.
 - [x] **A press inside the UI's 30 s.** Each step is bounded: the caller's Map and the versions are read in up to
-      6 s each, the connect takes up to 4 s and the send 12 s, about 28 s in all. The follow count, read alongside the
-      caller's Map within 5 s, adds nothing. `test_a_press_fits_in_the_uis_30_seconds` sums the bounds, so raising
-      one past the budget fails it.
+      6 s each, the connect takes up to 4 s and the send 12 s, about 28 s in all; Turn off, which reads no Map, about
+      22 s. The follow count, read alongside the caller's Map within 5 s, adds nothing.
+      `test_a_press_fits_in_the_uis_30_seconds` sums the bounds, so raising one past the budget fails it, and holds
+      the follow count's above 1 s. `test_the_follow_counts_bound_runs_while_the_callers_map_is_read` checks that
+      the bound runs from the read's start, not from the await.
 - [x] **Open migrations on the same parent.** PR 111 (`d8f2a1c4e6b9`) and PR 113 (`a7c2e9f1d4b3`) add migrations on
       this one's parent, `b4e8d2a6f0c1`. Staging runs PR 113's code, so its database is almost certainly at
       `a7c2e9f1d4b3` (its `alembic_version` would confirm it). Re-pointed onto `c5f1d7a9e2b4`, that revision would
@@ -211,10 +219,10 @@ Checked items have a handle. The rest are not covered, each with a reason.
 |---|---|---|---|
 | PostgreSQL (the Assistant's row, the scheduling policies, the choice) | unreachable | a 500, before any relay is read or sent to | not covered: shared by every `/user` route; a commit failing after the send is above |
 | PostgreSQL | no default scheduling policy | the Score lines read `not-scheduled` | `test_scores_are_live_only_while_the_scheduler_keeps_them_up_to_date` (no-default-policy) |
-| Neo4j, the follow count (`has_grapevine`) | unreadable | a 502 for the GET and Turn on, when the caller's Map asks the Assistant for Scores; Turn off doesn't read it | `test_a_follow_count_that_cannot_be_read_is_an_error`; `test_the_follow_count_counts_only_when_the_map_asks_for_scores`; `test_turn_off_reads_no_follow_count` |
-| Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | a 502 within 5 s of the read's start, alongside the caller's Map, with nothing published or saved; a Map that asks for no Scores doesn't wait for it | `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`; `test_a_follow_count_that_doesnt_count_isnt_waited_for` |
-| Our relay, the caller's Map | unreadable | a 502 for the GET and Turn on; Turn off goes ahead | `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`; `test_turn_on_needs_the_callers_map`; `test_turn_off_needs_only_the_assistants_map` |
-| Our relay, the caller's Map | more than 64 keys | a 422 for the GET and Turn on; Turn off goes ahead | AC13's handles; `test_turn_off_needs_no_map_even_one_too_big` |
+| Neo4j, the follow count (`has_grapevine`) | unreadable | a 502 for the GET and Turn on, when the caller's Map asks the Assistant for Scores and the scheduler would otherwise run the caller; Turn off doesn't read it | `test_a_follow_count_that_cannot_be_read_is_an_error`; `test_the_follow_count_counts_only_when_the_map_asks_for_scores`; `test_the_follow_count_counts_only_when_the_scheduler_would_run_the_caller`; `test_turn_off_reads_neither_the_callers_map_nor_the_follow_count` |
+| Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | a 502 within 5 s of the read's start, alongside the caller's Map, with nothing published or saved; a Map that asks for no Scores doesn't wait for it, and the read has stopped before the answer | `test_the_follow_counts_bound_runs_while_the_callers_map_is_read`; `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`; `test_a_follow_count_that_doesnt_count_isnt_waited_for` |
+| Our relay, the caller's Map | unreadable | a 502 for the GET and Turn on; Turn off doesn't read it | `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`; `test_turn_on_needs_the_callers_map`; `test_turn_off_needs_only_the_assistants_map` |
+| Our relay, the caller's Map | more than 64 keys | a 422 for the GET and Turn on, with no check made; Turn off doesn't read it | AC13's handles; `test_turn_off_needs_no_map_even_one_too_big` |
 | Writer relays, reading the Assistant's versions | none answers (one that sends `CLOSED` hasn't answered, and is left out) | a 502, with nothing published or saved | `test_when_no_relay_answers_nothing_is_published_or_remembered`; `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer` |
 | Writer relays, reading | a version whose signature doesn't verify | ignored | `test_a_version_that_does_not_verify_is_never_the_newest` |
 | Writer relays, reading | one stalls its close | its answer is kept, and the close costs at most 1 s | `tests/test_designated_pubkeys.py::test_a_relay_that_stalls_the_close_keeps_its_answer_and_costs_a_second` |
@@ -251,7 +259,7 @@ is named.
   `test_a_version_is_the_self_entries_and_the_client_tag`, `test_a_version_s_tags_are_its_self_entries_alone`,
   `test_turn_on_with_nothing_live_takes_the_stale_entries_off`
 - AC7 → `test_turn_off_lists_none_of_its_duties`, `test_turn_off_needs_only_the_assistants_map`,
-  `test_turn_off_needs_no_map_even_one_too_big`, `test_turn_off_reads_no_follow_count`
+  `test_turn_off_needs_no_map_even_one_too_big`, `test_turn_off_reads_neither_the_callers_map_nor_the_follow_count`
 - AC8 → `test_newest_is_nip_01_s`, `test_the_newest_version_across_relays_is_the_one_compared`,
   `test_a_version_that_does_not_verify_is_never_the_newest`, `test_a_new_version_is_dated_after_the_newest_found`
 - AC9 → `test_nothing_to_change`, `test_same_self_entries_is_a_set_of_key_and_relay`,
@@ -261,22 +269,27 @@ is named.
   `test_a_relay_that_does_not_answer_is_not_sent_the_version_again`
 - AC10 → `test_it_is_sent_to_the_relays_and_every_relay_an_earlier_version_named`,
   `test_a_press_never_connects_where_the_callers_map_points`,
-  `test_the_relays_are_the_outbox_then_should_say_then_hints_each_once`
+  `test_the_relays_are_the_outbox_then_should_say_then_hints_each_once`,
+  `test_the_get_names_the_relays_a_press_reads`,
+  `test_a_relay_should_say_names_outside_the_outbox_is_a_writer_relay`
 - AC11 → `test_the_report_names_public_addresses_one_line_per_relay`, `test_a_version_no_relay_took_is_an_error`,
   `test_a_repair_no_relay_takes_still_answers_published`,
   `test_a_press_that_errors_saves_nothing`
 - AC12 → `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`, `test_turn_on_needs_the_callers_map`,
   `test_a_follow_count_that_cannot_be_read_is_an_error`,
   `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`,
+  `test_the_follow_counts_bound_runs_while_the_callers_map_is_read`,
   `test_the_follow_count_is_read_alongside_the_callers_map`,
   `test_the_follow_count_counts_only_when_the_map_asks_for_scores`,
+  `test_the_follow_count_counts_only_when_the_scheduler_would_run_the_caller` (4 cases),
   `test_a_follow_count_that_doesnt_count_isnt_waited_for`,
+  `test_a_follow_count_given_up_before_it_starts_leaves_nothing_unawaited`,
   `test_the_upkeep_counts_only_when_the_map_asks_for_scores` (7 cases),
   `test_when_no_relay_answers_nothing_is_published_or_remembered`,
   `test_one_relay_answering_with_none_is_a_finished_read`,
   `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer`
 - AC13 → `test_a_map_of_64_keys_is_checked`, `test_a_map_too_big_to_check_is_a_422_not_a_truncated_check`,
-  `test_turn_on_over_a_map_too_big_to_check_publishes_nothing`
+  `test_a_map_too_big_to_check_is_never_checked`, `test_turn_on_over_a_map_too_big_to_check_publishes_nothing`
 - AC14 → `test_the_choice_is_saved_after_the_publish_and_committed_before_the_answer` (a publish, nothing to change
   and a repair),
   `test_a_press_that_errors_saves_nothing`, `test_nothing_to_change_publishes_nothing_and_remembers_the_choice`
@@ -287,7 +300,7 @@ is named.
 
 ## Checks
 
-Run 2026-10-29 at `c04f607` (this file's last commit changes only docs). Each stage ran in the foreground, with its
+Run 2026-10-29 at `3eca0f8` (this file's last commit changes only docs). Each stage ran in the foreground, with its
 exit code captured by brace-redirect, never piped through `tail`.
 
 | Stage | Command | Exit | Result |
@@ -296,11 +309,11 @@ exit code captured by brace-redirect, never piped through `tail`.
 | `check_imports` | `isort --check ./app` (5.13.2) | 0 | clean |
 | `check_lint` | `flake8 ./app --max-line-length 100 --extend-ignore E203` (7.3.0) | 0 | clean |
 | `check_types` | `mypy ./app` (1.20.1) | 0 | no issues in 193 source files |
-| `test` | `pytest ./tests` with CI's `PYTEST_ADDOPTS="-m 'not integration'"` (7.4.4) | 0 | 1548 passed, 143 deselected, none skipped |
+| `test` | `pytest ./tests` with CI's `PYTEST_ADDOPTS="-m 'not integration'"` (7.4.4) | 0 | 1557 passed, 143 deselected, none skipped |
 
 `poe check_all` itself then ran too, and exited 0 with the same results. poetry isn't installed here, and poe 0.18
 runs each task through it, so a stand-in answered poe's one call (`poetry env info -p`) with a virtualenv whose
 black, isort and flake8 are `poetry.lock`'s and whose mypy and pytest are the project's. The project's own virtualenv
 has flake8 5.0.4, whose pycodestyle misreads Python 3.12 f-strings: it fails `check_lint` with 121 findings inside
-f-strings across 27 files, the same at `562110f` as at `c04f607`. The 143 deselected tests are the integration suite,
+f-strings across 27 files, the same at `562110f` as at `3eca0f8`. The 143 deselected tests are the integration suite,
 which needs the live stack and wasn't run. None of this story's tests is integration-marked.

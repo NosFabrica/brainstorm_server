@@ -8,8 +8,11 @@ the writer's relays only, the repair, the 64-key cap, Turn off without the follo
 D7 and the Debt. Revised 2026-10-29 for the audit's second round: D4 (the follow count bounded and read only when it
 counts; Turn off's fallbacks, which the UI couldn't send), D5 (the time a press takes), D6 (the UI's rule, and the
 repair it couldn't send), D7, the Debt and Out of scope (when the UI's fix must reach production). Revised again for
-its third round: D4 (the follow count read alongside the caller's Map, and the Map read once), D5 (28 s), and D4, D6
-and the Debt for NosFabrica/Brainstorm-UI#307, which offers the repair and Turn off while the GET fails.
+its third round: D4 (the follow count read alongside the caller's Map, and the Map read once), D5 (28 s), D7 (the
+follow count's 502) and the implementation notes (`_follow_count`), and D4, D6 and the Debt for
+NosFabrica/Brainstorm-UI#307, which offers the repair and Turn off while the GET fails. Revised for its fourth round:
+D4 (Turn off reads no caller's Map; when the follow count counts; what the cap's check costs), D5 (Turn off's 22 s),
+D6 and D7 (`writerRelays`, the relays a press reads, David's decision), the Debt and the implementation notes.
 **Date:** 2026-10-27
 **Story:** [`stories/assistant-treasure-map/1-treasure-map.md`](../../stories/assistant-treasure-map/1-treasure-map.md),
 written after the build (2026-10-28)
@@ -174,30 +177,38 @@ the response, a failed commit would have followed a 200.
 ### D4 — A press reads strictly, publishes the self-entries alone, and goes only where § 9.2 sends a writer
 
 **The reads:**
-- The caller's Map is read from our relay, through `designation_service.fetch_latest_designation`:
-  - strictly for Turn on: 502 when it can't be read;
-  - best-effort for Turn off, which lists nothing and uses the Map only for the relays its live duties name.
-- A Map naming more than 64 keys (`self_map_build.MAX_MAP_KEYS`) is a 422 for the GET and for Turn on, and Turn off
-  goes ahead without it. A check weighs each key against every other, so its cost grows with the square of the keys:
-  an 835-key Map took seconds of the event loop's CPU per GET. It is never truncated, which could give the wrong
-  self-entries. `/setup` writes eight keys. The Map is read once per request (`map_groups`), and the worst Map found
-  under the cap, 64 keys naming the Assistant and 12,000 others in 0.9 MiB, costs a request about 65 ms.
+- The caller's Map is read from our relay, through `designation_service.fetch_latest_designation`, strictly, and only
+  for Turn on: 502 when it can't be read.
+- **Turn off reads neither the caller's Map nor the follow count.** It lists nothing, and under today's offer neither
+  could change where it reads or sends: without the follow count, Scores read as not scheduled, and only Scores can
+  be live, so its `shouldSay` was empty for every Map; live Scores would only add the TA relay, which the outbox
+  names first. Read anyway, as built until the audit's fourth round, the Map cost Turn off up to 6 s, and was the only
+  reason it had fallbacks (no Map, more than 64 keys). Should a duty other than Scores become live at a relay the
+  outbox doesn't name (Debt), Turn off would have to read the Map again to read there.
+- A Map naming more than 64 keys (`self_map_build.MAX_MAP_KEYS`) is a 422 for the GET and for Turn on, and is never
+  checked. A check weighs each key against every other, so its cost grows with the square of the keys: an 835-key
+  Map took 5.6 s of the event loop's CPU per GET. It is never truncated, which could give the wrong self-entries.
+  `/setup` writes eight keys. The Map is read once per request (`map_groups`). On an M3 Ultra, 64 short keys naming
+  the Assistant and 12,000 others (0.9 MiB) cost a request about 65 ms, and long keys and many hints cost more: 64
+  keys of 16,000 segments about 4.5x, 10,500 hints for the Assistant about 2.2x. The audit's M1 takes 1.25–1.6x as
+  long.
 - The follow count (D2) counts only when the caller's Map asks the Assistant for Scores: a key naming it covers kind
   30382 (`self_map_build.asks_for_scores`). Otherwise no Score is its duty, and the upkeep changes nothing the check
-  says. The GET and Turn on read it alongside the caller's Map, within 5 s, and await it only when it counts. Then
-  it's strict: a 502 when it failed or wasn't read in time, because read as none it would take the Scores entries
-  off. Otherwise it's cancelled, so Neo4j being down stops no one whose Map asks for no Scores.
+  says. The GET and Turn on read it alongside the caller's Map, within 5 s, and await it only when it counts and the
+  scheduler would otherwise run the caller: after the House Observer's, `scheduler_enabled`'s and the policies'
+  answers (`_upkeep_interval`). Then it's strict: a 502 when it failed or wasn't read in time, because read as none
+  it would take the Scores entries off. Otherwise it's cancelled, and awaited, so the read has stopped, its Neo4j
+  session released, before the answer goes out. Neo4j being down stops no one whose Map asks for no Scores.
   - Bounded: the Neo4j driver has no query timeout and waits 30 s to connect, so unbounded, a press outlasted the
-    UI's 30 s, holding its slot (D5), and then published.
+    UI's 30 s, holding its slot (D5), and then published. The bound runs inside the read, from its start: at the
+    await, it would add its 5 s to a press.
   - Alongside the Map: the second round read it after the Map, within 1 s, to keep a press inside the UI's 30 s. A
     stall of this process's event loop, which the GrapeRank result consumers share, could then fail an answer
-    Neo4j gave at once. Read alongside, and bounded under the Map read's 6 s, it adds nothing to a press.
-  - Turn off doesn't read it: it lists nothing, and live Scores would only add the TA relay, which the outbox names
-    first.
-- **Turn off's fallbacks.** It goes ahead without the caller's Map, past 64 keys and without the follow count. In
-  those same states the GET answers 422 or 502. NosFabrica/Brainstorm-UI#307 (open) offers Turn off beneath that
-  error. Until it lands, the UI shows no buttons until a GET succeeds, and that Turn off goes through the API alone
-  (Debt).
+    Neo4j gave at once. Read alongside, and bounded above a second and under the Map read's 6 s, it adds nothing
+    to a press.
+- **Turn off while the GET fails.** Turn off reads neither, so it goes ahead in the states where the GET answers 422
+  or 502 for the Map or the follow count. NosFabrica/Brainstorm-UI#307 (open) offers Turn off beneath that error.
+  Until it lands, the UI shows no buttons until a GET succeeds, and that Turn off goes through the API alone (Debt).
 - Then the writer's relays (below) are asked for the Assistant's kind 10040, the TA relay at its internal URL:
   - only versions validly signed by the Assistant count;
   - the newest by NIP-01 is the one compared and dated after;
@@ -251,7 +262,8 @@ with that event and those relays' report, even when none of them takes it: the v
 was read from, and the report shows each failed line. A relay that didn't answer is left alone: it is likely down,
 and would otherwise be sent to, and reported, on every press. So the press after one whose TA relay was down repairs
 it; as first built, every later press answered "nothing changed". Only when every relay holds it is the answer
-`published: false`. NosFabrica/Brainstorm-UI#307 (open) offers that press for the relays it can tell apart (D6).
+`published: false`. The GET names the relays a press reads (`writerRelays`, D6), so the UI can ask each one, and
+NosFabrica/Brainstorm-UI#307 (open) offers that press.
 
 Signing and sending are `assistant_publish`'s, shared with the Duty Menu. Tapestry left that sharing for later (its
 S2) because its Duty Menu route had shipped. Neither route had shipped here.
@@ -273,13 +285,16 @@ S2) because its Duty Menu route had shipped. Neither route had shipped here.
 
 A press takes about 28 s of the UI's 30 at worst: the caller's Map and the versions are read in up to 6 s each, the
 connect takes up to 4 s and the send 12 s. The follow count is read alongside the caller's Map, within 5 s (D4), so it
-adds nothing. `test_a_press_fits_in_the_uis_30_seconds` sums these bounds.
+adds nothing. Turn off reads neither, and takes about 22 s. `test_a_press_fits_in_the_uis_30_seconds` sums these
+bounds, and holds the follow count's between 1 s and the Map read's.
 
 ### D6 — The server answers what to list; the UI reads the published version itself
 
-The GET answers `{assistant, on, duties, shouldSay, relays}`. Its only relay read is our own relay, for the caller's
-Map. The UI reads the Assistant's kind 10040 from `relays` and compares it with `shouldSay`, as a set of
+The GET answers `{assistant, on, duties, shouldSay, relays, writerRelays}`. Its only relay read is our own relay, for
+the caller's Map. The UI reads the Assistant's kind 10040 from `relays` and compares it with `shouldSay`, as a set of
 `(key, relay)`, as it does for the Duty Menu. Its Nostr reads come from its EventStore (Brainstorm-UI ADR 0005).
+`writerRelays` names the relays a press reads: the outbox, then the relays `shouldSay` names, each once, at public
+URLs, and never a hint (below).
 
 **Options considered:**
 - **A (chosen):** as above. The answer carries no `published`, `current`, `falseClaim` or `active`; the UI works them
@@ -296,18 +311,26 @@ self-entries alone (D4), and NosFabrica/Brainstorm-UI#302 made the UI's the same
 self-entries alone, and `nothingStale` is gone.
 
 **What they don't share: the repair** (D4). The UI reads the newest version found on any of the relays it's given,
-so that alone can't show a relay that missed it: after such a press, the Map reads up to date.
-NosFabrica/Brainstorm-UI#307 (open) also asks the relays a press reads that the UI can tell apart, by id, whether
-they hold the newest version: the relays `shouldSay` names, and the TA relay when `relays` names it. One that answers
-without it is named on the page, and Update now stays enabled, or while off Turn off stays offered, so the press
-repairs it. Until #307 lands, that press goes through the API alone. Its limit: the rest of `relays` are the
-outbox's other relays and the caller's hints, which the answer doesn't tell apart, and a hint must never be asked,
-since a press never sends there. So a version missed only by another outbox relay waits for the next press that
-signs one. The GET naming the relays a press reads would close that (Debt).
+so that alone can't show a relay that missed it: after such a press, the Map reads up to date. A press repairs only
+the relays it reads, so the GET names every one of them, `writerRelays`, and the UI can ask each one, by id, whether
+it holds the newest version. `relays` can't serve: beyond the TA relay and the relays `shouldSay` names, it holds
+the outbox's other relays and the caller's hints, which it doesn't tell apart, and a hint must never be asked, since
+a press never goes there. David chose the GET naming them over the UI working them out of `relays` (2026-10-29).
+Turn off reads the outbox alone, which `writerRelays` starts with; today `shouldSay` names only the TA relay, which
+the outbox names first, so the two are the same.
+
+NosFabrica/Brainstorm-UI#307 (open) asks the relays it can tell apart in `relays` (those `shouldSay` names, and the
+TA relay), names one that answers without the newest version, and keeps Update now enabled, or while off Turn off
+offered, so the press repairs it. Until it lands, that press goes through the API alone. Its probe is to move to
+`writerRelays`, which closes its limit. Until then, a version missed only by an outbox relay other than the TA relay
+waits for the next press. When that version withdraws a claim (a Turn off, or an Update that drops a duty), the
+relay keeps serving the withdrawn self-entries meanwhile, and the UI offers no press for it.
 
 ### D7 — The wire: camelCase, plain sentences, nothing changed on an error
 
-- **camelCase** (`shouldSay`, `lastLandedAt`), as the UI's parser reads it, through Pydantic serialization aliases.
+- **camelCase** (`shouldSay`, `writerRelays`, `lastLandedAt`), as the UI's parser reads it, through Pydantic
+  serialization aliases. The parser ignores a field it doesn't know, so `writerRelays` changed nothing for the UI on
+  staging.
   This departs from the repo's snake_case for new endpoints (`app/schemas/CLAUDE.md`), because the UI's contract was
   written first and is on staging.
 - **Wrapped in `{data}`**, like every `/user` answer.
@@ -356,15 +379,16 @@ signs one. The GET naming the relays a press reads would close that (Debt).
   server publishes a self-Map, staging's included:** an Assistant's outbox names public relays, so a staging
   Assistant's self-Map reaches production readers too (Out of scope).
 - **The repair and Turn off while the GET fails reach the UI with NosFabrica/Brainstorm-UI#307** (open; D6, D4).
-  Until it lands, both go through the API alone. After it, a version missed only by an outbox relay other than the TA
-  relay still waits for the next press that signs one, since the UI can't tell the outbox's other relays from the
-  caller's hints in `relays`. The GET naming the relays a press reads, beside `relays`, would close that; #307's ask
-  doc lists it under "Not asked for (yet)".
+  Until it lands, both go through the API alone. The GET now names every relay a press reads (`writerRelays`), so
+  the UI can ask each one; until #307's probe uses it, a version missed only by an outbox relay other than the TA
+  relay waits for the next press, and if it withdrew a claim, that relay serves the withdrawn self-entries meanwhile,
+  with no press on offer.
 - **One press at a time is held in-process** (D5).
 - **No rate limit on the POST**, like the Duty Menu's.
 - **Trusted Lists and Concepts become claimable** once something publishes and keeps them up to date, starting with
   [NosFabrica/brainstorm_server#112](https://github.com/NosFabrica/brainstorm_server/issues/112). `evaluate_live`
-  then gains a branch for each.
+  then gains a branch for each. If one is live at a relay the outbox doesn't name, `writerRelays` names that relay
+  and Turn off, which reads the outbox alone, doesn't, so Turn off has to read the caller's Map again (D4).
 - **Owed under the Light profile:**
   - this ADR's acceptance;
   - Gate B's ratification of its classification;
@@ -384,8 +408,9 @@ As built in commit `e2ca872`, with the PR 110 audit's fixes after it:
 - `app/services/self_map_service.py`:
   - the routes' logic: `read_assistant_treasure_map`, `publish_assistant_treasure_map`;
   - the upkeep inputs: `_follow_count` (`cronjobs.scheduler.has_grapevine`, read alongside the caller's Map and
-    bounded by `FOLLOWS_TIMEOUT_SECONDS`), `_scores_upkeep` and `_upkeep_interval`;
-  - the relays: `_relays` (the GET's, with the hints) and `_writer_relays` (a press's);
+    bounded by `FOLLOWS_TIMEOUT_SECONDS`, never by Turn off), `_scores_upkeep` and `_upkeep_interval`;
+  - the relays: `_relays` (the GET's `relays`, with the hints) and `_writer_relays` (a press's, and the GET's
+    `writerRelays`);
   - the repair: `_missing`;
   - the choice: `_save_choice`;
   - one press at a time: `_one_press_at_a_time`, over `_pressing`.
