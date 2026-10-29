@@ -40,7 +40,7 @@ Access the URL `http://0.0.0.0:8000/admin`
 
 The suite splits into **fast** tests (service-mocked, no external services — the
 app's lifespan never runs) and **integration** tests (marked `integration`,
-require the real local stack: Neo4j + Redis).
+require the real local stack: Postgres, Neo4j and Redis).
 
 Fast tests — the default, run anywhere:
 
@@ -48,10 +48,22 @@ Fast tests — the default, run anywhere:
 poetry run pytest -m "not integration"
 ```
 
-Integration tests — bring the local stack up first, then run only that marker:
+> Note: the fast suite expects `PUBLIC_BASE_URL`'s host to be `localhost` — the
+> Open Ranking tests that sign an NWT use that audience. `tests/conftest.py`
+> reads `.env` itself, and a value already in `.env` or the environment wins over
+> its dummies, so a `PUBLIC_BASE_URL` naming any other host fails those tests.
+> Keep `env.example`'s `http://localhost:8000`, and don't source a deployment's
+> `.env` into the shell that runs the tests.
+
+Integration tests — bring the local stack up first, then run only that marker.
+The stack is the one-click deployment's (this repo's own `docker-compose.yml`
+has only the server and Postgres — see CLAUDE.md § Run locally); its stores are
+enough:
 
 ```bash
-docker-compose up -d            # postgres, redis, neo4j, strfry, neofry
+# in ../brainstorm_one_click_deployment
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d postgres redis_strfry neo4j
+# back here
 poetry run pytest -m integration
 ```
 
@@ -68,8 +80,15 @@ poetry run pytest
 
 ## How to run everything with docker
 
-- docker network create brainstorm-network
-- docker-compose up
+The whole stack runs from
+[brainstorm_one_click_deployment](https://github.com/NosFabrica/brainstorm_one_click_deployment),
+checked out next to this repo; its local override builds this server from
+`../brainstorm_server`:
+
+```bash
+# in ../brainstorm_one_click_deployment
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+```
 
 ## How to deploy to staging
 
