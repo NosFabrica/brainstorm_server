@@ -310,7 +310,8 @@ class Group:
 
 def map_groups(event: Any) -> list[Group]:
     """A Map's entries, one group per key in the order the Map first names it.
-    Tags whose key doesn't parse, or whose element 2 isn't a key, are left out."""
+    Tags whose key doesn't parse, or whose element 2 isn't a key, are left out.
+    Read once per request: a 1 MiB Map takes some 25 ms to read."""
     by_norm: dict[str, Group] = {}
     for tag in _tags_of(event):
         if not isinstance(tag, list) or len(tag) < 2 or not isinstance(tag[1], str):
@@ -323,15 +324,16 @@ def map_groups(event: Any) -> list[Group]:
 
 
 # A Map is checked whole or not at all: a check weighs each key against every
-# other, so its cost grows with the square of the keys. `/setup` writes eight;
-# at 64 the worst shape costs about 40 ms. Never truncated: a cut Map can give
-# the wrong self-entries.
+# other, so its cost grows with the square of the keys. `/setup` writes eight.
+# The worst Map found under the cap, 64 keys naming the Assistant and 12,000
+# others in 0.9 MiB, costs a request about 65 ms. Never truncated: a cut Map
+# can give the wrong self-entries.
 MAX_MAP_KEYS = 64
 
 
-def too_big_to_check(event: Any) -> bool:
-    """Does the Map name more keys than a check reads?"""
-    return len(map_groups(event)) > MAX_MAP_KEYS
+def too_big_to_check(groups: list[Group]) -> bool:
+    """Does the Map (`map_groups`) name more keys than a check reads?"""
+    return len(groups) > MAX_MAP_KEYS
 
 
 def in_supported_sets(probe: Probe) -> bool:
@@ -449,15 +451,13 @@ def scores_upkeep(
     return ScoresUpkeep("live")
 
 
-def asks_for_scores(event: Any, assistant: str) -> bool:
-    """Could the reader's Map give the Assistant a Score duty: does a key naming
-    the Assistant cover kind 30382? Only such a duty is live or not by
-    `ScoresUpkeep`, so when none can be, the upkeep changes nothing the check
-    says."""
+def asks_for_scores(groups: list[Group], assistant: str) -> bool:
+    """Could the reader's Map (`map_groups`) give the Assistant a Score duty:
+    does a key naming the Assistant cover kind 30382? Only such a duty is live
+    or not by `ScoresUpkeep`, so when none can be, the upkeep changes nothing
+    the check says."""
     who = assistant.lower()
-    return any(
-        who in g.providers and SCORE_KIND in g.key.kinds for g in map_groups(event)
-    )
+    return any(who in g.providers and SCORE_KIND in g.key.kinds for g in groups)
 
 
 @dataclass(frozen=True)
@@ -694,12 +694,15 @@ class SelfMapCheck:
 
 
 def evaluate_self_map(
-    map_event: Any, offer_rows: list[list[str]], assistant: str, scores: ScoresUpkeep
+    groups: list[Group],
+    offer_rows: list[list[str]],
+    assistant: str,
+    scores: ScoresUpkeep,
 ) -> SelfMapCheck:
     """What the Assistant's Treasure Map should list for the reader whose newest
-    kind 10040 is `map_event` (None when they have none), and why."""
+    kind 10040 has these groups (`map_groups`; none when they have no Map), and
+    why."""
     offer = Offer(offer_rows)
-    groups = map_groups(map_event)
     probes = build_probes(g.key for g in groups)
     duties = duties_of(groups, assistant, probes)
     live = {probe: evaluate_live(probe, offer, scores) for probe in probes}
@@ -749,8 +752,11 @@ def read_self_entries(event: Any, author: str) -> list[tuple[str, str]]:
     for tag in _tags_of(event):
         if not isinstance(tag, list) or len(tag) < 2 or not isinstance(tag[1], str):
             continue
+        # The author first: a reader's Map can name 12,000 others.
+        if tag[1].lower() != who:
+            continue
         parsed = parse_key(tag[0])
-        if parsed is None or tag[1].lower() != who:
+        if parsed is None:
             continue
         relay = tag[2].strip() if len(tag) > 2 and isinstance(tag[2], str) else ""
         if (parsed.norm, relay_key(relay)) not in seen:

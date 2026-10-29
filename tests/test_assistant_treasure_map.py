@@ -32,6 +32,7 @@ from app.services.self_map_build import (
     asks_for_scores,
     compare_keys,
     evaluate_self_map,
+    map_groups,
     most_specific_first,
     newest,
     nothing_to_change,
@@ -80,7 +81,7 @@ def relay_settings(monkeypatch):
 def _check(tags, scores=LIVE, rows=None):
     """What A's Treasure Map should list under a reader's Map with these tags."""
     return evaluate_self_map(
-        {"kind": 10040, "tags": tags} if tags is not None else None,
+        map_groups({"kind": 10040, "tags": tags} if tags is not None else None),
         offer_rows(A) if rows is None else rows,
         A,
         scores,
@@ -431,7 +432,7 @@ def test_the_upkeep_counts_only_when_the_map_asks_for_scores(tags, asks):
     """So the follow count is read only then: when no key naming the Assistant
     covers 30382, no Score is its duty, and the check is the same live or not."""
     event = {"kind": 10040, "tags": tags} if tags is not None else None
-    assert asks_for_scores(event, A) is asks
+    assert asks_for_scores(map_groups(event), A) is asks
     stopped = ScoresUpkeep("upkeep-stopped", 1_700_000_000)
     assert (_check(tags, LIVE) == _check(tags, stopped)) is not asks
 

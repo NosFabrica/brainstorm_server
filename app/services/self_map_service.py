@@ -79,6 +79,7 @@ from app.services.self_map_build import (
     SelfMapCheck,
     asks_for_scores,
     evaluate_self_map,
+    map_groups,
     newest,
     nothing_to_change,
     read_self_entries,
@@ -266,10 +267,11 @@ async def read_assistant_treasure_map(
                 "couldn't be checked. Try again in a moment."
             ),
         )
-    if too_big_to_check(map_event):
+    groups = map_groups(map_event)
+    if too_big_to_check(groups):
         raise _too_big("your Assistant's Treasure Map couldn't be checked")
-    upkeep = await _scores_upkeep(db, row, asks_for_scores(map_event, who))
-    check = evaluate_self_map(map_event, offer_rows(who), who, upkeep)
+    upkeep = await _scores_upkeep(db, row, asks_for_scores(groups, who))
+    check = evaluate_self_map(groups, offer_rows(who), who, upkeep)
     return AssistantTreasureMapCheck(
         assistant=who,
         on=bool(row.treasure_map_on),
@@ -309,14 +311,15 @@ async def publish_assistant_treasure_map(
             # Turning off lists nothing: the caller's Map only adds the relays
             # its live duties name.
             map_event = None
-        if too_big_to_check(map_event):
+        groups = map_groups(map_event)
+        if too_big_to_check(groups):
             if on:
                 raise _too_big("nothing was published")
-            map_event = None
+            groups = []
         # Turning off reads no follow count: it lists nothing, and live Scores
         # would only add the TA relay, which the outbox names.
-        upkeep = await _scores_upkeep(db, row, on and asks_for_scores(map_event, who))
-        check = evaluate_self_map(map_event, offer_rows(who), who, upkeep)
+        upkeep = await _scores_upkeep(db, row, on and asks_for_scores(groups, who))
+        check = evaluate_self_map(groups, offer_rows(who), who, upkeep)
         target = check.should_say if on else []
         relays = _writer_relays(check)
         read = publish_targets(relays)
