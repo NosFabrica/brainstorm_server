@@ -1,7 +1,7 @@
 # Story 1: Your Assistant's Treasure Map
 
 **Status:** Built on [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110), at
-`50443af`; waiting for Gate B
+`20b3679`, after the audit's second round; waiting for Gate B
 **Created:** 2026-10-28, after the build
 **Type:** Feature
 **Source spec:** the UI's ask, Brainstorm-UI `docs/assistant/TREASURE-MAP-ASK.md`, corrected by
@@ -15,12 +15,13 @@ phases.
 
 ## How this story was run
 
-- **Built first, recorded after.** No Gate A was held, the ADR was written after the build (2026-10-27), and no J1,
-  J2 or J3 judge ran. This file is the story the ADR's "Owed" list asks for, written from the code and tests at
-  `50443af`. Its test plan is the edge-case list, the error paths and the AC→handle lines below, in this one file,
-  as the Light profile's § Artifacts has it.
+- **Built first, recorded after.** No Gate A was held, the ADR was written after the build (2026-10-27), and no J1, J2
+  or J3 judge ran. This file is the story the ADR's "Owed" list asks for, written from the code and tests at `50443af`
+  and brought up to date at `20b3679`. Its test plan is the edge-case list, the error paths and the AC→handle lines
+  below, in this one file, as the Light profile's § Artifacts has it.
 - **An audit stood where the interior gates would have.** An independent audit of PR 110 (2026-10-28, 27 findings)
-  was fixed in `6cc74ca..28175d2` and `50443af`. The PR body's "What changed after the audit" lists the fixes, and
+  was fixed in `6cc74ca..28175d2` and `50443af`. Its second round (2026-10-29) re-checked `aa4d516` by reverting
+  each fix; what it found is in `aa4d516..20b3679`. The PR body's "What changed after the audit" lists the fixes, and
   its Evidence records the mutation checks and a run against six throwaway local relays.
 - **Tapestry's ids.** The tests ported from Tapestry's two self-map suites carry those suites' ids in their
   docstrings (`[U14]`, `[R5]`, …), for cross-reference. The handles here are test names.
@@ -174,10 +175,10 @@ Checked items have a handle. The rest are not covered, each with a reason.
       second adds an `alembic merge` revision over the two heads, and the third does the same.
       `tests/test_alembic_heads.py::test_the_migrations_have_one_head` fails until then: copying PR 113's migration
       in made it fail.
-- [x] **The 500 when the signed event fails its own check** (D4). `test_a_version_that_fails_its_own_check_is_never_sent`
-      builds a version one self-entry short: the answer is a 500, with nothing sent or saved.
-      `tests/test_assistant_publish.py` checks each of `sign_checked`'s three checks on its own. Before these, removing
-      the checks left the suite green.
+- [x] **The 500 when the signed event fails its own check** (D4).
+      `test_a_version_that_fails_its_own_check_is_never_sent` builds a version one self-entry short: the answer is a
+      500, with nothing sent or saved. `tests/test_assistant_publish.py` checks each of `sign_checked`'s three checks
+      on its own. Before these, removing the checks left the suite green.
 - [ ] **Not covered: a commit that fails after the send.** The new version is then on the relays while
       `treasure_map_on` keeps its old value, and the press answers an error. Pressing the same button again finds
       nothing to change and saves the choice. The fakes record the save but never fail the commit.
@@ -251,7 +252,8 @@ is named.
   `test_a_repair_no_relay_takes_still_answers_published`,
   `test_a_press_that_errors_saves_nothing`
 - AC12 → `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`, `test_turn_on_needs_the_callers_map`,
-  `test_a_follow_count_that_cannot_be_read_is_an_error`, `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`,
+  `test_a_follow_count_that_cannot_be_read_is_an_error`,
+  `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`,
   `test_the_follow_count_is_read_only_when_the_map_asks_for_scores`,
   `test_the_upkeep_counts_only_when_the_map_asks_for_scores` (7 cases),
   `test_when_no_relay_answers_nothing_is_published_or_remembered`,
@@ -263,14 +265,14 @@ is named.
   and a repair),
   `test_a_press_that_errors_saves_nothing`, `test_nothing_to_change_publishes_nothing_and_remembers_the_choice`
 - AC15 → `test_the_body_is_one_boolean` (4 cases), `test_the_request_cannot_choose_whose_assistant_or_where`
-- AC16 → `test_a_second_press_while_one_is_under_way_is_refused`, `test_a_refused_press_leaves_the_running_one_its_slot`,
-  `test_a_press_that_errors_lets_the_next_one_go_ahead`
+- AC16 → `test_a_second_press_while_one_is_under_way_is_refused`,
+  `test_a_refused_press_leaves_the_running_one_its_slot`, `test_a_press_that_errors_lets_the_next_one_go_ahead`
 - AC17 → `tests/test_alembic_heads.py::test_the_migrations_have_one_head`
 
 ## Checks
 
-Run 2026-10-28 at `50443af` (this file's commit changes only docs). Each stage ran in the foreground, with its exit
-code captured by brace-redirect, never piped through `tail`.
+Run 2026-10-29 at `20b3679` (this file's last commit changes only docs). Each stage ran in the foreground, with its
+exit code captured by brace-redirect, never piped through `tail`.
 
 | Stage | Command | Exit | Result |
 |---|---|---|---|
@@ -278,7 +280,7 @@ code captured by brace-redirect, never piped through `tail`.
 | `check_imports` | `isort --check ./app` (5.13.2) | 0 | clean |
 | `check_lint` | `flake8 ./app --max-line-length 100 --extend-ignore E203` (7.3.0) | 0 | clean |
 | `check_types` | `mypy ./app` (1.20.1) | 0 | no issues in 193 source files |
-| `test` | `pytest ./tests` with CI's `PYTEST_ADDOPTS="-m 'not integration'"` (7.4.4) | 0 | 1526 passed, 143 deselected, none skipped |
+| `test` | `pytest ./tests` with CI's `PYTEST_ADDOPTS="-m 'not integration'"` (7.4.4) | 0 | 1544 passed, 143 deselected, none skipped |
 
 **Deviation:** poe itself didn't run, because poetry isn't installed here. The five stages of `poe check_all` ran
 directly with its arguments, as CI's `build.yml` runs them. The 143 deselected tests are the integration suite, which

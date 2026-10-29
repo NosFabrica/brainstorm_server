@@ -1,7 +1,7 @@
 # Story 1: The Assistant's Duty Menu
 
 **Status:** Built on [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110), at
-`50443af`; waiting for Gate B
+`20b3679`, after the audit's second round; waiting for Gate B
 **Created:** 2026-10-28, after the build
 **Type:** Feature
 **Source spec:** [NosFabrica/brainstorm_server#108](https://github.com/NosFabrica/brainstorm_server/issues/108). The
@@ -14,12 +14,13 @@ story to the Standard phases.
 
 ## How this story was run
 
-- **Built first, recorded after.** No Gate A was held, the ADR was written after the build (2026-10-27), and no J1,
-  J2 or J3 judge ran. This file is the story the ADR's "Owed" list asks for, written from the code and tests at
-  `50443af`. Its test plan is the edge-case list, the error paths and the AC→handle lines below, in this one file,
-  as the Light profile's § Artifacts has it.
+- **Built first, recorded after.** No Gate A was held, the ADR was written after the build (2026-10-27), and no J1, J2
+  or J3 judge ran. This file is the story the ADR's "Owed" list asks for, written from the code and tests at `50443af`
+  and brought up to date at `20b3679`. Its test plan is the edge-case list, the error paths and the AC→handle lines
+  below, in this one file, as the Light profile's § Artifacts has it.
 - **An audit stood where the interior gates would have.** An independent audit of PR 110 (2026-10-28, 27 findings)
-  was fixed in `6cc74ca..28175d2` and `50443af`. The PR body's "What changed after the audit" lists the fixes.
+  was fixed in `6cc74ca..28175d2` and `50443af`. Its second round (2026-10-29) re-checked `aa4d516` by reverting
+  each fix; what it found is in `aa4d516..20b3679`. The PR body's "What changed after the audit" lists the fixes.
 - **Still owed:** David's acceptance of the ADR, and Gate B. Its reviewer ratifies the classification and writes the
   review file, `../../reviews/assistant-duty-menu/1-duty-menu.md`.
 
@@ -116,8 +117,8 @@ Checked items have a handle. The rest are not covered, each with a reason.
 - [x] **The route order.** `/user/{pubkey}` is a single-segment catch-all under the same prefix, and the UI reads any
       200 that isn't `{assistant, rows}` as "not on this server yet". `test_get_is_the_offer_not_a_user_profile`
       fails if the menu routes are mounted after it.
-- [x] **The 500 when the signed event fails its own check** (D6). `test_a_menu_that_fails_6_1_is_never_sent` builds
-      a menu without its `p`: the answer is a 500 and nothing is sent. `tests/test_assistant_publish.py` checks each of
+- [x] **The 500 when the signed event fails its own check** (D6). `test_a_menu_that_fails_6_1_is_never_sent` builds a
+      menu without its `p`: the answer is a 500 and nothing is sent. `tests/test_assistant_publish.py` checks each of
       `sign_checked`'s three checks on its own: the event verifies, carries exactly the tags built, and passes the
       caller's check. Before these, removing the checks left the suite green.
 - [ ] **Not covered: an earlier version that is validly signed but fails § 6.1.** `_is_own_menu` reads it anyway, so
@@ -165,8 +166,8 @@ named.
 
 ## Checks
 
-Run 2026-10-28 at `50443af` (this file's commit changes only docs). Each stage ran in the foreground, with its exit
-code captured by brace-redirect, never piped through `tail`.
+Run 2026-10-29 at `20b3679` (this file's last commit changes only docs). Each stage ran in the foreground, with its
+exit code captured by brace-redirect, never piped through `tail`.
 
 | Stage | Command | Exit | Result |
 |---|---|---|---|
@@ -174,7 +175,7 @@ code captured by brace-redirect, never piped through `tail`.
 | `check_imports` | `isort --check ./app` (5.13.2) | 0 | clean |
 | `check_lint` | `flake8 ./app --max-line-length 100 --extend-ignore E203` (7.3.0) | 0 | clean |
 | `check_types` | `mypy ./app` (1.20.1) | 0 | no issues in 193 source files |
-| `test` | `pytest ./tests` with CI's `PYTEST_ADDOPTS="-m 'not integration'"` (7.4.4) | 0 | 1526 passed, 143 deselected, none skipped |
+| `test` | `pytest ./tests` with CI's `PYTEST_ADDOPTS="-m 'not integration'"` (7.4.4) | 0 | 1544 passed, 143 deselected, none skipped |
 
 **Deviation:** poe itself didn't run, because poetry isn't installed here. The five stages of `poe check_all` ran
 directly with its arguments, as CI's `build.yml` runs them. The 143 deselected tests are the integration suite, which

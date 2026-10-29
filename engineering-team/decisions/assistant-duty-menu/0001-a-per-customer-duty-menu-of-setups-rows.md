@@ -4,7 +4,7 @@
 [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110) (commit `58b32b3`). No
 Gate A was held. It's for David to accept and for the Gate B reviewer to ratify, together with this ADR's
 classification. Revised 2026-10-28 for the PR 110 audit: D4's premise (what the UI copies from `/setup`), D5's read
-(now strict) and D6's check.
+(now strict) and D6's check; and 2026-10-29, for its second round: D6's date (what a republish replaces).
 **Date:** 2026-10-27
 **Story:** [`stories/assistant-duty-menu/1-duty-menu.md`](../../stories/assistant-duty-menu/1-duty-menu.md), written
 after the build (2026-10-28)
@@ -238,7 +238,8 @@ fixes after it:
 - `app/schemas/`: `AssistantDutyMenuOffer`, `AssistantRelayResult`, `PublishedAssistantDutyMenu`, and their two
   response wrappers.
 - `app/core/config.py` and `env.example`: `dictionary_relay`.
-- Tests: `tests/test_assistant_duty_menu.py` and `tests/test_setup_designation.py`.
+- Tests: `tests/test_assistant_duty_menu.py`, `tests/test_assistant_publish.py` (`sign_checked`) and
+  `tests/test_setup_designation.py`.
 
 ## Out of scope
 

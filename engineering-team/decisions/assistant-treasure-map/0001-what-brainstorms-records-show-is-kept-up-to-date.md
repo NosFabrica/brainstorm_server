@@ -383,7 +383,8 @@ As built in commit `e2ca872`, with the PR 110 audit's fixes after it:
 - `app/db_models/__init__.py`, `app/repos/brainstorm_nsec.py` (`set_treasure_map_on_by_pubkey_on_db`), and
   `alembic/versions/c5f1d7a9e2b4_add_treasure_map_on.py`.
 - Tests: `tests/test_assistant_treasure_map.py` (the cases ported from Tapestry's two self-map suites are named by
-  their ids), `tests/test_designated_pubkeys.py` and `tests/test_alembic_heads.py`.
+  their ids), `tests/test_assistant_publish.py` (`sign_checked`), `tests/test_designated_pubkeys.py`,
+  `tests/test_scheduler.py` (`has_grapevine`, and a cycle's no-follows skip) and `tests/test_alembic_heads.py`.
 
 ## Out of scope
 
