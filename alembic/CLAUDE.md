@@ -48,17 +48,23 @@ sidecar before the server starts. Locally, run them by hand.
   - **The merge revision a persistent database applies has to be the one that lands.** A branch tried on staging
     before it merges runs there through a branch that joins it to staging's code, with a merge revision of its own,
     Mj. If `main` later joins those heads with another, staging's next image stops in `start.sh` with "Can't locate
-    revision identified by" Mj. So Mj, with the same revision id, goes into whichever of the two joined branches
-    merges later, since only that one holds both of Mj's parents. If a third branch with a migration of its own
-    merged in between, that later branch also adds a merge revision over Mj and `main`'s head. Or, before that image
-    starts, staging is stamped to Mj's parents (`alembic stamp --purge <parent> <parent>`), and its `upgrade head`
-    applies the rest. Stamped to `main`'s merge revision instead, it would silently skip any migration of `main`'s
-    it lacks, and without `--purge` a stamp stops on the same error.
-  - **Until `main` carries Mj, every image staging runs has to.** One without it stops the same way, the joined
-    branch's own image included. To go back to an image without one of Mj's parents, downgrade first with the
-    join's image: `alembic downgrade <the other parent>` takes Mj off, and `alembic downgrade <that parent>@-1` then
-    undoes that migration. A stamp alone leaves what the migration made, and the next upgrade that makes it again
-    fails.
+    revision identified by" Mj. So Mj's file goes in unchanged (the same revision id, the same parents) with
+    whichever of the two joined branches merges later, since only that one holds both of Mj's parents. If a third
+    branch with a migration of its own merged before it (first, or in between), that later branch also adds a
+    separate merge revision over Mj and `main`'s head. Never give Mj's id to a merge over other parents, such as
+    `alembic merge --rev-id <Mj> heads` after updating from `main`: CI and production pass, but staging, already at
+    Mj, then never applies the third branch's migration. Or, before the image that joins the heads starts, staging
+    is stamped to Mj's parents (`alembic stamp --purge <parent> <parent>`), and its `upgrade head` applies the rest.
+    Stamped to `main`'s merge revision instead, it would silently skip any migration of `main`'s it lacks. Without
+    `--purge` a stamp stops too: on "Can't locate revision" with an image that lacks Mj, and on a `KeyError` naming
+    Mj with the join's.
+  - **While staging is at Mj, every image it runs has to carry Mj**, until `main` carries it or staging is stamped
+    to its parents. One without it stops the same way, the joined branch's own image included. To go back to an
+    image without one of Mj's parents, downgrade first with the join's image:
+    `alembic downgrade <that parent>@<the revision both branches start from>` takes Mj off and undoes that side's
+    migrations, however many there are, in one step. Then pin that image at once: until it starts, the join's pod
+    still serves, and its queries on what the downgrade dropped fail (`/health` doesn't touch the database). A stamp
+    alone leaves what the migration made, and the next upgrade that makes it again fails.
 
 ## Migration history (oldest → newest)
 
