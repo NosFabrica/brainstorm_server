@@ -25,7 +25,7 @@ from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag, Timestamp
 from app.api import app
 from app.core.config import settings
 from app.core.database import get_db
-from app.services import assistant_publish, self_map_service
+from app.services import assistant_publish, designation_service, self_map_service
 from app.services.duty_menu_build import designation_rows, offer_rows
 from app.services.self_map_build import (
     ScoresUpkeep,
@@ -848,6 +848,24 @@ def test_a_follow_count_neo4j_never_answers_is_an_error_at_once(
     assert r.status_code == 502 and isinstance(r.json()["detail"], str)
     assert time.monotonic() - start < 1
     assert world.sent == [] and world.choices == []
+
+
+def test_a_press_fits_in_the_uis_30_seconds():
+    """At worst a press reads the caller's Map and then the versions, in up to
+    6 s each, connects in 4 s and sends in 12; the rest takes milliseconds. The
+    follow count is read alongside the caller's Map, so it adds nothing while it
+    is bounded below that read."""
+    read = (
+        designation_service._FETCH_TIMEOUT_SECONDS
+        + designation_service._CLOSE_TIMEOUT_SECONDS
+    )
+    assert self_map_service.FOLLOWS_TIMEOUT_SECONDS < read
+    press = (
+        2 * read
+        + assistant_publish.CONNECT_TIMEOUT.total_seconds()
+        + assistant_publish.SEND_TIMEOUT_SECONDS
+    )
+    assert press <= 28
 
 
 def test_the_follow_count_is_read_alongside_the_callers_map(map_client, world):

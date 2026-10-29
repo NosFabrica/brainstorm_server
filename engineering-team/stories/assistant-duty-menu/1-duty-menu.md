@@ -120,7 +120,8 @@ Checked items have a handle. The rest are not covered, each with a reason.
 - [x] **The 500 when the signed event fails its own check** (D6). `test_a_menu_that_fails_6_1_is_never_sent` builds a
       menu without its `p`: the answer is a 500 and nothing is sent. `tests/test_assistant_publish.py` checks each of
       `sign_checked`'s three checks on its own: the event verifies, carries exactly the tags built, and passes the
-      caller's check. Before these, removing the checks left the suite green.
+      caller's check. It also checks an event that can't be signed. Before these, removing the checks left the suite
+      green.
 - [ ] **Not covered: an earlier version that is validly signed but fails § 6.1.** `_is_own_menu` reads it anyway, so
       a broken menu is still replaced, but no test publishes over one.
 - [ ] **Not covered: two publishes at once.** No lock is needed. Both build the same rows from the same settings, so
@@ -138,7 +139,7 @@ Checked items have a handle. The rest are not covered, each with a reason.
 | Relays, sending | one can't be reached | its line reads `couldn't connect`; the rest are sent to | `test_the_report_names_public_addresses_one_line_per_relay` |
 | Relays, sending | none takes the event | a 502 | `test_a_menu_no_relay_took_is_an_error` |
 | Settings | `dictionary_relay` empty, or a row with no relay | the row isn't served or offered | `tests/test_setup_designation.py::test_no_dictionary_rows_without_a_dictionary_relay`; `test_a_row_with_no_relay_is_not_offered` |
-| nostr-sdk, signing | the signed event isn't what was built, or fails § 6.1 | a 500, nothing sent | `test_a_menu_that_fails_6_1_is_never_sent`; `tests/test_assistant_publish.py` (4 tests) |
+| nostr-sdk, signing | the event can't be signed, or the signed event isn't what was built, or fails § 6.1 | a 500, nothing sent | `test_a_menu_that_fails_6_1_is_never_sent`; `tests/test_assistant_publish.py` (5 tests) |
 
 ## AC→handle lines
 

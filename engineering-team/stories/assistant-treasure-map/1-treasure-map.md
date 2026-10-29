@@ -169,6 +169,10 @@ Checked items have a handle. The rest are not covered, each with a reason.
 - [x] **A relay that stalls its close.** The read's 5 s deadline covers the open and the answer, not the close, which
       is bounded at 1 s. A real-socket test:
       `tests/test_designated_pubkeys.py::test_a_relay_that_stalls_the_close_keeps_its_answer_and_costs_a_second`.
+- [x] **A press inside the UI's 30 s.** Each step is bounded: the caller's Map and the versions are read in up to
+      6 s each, the connect takes up to 4 s and the send 12 s, about 28 s in all. The follow count, read alongside the
+      caller's Map within 5 s, adds nothing. `test_a_press_fits_in_the_uis_30_seconds` sums the bounds, so raising
+      one past the budget fails it.
 - [x] **Open migrations on the same parent.** PR 111 (`d8f2a1c4e6b9`) and PR 113 (`a7c2e9f1d4b3`) add migrations on
       this one's parent, `b4e8d2a6f0c1`. Staging runs PR 113's code, so its database is almost certainly at
       `a7c2e9f1d4b3` (its `alembic_version` would confirm it). Re-pointed onto `c5f1d7a9e2b4`, that revision would
@@ -179,7 +183,7 @@ Checked items have a handle. The rest are not covered, each with a reason.
 - [x] **The 500 when the signed event fails its own check** (D4).
       `test_a_version_that_fails_its_own_check_is_never_sent` builds a version one self-entry short: the answer is a
       500, with nothing sent or saved. `tests/test_assistant_publish.py` checks each of `sign_checked`'s three checks
-      on its own. Before these, removing the checks left the suite green.
+      on its own, and an event it can't sign. Before these, removing the checks left the suite green.
 - [ ] **Not covered: a commit that fails after the send.** The new version is then on the relays while
       `treasure_map_on` keeps its old value, and the press answers an error. Pressing the same button again finds
       nothing to change and saves the choice. The fakes record the save but never fail the commit.
@@ -209,7 +213,7 @@ Checked items have a handle. The rest are not covered, each with a reason.
 | Writer relays, sending | none takes a new version | a 502; the choice isn't saved | `test_a_version_no_relay_took_is_an_error`; `test_a_press_that_errors_saves_nothing` |
 | Writer relays, sending a repair | none takes it | a 200, `published: true`, the failed lines reported and the choice saved: the version is on the relay it was read from | `test_a_repair_no_relay_takes_still_answers_published` |
 | The request | a body other than `{on: <boolean>}` | a 422 | `test_the_body_is_one_boolean` |
-| nostr-sdk, signing | the signed event isn't what was built, or not the target | a 500, nothing sent or saved | `test_a_version_that_fails_its_own_check_is_never_sent`; `tests/test_assistant_publish.py` (4 tests) |
+| nostr-sdk, signing | the event can't be signed, or the signed event isn't what was built, or not the target | a 500, nothing sent or saved | `test_a_version_that_fails_its_own_check_is_never_sent`; `tests/test_assistant_publish.py` (5 tests) |
 
 ## AC→handle lines
 

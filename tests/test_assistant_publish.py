@@ -1,6 +1,7 @@
 """`assistant_publish.sign_checked`: what the Duty Menu and the Treasure Map sign
 is checked before anything is sent, and is a 500 otherwise. Each of its three
-checks has a case of its own, so none can go without a test failing.
+checks has a case of its own, so none can go without a test failing, and so has
+an event that can't be signed at all.
 """
 from __future__ import annotations
 
@@ -78,3 +79,8 @@ def test_an_event_that_does_not_verify_is_a_500(monkeypatch):
     monkeypatch.setattr(assistant_publish, "EventBuilder", Unverified)
 
     assert _refused(keys=Keys.generate(), tags=[]) == 500
+
+
+def test_an_event_that_cannot_be_signed_is_a_500():
+    """nostr-sdk refuses an empty tag: a 500 like a failed check, not a raw error."""
+    assert _refused(keys=Keys.generate(), tags=[[]]) == 500

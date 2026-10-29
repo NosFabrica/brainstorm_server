@@ -271,7 +271,7 @@ S2) because its Duty Menu route had shipped. Neither route had shipped here.
 
 A press takes about 28 s of the UI's 30 at worst: the caller's Map and the versions are read in up to 6 s each, the
 connect takes up to 4 s and the send 12 s. The follow count is read alongside the caller's Map, within 5 s (D4), so it
-adds nothing.
+adds nothing. `test_a_press_fits_in_the_uis_30_seconds` sums these bounds.
 
 ### D6 — The server answers what to list; the UI reads the published version itself
 
