@@ -853,6 +853,11 @@ class AssistantTreasureMapCheck(BaseModel):
     # `should_say` names, then the caller's hints for the Assistant. A press
     # never connects to the hints.
     relays: list[str]
+    # Where a press reads the versions, and so the relays a repair reaches: the
+    # outbox, then the relays `should_say` names, each once, at public URLs.
+    # Turning off reads the outbox alone; today `should_say` names only the TA
+    # relay, which the outbox names first.
+    writer_relays: list[str] = Field(serialization_alias="writerRelays")
 
 
 class PublishedAssistantTreasureMap(BaseModel):

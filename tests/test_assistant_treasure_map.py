@@ -712,11 +712,19 @@ def test_the_routes_require_authentication(method):
 def test_the_get_is_the_shape_the_ui_parses(map_client, world):
     check = _get(map_client)
 
-    assert set(check) == {"assistant", "on", "duties", "shouldSay", "relays"}
+    assert set(check) == {
+        "assistant",
+        "on",
+        "duties",
+        "shouldSay",
+        "relays",
+        "writerRelays",
+    }
     assert check["assistant"] == world.hex
     assert check["on"] is False
     assert {tuple(e) for e in check["shouldSay"]} == _five()
     assert check["relays"] == [PUBLIC_TA, *OUTBOX, DICTIONARY]
+    assert check["writerRelays"] == [PUBLIC_TA, *OUTBOX]
     rank = check["duties"][0]
     assert rank == {
         "key": "30382:rank",
@@ -740,7 +748,7 @@ def test_with_no_map_there_are_no_duties_and_the_relays_are_the_outbox(
     world.reader_map = None
     check = _get(map_client)
     assert check["duties"] == [] and check["shouldSay"] == []
-    assert check["relays"] == [PUBLIC_TA, *OUTBOX]
+    assert check["relays"] == check["writerRelays"] == [PUBLIC_TA, *OUTBOX]
 
 
 def test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map(map_client, world):
@@ -1352,6 +1360,45 @@ def test_a_press_never_connects_where_the_callers_map_points(map_client, world):
     assert {internal, DICTIONARY}.isdisjoint(world.read_from)
     ((urls, _),) = world.sent
     assert {internal, DICTIONARY}.isdisjoint(urls)
+
+
+def _public(relays: list[str]) -> list[str]:
+    """Relays as the GET names them: the TA relay at its public URL."""
+    return [PUBLIC_TA if relay == INTERNAL_TA else relay for relay in relays]
+
+
+def test_the_get_names_the_relays_a_press_reads(map_client, world):
+    """`writerRelays` is where Turn on reads the versions, so the UI can ask
+    each one whether it holds the newest, and a press repairs any that answers
+    without it. A hint for the Assistant is in `relays`, for readers, and not
+    here: a press never reads there. The TA relay is named at its public URL."""
+    hint = "wss://hint.example"
+    world.reader_map["tags"].append(["30382:rank", world.hex, hint])
+
+    check = _get(map_client)
+    _post(map_client, True)
+
+    assert check["writerRelays"] == [PUBLIC_TA, *OUTBOX]
+    assert {hint, DICTIONARY} <= set(check["relays"])
+    assert sorted(_public(world.read_from)) == sorted(check["writerRelays"])
+    assert INTERNAL_TA in world.read_from
+
+
+def test_a_relay_should_say_names_outside_the_outbox_is_a_writer_relay(
+    map_client, world, monkeypatch
+):
+    """With the TA relay out of the outbox, it is still read, for the five
+    Score entries `shouldSay` names there, and so it is still named."""
+    monkeypatch.setattr(
+        "app.services.self_map_service.assistant_relay_list", lambda: list(OUTBOX)
+    )
+
+    check = _get(map_client)
+    _post(map_client, True)
+
+    assert check["writerRelays"] == [*OUTBOX, PUBLIC_TA]
+    assert sorted(_public(world.read_from)) == sorted(check["writerRelays"])
+    assert INTERNAL_TA not in check["writerRelays"]
 
 
 def test_the_report_names_public_addresses_one_line_per_relay(map_client, world):

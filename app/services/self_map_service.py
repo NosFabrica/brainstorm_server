@@ -321,6 +321,7 @@ async def read_assistant_treasure_map(
         ],
         should_say=[list(entry) for entry in check.should_say],
         relays=_relays(check, map_event, who),
+        writer_relays=[t.url for t in publish_targets(_writer_relays(check))],
     )
 
 
