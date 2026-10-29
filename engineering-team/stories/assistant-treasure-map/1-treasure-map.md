@@ -177,7 +177,11 @@ Checked items have a handle. The rest are not covered, each with a reason.
       this one's parent, `b4e8d2a6f0c1`. Staging runs PR 113's code, so its database is almost certainly at
       `a7c2e9f1d4b3` (its `alembic_version` would confirm it). Re-pointed onto `c5f1d7a9e2b4`, that revision would
       make `alembic upgrade head` there find itself at head and never add `treasure_map_on`. So whichever PR merges
-      second adds an `alembic merge` revision over the two heads, and the third does the same.
+      second adds an `alembic merge` revision over the two heads, and the third does the same. Tried on staging
+      first, this PR runs there through a branch joining it to PR 113's code, with a merge revision of its own. That
+      one has to land on `main`, in the PR that merges second, or staging is stamped to `main`'s before its next
+      image starts; otherwise `start.sh` stops with "Can't locate revision identified by" the join's. A local alembic
+      run showed all three outcomes.
       `tests/test_alembic_heads.py::test_the_migrations_have_one_head` fails until then: copying PR 113's migration
       in made it fail.
 - [x] **The 500 when the signed event fails its own check** (D4).

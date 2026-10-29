@@ -45,6 +45,12 @@ sidecar before the server starts. Locally, run them by hand.
   that has applied a revision (staging runs open branches) is at that head: re-point it onto the other, and
   `upgrade head` there finds itself at head and never applies the revision it skipped. Re-pointing is safe only for a
   revision no persistent database has applied.
+  - **The merge revision a persistent database applies has to be the one that lands.** A branch tried on staging
+    before it merges runs there through a branch that joins it to staging's code, with a merge revision of its own.
+    If `main` later joins the same heads with another, staging's next image stops in `start.sh` with "Can't locate
+    revision identified by" the join's. So that merge revision goes into the branch that merges second and lands
+    with it, or staging is stamped to `main`'s before that image starts: `alembic stamp --purge <revision>`, since a
+    merge revision applies nothing, and without `--purge` the stamp stops on the same error.
 
 ## Migration history (oldest → newest)
 
