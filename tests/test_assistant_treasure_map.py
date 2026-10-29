@@ -523,6 +523,10 @@ class World:
         self.follow_reads = 0
         # For each read of the caller's Map: was a follow count read meanwhile?
         self.follows_read_alongside: list[bool] = []
+        # How long a read of the caller's Map takes, and, in order, each one
+        # ending ("Map read") and each follow count given up while Neo4j stalls.
+        self.map_read_seconds = 0.0
+        self.timeline: list[str] = []
 
     @property
     def hex(self) -> str:
@@ -542,8 +546,9 @@ class World:
         assert relay == OUR_RELAY and author == self.user
         reads = self.follow_reads
         # A relay read waits on the network, and what was started alongside runs.
-        await asyncio.sleep(0)
+        await asyncio.sleep(self.map_read_seconds)
         self.follows_read_alongside.append(self.follow_reads > reads)
+        self.timeline.append("Map read")
         if self.map_unreadable:
             raise ConnectionError("down")
         return self.reader_map
@@ -634,7 +639,11 @@ def world(monkeypatch, caller, assistant) -> World:
         assert pubkey == w.user
         w.follow_reads += 1
         if w.neo4j_stalls:
-            await asyncio.sleep(3)
+            try:
+                await asyncio.sleep(3)
+            except asyncio.CancelledError:
+                w.timeline.append("follow count given up")
+                raise
         if w.follows is None:
             raise ConnectionError("neo4j down")
         return w.follows > 0
@@ -854,18 +863,37 @@ def test_a_press_fits_in_the_uis_30_seconds():
     """At worst a press reads the caller's Map and then the versions, in up to
     6 s each, connects in 4 s and sends in 12; the rest takes milliseconds. The
     follow count is read alongside the caller's Map, so it adds nothing while it
-    is bounded below that read."""
+    is bounded below that read. Bounded at a second, as the audit's second round
+    had it, a stall of this process's event loop could fail it."""
     read = (
         designation_service._FETCH_TIMEOUT_SECONDS
         + designation_service._CLOSE_TIMEOUT_SECONDS
     )
-    assert self_map_service.FOLLOWS_TIMEOUT_SECONDS < read
+    assert 1 < self_map_service.FOLLOWS_TIMEOUT_SECONDS < read
     press = (
         2 * read
         + assistant_publish.CONNECT_TIMEOUT.total_seconds()
         + assistant_publish.SEND_TIMEOUT_SECONDS
     )
     assert press <= 28
+
+
+def test_the_follow_counts_bound_runs_while_the_callers_map_is_read(
+    map_client, world, monkeypatch
+):
+    """The bound starts with the read, so a stalled follow count is given up
+    before the caller's Map is read. Started at the await instead, it would add
+    its 5 s to a press: 33 s in all, past the UI's 30."""
+    monkeypatch.setattr(self_map_service, "FOLLOWS_TIMEOUT_SECONDS", 0.05)
+    world.map_read_seconds = 0.2
+    world.neo4j_stalls = True
+
+    assert map_client.get("/user/assistantTreasureMap").status_code == 502
+    r = map_client.post("/user/assistantTreasureMap", json={"on": True})
+
+    assert r.status_code == 502
+    assert world.timeline == ["follow count given up", "Map read"] * 2
+    assert world.sent == [] and world.choices == []
 
 
 def test_the_follow_count_is_read_alongside_the_callers_map(map_client, world):
