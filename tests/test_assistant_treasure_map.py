@@ -1038,9 +1038,9 @@ def test_a_follow_count_given_up_before_it_starts_leaves_nothing_unawaited(
 
 
 def test_turn_off_reads_neither_the_callers_map_nor_the_follow_count(map_client, world):
-    """Turning off lists nothing, so under today's offer neither can change
-    what's signed or where it goes: live Scores would only add the TA relay,
-    which the outbox names first. Read, the Map cost Turn off up to 6 s."""
+    """Turning off lists nothing, so neither can change what's signed or where
+    it goes: a version listing nothing is read and sent at the outbox, and sent
+    where earlier versions named. Read, the Map cost Turn off up to 6 s."""
     tags = [[k, world.hex, PUBLIC_TA] for k in FIVE]
     world.held[INTERNAL_TA] = [_version(world.assistant, tags, 1_700_000_000)]
     world.follows = None
@@ -1367,11 +1367,13 @@ def _public(relays: list[str]) -> list[str]:
     return [PUBLIC_TA if relay == INTERNAL_TA else relay for relay in relays]
 
 
-def test_the_get_names_the_relays_a_press_reads(map_client, world):
-    """`writerRelays` is where Turn on reads the versions, so the UI can ask
-    each one whether it holds the newest, and a press repairs any that answers
-    without it. A hint for the Assistant is in `relays`, for readers, and not
-    here: a press never reads there. The TA relay is named at its public URL."""
+def test_while_on_the_get_names_the_relays_update_now_reads(map_client, world):
+    """`writerRelays` is where the press that keeps the current choice reads the
+    versions, so the UI can ask each one whether it holds the newest, and that
+    press repairs any that answers without it. A hint for the Assistant is in
+    `relays`, for readers, and not here: a press never reads there. The TA relay
+    is named at its public URL."""
+    world.row.treasure_map_on = True
     hint = "wss://hint.example"
     world.reader_map["tags"].append(["30382:rank", world.hex, hint])
 
@@ -1384,14 +1386,15 @@ def test_the_get_names_the_relays_a_press_reads(map_client, world):
     assert INTERNAL_TA in world.read_from
 
 
-def test_a_relay_should_say_names_outside_the_outbox_is_a_writer_relay(
+def test_while_on_a_relay_should_say_names_outside_the_outbox_is_named(
     map_client, world, monkeypatch
 ):
-    """With the TA relay out of the outbox, it is still read, for the five
-    Score entries `shouldSay` names there, and so it is still named."""
+    """With the TA relay out of the outbox, Update now still reads it, for the
+    five Score entries `shouldSay` names there, and so it is still named."""
     monkeypatch.setattr(
         "app.services.self_map_service.assistant_relay_list", lambda: list(OUTBOX)
     )
+    world.row.treasure_map_on = True
 
     check = _get(map_client)
     _post(map_client, True)
@@ -1399,6 +1402,25 @@ def test_a_relay_should_say_names_outside_the_outbox_is_a_writer_relay(
     assert check["writerRelays"] == [*OUTBOX, PUBLIC_TA]
     assert sorted(_public(world.read_from)) == sorted(check["writerRelays"])
     assert INTERNAL_TA not in check["writerRelays"]
+
+
+def test_while_off_the_get_names_the_outbox_alone_as_turn_off_reads(
+    map_client, world, monkeypatch
+):
+    """Even when `shouldSay` names a relay outside it. Turn off lists nothing
+    and reads the outbox alone, so a relay only `shouldSay` names, probed while
+    off, would offer a Turn off that never mends it."""
+    monkeypatch.setattr(
+        "app.services.self_map_service.assistant_relay_list", lambda: list(OUTBOX)
+    )
+
+    check = _get(map_client)
+    _post(map_client, False)
+
+    assert check["on"] is False
+    assert {tuple(e) for e in check["shouldSay"]} == _five()
+    assert check["writerRelays"] == OUTBOX
+    assert sorted(world.read_from) == sorted(OUTBOX)
 
 
 def test_the_report_names_public_addresses_one_line_per_relay(map_client, world):

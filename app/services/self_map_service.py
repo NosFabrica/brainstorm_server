@@ -252,10 +252,17 @@ def _relays(
     )
 
 
-def _writer_relays(check: SelfMapCheck) -> list[str]:
-    """Where a press reads and sends, before the relays earlier versions name:
-    the Assistant's outbox and the relays its self-entries name."""
-    return self_map_relays(assistant_relay_list(), check.should_say, [])
+def _listed(check: SelfMapCheck, on: bool) -> list[tuple[str, str]]:
+    """The self-entries a press keeping `on` publishes: what the Map should
+    list when on, none when off."""
+    return check.should_say if on else []
+
+
+def _writer_relays(listed: list[tuple[str, str]]) -> list[str]:
+    """Where a press publishing these self-entries reads and sends, before the
+    relays earlier versions name: the Assistant's outbox and the relays they
+    name. Turning off lists none, so it reads the outbox alone."""
+    return self_map_relays(assistant_relay_list(), listed, [])
 
 
 def _missing(
@@ -306,9 +313,13 @@ async def read_assistant_treasure_map(
             db, row, follows if asks_for_scores(groups, who) else None
         )
     check = evaluate_self_map(groups, offer_rows(who), who, upkeep)
+    on = bool(row.treasure_map_on)
+    # What the press that keeps the current choice reads: Update now's while on,
+    # Turn off's while off.
+    press_reads = publish_targets(_writer_relays(_listed(check, on)))
     return AssistantTreasureMapCheck(
         assistant=who,
-        on=bool(row.treasure_map_on),
+        on=on,
         duties=[
             TreasureMapDutyLine(
                 key=line.key,
@@ -322,7 +333,7 @@ async def read_assistant_treasure_map(
         ],
         should_say=[list(entry) for entry in check.should_say],
         relays=_relays(check, map_event, who),
-        writer_relays=[t.url for t in publish_targets(_writer_relays(check))],
+        writer_relays=[t.url for t in press_reads],
     )
 
 
@@ -333,8 +344,8 @@ async def publish_assistant_treasure_map(
     who = keys.public_key().to_hex()
     with _one_press_at_a_time(who):
         # Turning off lists nothing, so it reads neither the caller's Map nor the
-        # follow count. Under today's offer neither can change where it reads or
-        # sends: live Scores would only add the TA relay, which the outbox names.
+        # follow count: a version listing nothing is read and sent at the outbox,
+        # and sent to every relay an earlier version's self-entries named.
         async with _follow_count(row.pubkey, wanted=on) as follows:
             try:
                 map_event = await _read_reader_map(user_pubkey) if on else None
@@ -354,8 +365,8 @@ async def publish_assistant_treasure_map(
                 db, row, follows if asks_for_scores(groups, who) else None
             )
         check = evaluate_self_map(groups, offer_rows(who), who, upkeep)
-        target = check.should_say if on else []
-        relays = _writer_relays(check)
+        target = _listed(check, on)
+        relays = _writer_relays(target)
         read = publish_targets(relays)
         held = await read_newest(
             read,
