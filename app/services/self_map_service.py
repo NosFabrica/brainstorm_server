@@ -28,9 +28,9 @@ press that answers an error writes nothing.
 The UI waits 30 s. A press takes about 28 s at worst: the caller's Map and the
 versions are read in up to 6 s each, the connect takes up to 4 s and the send
 12 s. The follow count is read alongside the caller's Map, in up to 5 s, and
-counts only when that Map asks the Assistant for Scores; turning off never
-reads it. A second press for the same Assistant is refused while one is under
-way.
+counts only when that Map asks the Assistant for Scores. Turning off reads
+neither, so it takes about 22 s at worst. A second press for the same
+Assistant is refused while one is under way.
 """
 from __future__ import annotations
 
@@ -330,32 +330,24 @@ async def publish_assistant_treasure_map(
     row, keys = await assistant(db, user_pubkey)
     who = keys.public_key().to_hex()
     with _one_press_at_a_time(who):
-        # Turning off reads no follow count: it lists nothing, and live Scores
-        # would only add the TA relay, which the outbox names.
+        # Turning off lists nothing, so it reads neither the caller's Map nor the
+        # follow count. Under today's offer neither can change where it reads or
+        # sends: live Scores would only add the TA relay, which the outbox names.
         async with _follow_count(row.pubkey, wanted=on) as follows:
             try:
-                map_event = await _read_reader_map(user_pubkey)
+                map_event = await _read_reader_map(user_pubkey) if on else None
             except Exception as e:
                 logger.warning(
                     f"treasure map press for {user_pubkey}: "
                     f"their kind 10040 unread: {e!r}"
                 )
-                if on:
-                    raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail=(
-                            "Couldn't read your Treasure Map, so nothing was "
-                            "published."
-                        ),
-                    )
-                # Turning off lists nothing: the caller's Map only adds the
-                # relays its live duties name.
-                map_event = None
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Couldn't read your Treasure Map, so nothing was published.",
+                )
             groups = map_groups(map_event)
             if too_big_to_check(groups):
-                if on:
-                    raise _too_big("nothing was published")
-                groups = []
+                raise _too_big("nothing was published")
             upkeep = await _scores_upkeep(
                 db, row, follows if asks_for_scores(groups, who) else None
             )

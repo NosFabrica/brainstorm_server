@@ -926,11 +926,11 @@ def test_the_follow_counts_bound_runs_while_the_callers_map_is_read(
 
 def test_the_follow_count_is_read_alongside_the_callers_map(map_client, world):
     """So its bound adds nothing to a press, and a stall of this process's event
-    loop while the Map is read doesn't fail it. Turning off reads none."""
+    loop while the Map is read doesn't fail it. Turning off reads neither."""
     _get(map_client)
     _post(map_client, True)
     _post(map_client, False)
-    assert world.follows_read_alongside == [True, True, False]
+    assert world.follows_read_alongside == [True, True]
 
 
 def test_the_follow_count_counts_only_when_the_map_asks_for_scores(map_client, world):
@@ -1029,17 +1029,17 @@ def test_a_follow_count_given_up_before_it_starts_leaves_nothing_unawaited(
     assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
 
 
-def test_turn_off_reads_no_follow_count(map_client, world):
-    """Turning off lists nothing, so the follow count can't change what's signed
-    or where it goes: live Scores would only add the TA relay, which the outbox
-    names first."""
+def test_turn_off_reads_neither_the_callers_map_nor_the_follow_count(map_client, world):
+    """Turning off lists nothing, so under today's offer neither can change
+    what's signed or where it goes: live Scores would only add the TA relay,
+    which the outbox names first. Read, the Map cost Turn off up to 6 s."""
     tags = [[k, world.hex, PUBLIC_TA] for k in FIVE]
     world.held[INTERNAL_TA] = [_version(world.assistant, tags, 1_700_000_000)]
     world.follows = None
 
     published = _post(map_client, False)
 
-    assert world.follow_reads == 0
+    assert world.follow_reads == 0 and world.timeline == []
     assert published["published"] is True
     assert published["event"]["tags"] == [["client", "Brainstorm"]]
     assert sorted(world.read_from) == sorted([INTERNAL_TA, *OUTBOX])
