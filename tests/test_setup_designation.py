@@ -122,10 +122,14 @@ def test_trusted_list_row_falls_back_to_the_ta_relay(setup_client, monkeypatch):
     assert tl_row[2] == ta_row[2]
 
 
-def test_dictionary_rows_follow_the_trusted_list_row(setup_client):
+def test_dictionary_rows_follow_the_trusted_list_row(setup_client, monkeypatch):
     """The Assistant manages the Dictionary: its kinds come right after 30392,
     as bare kinds, signed by the same Assistant."""
+    from app.core.config import settings
+
     client, assistant_pubkey = setup_client
+    # Set here: conftest loads `.env` first, which can leave it empty.
+    monkeypatch.setattr(settings, "dictionary_relay", "wss://dictionary.example")
     rows = _rows(client)
     keys = [r[0] for r in rows]
     assert keys[keys.index("30392") + 1 :] == ["39998", "39999"]
