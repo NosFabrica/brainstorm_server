@@ -215,7 +215,8 @@ is named.
 - AC4 → `test_scores_are_live_only_while_the_scheduler_keeps_them_up_to_date` (7 cases),
   `test_one_missed_run_is_a_brief_gap_and_two_a_stop`, `test_the_callers_own_policy_wins_over_the_default`,
   `test_the_house_observer_is_kept_up_to_date_by_the_periodic_trigger`,
-  `tests/test_scheduler.py::test_has_grapevine_is_whether_the_user_follows_someone`
+  `tests/test_scheduler.py::test_has_grapevine_is_whether_the_user_follows_someone`,
+  `tests/test_scheduler.py::test_a_cycle_admits_only_users_who_follow_someone` (the scheduler's side of the rule)
 - AC5 → `test_scores_that_are_not_live_are_listed_nowhere` (3 cases), `test_lists_are_never_claimed`,
   `test_concepts_are_never_claimed` (4 cases), `test_the_concept_reading`, `test_an_unchecked_key_is_never_claimed`,
   `test_an_unchecked_key_keeps_a_broader_one_from_claiming_it`
