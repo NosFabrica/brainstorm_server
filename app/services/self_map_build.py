@@ -325,9 +325,10 @@ def map_groups(event: Any) -> list[Group]:
 
 # A Map is checked whole or not at all: a check weighs each key against every
 # other, so its cost grows with the square of the keys. `/setup` writes eight.
-# The worst Map found under the cap, 64 keys naming the Assistant and 12,000
-# others in 0.9 MiB, costs a request about 65 ms. Never truncated: a cut Map
-# can give the wrong self-entries.
+# Under the cap, a request costs about 65 ms on an M3 Ultra for 64 short keys
+# naming the Assistant and 12,000 others (0.9 MiB), and more for long keys or
+# many hints: about 4.5x for 64 keys of 16,000 segments. An M1 takes up to
+# 1.6x as long. Never truncated: a cut Map can give the wrong self-entries.
 MAX_MAP_KEYS = 64
 
 

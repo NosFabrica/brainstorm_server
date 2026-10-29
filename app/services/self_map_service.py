@@ -138,7 +138,8 @@ async def _follow_count(
     """Whether the caller follows someone, by the scheduler's own
     `has_grapevine`: read alongside the caller's Map when `wanted` (None
     otherwise), within FOLLOWS_TIMEOUT_SECONDS. The upkeep awaits it only when
-    that Map asks the Assistant for Scores, and it is cancelled on the way out."""
+    that Map asks the Assistant for Scores and the scheduler would otherwise run
+    the caller (`_upkeep_interval`), and it is cancelled on the way out."""
     if not wanted:
         yield None
         return
@@ -201,9 +202,9 @@ async def _scores_upkeep(
     db: AsyncDBSession, row: BrainstormNsec, follows: Awaitable[bool] | None
 ) -> ScoresUpkeep:
     """Whether the caller's Scores have landed and are kept up to date.
-    `follows` is the follow count being read (`_follow_count`), None when no
-    Score can be a duty or nothing is listed: they then count as not scheduled,
-    which changes nothing the check says."""
+    `follows` is the follow count being read (`_follow_count`), None when the
+    caller's Map gives the Assistant no Score duty (turning off reads no Map):
+    they then count as not scheduled, which changes nothing the check says."""
     if follows is None:
         return ScoresUpkeep("not-scheduled")
     return scores_upkeep(
