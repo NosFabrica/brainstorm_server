@@ -12,7 +12,9 @@ its third round: D4 (the follow count read alongside the caller's Map, and the M
 follow count's 502) and the implementation notes (`_follow_count`), and D4, D6 and the Debt for
 NosFabrica/Brainstorm-UI#307, which offers the repair and Turn off while the GET fails. Revised for its fourth round:
 D4 (Turn off reads no caller's Map; when the follow count counts; what the cap's check costs), D5 (Turn off's 22 s),
-D6 and D7 (`writerRelays`, the relays a press reads, David's decision), the Debt and the implementation notes.
+D6 and D7 (`writerRelays`, the relays read by the press that keeps the current choice, David's decisions), the Debt
+and the implementation notes, and the Debt and Out of scope for NosFabrica/Brainstorm-UI#306, which took the UI's fix
+to production.
 **Date:** 2026-10-27
 **Story:** [`stories/assistant-treasure-map/1-treasure-map.md`](../../stories/assistant-treasure-map/1-treasure-map.md),
 written after the build (2026-10-28)
@@ -183,8 +185,10 @@ the response, a failed commit would have followed a 200.
   could change where it reads or sends: without the follow count, Scores read as not scheduled, and only Scores can
   be live, so its `shouldSay` was empty for every Map; live Scores would only add the TA relay, which the outbox
   names first. Read anyway, as built until the audit's fourth round, the Map cost Turn off up to 6 s, and was the only
-  reason it had fallbacks (no Map, more than 64 keys). Should a duty other than Scores become live at a relay the
-  outbox doesn't name (Debt), Turn off would have to read the Map again to read there.
+  reason it had fallbacks (no Map, more than 64 keys). A press now reads where the version it publishes is looked for
+  (`_writer_relays` of what it lists), so Turn off reads the outbox alone, and sends there and to every relay an
+  earlier version's self-entries named. Should a duty other than Scores become live at a relay the outbox doesn't
+  name, a Turn off that relay missed would go unmended (Debt).
 - A Map naming more than 64 keys (`self_map_build.MAX_MAP_KEYS`) is a 422 for the GET and for Turn on, and is never
   checked. A check weighs each key against every other, so its cost grows with the square of the keys: an 835-key
   Map took 5.6 s of the event loop's CPU per GET. It is never truncated, which could give the wrong self-entries.
@@ -262,8 +266,8 @@ with that event and those relays' report, even when none of them takes it: the v
 was read from, and the report shows each failed line. A relay that didn't answer is left alone: it is likely down,
 and would otherwise be sent to, and reported, on every press. So the press after one whose TA relay was down repairs
 it; as first built, every later press answered "nothing changed". Only when every relay holds it is the answer
-`published: false`. The GET names the relays a press reads (`writerRelays`, D6), so the UI can ask each one, and
-NosFabrica/Brainstorm-UI#307 (open) offers that press.
+`published: false`. The GET names the relays read by the press that keeps the current choice (`writerRelays`, D6),
+so the UI can ask each one, and NosFabrica/Brainstorm-UI#307 (open) offers that press.
 
 Signing and sending are `assistant_publish`'s, shared with the Duty Menu. Tapestry left that sharing for later (its
 S2) because its Duty Menu route had shipped. Neither route had shipped here.
@@ -293,8 +297,9 @@ bounds, and holds the follow count's between 1 s and the Map read's.
 The GET answers `{assistant, on, duties, shouldSay, relays, writerRelays}`. Its only relay read is our own relay, for
 the caller's Map. The UI reads the Assistant's kind 10040 from `relays` and compares it with `shouldSay`, as a set of
 `(key, relay)`, as it does for the Duty Menu. Its Nostr reads come from its EventStore (Brainstorm-UI ADR 0005).
-`writerRelays` names the relays a press reads: the outbox, then the relays `shouldSay` names, each once, at public
-URLs, and never a hint (below).
+`writerRelays` names the relays read by the press that keeps the current choice, each once, at public URLs, and never
+a hint (below): while on, Update now's (the outbox, then the relays `shouldSay` names); while off, Turn off's (the
+outbox alone).
 
 **Options considered:**
 - **A (chosen):** as above. The answer carries no `published`, `current`, `falseClaim` or `active`; the UI works them
@@ -312,19 +317,21 @@ self-entries alone, and `nothingStale` is gone.
 
 **What they don't share: the repair** (D4). The UI reads the newest version found on any of the relays it's given,
 so that alone can't show a relay that missed it: after such a press, the Map reads up to date. A press repairs only
-the relays it reads, so the GET names every one of them, `writerRelays`, and the UI can ask each one, by id, whether
-it holds the newest version. `relays` can't serve: beyond the TA relay and the relays `shouldSay` names, it holds
-the outbox's other relays and the caller's hints, which it doesn't tell apart, and a hint must never be asked, since
-a press never goes there. David chose the GET naming them over the UI working them out of `relays` (2026-10-29).
-Turn off reads the outbox alone, which `writerRelays` starts with; today `shouldSay` names only the TA relay, which
-the outbox names first, so the two are the same.
+the relays it reads, so the GET names the relays of the press the UI offers for it, `writerRelays`, and the UI can
+ask each one, by id, whether it holds the newest version. `relays` can't serve: beyond the TA relay and the relays
+`shouldSay` names, it holds the outbox's other relays and the caller's hints, which it doesn't tell apart, and a
+hint must never be asked, since a press never goes there. David chose the GET naming them over the UI working them
+out of `relays`, and chose the press that keeps the current choice (2026-10-29): Update now while on, Turn off while
+off. Update now's set, probed while off, would name a relay only `shouldSay` names, and offer a Turn off that never
+mends it, since Turn off reads the outbox alone. Today the two sets are the same, because `shouldSay` names only the
+TA relay, which the outbox names first; they differ once a duty can be live at a relay the outbox doesn't name.
 
-NosFabrica/Brainstorm-UI#307 (open) asks the relays it can tell apart in `relays` (those `shouldSay` names, and the
-TA relay), names one that answers without the newest version, and keeps Update now enabled, or while off Turn off
-offered, so the press repairs it. Until it lands, that press goes through the API alone. Its probe is to move to
-`writerRelays`, which closes its limit. Until then, a version missed only by an outbox relay other than the TA relay
-waits for the next press. When that version withdraws a claim (a Turn off, or an Update that drops a duty), the
-relay keeps serving the withdrawn self-entries meanwhile, and the UI offers no press for it.
+NosFabrica/Brainstorm-UI#307 (open) asks the relays it can tell apart in `relays` (the TA relay and, while on, those
+`shouldSay` names), names one that answers without the newest version, and keeps Update now enabled, or while off
+Turn off offered, so the press repairs it. Until it lands, that press goes through the API alone. Its probe is to
+move to `writerRelays`, which closes its limit. Until then, a version missed only by an outbox relay other than the TA
+relay waits for the next press. When that version withdraws a claim (a Turn off, or an Update that drops a duty),
+the relay keeps serving the withdrawn self-entries meanwhile, and the UI offers no press for it.
 
 ### D7 — The wire: camelCase, plain sentences, nothing changed on an error
 
@@ -373,22 +380,24 @@ relay keeps serving the withdrawn self-entries meanwhile, and the UI offers no p
 - **A relay that refused a removal keeps serving the old claim.** Each later press sends it the newest version again
   (D4) and reports the refusal. Tapestry's ledger row `2026-10-13-self-map-refused-removal-stays-outside` is the same
   case.
-- **Brainstorm-UI production reads a self-Map as an activation.** Its `describeDesignation` describes any kind 10040
-  whose providers are all on Brainstorm relays as "Activated Brainstorm trust signals", and the Assistant's own
-  self-Map is one. NosFabrica/Brainstorm-UI#302 fixes it, on UI staging. **It must reach UI production before any
-  server publishes a self-Map, staging's included:** an Assistant's outbox names public relays, so a staging
-  Assistant's self-Map reaches production readers too (Out of scope).
+- **Brainstorm-UI read a self-Map as an activation; done.** Its `describeDesignation` described any kind 10040 whose
+  providers are all on Brainstorm relays as "Activated Brainstorm trust signals", and the Assistant's own self-Map is
+  one. NosFabrica/Brainstorm-UI#302 fixed it, and the fix had to reach UI production before any server published a
+  self-Map, staging's included: an Assistant's outbox names public relays, so a staging Assistant's self-Map reaches
+  production readers too. It did with NosFabrica/Brainstorm-UI#306 (merged 2026-10-29 17:21 UTC): production's
+  bundle reads a self-Map as "Publishes and keeps up to date" (Out of scope).
 - **The repair and Turn off while the GET fails reach the UI with NosFabrica/Brainstorm-UI#307** (open; D6, D4).
-  Until it lands, both go through the API alone. The GET now names every relay a press reads (`writerRelays`), so
-  the UI can ask each one; until #307's probe uses it, a version missed only by an outbox relay other than the TA
-  relay waits for the next press, and if it withdrew a claim, that relay serves the withdrawn self-entries meanwhile,
-  with no press on offer.
+  Until it lands, both go through the API alone. The GET now names the relays read by the press that keeps the
+  current choice (`writerRelays`), so the UI can ask each one; until #307's probe uses it, a version missed only by
+  an outbox relay other than the TA relay waits for the next press, and if it withdrew a claim, that relay serves the
+  withdrawn self-entries meanwhile, with no press on offer.
 - **One press at a time is held in-process** (D5).
 - **No rate limit on the POST**, like the Duty Menu's.
 - **Trusted Lists and Concepts become claimable** once something publishes and keeps them up to date, starting with
   [NosFabrica/brainstorm_server#112](https://github.com/NosFabrica/brainstorm_server/issues/112). `evaluate_live`
-  then gains a branch for each. If one is live at a relay the outbox doesn't name, `writerRelays` names that relay
-  and Turn off, which reads the outbox alone, doesn't, so Turn off has to read the caller's Map again (D4).
+  then gains a branch for each. If one is live at a relay the outbox doesn't name, Turn off, which reads the outbox
+  alone, never mends a version that relay missed, and while off `writerRelays` doesn't name it (D4, D6). Turn off
+  would then have to read there too, and `writerRelays` with it.
 - **Owed under the Light profile:**
   - this ADR's acceptance;
   - Gate B's ratification of its classification;
@@ -409,8 +418,8 @@ As built in commit `e2ca872`, with the PR 110 audit's fixes after it:
   - the routes' logic: `read_assistant_treasure_map`, `publish_assistant_treasure_map`;
   - the upkeep inputs: `_follow_count` (`cronjobs.scheduler.has_grapevine`, read alongside the caller's Map and
     bounded by `FOLLOWS_TIMEOUT_SECONDS`, never by Turn off), `_scores_upkeep` and `_upkeep_interval`;
-  - the relays: `_relays` (the GET's `relays`, with the hints) and `_writer_relays` (a press's, and the GET's
-    `writerRelays`);
+  - the relays: `_relays` (the GET's `relays`, with the hints) and `_writer_relays` of `_listed` (a press's, and the
+    GET's `writerRelays`, for the current choice);
   - the repair: `_missing`;
   - the choice: `_save_choice`;
   - one press at a time: `_one_press_at_a_time`, over `_pressing`.
@@ -434,9 +443,9 @@ As built in commit `e2ca872`, with the PR 110 audit's fixes after it:
 
 - Keeping the self-Map true on its own (above).
 - Counting or describing Maps (§ 9.2): anything that counts kind-10040 adopters, or describes a kind 10040 to
-  people, should skip a Map whose public entries all name its author. Brainstorm-UI's `describeDesignation` does on
-  UI staging (NosFabrica/Brainstorm-UI#302), not yet on UI production, which it must reach before any server
-  publishes a self-Map (Debt).
+  people, should skip a Map whose public entries all name its author. Brainstorm-UI's `describeDesignation` does, on
+  UI staging (NosFabrica/Brainstorm-UI#302) and UI production (NosFabrica/Brainstorm-UI#306), which it had to reach
+  before any server published a self-Map (Debt).
 - Private duties, NIP-85's encrypted `.content`, which never go in a self-Map's public tags.
 - Trusted Lists and Concepts as live duties.
 - Dictionary management

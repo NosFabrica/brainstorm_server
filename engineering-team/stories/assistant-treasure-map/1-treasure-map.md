@@ -91,8 +91,9 @@ Testable from the outside. Each criterion has at least one handle below.
 - [x] **AC10 — where a version goes.** § 9.2's writer relays, each once: the Assistant's outbox, every relay its
       self-entries name, and every relay a self-entry of a version found named, with the TA relay at its internal
       URL. A press never connects to the caller's hints. The GET lists them in `relays`, after the outbox and the
-      `shouldSay` relays, for readers, and names the relays a press reads in `writerRelays`: the outbox and the
-      `shouldSay` relays, at public URLs, never a hint.
+      `shouldSay` relays, for readers. It names in `writerRelays` the relays read by the press that keeps the
+      current choice: while on, Update now's (the outbox and the `shouldSay` relays); while off, Turn off's (the
+      outbox alone); at public URLs, never a hint.
 - [x] **AC11 — the report.** The POST answers `{on, published, event, relays: [{url, ok, message}]}`, one line per
       relay, at public addresses. A relay that couldn't be reached reads `couldn't connect`. When no relay took a new
       version, the answer is a 502 and the choice isn't saved. A repair (AC9) answers `published: true` whether or not
@@ -139,16 +140,16 @@ The ADR is the design and stands in for the Design note. In brief:
     (`fetch_designated_pubkeys`, through `brainstorm_request_service`), which read through the stricter
     `fetch_latest` and still yield `[]` on any failure; and the scheduler.
   - Outside the diff, in Brainstorm-UI (ADR Debt):
-    - `describeDesignation` reads the self-Map as an activation on UI production. Its fix,
-      NosFabrica/Brainstorm-UI#302, is on UI staging, and has to reach UI production before any server publishes a
-      self-Map, staging's included: an Assistant's outbox names public relays, so a staging Assistant's self-Map
-      reaches production readers too.
+    - `describeDesignation` read the self-Map as an activation. Its fix, NosFabrica/Brainstorm-UI#302, had to reach UI
+      production before any server published a self-Map, staging's included: an Assistant's outbox names public
+      relays, so a staging Assistant's self-Map reaches production readers too. It did, with
+      NosFabrica/Brainstorm-UI#306 (merged 2026-10-29).
     - The repair (AC9) and Turn off while the GET fails (AC7) reach the UI with NosFabrica/Brainstorm-UI#307 (open),
       which asks the relays a press reads that it can tell apart in `relays` whether they hold the newest version.
-      Until it lands, both go through the API alone. The GET now names every relay a press reads (`writerRelays`,
-      AC10), and #307's probe is to move to it. Until then, a version missed only by an outbox relay other than the
-      TA relay waits for the next press, and if it withdrew a claim, that relay serves the withdrawn self-entries
-      meanwhile, with no press on offer (ADR D6).
+      Until it lands, both go through the API alone. The GET now names the relays read by the press that keeps the
+      current choice (`writerRelays`, AC10), and #307's probe is to move to it. Until then, a version missed only by
+      an outbox relay other than the TA relay waits for the next press, and if it withdrew a claim, that relay serves
+      the withdrawn self-entries meanwhile, with no press on offer (ADR D6).
 
 ## Out of scope
 
@@ -270,8 +271,9 @@ is named.
 - AC10 → `test_it_is_sent_to_the_relays_and_every_relay_an_earlier_version_named`,
   `test_a_press_never_connects_where_the_callers_map_points`,
   `test_the_relays_are_the_outbox_then_should_say_then_hints_each_once`,
-  `test_the_get_names_the_relays_a_press_reads`,
-  `test_a_relay_should_say_names_outside_the_outbox_is_a_writer_relay`
+  `test_while_on_the_get_names_the_relays_update_now_reads`,
+  `test_while_on_a_relay_should_say_names_outside_the_outbox_is_named`,
+  `test_while_off_the_get_names_the_outbox_alone_as_turn_off_reads`
 - AC11 → `test_the_report_names_public_addresses_one_line_per_relay`, `test_a_version_no_relay_took_is_an_error`,
   `test_a_repair_no_relay_takes_still_answers_published`,
   `test_a_press_that_errors_saves_nothing`
