@@ -102,7 +102,8 @@ Testable from the outside. Each criterion has at least one handle below.
 - [x] **AC15 — the body.** It is `{on: <boolean>}` and nothing else: `{}`, `"true"`, `1` and `null` are 422s. The
       request can't choose whose Assistant signs or where the version goes.
 - [x] **AC16 — one press at a time.** A second press for the same Assistant while one is under way is refused at
-      once, with a 409. A press that errors lets the next one go ahead.
+      once, with a 409, which frees nothing: a third while the first runs is refused too. A press that errors lets
+      the next one go ahead.
 - [x] **AC17 — one migration head.** The migrations, `c5f1d7a9e2b4` among them, have one head.
 
 ## Design (ADR 0001, in brief)
@@ -162,9 +163,10 @@ Checked items have a handle. The rest are not covered, each with a reason.
       this one's parent, `b4e8d2a6f0c1`. Whichever merges later has to re-point its `down_revision`.
       `tests/test_alembic_heads.py::test_the_migrations_have_one_head` fails until it does: copying PR 113's
       migration in made it fail.
-- [ ] **Not covered: the 500 when the signed event fails its own check** (D4). No test makes nostr-sdk sign something
-      other than what was built. If it did, the publish tests would fail, but nothing asserts that the answer is a
-      500 with nothing sent. A test that patches the signer would close this.
+- [x] **The 500 when the signed event fails its own check** (D4). `test_a_version_that_fails_its_own_check_is_never_sent`
+      builds a version one self-entry short: the answer is a 500, with nothing sent or saved.
+      `tests/test_assistant_publish.py` checks each of `sign_checked`'s three checks on its own. Before these, removing
+      the checks left the suite green.
 - [ ] **Not covered: a commit that fails after the send.** The new version is then on the relays while
       `treasure_map_on` keeps its old value, and the press answers an error. Pressing the same button again finds
       nothing to change and saves the choice. The fakes record the save but never fail the commit.
@@ -193,7 +195,7 @@ Checked items have a handle. The rest are not covered, each with a reason.
 | Writer relays, sending | one can't be reached | its line reads `couldn't connect`; the rest are sent to | `test_the_report_names_public_addresses_one_line_per_relay` |
 | Writer relays, sending | none takes the version | a 502; the choice isn't saved | `test_a_version_no_relay_took_is_an_error`; `test_a_press_that_errors_saves_nothing` |
 | The request | a body other than `{on: <boolean>}` | a 422 | `test_the_body_is_one_boolean` |
-| nostr-sdk, signing | the signed event isn't what was built | a 500, nothing sent | not covered (above) |
+| nostr-sdk, signing | the signed event isn't what was built, or not the target | a 500, nothing sent or saved | `test_a_version_that_fails_its_own_check_is_never_sent`; `tests/test_assistant_publish.py` (4 tests) |
 
 ## AC→handle lines
 
@@ -227,6 +229,7 @@ is named.
 - AC9 → `test_nothing_to_change`, `test_same_self_entries_is_a_set_of_key_and_relay`,
   `test_nothing_to_change_publishes_nothing_and_remembers_the_choice`,
   `test_nothing_to_change_still_sends_the_version_where_it_is_missing`,
+  `test_a_relay_holding_an_older_version_is_sent_the_newest`,
   `test_a_relay_that_does_not_answer_is_not_sent_the_version_again`
 - AC10 → `test_it_is_sent_to_the_relays_and_every_relay_an_earlier_version_named`,
   `test_a_press_never_connects_where_the_callers_map_points`,
@@ -242,10 +245,12 @@ is named.
   `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer`
 - AC13 → `test_a_map_of_64_keys_is_checked`, `test_a_map_too_big_to_check_is_a_422_not_a_truncated_check`,
   `test_turn_on_over_a_map_too_big_to_check_publishes_nothing`
-- AC14 → `test_the_choice_is_saved_after_the_publish_and_committed_before_the_answer`,
+- AC14 → `test_the_choice_is_saved_after_the_publish_and_committed_before_the_answer` (a publish, nothing to change
+  and a repair),
   `test_a_press_that_errors_saves_nothing`, `test_nothing_to_change_publishes_nothing_and_remembers_the_choice`
 - AC15 → `test_the_body_is_one_boolean` (4 cases), `test_the_request_cannot_choose_whose_assistant_or_where`
-- AC16 → `test_a_second_press_while_one_is_under_way_is_refused`, `test_a_press_that_errors_lets_the_next_one_go_ahead`
+- AC16 → `test_a_second_press_while_one_is_under_way_is_refused`, `test_a_refused_press_leaves_the_running_one_its_slot`,
+  `test_a_press_that_errors_lets_the_next_one_go_ahead`
 - AC17 → `tests/test_alembic_heads.py::test_the_migrations_have_one_head`
 
 ## Checks

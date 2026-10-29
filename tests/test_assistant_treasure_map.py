@@ -1011,6 +1011,22 @@ def test_nothing_to_change_still_sends_the_version_where_it_is_missing(
     assert _post(map_client, True)["published"] is False
 
 
+def test_a_relay_holding_an_older_version_is_sent_the_newest(map_client, world):
+    """Not only a relay with none: one that answered with an earlier version,
+    such as the one before a press it missed, gets the newest too."""
+    says_it_all = [[key, world.hex, PUBLIC_TA] for key in FIVE]
+    latest = _version(world.assistant, says_it_all, 1_700_000_100)
+    world.held[INTERNAL_TA] = [_version(world.assistant, [], 1_700_000_000)]
+    world.held[OUTBOX[0]] = [latest]
+    world.held[OUTBOX[1]] = [latest]
+
+    again = _post(map_client, True)
+
+    assert again["published"] is True and again["event"] == latest
+    assert again["relays"] == [{"url": PUBLIC_TA, "ok": True, "message": None}]
+    assert world.held[INTERNAL_TA][-1] == latest
+
+
 def test_a_relay_that_does_not_answer_is_not_sent_the_version_again(map_client, world):
     """It is likely down: sent to on every press, it would be reported on every
     press that has nothing to change."""
@@ -1047,6 +1063,12 @@ def test_the_choice_is_saved_after_the_publish_and_committed_before_the_answer(
     world.log.clear()
     _post(map_client, True)
     assert world.log == ["saved", "committed"]
+
+    # A repair, when the TA relay has lost the version, sends first too.
+    world.held[INTERNAL_TA].clear()
+    world.log.clear()
+    assert _post(map_client, True)["published"] is True
+    assert world.log == ["sent", "saved", "committed"]
 
 
 def test_a_press_that_errors_saves_nothing(map_client, world):
@@ -1221,6 +1243,44 @@ def test_a_second_press_while_one_is_under_way_is_refused(world):
         self_map_service.publish_assistant_treasure_map(world.db, world.user, False)
     )
     assert after.published and _self_entries(after.event, world.hex) == set()
+
+
+def test_a_refused_press_leaves_the_running_one_its_slot(world):
+    """The 409 frees nothing: a third press while the first is under way is
+    refused too, and only the first publishes."""
+
+    async def three():
+        return await asyncio.gather(
+            *(
+                self_map_service.publish_assistant_treasure_map(
+                    world.db, world.user, True
+                )
+                for _ in range(3)
+            ),
+            return_exceptions=True,
+        )
+
+    first, *others = asyncio.run(three())
+
+    assert _self_entries(first.event, world.hex) == _five()
+    assert [getattr(o, "status_code", o) for o in others] == [409, 409]
+    assert len(world.sent) == 1
+    assert self_map_service._pressing == set()
+
+
+def test_a_version_that_fails_its_own_check_is_never_sent(map_client, world, monkeypatch):
+    """`sign_checked` reads the signed version back before anything is sent:
+    here one short of a self-entry it should carry."""
+    monkeypatch.setattr(
+        self_map_service,
+        "self_map_tags",
+        lambda author, entries: self_map_tags(author, entries)[1:],
+    )
+
+    r = map_client.post("/user/assistantTreasureMap", json={"on": True})
+
+    assert r.status_code == 500 and isinstance(r.json()["detail"], str)
+    assert world.sent == [] and world.choices == []
 
 
 def test_a_press_that_errors_lets_the_next_one_go_ahead(map_client, world):
