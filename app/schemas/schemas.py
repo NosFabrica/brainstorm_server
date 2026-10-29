@@ -855,11 +855,15 @@ class AssistantTreasureMapCheck(BaseModel):
 
 class PublishedAssistantTreasureMap(BaseModel):
     """What `POST /user/assistantTreasureMap` did: the choice, and the version
-    signed, if one was, with how each relay took it."""
+    sent, if one was, with how each relay took it."""
 
     on: bool
-    # False when nothing would change, so nothing was signed.
+    # False when nothing would change and every relay that answered the read
+    # holds the newest version: nothing was signed or sent. True when a version
+    # was sent: a new one, or a repair, the newest one found sent unchanged to
+    # the relays that answered without it, whether or not they took it.
     published: bool
-    # The signed kind-10040 event, as relays received it.
+    # The kind-10040 event sent, as relays received it: the one signed now or,
+    # for a repair, the newest one found. None when nothing was sent.
     event: dict[str, Any] | None
     relays: list[AssistantRelayResult]

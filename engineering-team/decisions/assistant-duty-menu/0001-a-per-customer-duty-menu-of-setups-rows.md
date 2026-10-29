@@ -168,8 +168,11 @@ only the old version named.
 
 ### D6 — Dated after the newest found, the `p` kept, checked before it is sent
 
-- **The date:** `created_at = max(now, newest version found + 1)` (`menu_created_at`), so a republish always
-  replaces the old version, even one dated ahead of us.
+- **The date:** `created_at = max(now, newest version found + 1)` (`menu_created_at`), so a republish replaces
+  every version the read found, even one dated ahead of us. It can miss one only where it wasn't read: one answer,
+  from any relay read, is enough to publish (D5), so a version dated ahead and held only by relays that didn't
+  answer outlasts the new one there. Every menu is sent to the TA relay, so a publish could also require its answer,
+  at the cost of not publishing at all while the TA relay is down. That isn't done.
 - **The `p`:** the event is built with `allow_self_tagging()`, because § 4's one `p` is the Assistant itself.
 - **The check:** the signed event must verify, carry exactly the tags built, and pass `is_duty_menu` (§ 6.1) before
   anything is sent (`assistant_publish.sign_checked`, shared with the Treasure Map). If not, the publish is a 500

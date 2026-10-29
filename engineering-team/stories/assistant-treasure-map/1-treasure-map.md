@@ -74,7 +74,8 @@ Testable from the outside. Each criterion has at least one handle below.
       content. Nothing of the version it replaces is kept. With nothing live, it takes the stale entries off.
 - [x] **AC7 — Turn off.** `{on: false}` publishes a version that lists none of the Assistant's duties. It needs only
       the Assistant's own versions: it goes ahead when the caller's Map can't be read or names more than 64 keys, and
-      it reads no follow count.
+      it reads no follow count. Those fallbacks are the API's: the GET fails in the same states, and the UI shows no
+      buttons until a GET succeeds (ADR D4).
 - [x] **AC8 — the newest version, and dating after it.** The version compared is the newest by NIP-01 (the latest
       `created_at`, then the lowest id) across every relay read. A version whose signature doesn't verify is never
       the newest: the new one isn't dated after it, and the relays it names aren't followed. A new version is dated
@@ -88,8 +89,10 @@ Testable from the outside. Each criterion has at least one handle below.
       URL. A press never connects to the caller's hints. The GET lists them in `relays`, after the outbox and the
       `shouldSay` relays, for readers.
 - [x] **AC11 — the report.** The POST answers `{on, published, event, relays: [{url, ok, message}]}`, one line per
-      relay, at public addresses. A relay that couldn't be reached reads `couldn't connect`. When no relay took the
-      version, the answer is a 502 and the choice isn't saved.
+      relay, at public addresses. A relay that couldn't be reached reads `couldn't connect`. When no relay took a new
+      version, the answer is a 502 and the choice isn't saved. A repair (AC9) answers `published: true` whether or not
+      its relays take it: the version is already on the relay it was read from, and the report shows each failed
+      line.
 - [x] **AC12 — strict reads.** A caller's Map that can't be read is a 502 for the GET and Turn on, never an empty
       Map. So is a follow count not read within 1 s. It is read only when the caller's Map asks the Assistant for
       Scores, since otherwise it changes nothing. When no relay answers the read of the Assistant's versions, a
@@ -128,9 +131,14 @@ The ADR is the design and stands in for the Design note. In brief:
   - Consumers: Brainstorm-UI's fifth setup step; Tapestry's § 9.2 readers; GrapeRank's designation pins
     (`fetch_designated_pubkeys`, through `brainstorm_request_service`), which read through the stricter
     `fetch_latest` and still yield `[]` on any failure; and the scheduler.
-  - Outside the diff: Brainstorm-UI's `describeDesignation` read the self-Map as an activation. Its fix is
-    NosFabrica/Brainstorm-UI#302, on UI staging, and has to reach UI production before this story reaches server
-    production (ADR Debt).
+  - Outside the diff, in Brainstorm-UI (ADR Debt):
+    - `describeDesignation` reads the self-Map as an activation on UI production. Its fix,
+      NosFabrica/Brainstorm-UI#302, is on UI staging, and has to reach UI production before any server publishes a
+      self-Map, staging's included: an Assistant's outbox names public relays, so a staging Assistant's self-Map
+      reaches production readers too.
+    - The UI can't send the repair (AC9). It reads the newest version found on any relay, so after a press that
+      missed a relay it disables Update now, and after a Turn off it hides Turn off once that version lists nothing
+      (ADR D6). Nor can it send Turn off while the GET fails (AC7). Both need a UI follow-up.
 
 ## Out of scope
 
@@ -189,11 +197,12 @@ Checked items have a handle. The rest are not covered, each with a reason.
 | Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | a 502 after 1 s, with nothing published or saved | `test_a_follow_count_neo4j_never_answers_is_an_error_at_once` |
 | Our relay, the caller's Map | unreadable | a 502 for the GET and Turn on; Turn off goes ahead | `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`; `test_turn_on_needs_the_callers_map`; `test_turn_off_needs_only_the_assistants_map` |
 | Our relay, the caller's Map | more than 64 keys | a 422 for the GET and Turn on; Turn off goes ahead | AC13's handles; `test_turn_off_needs_no_map_even_one_too_big` |
-| Writer relays, reading the Assistant's versions | none answers, or one sends `CLOSED` | a 502, with nothing published or saved | `test_when_no_relay_answers_nothing_is_published_or_remembered`; `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer` |
+| Writer relays, reading the Assistant's versions | none answers (one that sends `CLOSED` hasn't answered, and is left out) | a 502, with nothing published or saved | `test_when_no_relay_answers_nothing_is_published_or_remembered`; `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer` |
 | Writer relays, reading | a version whose signature doesn't verify | ignored | `test_a_version_that_does_not_verify_is_never_the_newest` |
 | Writer relays, reading | one stalls its close | its answer is kept, and the close costs at most 1 s | `tests/test_designated_pubkeys.py::test_a_relay_that_stalls_the_close_keeps_its_answer_and_costs_a_second` |
 | Writer relays, sending | one can't be reached | its line reads `couldn't connect`; the rest are sent to | `test_the_report_names_public_addresses_one_line_per_relay` |
-| Writer relays, sending | none takes the version | a 502; the choice isn't saved | `test_a_version_no_relay_took_is_an_error`; `test_a_press_that_errors_saves_nothing` |
+| Writer relays, sending | none takes a new version | a 502; the choice isn't saved | `test_a_version_no_relay_took_is_an_error`; `test_a_press_that_errors_saves_nothing` |
+| Writer relays, sending a repair | none takes it | a 200, `published: true`, the failed lines reported and the choice saved: the version is on the relay it was read from | `test_a_repair_no_relay_takes_still_answers_published` |
 | The request | a body other than `{on: <boolean>}` | a 422 | `test_the_body_is_one_boolean` |
 | nostr-sdk, signing | the signed event isn't what was built, or not the target | a 500, nothing sent or saved | `test_a_version_that_fails_its_own_check_is_never_sent`; `tests/test_assistant_publish.py` (4 tests) |
 
@@ -236,6 +245,7 @@ is named.
   `test_a_press_never_connects_where_the_callers_map_points`,
   `test_the_relays_are_the_outbox_then_should_say_then_hints_each_once`
 - AC11 → `test_the_report_names_public_addresses_one_line_per_relay`, `test_a_version_no_relay_took_is_an_error`,
+  `test_a_repair_no_relay_takes_still_answers_published`,
   `test_a_press_that_errors_saves_nothing`
 - AC12 → `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`, `test_turn_on_needs_the_callers_map`,
   `test_a_follow_count_that_cannot_be_read_is_an_error`, `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`,

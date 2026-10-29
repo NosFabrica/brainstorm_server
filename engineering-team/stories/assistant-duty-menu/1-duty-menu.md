@@ -131,7 +131,8 @@ Checked items have a handle. The rest are not covered, each with a reason.
 | Dependency | Failure | Handling | Handle |
 |---|---|---|---|
 | PostgreSQL (the Assistant's row, made on first use) | unreachable | a 500, before any relay is read or sent to | not covered: shared by every `/user` route, and nothing is sent before the row is read |
-| Relays, reading earlier versions | none answers, or one sends `CLOSED` | a 502, nothing published | `test_when_no_relay_answers_the_read_nothing_is_published`; `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer` (the reader the menu shares) |
+| Relays, reading earlier versions | none answers (one that sends `CLOSED` hasn't answered, and is left out) | a 502, nothing published | `test_when_no_relay_answers_the_read_nothing_is_published`; `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer` (the reader the menu shares) |
+| Relays, reading earlier versions | some don't answer | left out: one answer is enough, so a version only they hold isn't dated after (ADR D6) | `test_one_relay_answering_the_read_is_enough` |
 | Relays, reading earlier versions | a version whose signature doesn't verify | ignored | `test_an_earlier_menu_that_does_not_verify_is_ignored` |
 | Relays, sending | one can't be reached | its line reads `couldn't connect`; the rest are sent to | `test_the_report_names_public_addresses_one_line_per_relay` |
 | Relays, sending | none takes the event | a 502 | `test_a_menu_no_relay_took_is_an_error` |

@@ -1027,6 +1027,22 @@ def test_a_relay_holding_an_older_version_is_sent_the_newest(map_client, world):
     assert world.held[INTERNAL_TA][-1] == latest
 
 
+def test_a_repair_no_relay_takes_still_answers_published(map_client, world):
+    """By design: the version is already on the relay it was read from, so the
+    answer is the report, its failed lines included, not a 502."""
+    _post(map_client, True)
+    world.held[INTERNAL_TA].clear()
+    world.refusing[INTERNAL_TA] = "blocked: read-only"
+
+    again = _post(map_client, True)
+
+    assert again["published"] is True
+    assert again["relays"] == [
+        {"url": PUBLIC_TA, "ok": False, "message": "blocked: read-only"}
+    ]
+    assert world.choices == [True, True]
+
+
 def test_a_relay_that_does_not_answer_is_not_sent_the_version_again(map_client, world):
     """It is likely down: sent to on every press, it would be reported on every
     press that has nothing to change."""

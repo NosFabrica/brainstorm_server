@@ -5,7 +5,9 @@
 Gate A was held. It's for David to accept and for the Gate B reviewer to ratify, together with this ADR's
 classification. Revised 2026-10-28 for the PR 110 audit: D2 (follows), D3 (when the choice is saved), D4 (no merge,
 the writer's relays only, the repair, the 64-key cap, Turn off without the follow count), D5 (refuse, not queue), D6,
-D7 and the Debt.
+D7 and the Debt. Revised 2026-10-29 for the audit's second round: D4 (the follow count bounded and read only when it
+counts; Turn off's fallbacks are the API's alone), D5 (the time a press takes), D6 (the UI's rule, and the repair it
+can't send), D7, the Debt and Out of scope (when the UI's fix must reach production).
 **Date:** 2026-10-27
 **Story:** [`stories/assistant-treasure-map/1-treasure-map.md`](../../stories/assistant-treasure-map/1-treasure-map.md),
 written after the build (2026-10-28)
@@ -183,6 +185,9 @@ the response, a failed commit would have followed a 200.
   as none it would take the Scores entries off. The Neo4j driver has no query timeout and waits 30 s to connect, so
   unbounded, a press outlasted the UI's 30 s, holding its slot (D5), and then published. Turn off doesn't read it:
   it lists nothing, and live Scores would only add the TA relay, which the outbox names first.
+- **Turn off's fallbacks are the API's alone.** It goes ahead without the caller's Map, past 64 keys and without the
+  follow count. But in those same states the GET answers 422 or 502, and Brainstorm-UI shows no buttons until a GET
+  succeeds, so the UI can't send that Turn off (Debt).
 - Then the writer's relays (below) are asked for the Assistant's kind 10040, the TA relay at its internal URL:
   - only versions validly signed by the Assistant count;
   - the newest by NIP-01 is the one compared and dated after;
@@ -232,9 +237,11 @@ press never connects to them.
 **When nothing would change, a relay that missed the newest version gets it.** The read keeps each relay's answer.
 A press whose target is already the newest version's self-entries sends that version, already signed and unchanged,
 to every relay that answered the read without it: with none, or with another version. It answers `published: true`
-with that event and those relays' report. A relay that didn't answer is left alone: it is likely down, and would
-otherwise be sent to, and reported, on every press. So the press after one whose TA relay was down repairs it; as first built, every later
-press answered "nothing changed". Only when every relay holds it is the answer `published: false`.
+with that event and those relays' report, even when none of them takes it: the version is already on the relay it
+was read from, and the report shows each failed line. A relay that didn't answer is left alone: it is likely down,
+and would otherwise be sent to, and reported, on every press. So the press after one whose TA relay was down repairs
+it; as first built, every later press answered "nothing changed". Only when every relay holds it is the answer
+`published: false`. Brainstorm-UI can't send that press yet (D6).
 
 Signing and sending are `assistant_publish`'s, shared with the Duty Menu. Tapestry left that sharing for later (its
 S2) because its Duty Menu route had shipped. Neither route had shipped here.
@@ -274,8 +281,13 @@ Map. The UI reads the Assistant's kind 10040 from `relays` and compares it with 
 **The cost:** the UI reads a version as the press does, so the two must agree on when nothing would change. That is
 a cross-repo contract. NosFabrica/Brainstorm-UI#301 aligned the UI with `nothing_to_change` as first built: the kind
 slots the writer owns, each key and relay once, and the `expiration` and stray-tag rule. The server's rule is now the
-self-entries alone (D4). The UI's `nothingStale` still also wants no `expiration` and no stray owned tag beside them,
-which no version this server signs carries, so the two agree on every version there is.
+self-entries alone (D4), and NosFabrica/Brainstorm-UI#302 made the UI's the same: its `selfMapStatus` compares the
+self-entries alone, and `nothingStale` is gone.
+
+**What they don't share: the repair** (D4). The UI reads the newest version found on any of the relays it's given.
+So after a press that missed a relay, it shows the Map up to date and disables Update now; after a Turn off, it hides
+Turn off once the newest version found lists nothing. The press that would send the version to that relay then goes
+only through the API. NosFabrica/Brainstorm-UI#302 records the gap; closing it is a UI follow-up (Debt).
 
 ### D7 — The wire: camelCase, plain sentences, nothing changed on an error
 
@@ -295,7 +307,7 @@ which no version this server signs carries, so the two agree on every version th
   `not-published-here`, `nothing-to-publish`, `unchecked`.
 - **Nothing to change** answers `{on, published: false, event: null, relays: []}` when every relay that answered the
   read holds the newest version. When one doesn't, the press sends it there and answers
-  `{on, published: true, event, relays}`, with that version and those relays (D4).
+  `{on, published: true, event, relays}`, with that version and those relays, whether or not they take it (D4).
 - **A relay that couldn't be reached** is reported as `couldn't connect`. The transport's own error is logged, not
   answered: it can describe a host the caller can't see.
 
@@ -322,9 +334,13 @@ which no version this server signs carries, so the two agree on every version th
 - **A relay that refused a removal keeps serving the old claim.** Each later press sends it the newest version again
   (D4) and reports the refusal. Tapestry's ledger row `2026-10-13-self-map-refused-removal-stays-outside` is the same
   case.
-- **Brainstorm-UI reads a self-Map as an activation.** Its `describeDesignation` describes any kind 10040 whose
-  providers are all on Brainstorm relays as "Activated Brainstorm trust signals", and the Assistant's own self-Map is
-  one. **The UI's fix must land before this PR deploys** (Out of scope).
+- **Brainstorm-UI production reads a self-Map as an activation.** Its `describeDesignation` describes any kind 10040
+  whose providers are all on Brainstorm relays as "Activated Brainstorm trust signals", and the Assistant's own
+  self-Map is one. NosFabrica/Brainstorm-UI#302 fixes it, on UI staging. **It must reach UI production before any
+  server publishes a self-Map, staging's included:** an Assistant's outbox names public relays, so a staging
+  Assistant's self-Map reaches production readers too (Out of scope).
+- **Brainstorm-UI can't send the repair** (D6), nor Turn off while the GET fails (D4). Both need a UI follow-up: the
+  first, a way to see that a relay the GET names answered without the newest version.
 - **One press at a time is held in-process** (D5).
 - **No rate limit on the POST**, like the Duty Menu's.
 - **Trusted Lists and Concepts become claimable** once something publishes and keeps them up to date, starting with
@@ -373,8 +389,9 @@ As built in commit `e2ca872`, with the PR 110 audit's fixes after it:
 
 - Keeping the self-Map true on its own (above).
 - Counting or describing Maps (§ 9.2): anything that counts kind-10040 adopters, or describes a kind 10040 to
-  people, should skip a Map whose public entries all name its author. Brainstorm-UI's `describeDesignation` doesn't
-  yet, and its fix must land before this PR deploys (Debt).
+  people, should skip a Map whose public entries all name its author. Brainstorm-UI's `describeDesignation` does on
+  UI staging (NosFabrica/Brainstorm-UI#302), not yet on UI production, which it must reach before any server
+  publishes a self-Map (Debt).
 - Private duties, NIP-85's encrypted `.content`, which never go in a self-Map's public tags.
 - Trusted Lists and Concepts as live duties.
 - Dictionary management
