@@ -953,6 +953,31 @@ def test_the_follow_count_counts_only_when_the_map_asks_for_scores(map_client, w
     assert map_client.get("/user/assistantTreasureMap").status_code == 502
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda w, m: setattr(settings, "scheduler_enabled", False),
+        lambda w, m: setattr(w.policy, "enabled", False),
+        lambda w, m: setattr(w, "default_policy", None),
+        lambda w, m: m.setattr(settings, "periodic_graperank_pubkey", w.user),
+    ],
+    ids=["scheduler-off", "policy-off", "no-default-policy", "house-observer"],
+)
+def test_the_follow_count_counts_only_when_the_scheduler_would_run_the_caller(
+    map_client, world, monkeypatch, change
+):
+    """It's awaited after the scheduler's own answers, so with Neo4j down a Map
+    that asks for Scores still gets its GET and its Turn on when the scheduler
+    wouldn't run the caller, or the periodic trigger runs them."""
+    world.follows = None
+    change(world, monkeypatch)
+
+    _get(map_client)
+    _post(map_client, True)
+
+    assert world.follow_reads == 2 and world.choices == [True]
+
+
 def test_a_follow_count_that_doesnt_count_isnt_waited_for(
     map_client, world, monkeypatch
 ):
