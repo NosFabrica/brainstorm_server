@@ -10,8 +10,10 @@ the service's import site; signing is real, with a generated Assistant key.
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import time
+import warnings
 from datetime import timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -929,7 +931,16 @@ def test_a_follow_count_that_doesnt_count_isnt_waited_for(
     map_client, world, monkeypatch
 ):
     """With Neo4j stalled, a Map that asks the Assistant for no Scores is
-    answered at once: the read is cancelled, not awaited to its bound."""
+    answered at once: the read is cancelled, not awaited to its bound, and has
+    stopped, its Neo4j session released, before the check is made, so it isn't
+    left running behind the answer."""
+    real = self_map_service.evaluate_self_map
+
+    def check(*args):
+        world.timeline.append("checked")
+        return real(*args)
+
+    monkeypatch.setattr(self_map_service, "evaluate_self_map", check)
     monkeypatch.setattr(self_map_service, "FOLLOWS_TIMEOUT_SECONDS", 2)
     world.neo4j_stalls = True
     world.reader_map["tags"] = [["30392", world.hex, PUBLIC_TA]]
@@ -940,6 +951,31 @@ def test_a_follow_count_that_doesnt_count_isnt_waited_for(
 
     assert time.monotonic() - start < 1
     assert world.follows_read_alongside == [True, True]
+    assert world.timeline == ["Map read", "follow count given up", "checked"] * 2
+
+
+def test_a_follow_count_given_up_before_it_starts_leaves_nothing_unawaited(
+    monkeypatch,
+):
+    """A Map read that fails before it yields gives the read up before it has
+    run. The read is made in its task, so it is then never made, rather than
+    made and left unawaited, which Python warns of."""
+
+    async def grapevine(pubkey):
+        return True
+
+    monkeypatch.setattr(self_map_service, "has_grapevine", grapevine)
+
+    async def given_up_at_once():
+        async with self_map_service._follow_count(A):
+            pass
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.run(given_up_at_once())
+        gc.collect()
+
+    assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
 
 
 def test_turn_off_reads_no_follow_count(map_client, world):

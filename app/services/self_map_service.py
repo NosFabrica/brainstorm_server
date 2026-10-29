@@ -153,8 +153,8 @@ async def _follow_count(
         yield task
     finally:
         task.cancel()
-        # Awaited, or a read that failed unawaited is logged as an exception
-        # never retrieved.
+        # Awaited, so a cancelled read has stopped, its Neo4j session killed and
+        # released, before the answer goes out.
         await asyncio.gather(task, return_exceptions=True)
 
 
