@@ -206,7 +206,8 @@ Checked items have a handle. The rest are not covered, each with a reason.
       `treasure_map_on` keeps its old value, and the press answers an error. Pressing the same button again finds
       nothing to change and saves the choice. The fakes record the save but never fail the commit.
 - [ ] **Not covered: a relay that refused a removal.** It keeps serving the old claim (ADR Debt). That is the relay's
-      doing; each later press sends it the newest version again and reports the refusal.
+      doing; each later press that reads there sends it the newest version again and reports the refusal, and a
+      relay only an earlier version named is sent it once.
 - [ ] **Not covered: keeping itself true.** § 9.2 says a key must remove or narrow a self-entry before it stops
       keeping it up to date. Nothing republishes when the answer changes: the UI shows the Map out of date, and the
       customer presses Update now (ADR Debt; Tapestry's story 5).

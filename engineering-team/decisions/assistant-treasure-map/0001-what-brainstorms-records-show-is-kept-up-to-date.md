@@ -188,7 +188,8 @@ the response, a failed commit would have followed a 200.
   reason it had fallbacks (no Map, more than 64 keys). A press now reads where the version it publishes is looked for
   (`_writer_relays` of what it lists), so Turn off reads the outbox alone, and sends there and to every relay an
   earlier version's self-entries named. Should a duty other than Scores become live at a relay the outbox doesn't
-  name, a Turn off that relay missed would go unmended (Debt).
+  name, a press that withdraws it there, a Turn off or an Update now that drops it, would send that relay the new
+  version once; if the relay missed it, no later press would read or send there again (Debt).
 - A Map naming more than 64 keys (`self_map_build.MAX_MAP_KEYS`) is a 422 for the GET and for Turn on, and is never
   checked. A check weighs each key against every other, so its cost grows with the square of the keys: an 835-key
   Map took 5.6 s of the event loop's CPU per GET. It is never truncated, which could give the wrong self-entries.
@@ -377,9 +378,10 @@ the relay keeps serving the withdrawn self-entries meanwhile, and the UI offers 
   to date. Until something republishes when the answer changes, the UI shows the Map out of date and the customer
   presses Update now. Natural hooks are a successful TA publish, a policy disabled, or an entitlement lapsing. This is
   Tapestry's story 5, not built there either.
-- **A relay that refused a removal keeps serving the old claim.** Each later press sends it the newest version again
-  (D4) and reports the refusal. Tapestry's ledger row `2026-10-13-self-map-refused-removal-stays-outside` is the same
-  case.
+- **A relay that refused a removal keeps serving the old claim.** Each later press that reads there sends it the
+  newest version again (D4) and reports the refusal. A relay only an earlier version named, which no press reads, is
+  sent the removal once and never again (the Trusted Lists bullet below). Tapestry's ledger row
+  `2026-10-13-self-map-refused-removal-stays-outside` is the same case.
 - **Brainstorm-UI read a self-Map as an activation; done.** Its `describeDesignation` described any kind 10040 whose
   providers are all on Brainstorm relays as "Activated Brainstorm trust signals", and the Assistant's own self-Map is
   one. NosFabrica/Brainstorm-UI#302 fixed it, and the fix had to reach UI production before any server published a
@@ -395,9 +397,13 @@ the relay keeps serving the withdrawn self-entries meanwhile, and the UI offers 
 - **No rate limit on the POST**, like the Duty Menu's.
 - **Trusted Lists and Concepts become claimable** once something publishes and keeps them up to date, starting with
   [NosFabrica/brainstorm_server#112](https://github.com/NosFabrica/brainstorm_server/issues/112). `evaluate_live`
-  then gains a branch for each. If one is live at a relay the outbox doesn't name, Turn off, which reads the outbox
-  alone, never mends a version that relay missed, and while off `writerRelays` doesn't name it (D4, D6). Turn off
-  would then have to read there too, and `writerRelays` with it.
+  then gains a branch for each. If one is live at a relay the outbox doesn't name, a press that withdraws it there
+  sends that relay the new version once, because an earlier version named it: a Turn off, which reads the outbox
+  alone, or an Update now that drops it, which reads only the relays of what it still lists. If the relay missed
+  that version, no later press reads or sends there again, so it keeps serving the withdrawn self-entries, and
+  `writerRelays` doesn't name it (D4, D6). The Update now case was there at `1779d70`; the fourth round added Turn
+  off's. A press would then have to read every relay a duty could be live at (every relay the offer names, say), not
+  only the relays of what it lists, and `writerRelays` with it.
 - **Owed under the Light profile:**
   - this ADR's acceptance;
   - Gate B's ratification of its classification;
