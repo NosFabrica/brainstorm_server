@@ -1,7 +1,7 @@
 # Story 1: Your Assistant's Treasure Map
 
 **Status:** Built on [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110), at
-`2fef911`, after the audit's reviews of `065619b` and `886fa3e`; waiting for Gate B
+`2577814`, after the audit's reviews of `065619b` and `886fa3e`; waiting for Gate B
 **Created:** 2026-10-28, after the build
 **Type:** Feature
 **Source spec:** the UI's ask, Brainstorm-UI `docs/assistant/TREASURE-MAP-ASK.md`, corrected by
@@ -17,14 +17,14 @@ phases.
 
 - **Built first, recorded after.** No Gate A was held, the ADR was written after the build (2026-10-27), and no J1, J2
   or J3 judge ran. This file is the story the ADR's "Owed" list asks for, written from the code and tests at `50443af`
-  and brought up to date at `2fef911`. Its test plan is the edge-case list, the error paths and the AC→handle lines
+  and brought up to date at `2577814`. Its test plan is the edge-case list, the error paths and the AC→handle lines
   below, in this one file, as the Light profile's § Artifacts has it.
 - **An audit stood where the interior gates would have.** An independent audit of PR 110 (2026-10-28, 27 findings)
   was fixed in `6cc74ca..28175d2` and `50443af`. Its second round (2026-10-29) re-checked `aa4d516` by reverting
   each fix; what it found is in `aa4d516..20b3679`. Its third round re-checked `562110f`; what it found is in
   `562110f..c04f607`. Its fourth round re-checked `1779d70`; what it found is in `1779d70..98ec893`. Its review of
   that round re-checked `065619b`; what it found is in `065619b..7043291`. Its review of those fixes re-checked
-  `886fa3e`; what it found is in `886fa3e..2fef911`. The PR body's "What changed after the audit" lists the fixes,
+  `886fa3e`; what it found is in `886fa3e..2577814`. The PR body's "What changed after the audit" lists the fixes,
   and its Evidence records the mutation checks and a run against six throwaway local relays, at `28175d2`.
 - **Tapestry's ids.** The tests ported from Tapestry's two self-map suites carry those suites' ids in their
   docstrings (`[U14]`, `[R5]`, …), for cross-reference. The handles here are test names.
@@ -317,7 +317,7 @@ is named.
 
 ## Checks
 
-Run 2026-10-29 at `7043291` (this file's last commit changes only docs). Each stage ran in the foreground, with its
+Run 2026-10-29 at `2577814` (this file's last commit changes only docs). Each stage ran in the foreground, with its
 exit code captured by brace-redirect, never piped through `tail`.
 
 | Stage | Command | Exit | Result |
@@ -332,5 +332,5 @@ exit code captured by brace-redirect, never piped through `tail`.
 runs each task through it, so a stand-in answered poe's one call (`poetry env info -p`) with a virtualenv whose
 black, isort and flake8 are `poetry.lock`'s and whose mypy and pytest are the project's. The project's own virtualenv
 has flake8 5.0.4, whose pycodestyle misreads Python 3.12 f-strings: it fails `check_lint` with 121 findings inside
-f-strings across 27 files, the same at `562110f` as at `7043291`. The 143 deselected tests are the integration suite,
+f-strings across 27 files, the same at `562110f` as at `2577814`. The 143 deselected tests are the integration suite,
 which needs the live stack and wasn't run. None of this story's tests is integration-marked.
