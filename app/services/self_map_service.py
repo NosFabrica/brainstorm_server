@@ -12,18 +12,17 @@ the § numbers are Tapestry's `protocols/drafts/treasure-maps.md`.
 
 A press reads the newest version strictly and publishes the self-entries the
 GET says, with the `client` tag and empty content: only this server signs the
-Assistant's kind 10040, so a version holds nothing else to keep. It reads and
-sends only where § 9.2 "Finding a self-Map" sends a writer: the Assistant's
-outbox, the relays its self-entries name, and every relay an earlier version's
-self-entries named, the TA relay at its internal URL, as scores are. The
-caller's hints for the Assistant are in the GET's `relays`, for readers, and a
-press never connects to them: the caller writes their own Map, so a hint can
-name any host. Signing and sending are `assistant_publish`'s, shared with the
-Duty Menu.
+Assistant's kind 10040, so a version holds nothing else to keep. It reads at
+the Assistant's outbox and the relays its self-entries name, and sends there
+and to every relay an earlier version's self-entries named (§ 9.2 "Finding a
+self-Map"), the TA relay at its internal URL, as scores are. The caller's hints
+for the Assistant are in the GET's `relays`, for readers, and a press never
+connects to them: the caller writes their own Map, so a hint can name any host.
+Signing and sending are `assistant_publish`'s, shared with the Duty Menu.
 
 The choice (`brainstorm_nsec.treasure_map_on`) is saved only by a press that
 succeeds, after its publish, and committed before the answer reports it. A
-press that answers an error writes nothing.
+press that answers an error leaves the choice as it was.
 
 The UI waits 30 s. A press takes about 28 s at worst: the caller's Map and the
 versions are read in up to 6 s each, the connect takes up to 4 s and the send
