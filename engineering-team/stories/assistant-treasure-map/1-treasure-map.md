@@ -1,7 +1,7 @@
 # Story 1: Your Assistant's Treasure Map
 
 **Status:** Built on [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110), at
-`7043291`, after the review of the audit's fourth round; waiting for Gate B
+`2fef911`, after the audit's reviews of `065619b` and `886fa3e`; waiting for Gate B
 **Created:** 2026-10-28, after the build
 **Type:** Feature
 **Source spec:** the UI's ask, Brainstorm-UI `docs/assistant/TREASURE-MAP-ASK.md`, corrected by
@@ -17,15 +17,15 @@ phases.
 
 - **Built first, recorded after.** No Gate A was held, the ADR was written after the build (2026-10-27), and no J1, J2
   or J3 judge ran. This file is the story the ADR's "Owed" list asks for, written from the code and tests at `50443af`
-  and brought up to date at `7043291`. Its test plan is the edge-case list, the error paths and the AC→handle lines
+  and brought up to date at `2fef911`. Its test plan is the edge-case list, the error paths and the AC→handle lines
   below, in this one file, as the Light profile's § Artifacts has it.
 - **An audit stood where the interior gates would have.** An independent audit of PR 110 (2026-10-28, 27 findings)
   was fixed in `6cc74ca..28175d2` and `50443af`. Its second round (2026-10-29) re-checked `aa4d516` by reverting
   each fix; what it found is in `aa4d516..20b3679`. Its third round re-checked `562110f`; what it found is in
   `562110f..c04f607`. Its fourth round re-checked `1779d70`; what it found is in `1779d70..98ec893`. Its review of
-  that round re-checked `065619b`; what it found is in `065619b..7043291`. The PR body's "What changed after the
-  audit" lists the fixes, and its Evidence records the mutation checks and a run against six throwaway local
-  relays.
+  that round re-checked `065619b`; what it found is in `065619b..7043291`. Its review of those fixes re-checked
+  `886fa3e`; what it found is in `886fa3e..2fef911`. The PR body's "What changed after the audit" lists the fixes,
+  and its Evidence records the mutation checks and a run against six throwaway local relays, at `28175d2`.
 - **Tapestry's ids.** The tests ported from Tapestry's two self-map suites carry those suites' ids in their
   docstrings (`[U14]`, `[R5]`, …), for cross-reference. The handles here are test names.
 - **Still owed:** David's acceptance of the ADR, and Gate B. Its reviewer ratifies the classification and writes the
@@ -62,8 +62,8 @@ Testable from the outside. Each criterion has at least one handle below.
 - [x] **AC3 — the offer is read per key, by § 6.2 covering.** A Map of `/setup`'s rows, with Scores live, gets
       exactly the five Score rows, entry for entry. A bare `30382`, `3038x` or `*` narrows to the five metric keys,
       and is never claimed as written. A `30382` metric Brainstorm doesn't publish, and a kind the offer has no row
-      for, are `not-offered`. An Alternate has the duty too. A more specific entry for another key is `elsewhere`,
-      and is never listed.
+      for, are `not-offered`. An Alternate has the duty too, and so does the Assistant named in upper case. A more
+      specific entry for another key is `elsewhere`, and is never listed.
 - [x] **AC4 — "live" comes from Brainstorm's records.** Scores are `live` only when they have been published,
       something keeps them up to date, and the last publish is no older than two intervals. That something is the
       scheduler (enabled, with a default policy, the caller's policy or the default enabled, and the caller following
@@ -185,23 +185,28 @@ Checked items have a handle. The rest are not covered, each with a reason.
       6 s each, the connect takes up to 4 s and the send 12 s, about 28 s in all; Turn off, which reads no Map, about
       22 s. The follow count, read alongside the caller's Map within 5 s, adds nothing.
       `test_a_press_fits_in_the_uis_30_seconds` sums the bounds, so raising one past the budget fails it, and holds
-      the follow count's above 1 s. `test_the_follow_counts_bound_runs_while_the_callers_map_is_read` checks that
-      the bound runs from the read's start, not from the await.
+      the follow count's between 1 s and the Map read's 6 s.
+      `test_the_follow_counts_bound_runs_while_the_callers_map_is_read` checks that the bound runs from the read's
+      start, not from the await.
 - [x] **Open migrations on the same parent.** PR 111 (`d8f2a1c4e6b9`) and PR 113 (`a7c2e9f1d4b3`) add migrations on
-      this one's parent, `b4e8d2a6f0c1`. Staging runs PR 113's code, so its database is almost certainly at
-      `a7c2e9f1d4b3` (its `alembic_version` would confirm it). Re-pointed onto `c5f1d7a9e2b4`, that revision would
-      make `alembic upgrade head` there find itself at head and never add `treasure_map_on`. So whichever PR merges
-      second adds an `alembic merge` revision over the two heads, and the third does the same. Tried on staging
-      first, this PR runs there through a branch joining it to PR 113's code, with a merge revision of its own. That
-      one has to land on `main`, unchanged, in whichever of PR 110 and PR 113 merges later (only that one holds both
-      parents), with a separate merge over it and `main`'s head if PR 111 merged before that one. Or staging is
-      stamped to the join's parents (`alembic stamp --purge c5f1d7a9e2b4 a7c2e9f1d4b3`) before the image that joins
-      the heads starts; otherwise `start.sh` stops with "Can't locate revision identified by" the join's. Stamped to
-      `main`'s merge revision instead, staging would skip PR 111's migration whenever it merged before the later of
-      the two. While staging is at the join's revision (until `main` has it, or staging is stamped to its parents),
-      every image staging runs needs it, PR 113's own included, and the way back is one downgrade with the join's
-      image, `alembic downgrade c5f1d7a9e2b4@b4e8d2a6f0c1`, with PR 113's image pinned straight after. A local
-      alembic run showed each outcome, in all six merge orders.
+      this one's parent, `b4e8d2a6f0c1`. Staging runs code built on PR 113's branch: on 2026-10-29 it pins PR 116's
+      image (`feat-persist-floor`), whose branch is stacked on PR 114's, which is stacked on PR 113's, and neither
+      PR 114 nor PR 116 adds a migration. So its database is almost certainly at `a7c2e9f1d4b3` (its
+      `alembic_version` would confirm it). Re-pointed onto `c5f1d7a9e2b4`, that revision would make
+      `alembic upgrade head` there find itself at head and never add `treasure_map_on`. So whichever PR merges second
+      adds an `alembic merge` revision over the two heads, and the third does the same. Tried on staging first, this
+      PR runs there through a branch joining it to the code staging runs (PR 113's, with PR 114's and PR 116's on
+      top), with a merge revision of its own. That one has to land on `main`, unchanged, in whichever of PR 110 and
+      PR 113 merges later (only that one holds both parents), with a separate merge over it and `main`'s head if
+      PR 111 merged before that one. Or staging is stamped to the join's parents
+      (`alembic stamp --purge c5f1d7a9e2b4 a7c2e9f1d4b3`) straight before the image that joins the heads starts (a
+      restart of the join's pod in between would apply the join's revision again); otherwise `start.sh` stops with
+      "Can't locate revision identified by" the join's. Stamped to `main`'s merge revision instead, staging would
+      skip PR 111's migration whenever it merged before the later of the two. While staging is at the join's
+      revision (until `main` has it, or staging is stamped to its parents), every image staging runs needs it,
+      PR 113's own included, and the way back is one downgrade with the join's image,
+      `alembic downgrade c5f1d7a9e2b4@b4e8d2a6f0c1`, with the image staging ran before the join pinned straight
+      after. A local alembic run showed each outcome, in all six merge orders.
       `tests/test_alembic_heads.py::test_the_migrations_have_one_head` fails until then: copying PR 113's migration
       in made it fail.
 - [x] **The 500 when the signed event fails its own check** (D4).
@@ -228,7 +233,7 @@ Checked items have a handle. The rest are not covered, each with a reason.
 | PostgreSQL (the Assistant's row, the scheduling policies, the choice) | unreachable | a 500, before any relay is read or sent to | not covered: shared by every `/user` route; a commit failing after the send is above |
 | PostgreSQL | no default scheduling policy | the Score lines read `not-scheduled` | `test_scores_are_live_only_while_the_scheduler_keeps_them_up_to_date` (no-default-policy) |
 | Neo4j, the follow count (`has_grapevine`) | unreadable | a 502 for the GET and Turn on, when the caller's Map asks the Assistant for Scores and the scheduler would otherwise run the caller; Turn off doesn't read it | `test_a_follow_count_that_cannot_be_read_is_an_error`; `test_the_follow_count_counts_only_when_the_map_asks_for_scores`; `test_the_follow_count_counts_only_when_the_scheduler_would_run_the_caller`; `test_turn_off_reads_neither_the_callers_map_nor_the_follow_count` |
-| Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | given up within 5 s of the read's start, alongside the caller's Map, so the 502 for the GET and Turn on comes once that Map is read (within its 6 s), when the Map asks the Assistant for Scores and the scheduler would otherwise run the caller, with nothing published or saved; otherwise nothing waits for it, and the read has stopped before the answer; Turn off doesn't read it | `test_the_follow_counts_bound_runs_while_the_callers_map_is_read`; `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`; `test_a_follow_count_that_doesnt_count_isnt_waited_for` |
+| Neo4j, the follow count | no answer (the driver has no query timeout and waits 30 s to connect) | given up within 5 s of the read's start, alongside the caller's Map, so the 502 for the GET and Turn on comes once that Map is read and the count given up, within the Map read's 6 s, when the Map asks the Assistant for Scores and the scheduler would otherwise run the caller, with nothing published or saved; otherwise nothing waits for it, and the read has stopped before the answer; Turn off doesn't read it | `test_the_follow_counts_bound_runs_while_the_callers_map_is_read`; `test_a_follow_count_neo4j_never_answers_is_an_error_at_once`; `test_a_follow_count_that_doesnt_count_isnt_waited_for`; `test_the_follow_count_counts_only_when_the_scheduler_would_run_the_caller`; `test_turn_off_reads_neither_the_callers_map_nor_the_follow_count` |
 | Our relay, the caller's Map | unreadable | a 502 for the GET and Turn on; Turn off doesn't read it | `test_a_map_that_cannot_be_read_is_an_error_not_an_empty_map`; `test_turn_on_needs_the_callers_map`; `test_turn_off_needs_only_the_assistants_map` |
 | Our relay, the caller's Map | more than 64 keys | a 422 for the GET and Turn on, with no check made and before the follow count is awaited; Turn off doesn't read it | AC13's handles; `test_turn_off_needs_no_map_even_one_too_big` |
 | Writer relays, reading the Assistant's versions | none answers (one that sends `CLOSED` hasn't answered, and is left out) | a 502, with nothing published or saved | `test_when_no_relay_answers_nothing_is_published_or_remembered`; `tests/test_designated_pubkeys.py::test_a_closed_request_is_no_answer` |
