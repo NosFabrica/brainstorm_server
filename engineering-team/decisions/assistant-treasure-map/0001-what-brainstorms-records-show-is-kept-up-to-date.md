@@ -15,7 +15,10 @@ D4 (Turn off reads no caller's Map; when the follow count counts; what the cap's
 D6 and D7 (`writerRelays`, the relays read by the press that keeps the current choice, David's decisions), the Debt
 and the implementation notes, and the Debt and Out of scope for NosFabrica/Brainstorm-UI#306, which took the UI's fix
 to production. Revised for the review of that round: D4 and the Debt (an Update now that drops a duty live at a relay
-outside the outbox leaves a miss there unmended too; a refused removal), D6, the Debt and Out of scope (wording).
+outside the outbox leaves a miss there unmended too; a refused removal), D6 and the Debt (wording), and Out of scope
+(`describeDesignation` describes a self-Map as what its author publishes; it never skipped one). Revised for the
+review of those fixes: D4 (the relays a press reads), D7 (UI production too) and the Debt (what an Update now reads,
+what a fix would read, and why nothing hits it under today's settings).
 **Date:** 2026-10-27
 **Story:** [`stories/assistant-treasure-map/1-treasure-map.md`](../../stories/assistant-treasure-map/1-treasure-map.md),
 written after the build (2026-10-28)
@@ -215,7 +218,8 @@ the response, a failed commit would have followed a 200.
 - **Turn off while the GET fails.** Turn off reads neither, so it goes ahead in the states where the GET answers 422
   or 502 for the Map or the follow count. NosFabrica/Brainstorm-UI#307 (open) offers Turn off beneath that error.
   Until it lands, the UI shows no buttons until a GET succeeds, and that Turn off goes through the API alone (Debt).
-- Then the writer's relays (below) are asked for the Assistant's kind 10040, the TA relay at its internal URL:
+- Then the outbox and the relays its self-entries name (`_writer_relays` of what it lists; a relay only an earlier
+  version named is sent to, never read) are asked for the Assistant's kind 10040, the TA relay at its internal URL:
   - only versions validly signed by the Assistant count;
   - the newest by NIP-01 is the one compared and dated after;
   - 502 when no relay answers.
@@ -339,7 +343,7 @@ the relay keeps serving the withdrawn self-entries meanwhile, and the UI offers 
 
 - **camelCase** (`shouldSay`, `writerRelays`, `lastLandedAt`), as the UI's parser reads it, through Pydantic
   serialization aliases. The parser ignores a field it doesn't know, so `writerRelays` changed nothing for the UI on
-  staging.
+  staging or production.
   This departs from the repo's snake_case for new endpoints (`app/schemas/CLAUDE.md`), because the UI's contract was
   written first and is on staging.
 - **Wrapped in `{data}`**, like every `/user` answer.
@@ -400,11 +404,14 @@ the relay keeps serving the withdrawn self-entries meanwhile, and the UI offers 
   [NosFabrica/brainstorm_server#112](https://github.com/NosFabrica/brainstorm_server/issues/112). `evaluate_live`
   then gains a branch for each. If one is live at a relay the outbox doesn't name, a press that withdraws it there
   sends that relay the new version once, because an earlier version named it: a Turn off, which reads the outbox
-  alone, or an Update now that drops it, which reads only the relays of what it still lists. If the relay missed
-  that version, no later press reads or sends there again, so it keeps serving the withdrawn self-entries, and
-  `writerRelays` doesn't name it (D4, D6). The Update now case was there at `1779d70`; the fourth round added Turn
-  off's. A press would then have to read every relay a duty could be live at (every relay the offer names, say), not
-  only the relays of what it lists, and `writerRelays` with it.
+  alone, or an Update now that drops it, which reads the outbox and the relays of what it still lists. If the relay
+  missed that version, no later press reads or sends there again, so it keeps serving the withdrawn self-entries,
+  and `writerRelays` doesn't name it (D4, D6). The Update now case was there at `1779d70`; the fourth round added
+  Turn off's. A press would then have to read every relay a duty could be live at (every relay the offer names that
+  takes a kind 10040, say: the Dictionary relay refuses one, and its EOSE would count as an answer to the strict
+  read, W2), not only the outbox and the relays of what it lists, and `writerRelays` with it. Even once both are
+  live, nothing hits this under today's settings: the Trusted Lists relay is always in the outbox, and the
+  Dictionary relay, where the offer's Concept rows point, holds no kind 10040 to go stale.
 - **Owed under the Light profile:**
   - this ADR's acceptance;
   - Gate B's ratification of its classification;
