@@ -9,7 +9,9 @@ stored like any other, and that the reporter count is not persisted (reads count
 """
 
 import asyncio
+from datetime import timedelta
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -42,13 +44,16 @@ def _scorecard(observer: str, observee: str, trusted_followers: int) -> dict:
     }
 
 
-def _message(observer: str, scorecards: dict) -> dict:
+def _message(
+    observer: str, scorecards: dict, write_set: list[str] | None = None
+) -> dict:
     return {
         "private_id": 1,
         "result": {
             "success": True,
             "duration_seconds": 1.0,
             "scorecards": scorecards,
+            "neo4jWritePubkeys": write_set,
         },
     }
 
@@ -60,6 +65,7 @@ def graph(monkeypatch):
     pks = {
         "many_followers": Keys.generate().public_key().to_hex(),
         "no_followers": Keys.generate().public_key().to_hex(),
+        "unreached": Keys.generate().public_key().to_hex(),
     }
 
     @asynccontextmanager
@@ -72,6 +78,24 @@ def graph(monkeypatch):
         "update_brainstorm_request_internal_publication_status_by_id_on_db",
         AsyncMock(),
     )
+    request_row = SimpleNamespace(force_full_neo4j=False)
+    monkeypatch.setattr(
+        writer_module,
+        "select_brainstorm_request_by_id_on_db",
+        AsyncMock(return_value=request_row),
+    )
+    monkeypatch.setattr(writer_module.settings, "neo4j_full_write", False)
+    # Cleaned recently by default, so only tests that move the clock see a time-based clear.
+    cleanup = {"last": writer_module.utc_now(), "marked": 0}
+
+    async def _last(db, pubkey):
+        return cleanup["last"]
+
+    async def _mark(db, pubkey):
+        cleanup["marked"] += 1
+
+    monkeypatch.setattr(writer_module, "get_last_neo4j_cleanup_at_on_db", _last)
+    monkeypatch.setattr(writer_module, "mark_neo4j_cleanup_on_db", _mark)
 
     async def _seed():
         driver = _fresh_driver()
@@ -95,7 +119,7 @@ def graph(monkeypatch):
 
     asyncio.run(_seed())
     try:
-        yield {"observer": observer, **pks}
+        yield {"observer": observer, "request_row": request_row, "cleanup": cleanup, **pks}
     finally:
         asyncio.run(_teardown())
 
@@ -165,7 +189,9 @@ def test_a_zero_follower_count_is_stored_not_skipped(graph):
     async def body():
         async with _loop_local_driver():
             await process_neo4j_write_message(
-                _message(observer, {"a": _scorecard(observer, graph["no_followers"], 0)})
+                _message(
+                    observer, {"a": _scorecard(observer, graph["no_followers"], 0)}
+                )
             )
         return await _props(graph["no_followers"], observer)
 
@@ -188,3 +214,163 @@ def test_a_single_scorecard_run_does_not_raise(graph):
             )
 
     asyncio.run(body())
+
+
+def _write(message: dict):
+    async def body():
+        async with _loop_local_driver():
+            await process_neo4j_write_message(message)
+
+    asyncio.run(body())
+
+
+def test_a_delta_write_only_touches_the_write_set(graph):
+    observer, a, b = graph["observer"], graph["many_followers"], graph["no_followers"]
+    first = {a: _scorecard(observer, a, 1), b: _scorecard(observer, b, 1)}
+    _write(_message(observer, first))
+
+    second = {a: _scorecard(observer, a, 2), b: _scorecard(observer, b, 2)}
+    _write(_message(observer, second, write_set=[a]))
+
+    assert asyncio.run(_props(a, observer))["trusted_followers"] == 2
+    assert asyncio.run(_props(b, observer))["trusted_followers"] == 1
+
+
+def test_a_missing_write_set_writes_every_scorecard(graph):
+    observer, a, b = graph["observer"], graph["many_followers"], graph["no_followers"]
+    _write(_message(observer, {a: _scorecard(observer, a, 1)}, write_set=[]))
+    _write(
+        _message(
+            observer, {a: _scorecard(observer, a, 3), b: _scorecard(observer, b, 3)}
+        )
+    )
+
+    assert asyncio.run(_props(a, observer))["trusted_followers"] == 3
+    assert asyncio.run(_props(b, observer))["trusted_followers"] == 3
+
+
+def test_a_full_write_clears_scores_on_nodes_no_longer_reached(graph):
+    observer, a, gone = graph["observer"], graph["many_followers"], graph["unreached"]
+    _write(
+        _message(
+            observer,
+            {a: _scorecard(observer, a, 1), gone: _scorecard(observer, gone, 1)},
+        )
+    )
+
+    graph["request_row"].force_full_neo4j = True
+    _write(_message(observer, {a: _scorecard(observer, a, 1)}, write_set=[]))
+
+    assert asyncio.run(_props(a, observer))["influence"] == 0.5
+    cleared = asyncio.run(_props(gone, observer))
+    assert cleared["influence"] is None
+    assert cleared["hops"] is None
+    assert cleared["trusted_followers"] is None
+
+
+def test_an_unforced_full_write_keeps_scores_on_nodes_no_longer_reached(graph):
+    """The cleanup scan costs a label scan; only forced runs pay it."""
+    observer, a, gone = graph["observer"], graph["many_followers"], graph["unreached"]
+    _write(
+        _message(
+            observer,
+            {a: _scorecard(observer, a, 1), gone: _scorecard(observer, gone, 1)},
+        )
+    )
+    _write(_message(observer, {a: _scorecard(observer, a, 1)}))
+
+    assert asyncio.run(_props(gone, observer))["influence"] == 0.5
+
+
+def test_a_hand_deleted_influence_is_rewritten_when_listed(graph):
+    observer, a = graph["observer"], graph["many_followers"]
+    _write(_message(observer, {a: _scorecard(observer, a, 1)}))
+
+    async def drop():
+        driver = _fresh_driver()
+        try:
+            async with driver.session() as s:
+                await s.run(
+                    "MATCH (n:NostrUser {pubkey: $pk}) SET n[$k] = null",
+                    pk=a,
+                    k=f"influence_{observer}",
+                )
+        finally:
+            await driver.close()
+
+    asyncio.run(drop())
+    _write(_message(observer, {a: _scorecard(observer, a, 1)}, write_set=[a]))
+
+    assert asyncio.run(_props(a, observer))["influence"] == 0.5
+
+
+def test_a_delta_write_keeps_scores_on_nodes_no_longer_reached(graph):
+    observer, a, gone = graph["observer"], graph["many_followers"], graph["unreached"]
+    _write(
+        _message(
+            observer,
+            {a: _scorecard(observer, a, 1), gone: _scorecard(observer, gone, 1)},
+        )
+    )
+    _write(_message(observer, {a: _scorecard(observer, a, 1)}, write_set=[]))
+
+    assert asyncio.run(_props(gone, observer))["influence"] == 0.5
+
+
+def _seed_then_drop(graph):
+    observer, a, gone = graph["observer"], graph["many_followers"], graph["unreached"]
+    _write(
+        _message(
+            observer,
+            {a: _scorecard(observer, a, 1), gone: _scorecard(observer, gone, 1)},
+        )
+    )
+    _write(_message(observer, {a: _scorecard(observer, a, 1)}, write_set=[]))
+    return observer, a, gone
+
+
+def test_a_never_cleaned_observer_clears_on_a_delta_run(graph):
+    graph["cleanup"]["last"] = None
+    observer, a, gone = _seed_then_drop(graph)
+
+    assert asyncio.run(_props(gone, observer))["influence"] is None
+    assert asyncio.run(_props(a, observer))["influence"] == 0.5
+    assert graph["cleanup"]["marked"] >= 1
+
+
+def test_an_observer_past_the_interval_clears_on_a_delta_run(graph, monkeypatch):
+    monkeypatch.setattr(writer_module.settings, "neo4j_cleanup_interval_days", 30)
+    graph["cleanup"]["last"] = writer_module.utc_now() - timedelta(days=31)
+    observer, _, gone = _seed_then_drop(graph)
+
+    assert asyncio.run(_props(gone, observer))["influence"] is None
+
+
+def test_cleanup_clears_a_node_that_lost_only_its_influence(graph):
+    observer, a, gone = graph["observer"], graph["many_followers"], graph["unreached"]
+    _write(
+        _message(
+            observer,
+            {a: _scorecard(observer, a, 1), gone: _scorecard(observer, gone, 1)},
+        )
+    )
+
+    async def drop_influence():
+        driver = _fresh_driver()
+        try:
+            async with driver.session() as s:
+                await s.run(
+                    "MATCH (n:NostrUser {pubkey: $pk}) SET n[$k] = null",
+                    pk=gone,
+                    k=f"influence_{observer}",
+                )
+        finally:
+            await driver.close()
+
+    asyncio.run(drop_influence())
+    graph["request_row"].force_full_neo4j = True
+    _write(_message(observer, {a: _scorecard(observer, a, 1)}, write_set=[]))
+
+    left = asyncio.run(_props(gone, observer))
+    assert left["hops"] is None
+    assert left["trusted_followers"] is None

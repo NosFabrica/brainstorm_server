@@ -108,7 +108,7 @@ in `brainstorm_nsec.py` are the only safe entry points.
 
 ### `user_repo.py` (Neo4j)
 
-27 async functions, raw Cypher. Patterned around three relations (`FOLLOWS`,
+30 async functions, raw Cypher. Patterned around three relations (`FOLLOWS`,
 `MUTES`, `REPORTS`) × two directions (in/out). For each (rel, direction) there
 are `get_list_of_pubkeys_*` and `count_*` helpers. Plus the bigger composite
 queries:
@@ -117,6 +117,7 @@ queries:
 - `get_outbound_counts_and_influence(session, pubkey, influence_key, *, verified_line, reporter_cutoff) → OutboundOverview(influence, following, muting, reporting, flagged_by_observer, flagged_count, verified, tier)` — single round-trip vs four sequential. `verified`/`tier` are the subject's *own* verdict, off the same `_TIER_PREDICATES` table the section rows use.
 - `get_paginated_section_connections(session, pubkey, influence_key, rel_type, direction, limit, cursor_inf, cursor_pk, …)` → `(items, next_cursor, total)` — cursor = `(influence, pubkey)`; ordered influence DESC, pubkey ASC. **Drives `/user/{pubkey}/connections`**. `verified_cutoff` is that section's preset cutoff — every row reports whether it clears it (`verified`) and which bucket it lands in (`tier`), and `verified_only` narrows the page to the verified rows. `verified_line` is the tier fallthrough boundary. There is no client-supplied `min_influence`.
 - `get_all_section_stats(...)` — one query covering all 6 sections; ~20 % faster than firing them in parallel.
+- `set_observer_scores(session, rows)` / `clear_observer_scores(session, pubkeys, keys)` / `get_pubkeys_scored_by_observer(session, keys)` — the GrapeRank result writer's side (`write_neo4j_results.py`). The two writes run in a managed transaction (retried on transient errors); the read is a `:NostrUser` label scan, so the writer runs it only for cleanup.
 - `get_user_graph_data(session, pubkey, influence_key, *, reporter_cutoff)` — unpaginated full graph; row `trusted_reporters` is the live `_live_reporters` count.
 - `get_network_alert_candidates(...)` / `count_above_cutoff_followers_capped(...)` / `count_verified_muters(...)` — the three bounded steps behind **`/networkAlerts`** (orchestrated by `network_alerts_service`). Things to preserve if you touch them:
   - Candidates are anchored *through* the `REPORTS` edge, never a `:NostrUser` label scan. No index can substitute — the influence properties are per-observer, so indexing them would mean one index per observer.
@@ -160,7 +161,7 @@ Dynamic property access uses `user[$influence_key]` parameterization so
 Don't write the property name into the query string — a per-observer name in the
 query text gives every observer its own Neo4j plan-cache entry. The write side
 follows the same rule from the other direction: `write_neo4j_results.py` builds
-the `{name: value}` map in Python and does `SET n += row.props`.
+the `{name: value}` map in Python and `set_observer_scores` does `SET n += row.props`.
 
 ## Common tasks
 

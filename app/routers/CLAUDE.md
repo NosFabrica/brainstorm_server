@@ -193,7 +193,7 @@ Attribute and dismiss both answer `UnresolvedResolutionOutcome`. `applied` false
 
 ### `admin/...` — administrative endpoints
 
-- **`admin/users`** — list users (paginated). Sort: `pubkey | times_calculated | last_triggered | last_updated`. `search` supports hex or npub. History: `/{pubkey}/history`. `POST /{pubkey}/resync` forces a full relay re-assert for that one observer. `POST /{pubkey}/sessions/revoke` kills that user's session tokens (users sign out everywhere themselves via `POST /user/sessions/revoke`).
+- **`admin/users`** — list users (paginated). Sort: `pubkey | times_calculated | last_triggered | last_updated`. `search` supports hex or npub. History: `/{pubkey}/history`. `POST /{pubkey}/resync?target=relay|neo4j|both` (default `both`) forces a full re-assert of that one observer on the chosen sinks. `POST /{pubkey}/sessions/revoke` kills that user's session tokens (users sign out everywhere themselves via `POST /user/sessions/revoke`).
 - **`admin/activity`** — platform-wide request activity feed (paginated, filter by `status`, `algorithm`, `pubkey`, `days`).
 - **`admin/stats`** — `GET /` → `AdminStats{total_users, scored_users, sp_adopters, queue_depth}`.
 - **`admin/graperank`** — `PUT/GET /preset/{id}` for DEFAULT/PERMISSIVE/RESTRICTIVE; `GET /preset/{id}/history` for the audit log.

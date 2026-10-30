@@ -1,4 +1,4 @@
-"""Admin resync re-asserts one observer's full state on the relay."""
+"""Admin resync re-asserts one observer's full state on the relay and/or Neo4j."""
 
 from datetime import datetime
 from unittest.mock import AsyncMock
@@ -42,9 +42,18 @@ def admin_client(client):
     yield client
 
 
-@pytest.mark.parametrize("params", [{}, {"target": "both"}, {"target": "vespa"}])
-def test_resync_forces_a_full_relay_run(admin_client, monkeypatch, params):
-    # A stale caller still sending a Vespa target gets the relay resync.
+@pytest.mark.parametrize(
+    "params, relay, neo4j",
+    [
+        ({}, True, True),
+        ({"target": "both"}, True, True),
+        ({"target": "relay"}, True, False),
+        ({"target": "neo4j"}, False, True),
+    ],
+)
+def test_resync_forces_a_full_run_per_target(
+    admin_client, monkeypatch, params, relay, neo4j
+):
     create = AsyncMock(return_value=_request())
     monkeypatch.setattr(
         "app.routers.admin.users.router.create_brainstorm_request", create
@@ -58,6 +67,21 @@ def test_resync_forces_a_full_relay_run(admin_client, monkeypatch, params):
         "algorithm": "graperank",
         "parameters": PUBKEY,
         "pubkey": PUBKEY,
-        "force_full_relay": True,
+        "force_full_relay": relay,
+        "force_full_neo4j": neo4j,
         "trigger_source": TriggerSource.ADMIN.value,
     }
+
+
+def test_resync_rejects_an_unknown_target(admin_client, monkeypatch):
+    create = AsyncMock(return_value=_request())
+    monkeypatch.setattr(
+        "app.routers.admin.users.router.create_brainstorm_request", create
+    )
+
+    response = admin_client.post(
+        f"/admin/users/{PUBKEY}/resync", params={"target": "vespa"}
+    )
+
+    assert response.status_code == 422
+    create.assert_not_awaited()

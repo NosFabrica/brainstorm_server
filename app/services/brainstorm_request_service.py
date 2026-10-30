@@ -114,6 +114,7 @@ async def create_brainstorm_request(
     pubkey: str,
     nsec_exists: bool = False,
     force_full_relay: bool = False,
+    force_full_neo4j: bool = False,
     trigger_source: str = TriggerSource.MANUAL.value,
 ) -> BrainstormRequestInstance:
     # Before any DB work, so a slow relay never holds a transaction open.
@@ -134,6 +135,7 @@ async def create_brainstorm_request(
             graperank_preset_used=effective_preset.value,
             graperank_params=params.model_dump(),
             force_full_relay=force_full_relay,
+            force_full_neo4j=force_full_neo4j,
             trigger_source=trigger_source,
         )
     )
