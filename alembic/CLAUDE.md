@@ -53,8 +53,9 @@ sidecar before the server starts. Locally, run them by hand.
     branch with a migration of its own merged before it (first, or in between), that later branch also adds a
     separate merge revision over Mj and `main`'s head. Never give Mj's id to a merge over other parents, such as
     `alembic merge --rev-id <Mj> heads` after updating from `main`: CI and production pass, but staging, already at
-    Mj, then never applies the third branch's migration. Or, before the image that joins the heads starts, staging
-    is stamped to Mj's parents (`alembic stamp --purge <parent> <parent>`), and its `upgrade head` applies the rest.
+    Mj, then never applies the third branch's migration. Or, straight before the image that joins the heads starts,
+    staging is stamped to Mj's parents (`alembic stamp --purge <parent> <parent>`), and its `upgrade head` applies
+    the rest: a restart of the pod running Mj in between would apply Mj again.
     Stamped to `main`'s merge revision instead, it would silently skip any migration of `main`'s it lacks. Without
     `--purge` a stamp stops too: on "Can't locate revision" with an image that lacks Mj, and on a `KeyError` naming
     Mj with the join's.
