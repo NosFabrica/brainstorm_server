@@ -11,6 +11,7 @@ from app.repos.brainstorm_request_repo import (
     create_brainstorm_request_on_db,
     delete_brainstorm_request_by_id_on_db,
     select_brainstorm_request_by_id_on_db,
+    update_brainstorm_request_status_by_id_on_db,
 )
 from app.schemas.schemas import BrainstormRequestInstance, GrapeRankError
 from app.services.designation_service import fetch_designated_pubkeys
@@ -114,6 +115,7 @@ async def create_brainstorm_request(
     pubkey: str,
     nsec_exists: bool = False,
     force_full_relay: bool = False,
+    force_full_neo4j: bool = False,
     trigger_source: str = TriggerSource.MANUAL.value,
 ) -> BrainstormRequestInstance:
     # Before any DB work, so a slow relay never holds a transaction open.
@@ -134,6 +136,7 @@ async def create_brainstorm_request(
             graperank_preset_used=effective_preset.value,
             graperank_params=params.model_dump(),
             force_full_relay=force_full_relay,
+            force_full_neo4j=force_full_neo4j,
             trigger_source=trigger_source,
         )
     )
@@ -155,9 +158,20 @@ async def create_brainstorm_request(
         )
 
     await update_last_time_triggered_graperank_on_db(db, parameters)
+    # Before the enqueue: an idle worker can finish and post results before the
+    # caller's own commit, and the row must exist by then.
+    await db.commit()
 
-    await enqueue_calc_request(
-        db, instance, parameters, trigger_source, designated_pubkeys
-    )
+    try:
+        await enqueue_calc_request(
+            db, instance, parameters, trigger_source, designated_pubkeys
+        )
+    except Exception:
+        # The row is committed: fail it, or it waits jobless for the stale sweep.
+        await update_brainstorm_request_status_by_id_on_db(
+            db, instance.private_id, BrainstormRequestStatus.FAILURE
+        )
+        await db.commit()
+        raise
 
     return instance

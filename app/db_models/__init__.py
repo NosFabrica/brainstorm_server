@@ -133,6 +133,11 @@ class BrainstormRequest(TimestampMixin, Base):
     force_full_relay: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True, server_default="false"
     )
+    # Same for the Neo4j score write: true = write every scorecard and clear the
+    # Observer's scores on nodes it no longer reaches.
+    force_full_neo4j: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, server_default="false"
+    )
 
 
 class BrainstormNostrRelayTransfer(TimestampMixin, Base):
@@ -178,6 +183,10 @@ class BrainstormNsec(TimestampMixin, Base):
     # scheduled runs only; reset to 0 after a successful full run.
     runs_since_full: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
+    )
+    # Last clear of this observer's out-of-reach Neo4j scores (NEO4J_CLEANUP_INTERVAL_DAYS).
+    last_neo4j_cleanup_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
     )
     # The scheduling policy this user is assigned to (see the Scheduling table).
     # NULL = the default policy (is_default row). Assigned by admins / a future

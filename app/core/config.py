@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     # baseline. Backwards-compat only — drains the legacy pre-cutoff backlog,
     # then off.
     relay_sweep_below_cutoff: bool = Field(default=False)
+    # Neo4j score write mode. True (default) = every scorecard each run; False = only
+    # the worker's `neo4jWritePubkeys`.
+    neo4j_full_write: bool = Field(default=True)
+    # Clear an observer's out-of-reach Neo4j scores (a label scan) on its first run
+    # after this many days since the last clear; forced runs always clear. <= 0 = forced only.
+    neo4j_cleanup_interval_days: int = Field(default=30)
     # --- Trusted Lists (kind-30392 from kind-39999 taggings) ---------------
     # Inclusive floor on the asserter's Rank (0-100) in the Observer's own web
     # of trust. Default 3 is exactly issue #73's "rank > 2" — stated as an

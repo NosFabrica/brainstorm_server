@@ -34,7 +34,7 @@ async def _trigger_graperank(pubkey: str, reason: str) -> None:
     async with db_session() as db:
         # Every-Nth full backstop: this is a scheduled run, so consult the
         # per-observer counter. When the backstop is due, force a full relay
-        # run (the consumer resets the counter on success);
+        # and Neo4j run (the consumer resets the counter on success);
         # otherwise count this scheduled delta toward the next backstop.
         nsec_obj, _ = await get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
             db, pubkey=pubkey
@@ -51,6 +51,7 @@ async def _trigger_graperank(pubkey: str, reason: str) -> None:
             pubkey=pubkey,
             nsec_exists=True,
             force_full_relay=due,
+            force_full_neo4j=due,
             trigger_source=TriggerSource.PERIODIC.value,
         )
     logger.info(

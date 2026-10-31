@@ -72,6 +72,27 @@ and applied with `SET n += row.props` — never interpolated into the query text
 which would give every observer its own Neo4j plan-cache entry. Same rule the
 read side follows via `n[$key]`; see [`../repos/CLAUDE.md`](../repos/CLAUDE.md).
 
+Delta by default when `neo4j_full_write=False`: only the worker's
+`neo4jWritePubkeys` are written. The worker diffs against what Neo4j holds, so a
+lost write reappears as changed next run. The worker's influence dead zone
+(`INFLUENCE_DEAD_ZONE`, 0.0005) holds a value that moved less than that, so the
+stored `influence` lags the computed one by under 0.0005; every larger move is
+written. A full write (setting, the
+row's `force_full_neo4j`, or a worker sending no write set) writes every
+scorecard. Clearing the observer's properties on nodes it no longer reaches
+costs one label scan, so it runs on forced runs (`force_full_neo4j`: resync
+`target=neo4j|both`) and otherwise by time: the first run after
+`neo4j_cleanup_interval_days` since `brainstorm_nsec.last_neo4j_cleanup_at`.
+By time, not run count, because cadences range from hours to months. The
+Cypher lives in `repos/user_repo.py`.
+
+Persist floor: the worker sends `neo4jPersistFloor` (default 0.0001, its
+`INFLUENCE_PERSIST_FLOOR`) and leaves scorecards at or below it out of
+`neo4jWritePubkeys`; full writes skip them too. `neo4jClearPubkeys` lists the ones
+Neo4j still holds scores for, and the writer clears them every run (by pubkey, no
+scan). No stored score = Influence at or below the floor, or out of reach. An older
+worker sends neither field: everything is written as before.
+
 ## Adding a new consumer
 
 1. Add an `async def consume_<topic>(): while True: msg = await ...; await handle(msg)` to `message_queue_consumer.py`.
