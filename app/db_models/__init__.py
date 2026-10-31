@@ -2,6 +2,7 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -552,6 +553,32 @@ class ShortUrl(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("kind", "entity_key", name="uq_short_url_kind_entity_key"),
     )
+
+
+class PasskeyVault(TimestampMixin, Base):
+    """A passkey-locked copy of a user's key, for signing in on a new device.
+
+    One row per passkey. ``blob`` is ciphertext the server cannot open: its key
+    is derived from the passkey's PRF output, which never leaves the browser.
+    See docs/adr/0005-passkey-vault.md.
+    """
+
+    __tablename__ = "passkey_vault"
+    # sha256 of the raw credential id, hex: a fixed-width key for any id length.
+    credential_id_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # The raw id, base64url: public, and what a client lists in excludeCredentials
+    # so a new passkey can't silently replace one made on another device.
+    credential_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    pubkey: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # SPKI DER, base64url, as the browser's getPublicKey() returned it.
+    credential_public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    alg: Mapped[int] = mapped_column(Integer, nullable=False)
+    blob: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sign_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class SupportTicket(TimestampMixin, Base):

@@ -68,6 +68,7 @@ file. Briefly:
 | `a7c3e9f1b2d4_add_session_version.py` | `brainstorm_nsec.session_version` — bumped to revoke a user's session tokens |
 | `b4e8d2a6f0c1_short_url_entities.py` | `short_url` keyed by `(kind, entity_key)`; old rows → `profile`, oldest kept per pubkey |
 | `a7c2e9f1d4b3_add_force_full_neo4j.py` | `brainstorm_request.force_full_neo4j` — per-run forced Neo4j write + stale-score cleanup; `brainstorm_nsec.last_neo4j_cleanup_at` — time-based cleanup clock |
+| `d8f2a1c4e6b9_add_passkey_vault.py` | `passkey_vault` — passkey-sealed key copies, one row per credential (see `docs/adr/0005-passkey-vault.md`) |
 
 **Orphaned columns (intentional):** `brainstorm_request.force_full_vespa` and
 `brainstorm_nsec.is_observer_search_available` stay in the database but are no longer mapped or used

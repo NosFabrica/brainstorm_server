@@ -18,6 +18,9 @@ from app.schemas.schemas import (
     FollowListIngestResult,
     OwnUserData,
     PaginatedUserConnections,
+    PasskeyVaultBlob,
+    PasskeyVaultChallenge,
+    PasskeyVaultEntry,
     RefreshedSubscriptionView,
     RelayAudit,
     ShortUrlEntity,
@@ -316,3 +319,23 @@ class ResolveSupportTicketResponse(SuccessfulResponseDataSchema):
 
 class GetRelayAuditResponse(SuccessfulResponseDataSchema):
     data: RelayAudit
+
+
+class PasskeyVaultChallengeResponse(SuccessfulResponseDataSchema):
+    data: PasskeyVaultChallenge
+
+
+class PasskeyVaultEntryResponse(SuccessfulResponseDataSchema):
+    data: PasskeyVaultEntry
+
+
+class PasskeyVaultListResponse(SuccessfulResponseDataSchema):
+    data: list[PasskeyVaultEntry]
+
+
+class PasskeyVaultBlobResponse(SuccessfulResponseDataSchema):
+    data: PasskeyVaultBlob
+
+
+class PasskeyVaultDeletedResponse(SuccessfulResponseDataSchema):
+    data: None = None
