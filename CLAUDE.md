@@ -60,7 +60,7 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 | [`engineering-team/`](engineering-team/) | Book-of-work artifacts (stories, ADRs, test plans, reviews, audits), run per tapestry's engineering harness. **Strictness: Light (trial)** — gates and lanes in [`workflows/light-profile.md`](engineering-team/workflows/light-profile.md); one Standard control book first, per its trial protocol. Loose ends: `engineering-team/OPEN.md`. |
 | [`docs/`](docs/) | Working docs: the (historical) internal-Vespa search essays and ADRs (`docs/adr/`). |
 | `start.sh` | Entrypoint: `alembic upgrade head && uvicorn app.api:app`. |
-| `docker-compose.yml` | Local stack (postgres, redis, neo4j, strfry, neofry). |
+| `docker-compose.yml` | Only the server (`web`) and Postgres — not the local stack; see [Run locally](#run-locally). |
 | `env.example` | All env vars. Copy to `.env` and fill in. |
 
 ## Conventions
@@ -82,9 +82,26 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 
 ## Run locally
 
+The full local stack (Postgres, Redis, Neo4j, neofry, strfry, the GrapeRank
+worker, the UI) is
+[brainstorm_one_click_deployment](https://github.com/NosFabrica/brainstorm_one_click_deployment)'s
+compose plus its local override, which builds this server from a sibling
+`../brainstorm_server` checkout:
+
+```bash
+# in ../brainstorm_one_click_deployment
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+```
+
+This repo's own `docker-compose.yml` is not that stack: it defines only the
+server (`web`) and Postgres, and `web` depends on a `brainstorm-neo4j` service
+it doesn't define, so compose refuses it as it stands. To run the server on the
+host instead, stop the stack's `brainstorm-server` (it holds port 8000) and
+point `.env` at the stack — its Neo4j bolt is on host port 7688 (README § How
+to run the tests):
+
 ```bash
 cp env.example .env             # then fill in DB creds, neo4j password, etc.
-docker compose up -d            # postgres, redis, neo4j, strfry, neofry
 ./start.sh                      # runs alembic migrations then uvicorn
 ```
 
@@ -94,6 +111,18 @@ CI builds an image per branch of this repo; staging pins one of those tags. The
 branch/PR/pin workflow — including whether to join the current staging branch
 or start a new cycle — is documented in
 [brainstorm-k8s `docs/staging-workflow.md`](https://github.com/NosFabrica/brainstorm-k8s/blob/master/docs/staging-workflow.md).
+
+Production runs the `latest` image, which CI builds from `main`
+(`.github/workflows/build.yml`), but it picks a new `latest` up only when its
+pod restarts: a merge to `main` is not a production deploy. On 2026-10-29
+production still lacked `POST /recommend/pubkeys` (on `main` since 2026-10-16,
+mounted unconditionally) and both `sessions/revoke` routes (#106, 2026-10-23),
+while staging served every route on `main`. To see what each server runs,
+compare the live route lists at
+`https://brainstormserver-staging.nosfabrica.com/openapi.json` and
+`https://brainstormserver.nosfabrica.com/openapi.json` with `main`'s
+(`app.openapi()["paths"]`). *Observed from outside, not read from the charts —
+to be confirmed by whoever runs brainstorm-k8s.*
 
 ## Things to know (gotchas)
 
