@@ -39,6 +39,33 @@ sidecar before the server starts. Locally, run them by hand.
 - Set `server_default` on every NOT NULL column you add to an existing table. Otherwise the migration fails on rows that pre-existed.
 - Custom data backfills go inline in the migration (`op.execute("UPDATE ... ")`) — keep them idempotent so re-running doesn't double-apply.
 - Filenames are `<hash>_<slug>.py`. Don't rename them after they've shipped — the hash is the migration's identity.
+- **Two branches that each add a migration on the same parent** leave two heads, and `start.sh`'s
+  `alembic upgrade head` stops on two (`tests/test_alembic_heads.py` fails first). Join them with `alembic merge`, a
+  revision whose `down_revision` names both heads, not by re-pointing one's `down_revision` onto the other. A database
+  that has applied a revision (staging runs open branches) is at that head: re-point it onto the other, and
+  `upgrade head` there finds itself at head and never applies the revision it skipped. Re-pointing is safe only for a
+  revision no persistent database has applied.
+  - **The merge revision a persistent database applies has to be the one that lands.** A branch tried on staging
+    before it merges runs there through a branch that joins it to staging's code, with a merge revision of its own,
+    Mj. If `main` later joins those heads with another, staging's next image stops in `start.sh` with "Can't locate
+    revision identified by" Mj. So Mj's file goes in unchanged (the same revision id, the same parents) with
+    whichever of the two joined branches merges later, since only that one holds both of Mj's parents. If a third
+    branch with a migration of its own merged before it (first, or in between), that later branch also adds a
+    separate merge revision over Mj and `main`'s head. Never give Mj's id to a merge over other parents, such as
+    `alembic merge --rev-id <Mj> heads` after updating from `main`: CI and production pass, but staging, already at
+    Mj, then never applies the third branch's migration. Or, straight before the image that joins the heads starts,
+    staging is stamped to Mj's parents (`alembic stamp --purge <parent> <parent>`), and its `upgrade head` applies
+    the rest: a restart of the pod running Mj in between would apply Mj again.
+    Stamped to `main`'s merge revision instead, it would silently skip any migration of `main`'s it lacks. Without
+    `--purge` a stamp stops too: on "Can't locate revision" with an image that lacks Mj, and on a `KeyError` naming
+    Mj with the join's.
+  - **While staging is at Mj, every image it runs has to carry Mj**, until `main` carries it or staging is stamped
+    to its parents. One without it stops the same way, the joined branch's own image included. To go back to an
+    image without one of Mj's parents, downgrade first with the join's image:
+    `alembic downgrade <that parent>@<the revision both branches start from>` takes Mj off and undoes that side's
+    migrations, however many there are, in one step. Then pin that image at once: until it starts, the join's pod
+    still serves, and its queries on what the downgrade dropped fail (`/health` doesn't touch the database). A stamp
+    alone leaves what the migration made, and the next upgrade that makes it again fails.
 
 ## Migration history (oldest → newest)
 
@@ -69,6 +96,7 @@ file. Briefly:
 | `b4e8d2a6f0c1_short_url_entities.py` | `short_url` keyed by `(kind, entity_key)`; old rows → `profile`, oldest kept per pubkey |
 | `a7c2e9f1d4b3_add_force_full_neo4j.py` | `brainstorm_request.force_full_neo4j` — per-run forced Neo4j write + stale-score cleanup; `brainstorm_nsec.last_neo4j_cleanup_at` — time-based cleanup clock |
 | `d8f2a1c4e6b9_add_passkey_vault.py` | `passkey_vault` — passkey-sealed key copies, one row per credential (see `docs/adr/0005-passkey-vault.md`) |
+| `c5f1d7a9e2b4_add_treasure_map_on.py` | `brainstorm_nsec.treasure_map_on` — the Assistant's Treasure Map choice, default false |
 
 **Orphaned columns (intentional):** `brainstorm_request.force_full_vespa` and
 `brainstorm_nsec.is_observer_search_available` stay in the database but are no longer mapped or used

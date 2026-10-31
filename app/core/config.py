@@ -143,6 +143,9 @@ class Settings(BaseSettings):
     # Where TLs are published. Empty = fall back to the TA relay, so retargeting
     # to the nip85.* relays is an env change rather than a diff.
     trusted_list_relay: str = Field(default="")
+    # Where the Assistant keeps the customer's Dictionary (kind 39998/39999):
+    # the relay `/setup` designates for those kinds and the Duty Menu offers.
+    dictionary_relay: str = Field(default="wss://dcosl.brainstorm.world")
     # Published-state-drift backstop: every Nth *scheduled* run for an observer
     # forces a full re-assert on the relay.
     # <= 0 disables the backstop.

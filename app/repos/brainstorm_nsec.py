@@ -120,6 +120,17 @@ async def update_last_time_published_graperank_on_db(
     await db.execute(statement)
 
 
+async def set_treasure_map_on_by_pubkey_on_db(
+    db: AsyncDBSession, pubkey: str, on: bool
+) -> None:
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(treasure_map_on=on)
+    )
+    await db.execute(statement)
+
+
 async def update_assistant_kind0_published_at_on_db(
     db: AsyncDBSession,
     pubkey: str,

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Generic, Literal, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from fastapi_pagination import Page
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
@@ -810,3 +810,89 @@ class AdminSupportThread(BaseModel):
     events: list[AdminSupportEventItem]
     diagnostics: dict[str, str] | None
     requester: SupportRequester
+
+
+class AssistantDutyMenuOffer(BaseModel):
+    """What the caller's Assistant's Duty Menu offers now (`GET /user/assistantDutyMenu`)."""
+
+    assistant: str
+    # `[<Treasure Map key>, <relay>]`, one per duty, in `/setup`'s order.
+    rows: list[list[str]]
+
+
+class AssistantRelayResult(BaseModel):
+    """How one relay took an event the Assistant signed."""
+
+    url: str
+    ok: bool
+    message: str | None = None
+
+
+class PublishedAssistantDutyMenu(BaseModel):
+    """The menu the Assistant signed, and how each relay took it."""
+
+    # The signed kind-39999 event, as relays received it.
+    event: dict[str, Any]
+    relays: list[AssistantRelayResult]
+
+
+# Your Assistant's Treasure Map. camelCase, as Brainstorm-UI's
+# `lib/assistantTreasureMap.ts` reads it.
+
+
+class TreasureMapDutyLine(BaseModel):
+    """One part of one of the caller's Treasure Map entries naming their Assistant."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    key: str
+    status: Literal["live", "offered", "not-offered", "elsewhere"]
+    # Where the offer publishes it; None when it isn't offered here.
+    relay: str | None
+    # Why an offered part isn't live.
+    reason: str | None
+    # `upkeep-stopped`'s last publish, in seconds.
+    last_landed_at: int | None = Field(serialization_alias="lastLandedAt")
+    # `[key, relay]`, the `shouldSay` entries that list this part: empty unless it's live.
+    entries: list[list[str]]
+
+
+class AssistantTreasureMapCheck(BaseModel):
+    """What the caller's Assistant's Treasure Map should list now, and why
+    (`GET /user/assistantTreasureMap`)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    assistant: str
+    # The remembered choice: list the live duties, or none.
+    on: bool
+    duties: list[TreasureMapDutyLine]
+    # `[key, relay]`, the self-entries it should carry, whether `on` or not.
+    should_say: list[list[str]] = Field(serialization_alias="shouldSay")
+    # Where a reader looks for a version (§ 9.2): the outbox, the relays
+    # `should_say` names, then the caller's hints for the Assistant. A press
+    # never connects to the hints.
+    relays: list[str]
+    # Where the press that keeps the current choice reads the versions, and so
+    # the relays its repair reaches, each once, at public URLs: while on, Update
+    # now's (the outbox, then the relays `should_say` names); while off, Turn
+    # off's (the outbox alone). Today `should_say` names only the TA relay, which
+    # the outbox names first, so the two are the same; they differ once a duty
+    # can be live at a relay the outbox doesn't name.
+    writer_relays: list[str] = Field(serialization_alias="writerRelays")
+
+
+class PublishedAssistantTreasureMap(BaseModel):
+    """What `POST /user/assistantTreasureMap` did: the choice, and the version
+    sent, if one was, with how each relay took it."""
+
+    on: bool
+    # False when nothing would change and every relay that answered the read
+    # holds the newest version: nothing was signed or sent. True when a version
+    # was sent: a new one, or a repair, the newest one found sent unchanged to
+    # the relays that answered without it, whether or not they took it.
+    published: bool
+    # The kind-10040 event sent, as relays received it: the one signed now or,
+    # for a repair, the newest one found. None when nothing was sent.
+    event: dict[str, Any] | None
+    relays: list[AssistantRelayResult]

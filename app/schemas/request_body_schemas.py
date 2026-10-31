@@ -2,7 +2,14 @@ import json
 from typing import ClassVar
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 from pydantic.networks import validate_email
 
 from app.core.config import settings
@@ -32,6 +39,13 @@ class SubmitFollowListBody(BaseModel):
 
 class GetTrustSignalsBody(BaseModel):
     pubkeys: list[str]
+
+
+class SetAssistantTreasureMapBody(BaseModel):
+    """Turn on and Update now are `true`; Turn off is `false`. Whose Assistant
+    comes from the session, never from the request."""
+
+    on: StrictBool
 
 
 class SetGrapeRankPresetBody(BaseModel):

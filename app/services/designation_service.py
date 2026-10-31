@@ -31,6 +31,9 @@ _HEX_PUBKEY = re.compile(r"^[0-9a-f]{64}$")
 
 # In-cluster relay, one small filter: a healthy answer takes milliseconds.
 _FETCH_TIMEOUT_SECONDS = 5.0
+# websockets waits 10 s for the close handshake by default, and a stalled relay
+# never sends it; by then the answer is already read.
+_CLOSE_TIMEOUT_SECONDS = 1.0
 
 
 def parse_designated_pubkeys(tags: list[list[str]], observer: str) -> list[str]:
@@ -54,23 +57,27 @@ def parse_designated_pubkeys(tags: list[list[str]], observer: str) -> list[str]:
     return out
 
 
-async def fetch_latest_event(
-    relay: str, kind: int, author: str, timeout: float = _FETCH_TIMEOUT_SECONDS
-) -> dict | None:
-    """The latest `kind` event `relay` holds from `author`, or None. Raises on
-    transport errors and timeouts.
+async def fetch_latest(relay: str, flt: dict) -> dict | None:
+    """The newest event `relay` holds for `flt`, or None when it answers with
+    none. Raises on transport errors, timeouts and a `CLOSED`, so a relay that
+    didn't answer never reads as one holding nothing: the Assistant's Duty Menu
+    and Treasure Map read their earlier versions strictly through this.
 
     A plain REQ-until-EOSE over one websocket, like `report_relay_service`: the
     nostr_sdk `Client` returns before its socket is open, so an immediate
-    `fetch_events` silently comes back empty.
+    `fetch_events` silently comes back empty. The deadline covers opening the
+    socket and the answer, not the close, so an answer read in time is kept.
     """
-    sub_id = f"latest-{kind}-{author[:8]}"
-    req = json.dumps(
-        ["REQ", sub_id, {"kinds": [kind], "authors": [author], "limit": 1}]
-    )
+    sub_id = "latest"
+    req = json.dumps(["REQ", sub_id, flt])
     latest: dict | None = None
-    async with asyncio.timeout(timeout):
-        async with websockets.connect(relay, open_timeout=timeout) as ws:
+    deadline = asyncio.get_running_loop().time() + _FETCH_TIMEOUT_SECONDS
+    async with websockets.connect(
+        relay,
+        open_timeout=_FETCH_TIMEOUT_SECONDS,
+        close_timeout=_CLOSE_TIMEOUT_SECONDS,
+    ) as ws:
+        async with asyncio.timeout_at(deadline):
             await ws.send(req)
             while True:
                 msg = json.loads(await ws.recv())
@@ -82,18 +89,23 @@ async def fetch_latest_event(
                         "created_at", 0
                     ):
                         latest = event
-                elif msg[0] in ("EOSE", "CLOSED"):
+                elif msg[0] == "EOSE":
                     break
-            try:
-                await ws.send(json.dumps(["CLOSE", sub_id]))
-            except Exception:
-                pass
+                elif msg[0] == "CLOSED":
+                    reason = msg[2] if len(msg) > 2 else ""
+                    raise RuntimeError(f"relay closed the request: {reason}")
+        try:
+            await ws.send(json.dumps(["CLOSE", sub_id]))
+        except Exception:
+            pass
     return latest
 
 
-async def _fetch_latest_designation(relay: str, observer: str) -> dict | None:
-    """The latest kind-10040 `relay` holds for `observer`, or None."""
-    return await fetch_latest_event(relay, DESIGNATION_KIND, observer)
+async def fetch_latest_designation(relay: str, observer: str) -> dict | None:
+    """The latest kind-10040 `relay` holds for `observer` (`fetch_latest`)."""
+    return await fetch_latest(
+        relay, {"kinds": [DESIGNATION_KIND], "authors": [observer], "limit": 1}
+    )
 
 
 async def fetch_designated_pubkeys(observer: str) -> list[str]:
@@ -107,7 +119,7 @@ async def fetch_designated_pubkeys(observer: str) -> list[str]:
     """
     relay = settings.nostr_transfer_to_relay
     try:
-        event = await _fetch_latest_designation(relay, observer)
+        event = await fetch_latest_designation(relay, observer)
     except Exception as e:
         logger.warning(f"kind-10040 lookup on {relay} failed for {observer}: {e!r}")
         return []

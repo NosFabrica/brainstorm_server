@@ -150,3 +150,60 @@ def test_two_jobs_on_different_keys_do_not_lock_each_other_out():
         return scheduler, billing
 
     assert asyncio.run(_run()) == (True, True)
+
+
+def test_has_grapevine_is_whether_the_user_follows_someone(monkeypatch):
+    """The scheduler's no-follows rule, which the Treasure Map's check shares."""
+    from contextlib import asynccontextmanager
+
+    from app.cronjobs import scheduler as loop
+
+    follows = {"a": 2, "b": 0}
+
+    @asynccontextmanager
+    async def session():
+        yield None
+
+    async def count(_session, pubkey):
+        return follows[pubkey]
+
+    monkeypatch.setattr(loop.neo4j_driver, "session", session)
+    monkeypatch.setattr(loop, "count_user_follows", count)
+    assert asyncio.run(loop.has_grapevine("a")) is True
+    assert asyncio.run(loop.has_grapevine("b")) is False
+
+
+def test_a_cycle_admits_only_users_who_follow_someone(monkeypatch):
+    """`_run_cycle` skips a candidate with no grapevine, by the rule the
+    Treasure Map reads Scores' upkeep with."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.cronjobs import scheduler as loop
+
+    default = SimpleNamespace(priority=0, schedule_interval_seconds=DAY, enabled=True)
+    monkeypatch.setattr(loop.settings, "scheduler_inflight_target", 5)
+    monkeypatch.setattr(
+        loop, "count_scheduled_publishing_inflight_on_db", AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr(
+        loop, "any_interactive_in_pipeline_on_db", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        loop, "get_default_scheduling_on_db", AsyncMock(return_value=default)
+    )
+    monkeypatch.setattr(
+        loop,
+        "load_scheduler_candidates_on_db",
+        AsyncMock(return_value=[_cand(pubkey="alone"), _cand(pubkey="follows")]),
+    )
+    monkeypatch.setattr(
+        loop, "has_grapevine", AsyncMock(side_effect=lambda pubkey: pubkey == "follows")
+    )
+    monkeypatch.setattr(loop, "_admitted_counts", {})
+    enqueue = AsyncMock()
+    monkeypatch.setattr(loop, "create_brainstorm_request", enqueue)
+
+    asyncio.run(loop._run_cycle(None))
+
+    assert [c.kwargs["pubkey"] for c in enqueue.call_args_list] == ["follows"]

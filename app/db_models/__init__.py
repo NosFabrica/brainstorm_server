@@ -208,6 +208,12 @@ class BrainstormNsec(TimestampMixin, Base):
     session_version: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
     )
+    # The customer's choice for their Assistant's Treasure Map (its own kind
+    # 10040): list its live duties, or none. Off until the first Turn on; only
+    # POST /user/assistantTreasureMap writes it.
+    treasure_map_on: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
     # See SchedulingSource. Billing only overwrites when this isn't ADMIN, so a
     # comped user survives a lapse and stays distinguishable from a bug.
     scheduling_source: Mapped[str] = mapped_column(

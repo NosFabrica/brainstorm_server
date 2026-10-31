@@ -10,6 +10,8 @@ from app.schemas.graperank_schemas import (
 )
 from app.schemas.schemas import (
     AdminStats,
+    AssistantDutyMenuOffer,
+    AssistantTreasureMapCheck,
     AuthSuccessfulToken,
     BillingPlansData,
     BrainstormPubkeyInstance,
@@ -21,6 +23,8 @@ from app.schemas.schemas import (
     PasskeyVaultBlob,
     PasskeyVaultChallenge,
     PasskeyVaultEntry,
+    PublishedAssistantDutyMenu,
+    PublishedAssistantTreasureMap,
     RefreshedSubscriptionView,
     RelayAudit,
     ShortUrlEntity,
@@ -145,6 +149,22 @@ class PublishAssistantProfileData(BaseModel):
 
 class PublishAssistantProfileResponse(SuccessfulResponseDataSchema):
     data: PublishAssistantProfileData
+
+
+class GetAssistantDutyMenuResponse(SuccessfulResponseDataSchema):
+    data: AssistantDutyMenuOffer
+
+
+class PublishAssistantDutyMenuResponse(SuccessfulResponseDataSchema):
+    data: PublishedAssistantDutyMenu
+
+
+class GetAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
+    data: AssistantTreasureMapCheck
+
+
+class PublishAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
+    data: PublishedAssistantTreasureMap
 
 
 class AdminStatsResponse(SuccessfulResponseDataSchema):

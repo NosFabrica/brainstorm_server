@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from nostr_sdk import Event, Keys
 
 from app.message_queue_tasks.ta_signing import (
+    TA_METRIC_TAGS,
     UNREACHABLE_HOPS,
     TaInput,
     atag_deletion_tags,
@@ -231,3 +232,18 @@ def test_sign_publish_events_with_nothing_to_publish_yields_nothing():
     )
 
     assert events == []
+
+
+def test_ta_tags_writes_the_metric_tags_in_ta_metric_tags():
+    """`/setup`, the Duty Menu and the Treasure Map name a TA's metrics from
+    TA_METRIC_TAGS, so it has to be what `ta_tags` writes."""
+    from app.message_queue_tasks.ta_signing import ta_tags
+
+    reachable = ta_tags(TaInput("a" * 64, 50, 1, 2, 3, 4))
+    unreachable = ta_tags(TaInput("a" * 64, 50, 1, 2, 3, UNREACHABLE_HOPS))
+
+    def metrics(tags):
+        return [t[0] for t in tags if t[0] not in ("d", "client")]
+
+    assert metrics(reachable) == list(TA_METRIC_TAGS)
+    assert metrics(unreachable) == [m for m in TA_METRIC_TAGS if m != "hops"]
