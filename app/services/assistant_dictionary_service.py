@@ -17,7 +17,7 @@ A press runs in four steps, under one lock per Assistant (D6, D7):
    relay, strictly: if it doesn't answer, nothing is published (502);
 3. every concept is decided and signed, and every event checked, before any
    is sent (500);
-4. the events are sent in order, through the Duty Menu's relay I/O, to the
+4. the events are sent in order, through `assistant_publish`, to the
    dictionary relay and the Assistant's outbox, while the deadline lasts.
 
 A withdraw reads only the Assistant's headers: removing a copy doesn't need
@@ -51,6 +51,7 @@ from app.repos.brainstorm_nsec import (
 )
 from app.schemas.schemas import AssistantConceptResult, AssistantDictionaryResult
 from app.services.assistant_profile_service import assistant_relay_list
+from app.services.assistant_publish import connect_targets, relay_report, send_event
 from app.services.dictionary_copy_build import (
     B_DEFERRED,
     HEADER_KIND,
@@ -63,7 +64,6 @@ from app.services.dictionary_copy_build import (
 )
 from app.services.dictionary_relay_reader import fetch_newest_headers
 from app.services.duty_menu_build import publish_targets, relay_key
-from app.services.duty_menu_service import connect_targets, relay_report, send_event
 
 logger = loggr.get_logger(__name__)
 
@@ -290,9 +290,8 @@ async def _send(
     targets = publish_targets([settings.dictionary_relay], assistant_relay_list())
     loop = asyncio.get_running_loop()
     client = Client()
-    failures: dict[str, str] = {}
     try:
-        connected = await connect_targets(client, targets, failures)
+        connected = await connect_targets(client, targets)
         urls = [t.write_url for t in targets if relay_key(t.write_url) in connected]
         for index, event in signed:
             result = results[index]
@@ -302,7 +301,7 @@ async def _send(
                 )
                 continue
             accepted, refused = await send_event(client, event, urls)
-            report = relay_report(targets, accepted, refused, failures)
+            report = relay_report(targets, connected, accepted, refused)
             for line in report:
                 if not line.ok:
                     # Quoted: the `d` is the caller's text and the message the

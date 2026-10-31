@@ -51,7 +51,7 @@ These come from the ADR's decisions, not from any acceptance criterion:
   `asyncio.gather`, and the fake counts sends in flight.
 - [ ] **Regression sentinel S1:** `tests/test_assistant_duty_menu.py` and `tests/test_assistant_treasure_map.py` stay
   green unchanged. Their relay I/O (`connect_targets`, `send_event`, `relay_report`) is what this story imports,
-  untouched.
+  untouched. *(Since the rebase onto `main`, it lives in `assistant_publish`, and both files still pass unchanged.)*
 - [ ] **Regression sentinel S2:** the rest of the fast suite stays green: 1,494 passed on the base (`e2ca872`).
 - [ ] **Regression sentinel S3:** the AC11 fixtures are the UI's, copied verbatim. B1 and B3 catch the server side
   drifting from them. They can't see the UI: nothing here reads that repo, so a change on the UI side alone leaves them

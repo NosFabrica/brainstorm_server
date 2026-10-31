@@ -26,7 +26,10 @@ Repo facts this builds on (on #110's branch):
 
 - **Relay I/O for Assistant-signed events.** `duty_menu_service.connect_targets`, `send_event` and `relay_report`,
   with `duty_menu_build.publish_targets` / `relay_key` / `RelayTarget`, are shared by the Duty Menu and the Assistant's
-  Treasure Map. `relay_report` answers `AssistantRelayResult(url, ok, message)` per relay.
+  Treasure Map. `relay_report` answers `AssistantRelayResult(url, ok, message)` per relay. *(Since the rebase onto
+  `main`, 2026-10-31: #110's `5dc41fc` moved these three into `assistant_publish`, where `connect_targets` returns
+  the relays that connected and `relay_report` takes them. The Dictionary imports them from there; D1–D7 are
+  unchanged.)*
 - **Strict reads.** `designation_service.fetch_latest_designation` is a plain websocket REQ-until-EOSE that raises on
   a transport error, a timeout or a `CLOSED`, so a relay that didn't answer never reads as one holding nothing. Its
   docstring records why not nostr-sdk: the `Client` returns before its socket is open, so an immediate
@@ -278,8 +281,8 @@ dict]`, strict, as in D3: the newest verified kind-39998 event per (author, `d`)
 - keys through `get_or_create_brainstorm_observer_nsec_by_pubkey_on_db`;
 - the lock (D7);
 - the four steps of D6, in order;
-- publishing through `duty_menu_service.connect_targets` / `send_event` / `relay_report` and
-  `duty_menu_build.publish_targets` / `relay_key`;
+- publishing through `assistant_publish.connect_targets` / `send_event` / `relay_report` (`duty_menu_service`'s
+  when this was written) and `duty_menu_build.publish_targets` / `relay_key`;
 - the self-check (D5);
 - the 40-second send deadline (D6).
 
@@ -296,8 +299,9 @@ comment.
 
 **Docs:**
 
-- `app/services/CLAUDE.md` gets rows for the three new modules. The `duty_menu_service` row's "shared with the
-  Assistant's Treasure Map" becomes "shared with the Assistant's Treasure Map and its Dictionary".
+- `app/services/CLAUDE.md` gets rows for the three new modules. The row of the module holding the relay I/O names
+  the Dictionary as one of its users: `duty_menu_service`'s when this was written, `assistant_publish`'s since the
+  rebase, whose module docstring says so too.
 - `app/routers/CLAUDE.md` gets the two routes in its `/user` table, beside `/assistantDutyMenu`, with the same "must
   stay on this router" note.
 - `BIBLE.md` §4: the paragraph listing what the Assistant key signs on request gains the Dictionary copies, as the Duty
@@ -323,13 +327,14 @@ comment.
 - `app/services/CLAUDE.md` and `app/routers/CLAUDE.md`: rows added.
 - `BIBLE.md` §4: the list of what the Assistant key signs on request gains the Dictionary copies.
 - `app/services/self_map_build.py`: docstring only (lines 21–22), no code.
+- `app/services/assistant_publish.py` (since the rebase): docstring only, naming the Dictionary's use of it.
 
 **New:** `app/services/dictionary_copy_build.py`, `app/services/dictionary_relay_reader.py`,
 `app/services/assistant_dictionary_service.py`, and the two test files.
 
 **Imported, unchanged:**
 
-- `duty_menu_service` (`connect_targets`, `send_event`, `relay_report`);
+- `assistant_publish` (`connect_targets`, `send_event`, `relay_report`; `duty_menu_service`'s until the rebase);
 - `duty_menu_build` (`publish_targets`, `relay_key`, `RelayTarget`);
 - `assistant_profile_service.assistant_relay_list`;
 - `repos/brainstorm_nsec.get_or_create_brainstorm_observer_nsec_by_pubkey_on_db`;
