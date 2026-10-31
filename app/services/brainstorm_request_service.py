@@ -11,6 +11,7 @@ from app.repos.brainstorm_request_repo import (
     create_brainstorm_request_on_db,
     delete_brainstorm_request_by_id_on_db,
     select_brainstorm_request_by_id_on_db,
+    update_brainstorm_request_status_by_id_on_db,
 )
 from app.schemas.schemas import BrainstormRequestInstance, GrapeRankError
 from app.services.designation_service import fetch_designated_pubkeys
@@ -161,8 +162,16 @@ async def create_brainstorm_request(
     # caller's own commit, and the row must exist by then.
     await db.commit()
 
-    await enqueue_calc_request(
-        db, instance, parameters, trigger_source, designated_pubkeys
-    )
+    try:
+        await enqueue_calc_request(
+            db, instance, parameters, trigger_source, designated_pubkeys
+        )
+    except Exception:
+        # The row is committed: fail it, or it waits jobless for the stale sweep.
+        await update_brainstorm_request_status_by_id_on_db(
+            db, instance.private_id, BrainstormRequestStatus.FAILURE
+        )
+        await db.commit()
+        raise
 
     return instance
