@@ -18,8 +18,8 @@ The map of the estate's repos and deployments is
 | Service | Role |
 |---|---|
 | **PostgreSQL** | Domain DB, including the share-link records (`short_url`). Alembic migrations in `alembic/`. Schema = `app/db_models/`. |
-| **Neo4j** | Graph DB. Stores follow/mute/report relationships per `NostrUser` pubkey. |
-| **Redis** | Message queue (between strfry plugin → kind-event consumer, and between graperank workers → score uploader), reverse-set caches (`followed_by:<pubkey>`, `muted_by:<pubkey>`, `reported_by:<pubkey>`), and rate-limit counters (including the shortener's — its *records* live in PostgreSQL, see [`app/routers/shorturl/`](app/routers/shorturl/CLAUDE.md)). |
+| **Neo4j** | Graph DB. Stores follow/mute/report and kind-10040 designation (`DESIGNATES`) relationships per `NostrUser` pubkey. |
+| **Redis** | Message queue (between strfry plugin → kind-event consumer, and between graperank workers → score uploader), reverse-set caches (`followed_by:<pubkey>`, `muted_by:<pubkey>`, `reported_by:<pubkey>`), the forward `designates:<pubkey>` sets (kind-10040 designations, [ADR 0007](docs/adr/0007-designations-are-graph-edges.md)), and rate-limit counters (including the shortener's — its *records* live in PostgreSQL, see [`app/routers/shorturl/`](app/routers/shorturl/CLAUDE.md)). |
 | **Search relay** | The shared vespa-relay (`SEARCH_RELAY_URL`). Mirrors the 30382s we publish and answers `POST /search/pubkeys` (public, no capability document); our ORE-05 proxies to it, and ORE-04 `merchants` reads kind-30402 listings from it over NIP-FE. See `app/core/search_relay.py`. |
 | **strfry / neofry** | Local Nostr relays. The server publishes signed TA (Trusted Assertions) events to them and consumes incoming events. |
 | **Nostr SDK** | `nostr_sdk` Python bindings, used for parsing pubkeys (npub ↔ hex), event signing, and relay clients. |

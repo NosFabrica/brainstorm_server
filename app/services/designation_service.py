@@ -54,25 +54,23 @@ def parse_designated_pubkeys(tags: list[list[str]], observer: str) -> list[str]:
     return out
 
 
-async def _fetch_latest_designation(relay: str, observer: str) -> dict | None:
-    """The latest kind-10040 `relay` holds for `observer`, or None. Raises on
+async def fetch_latest_event(
+    relay: str, kind: int, author: str, timeout: float = _FETCH_TIMEOUT_SECONDS
+) -> dict | None:
+    """The latest `kind` event `relay` holds from `author`, or None. Raises on
     transport errors and timeouts.
 
     A plain REQ-until-EOSE over one websocket, like `report_relay_service`: the
     nostr_sdk `Client` returns before its socket is open, so an immediate
     `fetch_events` silently comes back empty.
     """
-    sub_id = f"designation-{observer[:8]}"
+    sub_id = f"latest-{kind}-{author[:8]}"
     req = json.dumps(
-        [
-            "REQ",
-            sub_id,
-            {"kinds": [DESIGNATION_KIND], "authors": [observer], "limit": 1},
-        ]
+        ["REQ", sub_id, {"kinds": [kind], "authors": [author], "limit": 1}]
     )
     latest: dict | None = None
-    async with asyncio.timeout(_FETCH_TIMEOUT_SECONDS):
-        async with websockets.connect(relay, open_timeout=_FETCH_TIMEOUT_SECONDS) as ws:
+    async with asyncio.timeout(timeout):
+        async with websockets.connect(relay, open_timeout=timeout) as ws:
             await ws.send(req)
             while True:
                 msg = json.loads(await ws.recv())
@@ -91,6 +89,11 @@ async def _fetch_latest_designation(relay: str, observer: str) -> dict | None:
             except Exception:
                 pass
     return latest
+
+
+async def _fetch_latest_designation(relay: str, observer: str) -> dict | None:
+    """The latest kind-10040 `relay` holds for `observer`, or None."""
+    return await fetch_latest_event(relay, DESIGNATION_KIND, observer)
 
 
 async def fetch_designated_pubkeys(observer: str) -> list[str]:

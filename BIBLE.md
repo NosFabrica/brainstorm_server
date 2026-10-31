@@ -51,7 +51,7 @@ The unit of work is a **Brainstorm request**: one full GrapeRank lifecycle for o
 | **nostr relays** (strfry/neofry) | The published record: signed TAs, and the incoming assertion events | **Source of truth for published scores.** The publish is the act; everything else mirrors it |
 | **PostgreSQL** | Domain state: requests and their lifecycle, encrypted assistant nsecs, presets and their history, the published-pubkeys baseline | Source of truth for the *process* (what ran, what was published, with which keys and parameters) |
 | **Neo4j** | The social graph (`FOLLOWS`/`MUTES`/`REPORTS` per pubkey) + per-observer scorecard properties | Source of truth for the *input graph* |
-| **Redis** | The lanes and result queues, plus reverse-set caches (`followed_by:` / `muted_by:` / `reported_by:`) | Transport and cache — rebuildable |
+| **Redis** | The lanes and result queues, plus reverse-set caches (`followed_by:` / `muted_by:` / `reported_by:`) and the forward designation sets (`designates:` / `zaps_via:`) | Transport and cache — rebuildable: an empty Redis is refilled from Neo4j at startup (`backfill_redis_relationships`) |
 
 One invariant follows, and code review should enforce it: **graph/Postgres writes must succeed** — they are source of truth for their domain.
 
@@ -63,7 +63,7 @@ The assistant is also given a public face: a kind-0 profile published on request
 
 ## 5. Ingestion and search
 
-**Ingestion** is the strfry-plugin path: events land on the `strfry:events` queue and dispatch by kind — 3/10000/1984 → Neo4j relationship upserts + Redis reverse-sets (user-level reports only, per NIP-56), 5 → reconcile the deleting author's report edges. Details: [`app/message_queue_tasks/CLAUDE.md`](app/message_queue_tasks/CLAUDE.md).
+**Ingestion** is the strfry-plugin path: events land on the `strfry:events` queue and dispatch by kind — 3/10000/1984 → Neo4j relationship upserts + Redis reverse-sets (user-level reports only, per NIP-56), 10040 → `DESIGNATES` edges + the forward `designates:` set every Observer's run reads (ADR 0007), 5 → reconcile the deleting author's report edges. Details: [`app/message_queue_tasks/CLAUDE.md`](app/message_queue_tasks/CLAUDE.md).
 
 **Search** is served by the shared search relay (vespa-relay at `wss://search.brainstorm.world`), which mirrors the kind-30382 assertions we publish. ORE-05 is served by the search relay (its public `POST /search/pubkeys`); ours forwards there and passes the answer through unchanged, so `rank` is the relay's Search relevance and the relay alone decides 202/422 for a pov. The essays in [`docs/`](docs/) on the old internal Vespa search are historical.
 

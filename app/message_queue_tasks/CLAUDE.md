@@ -9,7 +9,7 @@ loop forever (`while True: await blpop(...)`) so they're started with
 
 | Redis queue | Consumer (in `message_queue_consumer.py`) | Per-message handler | Side effects |
 |---|---|---|---|
-| `strfry:events` | `consume_strfry_plugin_messages()` | `process_strfry_event()` in `process_strfry_event.py` | Kind 3/10000/1984 → Neo4j relationship updates + Redis reverse-set caches. Kind 5 → recompute the author's report edges from the relay. Kind 39999 → persist tag elements / taggings to Postgres (Trusted Lists input). Other kinds (incl. 0) are ignored. |
+| `strfry:events` | `consume_strfry_plugin_messages()` | `process_strfry_event()` in `process_strfry_event.py` | Kind 3/10000/1984 → Neo4j relationship updates + Redis reverse-set caches. Kind 10040 → `DESIGNATES` edges + the forward `designates:` set. Kind 5 → recompute the author's report edges from the relay. Kind 39999 → persist tag elements / taggings to Postgres (Trusted Lists input). Other kinds (incl. 0) are ignored. |
 | `nostr_results_message_queue` | `consume_nostr_upload_messages()` | `process_nostr_upload_message()` in `upload_nostr_events.py` | Sign + publish TA events to Nostr relays. |
 | (other queues, see `message_queue_consumer.py`) | `consume_messages`, `consume_neo4j_write_messages`, `consume_job_started_messages` | … | … |
 
@@ -31,10 +31,13 @@ Dispatches incoming Nostr events by kind:
 - **Kind 3** (contacts/follows) → upsert `FOLLOWS` relationships in Neo4j + maintain `followed_by:<pubkey>` Redis reverse-sets.
 - **Kind 10000** (mute list) → same shape as kind 3 but with `MUTES` relationships and `muted_by:` sets.
 - **Kind 1984** (reports) → `REPORTS` relationships + `reported_by:` sets. **Only user-level reports count**: per NIP-56 a note/media report carries an `e` tag, a user report is `p`-only.
+- **Kind 10040** (designations) → `process_event_kind_10040`. Replaces the author's `DESIGNATES` edges (one write: drop the ones no longer listed, merge the rest) and their **forward** set `designates:<author>` (DEL + SADD in one MULTI). Forward, unlike the three above: a provider key is designated by many and designates nobody, so a reverse set would be a hub GrapeRank reads whole every run; the worker reads `designates:` for each user it reaches instead. Only public rows (`parse_designated_pubkeys`). Backfill: `scripts/backfill_designations.py`. See [ADR 0007](../../docs/adr/0007-designations-are-graph-edges.md).
 - **Kind 5** (NIP-09 deletion) → `process_event_kind_5`. Reconciles the deleting author's `REPORTS` edges + `reported_by:` membership.
 - **Kind 39999** (Decentralized-Lists item) → `process_event_kind_39999`. Tag elements and taggings share this kind and are told apart by their `z` tag (`app/services/tagging_parse.py`); anything matching neither concept is foreign traffic and is dropped. Persists to `nostr_tag_element` / `nostr_user_tagging` — the input set for Trusted Lists.
 
 The reverse-set helper is `_update_reverse_sets`. Use it for any new "X → relationships → reverse-cache" pattern.
+
+**A wiped Redis is rebuilt from Neo4j** by `backfill_redis_relationships.py`, once, at startup (when the done marker is absent, the graph is populated and no relationship keys exist): the reverse sets from `FOLLOWS` / `MUTES` / `REPORTS` keyed by target, and the forward sets `designates:` / `zaps_via:` from `DESIGNATES` / `ZAPS_VIA` keyed by source. Any new Redis copy of a Neo4j relationship the worker reads belongs in it — otherwise a wipe loses it for good (the profile resolver, for one, skips users it already settled).
 
 ## upload_nostr_events.py
 

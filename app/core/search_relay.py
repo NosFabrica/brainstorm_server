@@ -146,7 +146,9 @@ async def fetch_events(nostr_filter: dict) -> list[dict]:
         )
 
     events: list[dict] = []
-    for line in response.text.splitlines():
+    # NDJSON lines end at "\n" only: `splitlines()` also breaks on U+2028 and
+    # friends, which JSON allows unescaped inside a string (profiles carry them).
+    for line in response.text.split("\n"):
         if not line.strip():
             continue
         try:
@@ -168,3 +170,37 @@ async def fetch_events(nostr_filter: dict) -> list[dict]:
                 f"search relay refused the read: {answer[-1]!r}"
             )
     raise SearchRelayUnavailable("search relay ended the answer without EOSE")
+
+
+# The most authors one profile read names; 500 came back in ~1 s (2026-10-27).
+PROFILE_BATCH = 500
+
+
+async def fetch_profiles(pubkeys: list[str]) -> dict[str, dict]:
+    """The latest kind-0 the relay holds for each of `pubkeys` (at most
+    `PROFILE_BATCH`), by author; an author it has none for is absent.
+
+    Read unranked (`include:spam`): this is a lookup by author, not a search, and
+    without a ranking observer the relay refuses anonymous reads. No signature
+    check — we run this relay, and it verifies what it stores. Raises
+    `SearchRelayUnavailable` like `fetch_events`.
+    """
+    if not pubkeys:
+        return {}
+    events = await fetch_events(
+        {
+            "kinds": [0],
+            "authors": pubkeys,
+            "limit": len(pubkeys),
+            "search": "include:spam",
+        }
+    )
+    latest: dict[str, dict] = {}
+    for event in events:
+        author = event.get("pubkey")
+        if not isinstance(author, str) or event.get("kind") != 0:
+            continue
+        held = latest.get(author)
+        if held is None or event.get("created_at", 0) > held.get("created_at", 0):
+            latest[author] = event
+    return latest
