@@ -1,7 +1,7 @@
 """add treasure_map_on to brainstorm_nsec
 
 Revision ID: c5f1d7a9e2b4
-Revises: b4e8d2a6f0c1
+Revises: d8f2a1c4e6b9
 Create Date: 2026-10-27 00:00:00.000000
 
 The customer's choice for their Assistant's Treasure Map (its own kind 10040):
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision = 'c5f1d7a9e2b4'
-down_revision = 'b4e8d2a6f0c1'
+down_revision = 'd8f2a1c4e6b9'
 branch_labels = None
 depends_on = None
 
