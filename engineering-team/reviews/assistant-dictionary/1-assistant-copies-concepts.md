@@ -715,3 +715,9 @@ Everything else holds:
 The four new findings are non-blocking, and nothing holds the gate. I'd take Non-blocking 1 (one token) before merge.
 As before, the operator gives Gate B's verdict. This section is uncommitted, and the story's `Status` line is
 untouched.
+
+## Operator verdict (2026-10-31)
+
+**PASS**, given in the session as "PASS, rebase, open PR". By then the re-review's four non-blocking findings were
+fixed (`59aec9f`; the story's "Changes from the Gate B re-review"). The branch was then rebased onto `main` (the
+story's "The rebase onto main").

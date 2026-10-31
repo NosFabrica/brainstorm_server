@@ -1,13 +1,13 @@
 # Story 1: Your Assistant's Dictionary — the Assistant signs concept copies
 
-**Status:** Draft (Gate A approved 2026-10-27)
+**Status:** Done (Gate A approved 2026-10-27; Gate B PASS from the operator 2026-10-31)
 **Created:** 2026-10-27
 **Type:** Feature
 **Source spec:** [NosFabrica/brainstorm_server#112](https://github.com/NosFabrica/brainstorm_server/issues/112),
 from Brainstorm-UI's `docs/dictionary/ASSISTANT-COPY-ASK.md`
 ([NosFabrica/Brainstorm-UI#299](https://github.com/NosFabrica/Brainstorm-UI/pull/299))
-**Base:** branched from #110 (`feat/settings-updates`) for the Assistant's relay I/O; rebased onto `main` once #110
-merges.
+**Base:** branched from #110 (`feat/settings-updates`, at `e2ca872`) for the Assistant's relay I/O; rebased onto
+`main` at `3cf0aa5`, #110's merge, on 2026-10-31 (see "The rebase onto main").
 **Classification:** ADR (irreversibility triggers: a wire format or event shape, a cross-repo contract, request
 routing, an auth/trust default (what the Assistant signs, at whose request), and a value that exists in more than one
 repo (the copy rule's tag list)). The story runs the **Standard** phases per
@@ -112,7 +112,8 @@ Two routes on the authenticated `/user` router, beside the Duty Menu's, built fr
 - **`assistant_dictionary_service`**:
   - reads the community header and the Assistant's newest version from the dictionary relay;
   - signs with the Assistant's key;
-  - publishes through the Duty Menu's relay I/O (`connect_targets`, `send_event`, `relay_report`);
+  - publishes through the Duty Menu's relay I/O (`connect_targets`, `send_event`, `relay_report`), in
+    `assistant_publish` since the rebase;
   - handles one press at a time per Assistant.
 
 ## Gate-command deviation (approved)
@@ -205,7 +206,7 @@ No test changed during implementation. Three choices go beyond the ADR's letter,
 
 ## Gate results (the approved deviation)
 
-Last run 2026-10-28, after the Gate B re-review's fixes, in the foreground, each stage's exit code captured by
+Last run 2026-10-31, after the rebase onto `main` (`3cf0aa5`), in the foreground, each stage's exit code captured by
 brace-redirect:
 
 | Stage | Result |
@@ -213,11 +214,17 @@ brace-redirect:
 | `black --check ./app` | 0 |
 | `isort --check ./app` | 0 |
 | `flake8 ./app --max-line-length 100 --extend-ignore E203` | 0 |
-| `mypy ./app` | 0 (no issues in 195 source files) |
-| `pytest -m "not integration" ./tests` | 0: 1,615 passed (the base's 1,494 plus this story's 121), 143 deselected |
-| `pytest -m integration ./tests` (parity) | 47 failed, 96 errors: the same 143 node ids as the base `e2ca872`, compared line for line |
+| `mypy ./app` | 0 (no issues in 201 source files) |
+| `pytest -m "not integration" ./tests` | 0: 1,740 passed (`main`'s 1,619 plus this story's 121), 157 deselected |
+| `pytest -m integration ./tests` (parity) | 49 failed, 108 errors: the same 157 node ids as `main` at `3cf0aa5`, compared line for line |
 
-Earlier runs: 1,591 passed at Gate B (this story's 97), and 1,596 after the review's fixes (102).
+CI (`.github/workflows/build.yml`) runs `poe check_all` the same way, with `-m 'not integration'`.
+
+Earlier runs, on #110's branch at `e2ca872`, each with the same 143 integration node ids as that base:
+
+- 1,591 passed at Gate B (this story's 97);
+- 1,596 after the review's fixes (102);
+- 1,615 after the re-review's fixes (121).
 
 ## Changes from the Gate B review
 
@@ -263,3 +270,22 @@ the defect's own reason. The proof was run on the whole tree at that commit, wit
   - The note above on W9 is narrowed.
   - ADR D1 now says when the UI can send a bad body, and what a lone surrogate gets.
   - The line counts in `app/services/CLAUDE.md` and the gate table are current.
+
+## The rebase onto main
+
+On 2026-10-31, after Gate B's PASS, the branch was rebased from `e2ca872` (#110's tip when this story branched) onto
+`main` at `3cf0aa5`, #110's merge.
+
+- **The relay I/O moved.** #110's `5dc41fc` moved `connect_targets`, `send_event` and `relay_report` from
+  `duty_menu_service` into `assistant_publish`, with two changes:
+  - `connect_targets` returns the relays that connected and logs why the others didn't;
+  - `relay_report` takes that set, and reports an unreachable relay as `couldn't connect` rather than the transport's
+    own error, as the Duty Menu and the Treasure Map now do.
+
+  `_send` imports them from there, and no longer passes a failures dict. Nothing in D1–D7 changes, and no test
+  changed: R23 and R24 still find an unreachable relay reported `ok: false`, with a message.
+- **Three docs conflicted**, where both sides had added to the same table or paragraph: `BIBLE.md` §4,
+  `app/routers/CLAUDE.md` and `app/services/CLAUDE.md`. Each keeps `main`'s text with this story's rows and sentence
+  added, and the line counts are current. `assistant_publish.py`'s row and module docstring name the Dictionary as one
+  of its users.
+- The story's own files are byte-identical to before the rebase (`59aec9f`).
