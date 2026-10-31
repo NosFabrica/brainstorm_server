@@ -11,7 +11,7 @@ from app.core.database import execute_db_statement, handle_no_data
 from app.core.loggr import loggr
 from app.db_models import BrainstormNsec, Scheduling, SchedulingSource
 from app.repos.scheduling_repo import get_default_scheduling_on_db, get_scheduling_on_db
-from app.utils.datetimes import utc_now
+from app.utils.datetimes import as_naive_utc, utc_now
 from app.utils.encryption import decrypt_nsec, encrypt_nsec
 from app.utils.nostr import generate_random_nsec
 
@@ -354,6 +354,25 @@ async def reset_runs_since_full_on_db(db: AsyncDBSession, pubkey: str) -> None:
         update(BrainstormNsec)
         .where(BrainstormNsec.pubkey == pubkey)
         .values(runs_since_full=0)
+    )
+    await db.execute(statement)
+
+
+async def get_last_neo4j_cleanup_at_on_db(
+    db: AsyncDBSession, pubkey: str
+) -> datetime | None:
+    statement = select(BrainstormNsec.last_neo4j_cleanup_at).where(
+        BrainstormNsec.pubkey == pubkey
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return as_naive_utc(result.scalar_one_or_none())
+
+
+async def mark_neo4j_cleanup_on_db(db: AsyncDBSession, pubkey: str) -> None:
+    statement = (
+        update(BrainstormNsec)
+        .where(BrainstormNsec.pubkey == pubkey)
+        .values(last_neo4j_cleanup_at=utc_now())
     )
     await db.execute(statement)
 

@@ -2,6 +2,7 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -133,6 +134,11 @@ class BrainstormRequest(TimestampMixin, Base):
     force_full_relay: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True, server_default="false"
     )
+    # Same for the Neo4j score write: true = write every scorecard and clear the
+    # Observer's scores on nodes it no longer reaches.
+    force_full_neo4j: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, server_default="false"
+    )
 
 
 class BrainstormNostrRelayTransfer(TimestampMixin, Base):
@@ -178,6 +184,10 @@ class BrainstormNsec(TimestampMixin, Base):
     # scheduled runs only; reset to 0 after a successful full run.
     runs_since_full: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
+    )
+    # Last clear of this observer's out-of-reach Neo4j scores (NEO4J_CLEANUP_INTERVAL_DAYS).
+    last_neo4j_cleanup_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
     )
     # The scheduling policy this user is assigned to (see the Scheduling table).
     # NULL = the default policy (is_default row). Assigned by admins / a future
@@ -549,6 +559,32 @@ class ShortUrl(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("kind", "entity_key", name="uq_short_url_kind_entity_key"),
     )
+
+
+class PasskeyVault(TimestampMixin, Base):
+    """A passkey-locked copy of a user's key, for signing in on a new device.
+
+    One row per passkey. ``blob`` is ciphertext the server cannot open: its key
+    is derived from the passkey's PRF output, which never leaves the browser.
+    See docs/adr/0005-passkey-vault.md.
+    """
+
+    __tablename__ = "passkey_vault"
+    # sha256 of the raw credential id, hex: a fixed-width key for any id length.
+    credential_id_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # The raw id, base64url: public, and what a client lists in excludeCredentials
+    # so a new passkey can't silently replace one made on another device.
+    credential_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    pubkey: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # SPKI DER, base64url, as the browser's getPublicKey() returned it.
+    credential_public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    alg: Mapped[int] = mapped_column(Integer, nullable=False)
+    blob: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sign_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class SupportTicket(TimestampMixin, Base):

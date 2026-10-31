@@ -29,6 +29,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/billing` | `billing/` | none — public plans list. **Always mounted**: an empty `plans` array is the "no billing here" signal the UI hides on. A mapping naming a service Flash does not hold drops that service's plans and logs an error, so one mistyped id degrades the page rather than refusing it |
 | `/admin/billing/dev` | `admin/billing/dev.py` | billing access; mounted only when `flash_enabled` AND `deploy_environment == LOCAL` — mock Flash state (subscriptions AND plans, so the pricing page the paid rehearsal starts on has something to render) + signed synthetic webhook emitter |
 | `/shorturl` | `shorturl/` | none — POST is rate-limited 1 req/s/IP |
+| `/passkeyVault` | `passkey_vault/` | **split**: `POST /challenge` and `POST /{hash}/open` are public (rate-limited per IP; the passkey assertion is the credential); `GET`, `PUT /{hash}`, `DELETE /{hash}` are `verify_token`. See [`passkey_vault/CLAUDE.md`](passkey_vault/CLAUDE.md) |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
 | `/user/support` | `support/` | `verify_token`. **Must be included before `public_user_router`** — otherwise `/{pubkey}` answers `GET /user/support` as a profile, 200 with the wrong body (pinned in `tests/test_support.py`). `GET ''` the state, `POST /tickets` to file, `GET /tickets/{id}` the thread (404 when absent *or* not the caller's), `POST /tickets/{id}/messages` to reply (rate-limited per pubkey; reopens a closed ticket), `POST /tickets/{id}/resolve` to close. The listing answers **304** to a matching `If-None-Match` — see the conditional-GET note below |
@@ -196,7 +197,7 @@ Attribute and dismiss both answer `UnresolvedResolutionOutcome`. `applied` false
 
 ### `admin/...` — administrative endpoints
 
-- **`admin/users`** — list users (paginated). Sort: `pubkey | times_calculated | last_triggered | last_updated`. `search` supports hex or npub. History: `/{pubkey}/history`. `POST /{pubkey}/resync` forces a full relay re-assert for that one observer. `POST /{pubkey}/sessions/revoke` kills that user's session tokens (users sign out everywhere themselves via `POST /user/sessions/revoke`).
+- **`admin/users`** — list users (paginated). Sort: `pubkey | times_calculated | last_triggered | last_updated`. `search` supports hex or npub. History: `/{pubkey}/history`. `POST /{pubkey}/resync?target=relay|neo4j|both` (default `both`) forces a full re-assert of that one observer on the chosen sinks. `POST /{pubkey}/sessions/revoke` kills that user's session tokens (users sign out everywhere themselves via `POST /user/sessions/revoke`).
 - **`admin/activity`** — platform-wide request activity feed (paginated, filter by `status`, `algorithm`, `pubkey`, `days`).
 - **`admin/stats`** — `GET /` → `AdminStats{total_users, scored_users, sp_adopters, queue_depth}`.
 - **`admin/graperank`** — `PUT/GET /preset/{id}` for DEFAULT/PERMISSIVE/RESTRICTIVE; `GET /preset/{id}/history` for the audit log.

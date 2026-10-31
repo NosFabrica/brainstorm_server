@@ -4,6 +4,7 @@ from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import redis_client
 from app.repos.tagging_repo import upsert_tag_element_on_db, upsert_user_tagging_on_db
+from app.services.designation_service import DESIGNATION_KIND, parse_designated_pubkeys
 from app.services.report_graph_service import (
     diff_author_targets,
     extract_report_targets,
@@ -22,6 +23,10 @@ BATCH_SIZE = 100  # Adjust as needed
 FOLLOWED_BY_KEY_PREFIX = "followed_by:"
 MUTED_BY_KEY_PREFIX = "muted_by:"
 REPORTED_BY_KEY_PREFIX = "reported_by:"
+# Forward, not reverse: one small set per designator. A provider key is designated
+# by many and designates nobody, so a reverse set would be a hub GrapeRank reads
+# in full every run; the worker reads these for the users it reaches instead.
+DESIGNATES_KEY_PREFIX = "designates:"
 
 logger = loggr.get_logger(__name__)
 
@@ -56,6 +61,9 @@ async def process_strfry_event(session: AsyncNeoSession, event: dict):
     if kind == 5:
         # logger.info("Consuming event of kind 5")
         return await process_event_kind_5(session, event)
+
+    if kind == DESIGNATION_KIND:
+        return await process_event_kind_10040(session, event)
 
     if kind == TAGGING_KIND:
         # Tag elements and taggings are both kind 39999, told apart by `z`.
@@ -200,6 +208,46 @@ async def process_event_kind_3(session: AsyncNeoSession, event: dict):
         added_pubkeys=followed_pubkeys,
         removed_pubkeys=removed,
     )
+
+
+async def process_event_kind_10040(session: AsyncNeoSession, event: dict):
+    """A kind-10040 replaces its author's designations: `DESIGNATES` edges in
+    Neo4j and the `designates:<author>` set GrapeRank reads.
+
+    Only the public designation rows count — entries encrypted into the content
+    need the author's key. Any assertion kind counts (`30382:rank`, `30392`, …):
+    the edge says "I trust this key to publish assertions for me".
+    """
+    publisher = event["pubkey"]
+    tags = [t for t in event.get("tags") or [] if isinstance(t, list)]
+    designated = parse_designated_pubkeys(tags, publisher)
+
+    if designated:
+        cypher = """
+        MERGE (pub:NostrUser {pubkey: $publisher})
+        WITH pub
+        OPTIONAL MATCH (pub)-[r:DESIGNATES]->(old:NostrUser)
+        WHERE NOT old.pubkey IN $designated
+        DELETE r
+        WITH DISTINCT pub
+        UNWIND $designated AS dp
+            MERGE (d:NostrUser {pubkey: dp})
+            MERGE (pub)-[:DESIGNATES]->(d)
+        """
+    else:
+        cypher = """
+        MATCH (:NostrUser {pubkey: $publisher})-[r:DESIGNATES]->()
+        DELETE r
+        """
+    await _write(session, cypher, publisher=publisher, designated=designated)
+
+    # Replaced whole, atomically: a reader never sees half of the old list.
+    key = f"{DESIGNATES_KEY_PREFIX}{publisher}"
+    pipe = redis_client.pipeline(transaction=True)
+    pipe.delete(key)
+    if designated:
+        pipe.sadd(key, *designated)
+    await pipe.execute()
 
 
 async def _update_reverse_sets(

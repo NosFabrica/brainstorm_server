@@ -42,7 +42,7 @@ The unit of work is a **Brainstorm request**: one full GrapeRank lifecycle for o
 
 **Terminal states.** *Success* or *Failure*, with a parallel TA-publication status so a calculation that succeeded but never finished publishing is visible as exactly that. A non-terminal request whose worker died (deploy, crash — its lane payload popped and lost) is **Abandoned**; an admin **reaps** it terminal so it stops counting against admission. Reaping marks the row; it cannot resurrect, and a late worker write-back cannot un-reap it.
 
-**Drift repair.** Steady state is incremental. Divergence between what the relay holds and what the baseline believes is repaired by scheduled full-syncs (`FULL_SYNC_EVERY_N_RUNS`), per-run `force_full_relay` overrides on the request row, or the admin resync — full-sync **re-asserts, it never decides deletions**. The below-cutoff sweep modes are backlog drains, deliberately not a steady state.
+**Drift repair.** Steady state is incremental. Divergence between what the relay holds and what the baseline believes is repaired by scheduled full-syncs (`FULL_SYNC_EVERY_N_RUNS`), per-run `force_full_relay` / `force_full_neo4j` overrides on the request row, or the admin resync — full-sync **re-asserts, it never decides deletions** on the relay. Neo4j clears the observer's scores on nodes it no longer reaches on forced runs and, by time, every `NEO4J_CLEANUP_INTERVAL_DAYS`. The below-cutoff sweep modes are backlog drains, deliberately not a steady state.
 
 ## 3. Stores, and who holds the truth
 
@@ -51,7 +51,7 @@ The unit of work is a **Brainstorm request**: one full GrapeRank lifecycle for o
 | **nostr relays** (strfry/neofry) | The published record: signed TAs, and the incoming assertion events | **Source of truth for published scores.** The publish is the act; everything else mirrors it |
 | **PostgreSQL** | Domain state: requests and their lifecycle, encrypted assistant nsecs, presets and their history, the published-pubkeys baseline | Source of truth for the *process* (what ran, what was published, with which keys and parameters) |
 | **Neo4j** | The social graph (`FOLLOWS`/`MUTES`/`REPORTS` per pubkey) + per-observer scorecard properties | Source of truth for the *input graph* |
-| **Redis** | The lanes and result queues, plus reverse-set caches (`followed_by:` / `muted_by:` / `reported_by:`) | Transport and cache — rebuildable |
+| **Redis** | The lanes and result queues, plus reverse-set caches (`followed_by:` / `muted_by:` / `reported_by:`) and the forward designation sets (`designates:` / `zaps_via:`) | Transport and cache — rebuildable: an empty Redis is refilled from Neo4j at startup (`backfill_redis_relationships`) |
 
 One invariant follows, and code review should enforce it: **graph/Postgres writes must succeed** — they are source of truth for their domain.
 
@@ -63,7 +63,7 @@ The assistant is also given a public face: a kind-0 profile published on request
 
 ## 5. Ingestion and search
 
-**Ingestion** is the strfry-plugin path: events land on the `strfry:events` queue and dispatch by kind — 3/10000/1984 → Neo4j relationship upserts + Redis reverse-sets (user-level reports only, per NIP-56), 5 → reconcile the deleting author's report edges. Details: [`app/message_queue_tasks/CLAUDE.md`](app/message_queue_tasks/CLAUDE.md).
+**Ingestion** is the strfry-plugin path: events land on the `strfry:events` queue and dispatch by kind — 3/10000/1984 → Neo4j relationship upserts + Redis reverse-sets (user-level reports only, per NIP-56), 10040 → `DESIGNATES` edges + the forward `designates:` set every Observer's run reads (ADR 0007), 5 → reconcile the deleting author's report edges. Details: [`app/message_queue_tasks/CLAUDE.md`](app/message_queue_tasks/CLAUDE.md).
 
 **Search** is served by the shared search relay (vespa-relay at `wss://search.brainstorm.world`), which mirrors the kind-30382 assertions we publish. ORE-05 is served by the search relay (its public `POST /search/pubkeys`); ours forwards there and passes the answer through unchanged, so `rank` is the relay's Search relevance and the relay alone decides 202/422 for a pov. The essays in [`docs/`](docs/) on the old internal Vespa search are historical.
 
@@ -75,7 +75,7 @@ Route families, one line each — the OpenAPI page (`/docs`) is the contract, [`
 
 *Snapshot dated 2026-10-06 — re-date when you revise.*
 
-**Built and load-bearing:** the full request lifecycle of §2 including scheduler lanes and reaping; incremental TA publishing with local-diff deletions and the self-correcting baseline; full-sync drift repair with per-run `force_full_relay` overrides; the preset system (DEFAULT/PERMISSIVE/RESTRICTIVE/CUSTOM, DB-authoritative, with history); nsec encryption with rotation and verification; assistant kind-0 + NIP-05 + setup designation rows; `/shortestPath`; `/networkAlerts`.
+**Built and load-bearing:** the full request lifecycle of §2 including scheduler lanes and reaping; incremental TA publishing with local-diff deletions and the self-correcting baseline; full-sync drift repair with per-run `force_full_relay` / `force_full_neo4j` overrides; changed-only Neo4j score writes; the preset system (DEFAULT/PERMISSIVE/RESTRICTIVE/CUSTOM, DB-authoritative, with history); nsec encryption with rotation and verification; assistant kind-0 + NIP-05 + setup designation rows; `/shortestPath`; `/networkAlerts`.
 
 **In progress / known gaps:** token-less serving of house-POV profile data for anonymous UI visitors (coordinated with Brainstorm-UI — its anonymous profile pages 401 until this lands); the production `timestamptz` drift (CLAUDE.md § gotchas — normalize aware→naive at the listed boundaries); `ErrorResponseSchema` documented as the error convention but not used by live responses — three error shapes exist (tracked in [`engineering-team/OPEN.md`](engineering-team/OPEN.md)).
 

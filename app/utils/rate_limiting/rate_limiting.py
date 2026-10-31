@@ -119,6 +119,13 @@ rate_limit_login_verify = rate_limit_per_ip(
 rate_limit_login_new_observer = rate_limit_per_ip(
     "login_new_observer", lambda: settings.login_new_observer_rate_limit_per_hour, 3600
 )
+# The passkey vault's unauthenticated half: issuing challenges, and opening a vault.
+rate_limit_passkey_challenge = rate_limit_per_ip(
+    "passkey_challenge", lambda: settings.passkey_challenge_rate_limit_per_minute, 60
+)
+rate_limit_passkey_open = rate_limit_per_ip(
+    "passkey_open", lambda: settings.passkey_open_rate_limit_per_minute, 60
+)
 
 
 # Generous enough for the pending-checkout poll (every few seconds), tight

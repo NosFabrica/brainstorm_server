@@ -94,6 +94,8 @@ file. Briefly:
 | `c3d4e5f6a7b8_add_short_url.py` | `short_url` — share-link records moved out of Redis (see `docs/adr/0002-short-links-in-postgres.md`) |
 | `a7c3e9f1b2d4_add_session_version.py` | `brainstorm_nsec.session_version` — bumped to revoke a user's session tokens |
 | `b4e8d2a6f0c1_short_url_entities.py` | `short_url` keyed by `(kind, entity_key)`; old rows → `profile`, oldest kept per pubkey |
+| `a7c2e9f1d4b3_add_force_full_neo4j.py` | `brainstorm_request.force_full_neo4j` — per-run forced Neo4j write + stale-score cleanup; `brainstorm_nsec.last_neo4j_cleanup_at` — time-based cleanup clock |
+| `d8f2a1c4e6b9_add_passkey_vault.py` | `passkey_vault` — passkey-sealed key copies, one row per credential (see `docs/adr/0005-passkey-vault.md`) |
 | `c5f1d7a9e2b4_add_treasure_map_on.py` | `brainstorm_nsec.treasure_map_on` — the Assistant's Treasure Map choice, default false |
 
 **Orphaned columns (intentional):** `brainstorm_request.force_full_vespa` and

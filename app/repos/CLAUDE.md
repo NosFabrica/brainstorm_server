@@ -13,6 +13,7 @@ never touch SQLAlchemy `Select`s or Cypher strings directly.
 | `graperank_preset_repo.py` | PostgreSQL (`graperank_preset`, `graperank_preset_history`) | Builtin preset CRUD + audit-log helpers + camelCase ↔ snake_case converters |
 | `brainstorm_nostr_transferer.py` | PostgreSQL (`brainstorm_nostr_relay_transfer`) | Relay-sync state machine (per-kind cursor + completion) |
 | `short_url_repo.py` | PostgreSQL (`short_url`) | Share-link records: resolve by code, dedup lookup by (pubkey, relay-set fingerprint), insert |
+| `passkey_vault_repo.py` | PostgreSQL (`passkey_vault`) | Passkey vault rows: by credential hash, by owner, an owner-only `ON CONFLICT DO UPDATE` upsert (returns nothing for someone else's hash; resets the counter), a conditional mark-used that only moves the counter forward, owner-scoped delete |
 | `user_repo.py` | **Neo4j** | All Cypher queries for the social graph (follows/mutes/reports + influence-weighted counts/paginations) |
 | `billing_plan_repo.py` | PostgreSQL (`billing_plan`) | Mapping CRUD — Flash plan → scheduling policy, and whether we sell it. Listed by `id`, which is a stable order rather than a meaningful one: display order is Flash's `sortOrder`. `is_active` means *sellable*: only the plans-for-sale listing filters on it, never the entitlement lookup. There is **no** scheduling-id → plan lookup — a subscriber's tier is their policy, read straight off the assignment |
 | `support_repo.py` | PostgreSQL (`support_ticket`, `support_message`, `support_event`) | Ticket list statement builders (newest activity first), the unclosed-ticket count behind the cap and the per-pubkey advisory lock that makes it hold, plain inserts, the thread reads — messages and events ordered by **`id`**, not `created_at`, which ties when two rows land in the same millisecond — `lock_support_ticket_on_db` (the `FOR UPDATE` read every mutation opens with), and `build_admin_support_tickets_stmt` — the queue, with each filter applied only when given, so an unfiltered queue constrains nothing. `build_expired_diagnostics_stmt` / `clear_expired_support_diagnostics_on_db` clear the snapshot past its retention window — dated from filing, skipping rows already cleared. `select_user_support_digest_on_db` / `select_admin_support_digest_on_db` back the conditional GET: `max(updated_at), count(*)` over the same rows the listing would return, through the shared `_admin_support_filters` so the two can never disagree about scope. **`updated_at`, never `last_message_at`** — resolving, recategorizing and a message-less reopen change what the client renders while touching no message, and a validator keyed on message activity reports those as unchanged forever. **Unindexed on purpose (for now):** nothing indexes `updated_at`, `status` or `category`, so the admin digest is a scan. It is still strictly cheaper than the listing it guards — same rows, no sort, no limit, no serialization — which is the bar. If polling ever shows up in slow queries, `(pubkey, updated_at desc)` and `(updated_at desc)` are the indexes to reach for; pick them off a real plan rather than a guess. No ticket-field writes beyond insert — the service's private helpers own those |
@@ -81,7 +82,7 @@ in `brainstorm_nsec.py` are the only safe entry points.
 - `create_brainstorm_request_on_db(db, algorithm, parameters, pubkey, graperank_preset_used, graperank_params) → BrainstormRequest`
 - `select_latest_brainstorm_request_on_db(db, pubkey) → BrainstormRequest | None` (+ `non_waiting`, `successful` variants)
 - Status mutators: `update_brainstorm_request_status_by_id_on_db`, `…_ta_status_by_id_on_db`, `…_internal_publication_status_by_id_on_db`, `update_brainstorm_request_result_by_id_on_db`
-- `fail_stale_ongoing_brainstorm_requests_on_db(db, stale_threshold) → int` (rowcount; used by the cronjob in `app/cronjobs/`)
+- `fail_stale_in_pipeline_brainstorm_requests_on_db(db, stale_threshold) → list[int]` (reaped run ids; calc or TA publish non-terminal past the cutoff; used by the cronjob in `app/cronjobs/`). `update_brainstorm_request_result_by_id_on_db` only writes over a non-terminal calc status, so a reaped run can't be resurrected.
 - `compute_admin_stats_on_db(db) → dict` (queue_depth, scored_users, sp_adopters — single round-trip)
 
 ### `brainstorm_nsec.py`
@@ -108,7 +109,7 @@ in `brainstorm_nsec.py` are the only safe entry points.
 
 ### `user_repo.py` (Neo4j)
 
-27 async functions, raw Cypher. Patterned around three relations (`FOLLOWS`,
+30 async functions, raw Cypher. Patterned around three relations (`FOLLOWS`,
 `MUTES`, `REPORTS`) × two directions (in/out). For each (rel, direction) there
 are `get_list_of_pubkeys_*` and `count_*` helpers. Plus the bigger composite
 queries:
@@ -117,6 +118,7 @@ queries:
 - `get_outbound_counts_and_influence(session, pubkey, influence_key, *, verified_line, reporter_cutoff) → OutboundOverview(influence, following, muting, reporting, flagged_by_observer, flagged_count, verified, tier)` — single round-trip vs four sequential. `verified`/`tier` are the subject's *own* verdict, off the same `_TIER_PREDICATES` table the section rows use.
 - `get_paginated_section_connections(session, pubkey, influence_key, rel_type, direction, limit, cursor_inf, cursor_pk, …)` → `(items, next_cursor, total)` — cursor = `(influence, pubkey)`; ordered influence DESC, pubkey ASC. **Drives `/user/{pubkey}/connections`**. `verified_cutoff` is that section's preset cutoff — every row reports whether it clears it (`verified`) and which bucket it lands in (`tier`), and `verified_only` narrows the page to the verified rows. `verified_line` is the tier fallthrough boundary. There is no client-supplied `min_influence`.
 - `get_all_section_stats(...)` — one query covering all 6 sections; ~20 % faster than firing them in parallel.
+- `set_observer_scores(session, rows)` / `clear_observer_scores(session, pubkeys, keys)` / `get_pubkeys_scored_by_observer(session, keys)` — the GrapeRank result writer's side (`write_neo4j_results.py`). The two writes run in a managed transaction (retried on transient errors); the read is a `:NostrUser` label scan, so the writer runs it only for cleanup.
 - `get_user_graph_data(session, pubkey, influence_key, *, reporter_cutoff)` — unpaginated full graph; row `trusted_reporters` is the live `_live_reporters` count.
 - `get_network_alert_candidates(...)` / `count_above_cutoff_followers_capped(...)` / `count_verified_muters(...)` — the three bounded steps behind **`/networkAlerts`** (orchestrated by `network_alerts_service`). Things to preserve if you touch them:
   - Candidates are anchored *through* the `REPORTS` edge, never a `:NostrUser` label scan. No index can substitute — the influence properties are per-observer, so indexing them would mean one index per observer.
@@ -147,20 +149,20 @@ from `_tier_band_params()` — the `TIER_*` constants, bound the same way by eve
 expander. No endpoint takes band overrides: a client that could move a band could
 make `/connections?tier=…` return rows `/stats` counted in a different bucket.
 Verified is strict `>` the
-verified line, so `_VERIFIED_LINE` / `_UNVERIFIED_LINE` are exact complements
-among subjects that have an influence at all (`_NO_INFLUENCE` is the third
-case); let them drift and a subject sitting exactly on the line lands in no
+verified line, so `_VERIFIED_LINE` / `_UNVERIFIED_LINE` are exact complements;
+`_UNVERIFIED_LINE` includes "no stored influence" (out of reach, or at or below
+the worker's persist floor), so a reported near-zero account is still flagged.
+Let them drift and a subject sitting exactly on the line lands in no
 bucket. `get_outbound_counts_and_influence` and
-`get_paginated_flagged_connections` share the same `<= $verified_line` reading
-of "flagged", which is why `/overview`'s `flagged_count` matches
-`/connections?kind=flagged`.
+`get_paginated_flagged_connections` share the same reading of "flagged", which
+is why `/overview`'s `flagged_count` matches `/connections?kind=flagged`.
 
 Dynamic property access uses `user[$influence_key]` parameterization so
 `influence_<observer>` columns don't get string-interpolated into Cypher.
 Don't write the property name into the query string — a per-observer name in the
 query text gives every observer its own Neo4j plan-cache entry. The write side
 follows the same rule from the other direction: `write_neo4j_results.py` builds
-the `{name: value}` map in Python and does `SET n += row.props`.
+the `{name: value}` map in Python and `set_observer_scores` does `SET n += row.props`.
 
 ## Common tasks
 

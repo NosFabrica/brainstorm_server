@@ -2,7 +2,14 @@ import json
 from typing import ClassVar
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 from pydantic.networks import validate_email
 
 from app.core.config import settings
@@ -192,3 +199,48 @@ class CreateSupportTicketBody(BaseModel):
                 f"diagnostics exceed {settings.support_diagnostics_max_bytes} bytes"
             )
         return v
+
+
+_B64URL = r"^[A-Za-z0-9_-]+$"
+
+
+class PutPasskeyVaultBody(BaseModel):
+    """A passkey-locked key copy. Only its owner, holding a Session, writes one."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    credential_id: str = Field(alias="credentialId", max_length=1024, pattern=_B64URL)
+    # SPKI DER of the credential's public key, base64url — getPublicKey().
+    public_key: str = Field(alias="publicKey", max_length=2048, pattern=_B64URL)
+    alg: int
+    blob: str
+    label: str | None = Field(default=None, max_length=64)
+
+    # A sealed 32-byte key is ~250 bytes; this bounds the row, not the format.
+    MAX_BLOB_BYTES: ClassVar[int] = 4096
+
+    @field_validator("blob")
+    @classmethod
+    def _blob_fits(cls, blob: str) -> str:
+        if len(blob.encode()) > cls.MAX_BLOB_BYTES:
+            raise ValueError(f"blob exceeds {cls.MAX_BLOB_BYTES} bytes")
+        return blob
+
+
+class PasskeyAssertion(BaseModel):
+    """A WebAuthn get() response, every buffer base64url."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    credential_id: str = Field(alias="credentialId", max_length=1024, pattern=_B64URL)
+    client_data_json: str = Field(
+        alias="clientDataJSON", max_length=4096, pattern=_B64URL
+    )
+    authenticator_data: str = Field(
+        alias="authenticatorData", max_length=4096, pattern=_B64URL
+    )
+    signature: str = Field(max_length=2048, pattern=_B64URL)
+
+
+class OpenPasskeyVaultBody(BaseModel):
+    assertion: PasskeyAssertion

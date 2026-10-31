@@ -1,5 +1,6 @@
 from typing import Any, NamedTuple
 
+from neo4j import AsyncManagedTransaction
 from neo4j import AsyncSession as AsyncNeoSession
 from neo4j import Query
 from neo4j.exceptions import ClientError
@@ -358,9 +359,9 @@ async def get_outbound_counts_and_influence(
     the follower cutoff (`verified_line`) — the general trusted bar, since the
     subject isn't rating anyone here.
 
-    "Flagged" is *not verified* (influence `<= verified_line`, the complement of
-    the strict `>` used everywhere else) AND reported by 2+ accounts above
-    `reporter_cutoff`, counted live."""
+    "Flagged" is *not verified* (no stored influence, or `<= verified_line`: the
+    complement of the strict `>` used everywhere else) AND reported by 2+ accounts
+    above `reporter_cutoff`, counted live."""
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
     CALL (user) {{
@@ -448,13 +449,11 @@ def _verified(param: str) -> str:
     return f"__INF__ IS NOT NULL AND __INF__ > ${param}"
 
 
-# Among subjects with an influence, these two are exact complements; a subject
-# with no influence property at all is neither. The tier buckets partition a
-# section across the three, so any drift leaves subjects sitting exactly on the
-# line in no bucket at all.
+# Exact complements: no stored influence (out of reach, or at or below the
+# worker's persist floor) counts as not verified. Let them drift and a subject
+# sitting exactly on the line lands in no bucket.
 _VERIFIED_LINE = _verified("verified_line")
-_UNVERIFIED_LINE = "__INF__ IS NOT NULL AND __INF__ <= $verified_line"
-_NO_INFLUENCE = "__INF__ IS NULL"
+_UNVERIFIED_LINE = "(__INF__ IS NULL OR __INF__ <= $verified_line)"
 
 _TIER_PREDICATES: dict[str, str] = {
     # Bucket names match the GR result writer's count_values keys (see
@@ -478,7 +477,7 @@ _TIER_PREDICATES: dict[str, str] = {
         f"{_VERIFIED_LINE} AND __INF__ >= $tier_medium AND __INF__ < $tier_medium_high"
     ),
     "medium_low": f"{_VERIFIED_LINE} AND __INF__ < $tier_medium",
-    "low": f"({_NO_INFLUENCE} OR ({_UNVERIFIED_LINE} AND __TR__ < 2))",
+    "low": f"{_UNVERIFIED_LINE} AND __TR__ < 2",
     FLAGGED_TIER: f"{_UNVERIFIED_LINE} AND __TR__ >= 2",
 }
 
@@ -740,10 +739,10 @@ async def get_paginated_flagged_connections(
     with_total: bool = False,
 ) -> tuple[list[UserConnectionItem], tuple[float, str] | None, int | None]:
     """DISTINCT flagged users across any relationship to `pubkey`. A user is
-    flagged when (from `pubkey`'s perspective) they are not verified — influence
-    at or below `verified_line`, the complement of the strict `>` used
-    everywhere else — AND at least 2 reporters above `reporter_cutoff` report
-    them, counted live.
+    flagged when (from `pubkey`'s perspective) they are not verified — no stored
+    influence, or at or below `verified_line`, the complement of the strict `>`
+    used everywhere else — AND at least 2 reporters above `reporter_cutoff`
+    report them, counted live.
     Cursor-paginated by (influence <order>, pubkey ASC). Same shape as
     get_paginated_section_connections so the client can reuse one item type.
     One pass yields both the page and the DISTINCT flagged total; `with_total`
@@ -1332,3 +1331,54 @@ async def count_verified_muters(
     return {
         record["pubkey"]: int(record["verified_muters"] or 0) async for record in result
     }
+
+
+async def set_observer_scores(session: AsyncNeoSession, rows: list[dict]) -> None:
+    """`rows`: `{pubkey, props}`, props keyed `<field>_<observer>` (built by the caller).
+    Managed transaction: retried on transient errors (ingest can deadlock on the same nodes).
+    """
+
+    async def work(tx: AsyncManagedTransaction) -> None:
+        result = await tx.run(
+            """
+            UNWIND $rows AS row
+            MATCH (n:NostrUser {pubkey: row.pubkey})
+            SET n += row.props
+            """,
+            rows=rows,
+        )
+        await result.consume()
+
+    await session.execute_write(work)
+
+
+async def get_pubkeys_scored_by_observer(
+    session: AsyncNeoSession, keys: list[str]
+) -> list[str]:
+    """Every node holding any of the observer's score properties. A label scan."""
+    result = await session.run(
+        "MATCH (n:NostrUser) WHERE any(k IN $keys WHERE n[k] IS NOT NULL) "
+        "RETURN n.pubkey AS pubkey",
+        keys=keys,
+    )
+    return [r["pubkey"] async for r in result]
+
+
+async def clear_observer_scores(
+    session: AsyncNeoSession, pubkeys: list[str], keys: list[str]
+) -> None:
+    """Remove the observer's score properties; the nodes and edges stay."""
+
+    async def work(tx: AsyncManagedTransaction) -> None:
+        result = await tx.run(
+            """
+            UNWIND $pubkeys AS pubkey
+            MATCH (n:NostrUser {pubkey: pubkey})
+            SET n += $nulls
+            """,
+            pubkeys=pubkeys,
+            nulls=dict.fromkeys(keys),
+        )
+        await result.consume()
+
+    await session.execute_write(work)

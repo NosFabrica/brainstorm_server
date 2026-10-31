@@ -83,6 +83,15 @@ GrapeRank is expensive per observer, so:
 Note: the default observer alone covers anonymous/default search; this is for
 refreshing ALL personalized perspectives at once.
 
+### `backfill_designations.py`
+
+Replays every kind-10040 neofry holds through the live ingest handler
+(`process_event_kind_10040`), building `DESIGNATES` edges + `designates:` sets for
+designations published before that handler shipped. Reads a `strfry scan` NDJSON
+(`--scan -` for stdin; the docstring has the docker/kubectl lines), keeps each
+author's newest. Dry-run by default (author + designation counts); `--apply`
+writes, serially. Idempotent — each author's set is replaced whole.
+
 ### `clean_trusted_reporters_props.py`
 
 Strips leftover `trusted_reporters_<observer>` props from `NostrUser` nodes (the

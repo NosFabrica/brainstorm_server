@@ -161,6 +161,24 @@ UNIQUE `(kind, entity_key)` is what makes minting idempotent: a concurrent
 double-mint loses the race in the database rather than creating a second code
 for the same entity.
 
+### `PasskeyVault` — `passkey_vault`
+
+A passkey-locked copy of a user's key, so a synced passkey can sign them in on a
+new device. One row per passkey. The server cannot open `blob`; why it holds one
+at all: [ADR 0005](../../docs/adr/0005-passkey-vault.md).
+
+| Column | Type | Notes |
+|---|---|---|
+| `credential_id_hash` | str(64) PK | sha256 of the raw credential id, hex: a fixed-width key whatever the id's length |
+| `credential_id` | str(1024) | the raw id, base64url. Public; listed back to the owner so a new passkey can exclude it (an authenticator otherwise overwrites one with the same user handle) |
+| `pubkey` | str(64), indexed | the owner. Every write and delete is scoped to it |
+| `credential_public_key` | text | SPKI DER, base64url, from the browser's `getPublicKey()` |
+| `alg` | int | COSE alg: -7 ES256, -8 EdDSA, -257 RS256 |
+| `blob` | text | the client's sealed record (≤4KB), checked for owner + credential, never decrypted |
+| `label` | str(64), nullable | the passkey's provider as the client named it ("iCloud Keychain") |
+| `sign_count` | bigint | the authenticator's counter; synced passkeys stay 0. Reset when the public key changes |
+| `last_used_at` | DateTime, nullable | last successful open, stamped with the database's `now()` like `created_at` (one clock) |
+
 ### `SupportTicket` — `support_ticket`
 
 A user's support ticket. `status` / `category` / `last_message_author` are open sets stored as `String`, no CHECK — `SupportTicketStatus` / `SupportAuthor` name the known values. `last_message_at` is **stored**: it is the `ORDER BY` of both ticket lists (`ix_support_ticket_pubkey_last_message_at`, `ix_support_ticket_last_message_at`, both DESC). Naive `DateTime`, like `scheduling`. **Personal data**: `notify_email` (optional) and the user-written `subject`; `diagnostics` is a flat `{label: value}` snapshot capped at the schema layer.
