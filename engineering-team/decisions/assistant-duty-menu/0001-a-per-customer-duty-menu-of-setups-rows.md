@@ -5,6 +5,7 @@
 Gate A was held. It's for David to accept and for the Gate B reviewer to ratify, together with this ADR's
 classification. Revised 2026-10-28 for the PR 110 audit: D4's premise (what the UI copies from `/setup`), D5's read
 (now strict) and D6's check; and 2026-10-29, for its second round: D6's date (what a republish replaces).
+PR 110 merged on 2026-10-31 (`3cf0aa5`), with this ADR still Proposed.
 **Date:** 2026-10-27
 **Story:** [`stories/assistant-duty-menu/1-duty-menu.md`](../../stories/assistant-duty-menu/1-duty-menu.md), written
 after the build (2026-10-28)

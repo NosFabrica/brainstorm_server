@@ -1,7 +1,8 @@
 # Story 1: The Assistant's Duty Menu
 
 **Status:** Built on [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110), at
-`c04f607`, after the audit's third round; waiting for Gate B
+`c04f607`, after the audit's third round, and merged to `main` on 2026-10-31 (`3cf0aa5`); Gate B is
+still owed
 **Created:** 2026-10-28, after the build
 **Type:** Feature
 **Source spec:** [NosFabrica/brainstorm_server#108](https://github.com/NosFabrica/brainstorm_server/issues/108). The
