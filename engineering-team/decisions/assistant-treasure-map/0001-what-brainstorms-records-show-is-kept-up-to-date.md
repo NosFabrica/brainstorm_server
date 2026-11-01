@@ -18,7 +18,8 @@ to production. Revised for the review of that round: D4 and the Debt (an Update 
 outside the outbox leaves a miss there unmended too; a refused removal), D6 and the Debt (wording), and Out of scope
 (`describeDesignation` describes a self-Map as what its author publishes; it never skipped one). Revised for the
 review of those fixes: D4 (the relays a press reads), D7 (UI production too) and the Debt (what an Update now reads,
-what a fix would read, and why nothing hits it under today's settings).
+what a fix would read, and why nothing hits it under today's settings). PR 110 merged on 2026-10-31 (`3cf0aa5`),
+with this ADR still Proposed. Revised after the merge: the Debt (a press that lists a Concept).
 **Date:** 2026-10-27
 **Story:** [`stories/assistant-treasure-map/1-treasure-map.md`](../../stories/assistant-treasure-map/1-treasure-map.md),
 written after the build (2026-10-28)
@@ -411,7 +412,10 @@ the relay keeps serving the withdrawn self-entries meanwhile, and the UI offers 
   takes a kind 10040, say: the Dictionary relay refuses one, and its EOSE would count as an answer to the strict
   read, W2), not only the outbox and the relays of what it lists, and `writerRelays` with it. Even once both are
   live, nothing hits this under today's settings: the Trusted Lists relay is always in the outbox, and the
-  Dictionary relay, where the offer's Concept rows point, holds no kind 10040 to go stale.
+  Dictionary relay, where the offer's Concept rows point, holds no kind 10040 to go stale. A press that lists a
+  Concept would read the Dictionary relay anyway, since a press reads every relay its self-entries name: its EOSE
+  would count as an answer there too, and with nothing to change, each such press would send it the version again
+  and answer `published: true` with its refusal.
 - **Owed under the Light profile:**
   - this ADR's acceptance;
   - Gate B's ratification of its classification;

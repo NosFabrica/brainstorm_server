@@ -1,7 +1,8 @@
 # Story 1: Your Assistant's Treasure Map
 
 **Status:** Built on [NosFabrica/brainstorm_server#110](https://github.com/NosFabrica/brainstorm_server/pull/110), at
-`2577814`, after the audit's reviews of `065619b` and `886fa3e`; waiting for Gate B
+`2577814`, after the audit's reviews of `065619b` and `886fa3e`, and merged to `main` on 2026-10-31
+(`3cf0aa5`); Gate B is still owed
 **Created:** 2026-10-28, after the build
 **Type:** Feature
 **Source spec:** the UI's ask, Brainstorm-UI `docs/assistant/TREASURE-MAP-ASK.md`, corrected by
@@ -208,7 +209,10 @@ Checked items have a handle. The rest are not covered, each with a reason.
       `alembic downgrade c5f1d7a9e2b4@b4e8d2a6f0c1`, with the image staging ran before the join pinned straight
       after. A local alembic run showed each outcome, in all six merge orders.
       `tests/test_alembic_heads.py::test_the_migrations_have_one_head` fails until then: copying PR 113's migration
-      in made it fail.
+      in made it fail. At the merge (2026-10-31), PR 113's migration was already on `main` (`89b3940`), with PR 111's
+      on top of it, so `9097e2e` re-pointed `c5f1d7a9e2b4` onto PR 111's `d8f2a1c4e6b9`, since no persistent
+      database had applied it. No merge revision was needed: `main`'s migrations are one line, `b4e8d2a6f0c1`,
+      `a7c2e9f1d4b3`, `d8f2a1c4e6b9`, `c5f1d7a9e2b4`.
 - [x] **The 500 when the signed event fails its own check** (D4).
       `test_a_version_that_fails_its_own_check_is_never_sent` builds a version one self-entry short: the answer is a
       500, with nothing sent or saved. `tests/test_assistant_publish.py` checks each of `sign_checked`'s three checks
