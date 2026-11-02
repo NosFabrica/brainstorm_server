@@ -79,6 +79,15 @@ async def process_neo4j_write_message(message: dict):
     grape_rank_result: GrapeRankResult = message["result"]
     scorecards = grape_rank_result.get("scorecards")
     if not scorecards:
+        # A failed calc closes this stage in its own consumer.
+        if is_success:
+            async with db_session() as db:
+                await update_brainstorm_request_internal_publication_status_by_id_on_db(
+                    db,
+                    brainstorm_request_id=run_id,
+                    status=BrainstormRequestStatus.SUCCESS,
+                )
+                await db.commit()
         return
 
     observer = next(iter(scorecards.values()))["observer"]

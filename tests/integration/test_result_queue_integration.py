@@ -94,8 +94,10 @@ async def test_handler_exception_still_acks_and_releases(client, prefix):
     q = f"{prefix}:q"
     key, _ = await _publish(client, prefix, [q])
 
-    await handle_one(client, q, await _take(client, q), *_fns(Recorder(raises=True)))
+    rec = Recorder(raises=True)
+    await handle_one(client, q, await _take(client, q), *_fns(rec))
 
+    assert rec.lost and "boom" in rec.lost[0]
     assert await client.exists(key) == 0
     assert await client.llen(processing_list(q)) == 0
 
