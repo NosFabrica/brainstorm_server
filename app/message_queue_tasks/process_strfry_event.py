@@ -27,6 +27,14 @@ REPORTED_BY_KEY_PREFIX = "reported_by:"
 # by many and designates nobody, so a reverse set would be a hub GrapeRank reads
 # in full every run; the worker reads these for the users it reaches instead.
 DESIGNATES_KEY_PREFIX = "designates:"
+VOUCHED_BY_KEY_PREFIX = "vouched_by:"
+
+# A vouch list is a NIP-51 follow set (kind 30003) whose `d` tag is "vouches":
+# the author's deliberate endorsements, as opposed to the ambient attention of
+# their kind-3 follows. Any other d-value is an ordinary follow set and carries
+# no assertion — it is ignored.
+VOUCH_LIST_KIND = 30003
+VOUCH_LIST_D_TAG = "vouches"
 
 logger = loggr.get_logger(__name__)
 
@@ -64,6 +72,9 @@ async def process_strfry_event(session: AsyncNeoSession, event: dict):
 
     if kind == DESIGNATION_KIND:
         return await process_event_kind_10040(session, event)
+
+    if kind == VOUCH_LIST_KIND:
+        return await process_event_kind_30003(session, event)
 
     if kind == TAGGING_KIND:
         # Tag elements and taggings are both kind 39999, told apart by `z`.
@@ -206,6 +217,72 @@ async def process_event_kind_3(session: AsyncNeoSession, event: dict):
         FOLLOWED_BY_KEY_PREFIX,
         publisher,
         added_pubkeys=followed_pubkeys,
+        removed_pubkeys=removed,
+    )
+
+
+async def process_event_kind_30003(session: AsyncNeoSession, event: dict):
+    """A vouch list replaces its author's vouches: `VOUCHES` edges in Neo4j and
+    the `vouched_by:<pubkey>` reverse sets GrapeRank reads.
+
+    Same replaceable-list semantics as kind 3 — the newest event is the whole
+    list. NIP-09 deletion is not reconciled (same as follows; only reports are,
+    because their semantics demand it): a deleted vouch list's edges persist
+    until the author publishes a replacement or empties the list.
+    """
+    tags = event.get("tags") or []
+    d_tag = next(
+        (t[1] for t in tags if isinstance(t, list) and len(t) > 1 and t[0] == "d"),
+        None,
+    )
+    if d_tag != VOUCH_LIST_D_TAG:
+        return
+
+    publisher = event["pubkey"]
+    vouched_pubkeys = p_tag_pubkeys(tags)
+
+    if not vouched_pubkeys:
+        cypher = """
+        OPTIONAL MATCH (pub:NostrUser {pubkey: $publisher})-[r:VOUCHES]->(oldF)
+        WITH collect(oldF.pubkey) AS removed, collect(r) AS rels
+        FOREACH (rel IN rels | DELETE rel)
+        RETURN removed
+        """
+        record = await _write(session, cypher, publisher=publisher)
+        removed = record["removed"] if record else []
+        await _update_reverse_sets(
+            VOUCHED_BY_KEY_PREFIX, publisher, removed_pubkeys=removed
+        )
+        return
+
+    upsert_cypher = """
+    MERGE (pub:NostrUser {pubkey: $publisher})
+
+    WITH pub
+    UNWIND $vouched_pubkeys AS fp
+        MERGE (f:NostrUser {pubkey: fp})
+        MERGE (pub)-[:VOUCHES]->(f)
+    """
+    await _write(
+        session, upsert_cypher, publisher=publisher, vouched_pubkeys=vouched_pubkeys
+    )
+
+    cleanup_cypher = """
+    MATCH (pub:NostrUser {pubkey: $publisher})-[r:VOUCHES]->(oldF)
+    WHERE NOT oldF.pubkey IN $vouched_pubkeys
+    WITH collect(oldF.pubkey) AS removed, collect(r) AS rels
+    FOREACH (rel IN rels | DELETE rel)
+    RETURN removed
+    """
+    record = await _write(
+        session, cleanup_cypher, publisher=publisher, vouched_pubkeys=vouched_pubkeys
+    )
+    removed = record["removed"] if record else []
+
+    await _update_reverse_sets(
+        VOUCHED_BY_KEY_PREFIX,
+        publisher,
+        added_pubkeys=vouched_pubkeys,
         removed_pubkeys=removed,
     )
 

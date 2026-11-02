@@ -45,6 +45,8 @@ def _params(follower_cutoff: float) -> dict:
         "verifiedFollowersInfluenceCutoff": follower_cutoff,
         "verifiedReportersInfluenceCutoff": 0.1,
         "verifiedMutersInfluenceCutoff": 0.01,
+        "vouchRating": 1.0,
+        "vouchConfidence": 0.4,
     }
 
 

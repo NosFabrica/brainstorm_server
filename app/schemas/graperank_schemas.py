@@ -33,3 +33,9 @@ class GrapeRankPresetParams(BaseModel):
     verifiedFollowersInfluenceCutoff: float = Field(ge=0.0, le=1.0)
     verifiedReportersInfluenceCutoff: float = Field(ge=0.0, le=1.0)
     verifiedMutersInfluenceCutoff: float = Field(ge=0.0, le=1.0)
+    # Defaults exist for one legacy reader: per-user CUSTOM params stored as
+    # JSONB before vouches existed. Everywhere else supplies the full shape —
+    # model_dump() always writes the defaults out, so the Java worker's
+    # required-fields contract is unaffected.
+    vouchRating: float = Field(ge=-1.0, le=1.0, default=1.0)
+    vouchConfidence: float = Field(ge=0.0, le=1.0, default=0.4)
