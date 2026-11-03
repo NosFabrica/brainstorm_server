@@ -324,13 +324,26 @@ newest tagging, so the client's switch from ids to coordinates
 - **Retraction** scans the signer's live 30393 and 30394 lists as it does 30392
   (0001 D7, D11). It reads `source-tag`, `tagging-target` and the title off the
   live event instead of parsing the `d`: slugs and DList `d`s both contain `-`,
-  so the `d` can't be split reliably.
+  so the `d` can't be split reliably. A live slot missing any of those tags,
+  or carrying one it can't read, is left in place and logged: it is never
+  retracted under a guessed identity, and the run goes on.
+- **A failed read of the live slots retracts nothing,** as 0001's code does
+  today (`trusted_list_service`, the slot scan's `except`). The scan covers
+  all three kinds, so a failure stops retraction for all three; publishing
+  goes ahead.
 - **0001's empty-view safeguards apply unchanged** (D11). An untrustworthy
   empty view never reaches retraction.
 - **A failed target lookup is an untrustworthy view too.** If the lookup relays
   can't be reached, every content target is unresolved and every content list
   would look empty. In that case the run publishes no 30393 or 30394 lists and
   retracts none. It reports why, and the 30392 lists still build.
+  - **"Can't be reached" means any configured lookup relay**
+    (`trusted_list_target_relays`) failing to answer, not all of them. The
+    search relay holds nearly every tagged event (99 of 101 ids), so with it
+    down and only a tagging's hint relay answering, most targets would come
+    back unresolved and their lists would be republished emptied (below)
+    without tripping this guard. Hint relays are best effort: one failing
+    leaves the view trusted.
 - **A list whose members all drop out is republished empty, without the
   retracted marker,** as 0001 does. This diverges from Tapestry's 30394, which
   publishes nothing. An empty list is still a maintained claim, and leaving the

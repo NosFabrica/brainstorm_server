@@ -109,6 +109,8 @@ test plan.
 - [ ] **AC8: a failed lookup retracts nothing.** If the lookup relays can't be
       reached, the run publishes no 30393 or 30394 lists and retracts none. It
       says why in the run result. The 30392 lists still build and publish.
+      Any configured lookup relay failing counts; a tagging's hint relay
+      failing does not (ADR 0002 D8).
 - [ ] **AC9: pairs dictionary.** For a given Observer, the content dictionary
       holds exactly those (Tag, tagging target) pairs with at least
       `trusted_list_min_tag_uses` non-neutral taggings by asserters who qualify
@@ -157,7 +159,9 @@ test plan.
       carrying `["status","retracted"]`. Its identity tags are read off the
       live event, not parsed from its `d`. A pair whose publish failed this run
       keeps its slot (story 1's AC14), and an untrustworthy empty view retracts
-      nothing (ADR 0001 D11).
+      nothing (ADR 0001 D11). A live slot missing its identity tags is left in
+      place and logged, and a failed read of the live slots retracts nothing
+      of any kind (ADR 0002 D8).
 - [ ] **AC16: emptied list republished.** A pair still in the dictionary whose
       members all fall out is republished with no members and **no** retracted
       marker.
