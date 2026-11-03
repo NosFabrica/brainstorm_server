@@ -352,15 +352,24 @@ assistant only on `30392` unpacks people lists and never content lists.
   with the same assistant key and relay as the `"30392"` row. The server then
   advertises exactly what it publishes. Everything that reads the list sees
   the change:
-  - **`/setup`** gains the two rows.
+  - **`/setup`** gains the two rows, straight after `"30392"` and before the
+    Dictionary rows (`"39998"`, `"39999"`), so the three Trusted List rows sit
+    together. `tests/test_setup_designation.py`'s check that the Dictionary
+    rows come right after `"30392"` becomes "right after `"30394"`".
   - **The Duty Menu offers two more duties.** A customer's menu is signed only
     when they ask (`duty_menu_service`), and the UI shows a menu that differs
     from the offer as out of date. So every customer's existing menu will show
     as out of date until they republish it. That's accurate: the assistant now
     offers more.
-  - **The Treasure Map check** treats Trusted Lists as never live
-    (`self_map_service`: "Trusted Lists are `not-scheduled`"), so the new rows
-    add no self-entries. Nothing changes there.
+  - **The Treasure Map check** (`self_map_build.evaluate_self_map`, served by
+    the check endpoint as `duties` and `should_say`) changes in one place.
+    Trusted Lists are never live (`evaluate_live` answers `not-scheduled` for
+    every kind 30390–30399), so the new rows add nothing to `should_say`: no
+    self-entries. But `duty_lines` gives one line per offered row a reader's
+    key wins, so a reader whose 10040 carries `/setup`'s rows gets two more
+    duty lines, `30393` and `30394`, both `not-scheduled`, exactly like
+    `30392`'s. No code changes there; the module docstring's list of offered
+    keys gains the two.
   - **Brainstorm-UI:** `services/trustLists.ts` `designationFor` takes its
     Trusted List key and relay from the `"30392"` row only, so it's
     unaffected. `lib/treasureMap.ts` `offeredDuties` turns every `/setup` row
@@ -516,12 +525,24 @@ and the timing.
   response, and updates its description, which still says 30392 only.
 - `app/schemas/trusted_list_schemas.py`: those fields.
 - `app/services/duty_menu_build.py`: the `"30393"` and `"30394"` rows in
-  `designation_rows` (D9). `app/routers/setup/router.py` only calls it.
+  `designation_rows`, after `"30392"` (D9). `app/routers/setup/router.py` and
+  `duty_menu_service` only call it.
+- `app/services/self_map_build.py`: the module docstring's list of offered
+  keys only (D9). Its logic already treats every 3039x kind as a Trusted List.
 - `app/core/config.py` and `env.example`: `tagging_honored_namespaces` and
   `trusted_list_target_relays`.
 - `scripts/backfill_event_taggings.py` (new): the D10 replay.
 - `BIBLE.md` §5: how taggings reach this server (D10).
-- Tests beside 0001's, plus the setup endpoint's (`tests/test_setup_designation.py`).
+- `scripts/test_admin_trusted_lists.py`: the admin endpoint's smoke script.
+  Its `--verify-relay` read goes from kind 30392 to 30392–30394, and `--seed`
+  gains an event tagging beside its pubkey tagging, so it exercises what the
+  endpoint now builds.
+- Tests beside 0001's, plus the three that pin the offered rows' exact order:
+  `tests/test_setup_designation.py` (Dictionary rows now follow `"30394"`),
+  `tests/test_assistant_duty_menu.py` (`EXPECTED_KEYS` gains `"30393"`,
+  `"30394"`), and `tests/test_assistant_treasure_map.py` (the duty-line keys
+  built from `designation_rows`, at its U14 test and the check endpoint's,
+  gain the two `not-scheduled` lines).
 
 **Brainstorm-UI consumers of this server's output** (not changed by this
 story): the admin run-result card (Brainstorm-UI#335), My Assistants'

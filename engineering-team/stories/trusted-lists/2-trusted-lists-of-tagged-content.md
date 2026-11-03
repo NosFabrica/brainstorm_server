@@ -147,8 +147,11 @@ test plan.
       `kind` and `tagging_target`. The run result carries `unresolved_targets`
       and `unnamed_kinds`.
 - [ ] **AC14b: setup advertises the new kinds.** `GET /setup/{pubkey}` returns
-      bare `"30393"` and `"30394"` rows beside `"30392"`, with the same
-      assistant key and relay (ADR 0002 D9). The existing rows are unchanged.
+      bare `"30393"` and `"30394"` rows straight after `"30392"` and before
+      the Dictionary rows, with the same assistant key and relay (ADR 0002 D9).
+      The existing rows are unchanged. The Duty Menu offer carries the same two
+      rows, and the Treasure Map check of a Map built from `/setup`'s rows
+      gives them `not-scheduled` duty lines and no self-entries.
 - [ ] **AC15: retraction across kinds.** A 30393 or 30394 slot this signer
       published whose pair has left the dictionary is replaced by an empty list
       carrying `["status","retracted"]`. Its identity tags are read off the
