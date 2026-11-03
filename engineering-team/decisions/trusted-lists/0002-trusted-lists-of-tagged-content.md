@@ -532,7 +532,10 @@ and the timing.
 - `app/core/config.py` and `env.example`: `tagging_honored_namespaces` and
   `trusted_list_target_relays`.
 - `scripts/backfill_event_taggings.py` (new): the D10 replay.
-- `BIBLE.md` §5: how taggings reach this server (D10).
+- `BIBLE.md` §5: how taggings reach this server (D10). `BIBLE.md` §3's
+  account of the setup endpoint's rows and `app/routers/CLAUDE.md`'s
+  `setup/router.py` entry both list the rows exactly, and gain `30393` and
+  `30394` (D9).
 - `scripts/test_admin_trusted_lists.py`: the admin endpoint's smoke script.
   Its `--verify-relay` read goes from kind 30392 to 30392–30394, and `--seed`
   gains an event tagging beside its pubkey tagging, so it exercises what the
