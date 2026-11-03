@@ -111,6 +111,13 @@ _Avoid_: route, chain
 An account on a Path other than its two ends.
 _Avoid_: intermediary, hop (a hop is a step, not an account), middleman
 
+**Tagging target**:
+The kind of thing a Tag was applied to: people, one event kind (notes, articles, listings), or the items
+of one DList (books, GitHub Accounts), where an item's DList is the header its own `z` names. One Trusted
+List is built per Observer, Tag and tagging target used. See ADR trusted-lists/0002. Not the Observee: a
+tagging target is a kind of thing, never one user being scored.
+_Avoid_: category, content category (the Loom roadmap and Tapestry's spawning draft use these), target (unqualified)
+
 ### Entitlement and support
 
 **Policy**:
