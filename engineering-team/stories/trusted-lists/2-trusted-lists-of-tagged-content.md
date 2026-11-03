@@ -7,7 +7,10 @@
 **Design:** ADR [`trusted-lists/0002`](../../decisions/trusted-lists/0002-trusted-lists-of-tagged-content.md), extending ADR [`trusted-lists/0001`](../../decisions/trusted-lists/0001-trusted-lists-from-taggings.md)
 **Loom:** E9.2 (build Trusted Lists of tagged content); P-143 (start Tags in search now, and its acceptance test)
 **Classification:** ADR (irreversibility triggers: wire format / event shape,
-schema + migration, cross-repo contract). The story runs the **Standard**
+schema + migration, cross-repo contract, auth/trust default (the honored
+namespaces, ADR 0002 D6), a value held in more than one repo (the namespaces,
+the tagging-target rule and kind names, kept in step with Brainstorm-UI)). The
+story runs the **Standard**
 phases per [`workflows/light-profile.md`](../../workflows/light-profile.md)
 §"Gate A".
 
@@ -20,7 +23,7 @@ podcasters.
 
 People also tag notes, articles, listings and DList items (books, GitHub
 Accounts) with the same Tags. This server receives those taggings (kind 39999
-already syncs, ADR 0001 D10) and drops them at parse. So a book tagged
+reaches it through neofry, BIBLE §5) and drops them at parse. So a book tagged
 "espresso" never comes back for "espresso books" unless its own text says
 espresso.
 
@@ -87,6 +90,10 @@ test plan.
 - [ ] **AC6: tagging target resolution.** Per ADR 0002 D2:
       - an `a` coordinate of kind 39999 resolves to the DList its item's own
         `z` names (a `39998` coordinate or a `9998` id);
+      - an `e` id of a kind-9999 item resolves to its DList the same way, and
+        the member is the id (a 30393);
+      - a 39999 or 9999 item with no header `z` resolves to its kind, named
+        "List items";
       - an `a` coordinate of any other kind resolves to that kind, with no
         lookup;
       - an `e` id whose event is not addressable resolves to its kind, and the
@@ -96,7 +103,7 @@ test plan.
       - an item claiming two DLists is a member of both lists.
       Answers are cached across runs.
 - [ ] **AC7: unresolved targets are skipped, counted and retried.** A target
-      that no lookup relay returns, or an item with no DList `z`, joins no list.
+      that no lookup relay returns joins no list.
       It's counted in the run result's `unresolved_targets` and looked up again
       next run.
 - [ ] **AC8: a failed lookup retracts nothing.** If the lookup relays can't be
@@ -129,15 +136,19 @@ test plan.
 - [ ] **AC12: title.** The title is `<Tag name> <tagging target name>`. A
       DList's name is the plural in its header's `names` tag, else the
       singular, else the header's `d`. An event kind's name comes from the
-      fixed table (1 Notes, 20 Pictures, 30023 Articles, 30402 Listings, 39998
-      Lists). A pair whose kind has no name gets no list and appears in the
-      run result's `unnamed_kinds`.
+      fixed table, matching Brainstorm-UI's per-kind labels (1 Notes, 20
+      Photos, 30023 Articles, 30402 Listings, 39998 Open lists, 39999 and 9999
+      List items). A pair whose kind has no name gets no
+      list and appears in the run result's `unnamed_kinds`.
 - [ ] **AC13: signing and relay.** Lists are signed by the Observer's assistant
       nsec and published to the same relay as their 30392 lists.
 - [ ] **AC14: one run, three kinds.** `POST /admin/trustedLists/{observer}`
       builds 30392, 30393 and 30394 in one run. Each per-list result carries
       `kind` and `tagging_target`. The run result carries `unresolved_targets`
       and `unnamed_kinds`.
+- [ ] **AC14b: setup advertises the new kinds.** `GET /setup/{pubkey}` returns
+      bare `"30393"` and `"30394"` rows beside `"30392"`, with the same
+      assistant key and relay (ADR 0002 D9). The existing rows are unchanged.
 - [ ] **AC15: retraction across kinds.** A 30393 or 30394 slot this signer
       published whose pair has left the dictionary is replaced by an empty list
       carrying `["status","retracted"]`. Its identity tags are read off the
@@ -149,8 +160,14 @@ test plan.
       marker.
 - [ ] **AC17: people lists unchanged.** For the same input, the 30392 events a
       run produces are identical to story 1's output.
-- [ ] **AC18: live acceptance (after deploy, not CI).** Through the house's
-      perspective on `wss://search.brainstorm.world`:
+- [ ] **AC17b: replay script.** `scripts/backfill_event_taggings.py --scan -`
+      reads `strfry scan` output (one event per line) and runs each kind-39999
+      event through `process_event_kind_39999`. Without `--apply` it writes
+      nothing and prints counts (headers, event taggings, tag elements, pubkey
+      taggings, ignored). With `--apply` it writes, and a second run changes
+      nothing (ADR 0002 D10).
+- [ ] **AC18: live acceptance (after deploy and the replay, not CI).** Through
+      the house's perspective on `wss://search.brainstorm.world`:
       - "verified human" with kinds `[0, 39999, 30392, 30394]` returns the
         profiles and the GitHub Accounts items carrying the tag;
       - "stoicism" with kinds `[1, 30393]` returns notes tagged stoicism;
@@ -187,6 +204,11 @@ test plan.
 - **Tagging addressable events by coordinate in the client:**
   NosFabrica/Brainstorm-UI#334, a prerequisite for listings tagged after this
   ships.
+- **The admin "View list"** for 30393 and 30394 results in Brainstorm-UI:
+  NosFabrica/Brainstorm-UI#335.
+- **Running the replay in production:** the cluster operators (Jeremy, Enes,
+  and possibly Vitor) confirm the command and timing. This story ships the
+  script and the runbook (ADR 0002 D10, BIBLE §5).
 - **A schedule** (Loom E9.3). This story keeps the admin action.
 - **The spawning draft's kinds and keys**, including 30396 (Loom E9.5).
 - **Moving pubkey taggings onto the same header-and-`z` shape** as event

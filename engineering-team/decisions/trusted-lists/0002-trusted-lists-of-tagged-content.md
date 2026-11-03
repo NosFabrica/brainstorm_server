@@ -139,20 +139,36 @@ Building only used pairs bounds the count by real tagging activity.
 
 | What the tagging names | Tagging target | Member |
 |---|---|---|
-| `a` = `39999:<pk>:<d>` (a DList item) | the item's DList: the header in the item's own `z` (`39998:…` or `9998` id) | `a` coordinate |
+| `a` = `39999:<pk>:<d>` (an addressable DList item) | the item's DList: the header in the item's own `z` | `a` coordinate |
+| `e` = the id of a kind-9999 DList item (the regular, non-replaceable item kind) | the item's DList, the same way | `e` id |
+| a DList item (39999 or 9999) with no header `z` | its kind (D4 names both "List items") | as above |
 | `a` = `<k>:<pk>:<d>`, any other addressable kind | kind `k` | `a` coordinate |
-| `e` = an id whose event is addressable (legacy, #334) | as the two rows above | **its coordinate**, as `a` |
+| `e` = an id whose event is addressable (legacy, #334) | as the rows above | **its coordinate**, as `a` |
 | `e` = an id whose event is not addressable | its kind `k` | `e` id |
 
+- **39999 and 9999 items are treated the same,** except that one is replaceable
+  and so is named by coordinate, and the other by id. A DList holding both
+  kinds of item gets two lists for the same Tag: a 30394 and a 30393.
+- **A header `z`** is `39998:<pk>:<d>` for an addressable header, or the header's
+  event id for a kind-9998 header (DList Header Declaration). The DList is
+  identified the same way in `tagging-target` (D5).
 - **A coordinate carries its kind**, so listings and articles need no lookup.
 - **A DList item's list and an id's kind need the event itself.** They are
   resolved at build time by fetching the target by id or coordinate (D6), and
   cached.
 - **An item that claims two DLists** (two header `z` tags) is a member of both
   lists.
-- **This rule must match the client's.** Brainstorm-UI's `feat/search-tag-filters`
-  branch groups results the same way (`lib/tagTabGroups.ts`, `groupOf`), so the
-  lists and the client's chips agree on what a target is.
+- **This rule follows the client's grouping rule,** Brainstorm-UI
+  `feat/search-tag-filters` `lib/tagTabGroups.ts` `groupOf`: items of either
+  kind group by their header, and anything else, including a headerless item,
+  groups by its kind. Two known differences:
+  - **An item with two headers** joins both lists here, while `groupOf` files
+    it under its first header only (`.find`, and `dlistFields.ts`: "its first
+    `z`"). This difference is intended: a book on two DLists should answer a
+    search naming either one. The client's chips still show it once.
+  - **A 9998 header named by event id:** `groupOf` recognizes a 9998 header
+    only in a `9998:<pk>:` coordinate form, though its own `headerReference`
+    uses the id. That's a client fix, out of scope here.
 
 ### D3 — Kinds and members: 30393 for events by id, 30394 for coordinates
 
@@ -179,7 +195,12 @@ title = "<tag element name> <tagging target name>"     e.g. "espresso Books", "s
   (`["names", "GitHub Account", "GitHub Accounts"]` → "GitHub Accounts"),
   falling back to the singular, then to the header's `d`.
 - **An event kind's name** comes from a fixed table in `trusted_list_build`:
-  1 → Notes, 20 → Pictures, 30023 → Articles, 30402 → Listings, 39998 → Lists.
+  1 → Notes, 20 → Photos, 30023 → Articles, 30402 → Listings, 39998 → Open
+  lists, and 39999 and 9999 → List items (for an item with no header `z`).
+  These are Brainstorm-UI's per-kind labels (`lib/kindFamily.ts`), pluralized
+  as its `pluralLabel` does, so a list's title and the client's chip say the
+  same thing. The client can also replace a kind's label with an app's own noun
+  (`kindLabel`'s `sourceAppFor`); the server uses the per-kind label only.
   A kind with no entry gets no list, and the run reports it (D8), so a missing
   name is seen, not guessed.
 - **One form of the name is enough.** The probe shows singular and plural match
@@ -227,9 +248,10 @@ content         {"members":[{"id"|"address", "endorsements", "disputes", "score"
 
 ### D6 — Ingest event taggings and tagging headers; resolve targets at build time
 
-Kind-39999 events already arrive (0001 D10's `tagging_ev_kinds`) and are
-dropped by `parse_user_tagging`'s `z` check. Two new parsers in `tagging_parse`,
-dispatched from `process_event_kind_39999`:
+Kind-39999 events already reach `process_event_kind_39999`, and the ones that
+aren't tag elements or pubkey taggings are dropped by `parse_user_tagging`'s
+`z` check. In production they arrive through neofry (see D10 for the path).
+Two new parsers in `tagging_parse`, dispatched from the same function:
 
 - **Tagging header:** a `z` to `39998:<ns>:tagging-with-specific-tag` for an
   honored `<ns>`, plus an `a` to its Tag element (`39999:<author>:<slug>`; `e`
@@ -239,11 +261,28 @@ dispatched from `process_event_kind_39999`:
   target in `a` or `e`. Replaceable on (asserter, `d`), latest-wins on
   `created_at`, as 0001 D2.
 
-**Honored namespaces** become a setting defaulting to both values the client
-writes (`82b75e47…` and `a68dbf56…`, Brainstorm-UI
-`config/tagging.config.json`). On today's data, 11 event taggings carry only
-the second. People taggings keep 0001's legacy-only check: none on the hub
-carry the second namespace alone.
+**Honored namespaces.** Which concept namespaces count is a trust default: it
+decides whose `nostr-event-tag` and `tagging-with-specific-tag` lists this
+server accepts. Options considered:
+
+- **A (chosen) — a setting, `tagging_honored_namespaces`, defaulting to the two
+  values the client writes** (`82b75e47…`, the legacy canonical namespace, and
+  `a68dbf56…`, Brainstorm-UI `config/tagging.config.json`). A tagging counts if
+  it joins any honored namespace.
+- **B — legacy only, as 0001 does for people taggings.** **Rejected:** 11 of
+  today's 128 event taggings carry only `a68dbf56…`, so they would be dropped
+  silently.
+- **C — any namespace.** **Rejected:** a namespace is just a pubkey, so anyone
+  could seed one and have its taggings counted. The event-taggings spec makes
+  the honored set a reader's choice ("Reading: which taggings count is
+  reader-determined") precisely so a reader doesn't do this.
+- **D — read the client's config at runtime.** **Rejected:** it couples this
+  server's trust default to another repo's deployment.
+
+The value now lives in two repos (here and Brainstorm-UI's config), so a
+change to the client's namespaces needs the setting changed too. People
+taggings keep 0001's legacy-only check: none on the hub carry the second
+namespace alone, and changing it is out of scope.
 
 A tagging whose header or Tag element hasn't arrived is kept and dropped at
 read time, as 0001 does with a missing element.
@@ -271,7 +310,8 @@ a qualifying asserter), same qualifying asserters (0001 D3), same predicate
 string key; the key becomes an event id or coordinate instead of a pubkey. An
 addressable target tagged by id and by coordinate counts once, under its
 coordinate (D2). An asserter who tagged it both ways holds one stance, their
-newest tagging (decided at Gate A, 2026-11-03).
+newest tagging, so the client's switch from ids to coordinates
+(Brainstorm-UI#334) never counts anyone twice.
 
 ### D8 — One run builds all three kinds; retraction covers all three
 
@@ -295,6 +335,101 @@ newest tagging (decided at Gate A, 2026-11-03).
   publishes nothing. An empty list is still a maintained claim, and leaving the
   old members live would keep claiming them.
 
+### D9 — The setup endpoint advertises 30393 and 30394 rows
+
+`GET /setup/{pubkey}` (`app/routers/setup/router.py`) returns the rows an
+Observer's kind-10040 should carry. Today it has one bare Trusted List row,
+`"30392"`. The search relay's signer gate is per kind (Context), so a 10040
+that names the assistant only on `30392` unpacks people lists and never content
+lists.
+
+**Options considered:**
+
+- **A (chosen) — add bare `"30393"` and `"30394"` rows** with the same assistant
+  key and relay as the `"30392"` row. The server then advertises exactly what it
+  publishes. Two Brainstorm-UI readers see the change:
+  - `services/trustLists.ts` `designationFor` takes its Trusted List key and
+    relay from the `"30392"` row only, so it is unaffected.
+  - `lib/treasureMap.ts` `offeredDuties` turns **every** `/setup` row into a duty
+    the assistant offers, shown in My Assistants (`hooks/useMyAssistants.ts`).
+    The two new rows appear there as two new offered duties. That's intended:
+    the assistant really does publish those kinds.
+- **B — leave `/setup` alone, because Brainstorm-UI already writes all three rows
+  from the `"30392"` one** (`lib/nip85Declaration.ts`, `LIST_KINDS`).
+  **Rejected:** that is a client convention, not something this server says. A
+  client that copies `/setup`'s rows into a 10040 verbatim would name 30392
+  only, and its content lists would silently never unpack.
+
+Bare rows, not `30393:<name>`, for the reason the router's own comment gives
+for `"30392"`: Tapestry's reader treats a named 3039x row as a reserved
+override and ignores it.
+
+### D10 — Replay the taggings already received, once, after deploy
+
+**How taggings reach this server in production** (brainstorm-k8s
+`charts/brainstorm/prod-values.yaml`, `neofry` section; staging is the same):
+
+1. **Clients publish taggings to the tag hub,** `wss://dcosl.brainstorm.world`
+   (Brainstorm-UI `config/tagging.config.json` `tagRelays`). The Tapestry
+   instances, `tags.brainstorm.world` among them, sync through it.
+2. **neofry's router has a `dcosl` stream** pulling kind 39999 down from that
+   hub, live, into neofry's store.
+3. **neofry forwards kind 39999** (it's in `redisKinds`) onto the
+   `strfry:events` queue this server consumes, which dispatches it to
+   `process_event_kind_39999`.
+4. **The back-catalogue was filled once** by a manual `strfry sync` from the hub,
+   recorded in the same values file.
+
+The transferer's `tagging_ev_kinds` (0001 D10) is a separate one-time backfill.
+It stops for good once marked complete, and the recurring transferer covers
+`ev_kinds` only.
+
+**So every note and item tagging received before this ships was dropped at
+parse,** and nothing will deliver it again. The acceptance test's data (the
+"verified human" GitHub Accounts taggings) is in that set.
+
+**Options considered:**
+
+- **A (chosen) — a one-off replay script, `scripts/backfill_event_taggings.py`.**
+  It reads kind-39999 events from `strfry scan` on stdin, runs each through
+  `process_event_kind_39999`, and is dry-run by default (`--apply` to write).
+  This is the pattern `scripts/backfill_designations.py` set for kind 10040
+  (on `upstream/claude/serene-cerf-oskqw2`):
+
+  ```
+  kubectl -n <ns> exec brainstorm-neofry-0 -c neofry -- \
+      /app/strfry scan '{"kinds":[39999]}' \
+    | kubectl -n <ns> exec -i deploy/brainstorm-server -- \
+      poetry run python -m scripts.backfill_event_taggings --scan - [--apply]
+  ```
+
+  Upserts are latest-wins (D6), so a rerun is safe, and so is a tagging that
+  arrives live during the replay. Run it after the release with the new
+  parsers is serving, so nothing lands between the replay and live ingest.
+- **B — reset the transferer's 39999 row so its backfill re-runs.**
+  **Rejected:** it re-sends events to a relay that already holds them. neofry
+  forwards an event to the queue when it stores it, so events it already holds
+  are not forwarded again. The same values file records this for kind 10040:
+  "10040s already in LMDB before that restart never reach redis".
+- **C — re-sync from the hub** (another `strfry sync`). **Rejected** for the same
+  reason: a sync only fetches what neofry is missing.
+
+**Sources.** The tag hub and `tags.brainstorm.world` held the same
+tagging-related events on 2026-11-03 (1,368 each, one different on each side).
+The search relay held 8 more, published to other relays. It serves an
+anonymous read that carries `"search": "include:spam"`, but neofry's router
+can't send one: strfry's filter parser rejects any key it doesn't know
+(`src/filters.h`, "unrecognised filter item"), `search` included. So the search
+relay can't be a router stream without a strfry change or NIP-42 sign-in. A
+one-off read can reach it, though. The replay can take a second input, a
+`nak req -k 39999 --search include:spam` dump from the search relay, through the
+same script, since upserts are latest-wins and duplicates are harmless.
+Adding live sources is an ops question, not part of this story.
+
+**Owners to confirm before running:** the replay runs in production pods, so
+the cluster operators (Jeremy, Enes, and possibly Vitor) confirm the command
+and the timing.
+
 ## Consequences
 
 **Enables**
@@ -314,17 +449,25 @@ newest tagging (decided at Gate A, 2026-11-03).
   E9.3 (the schedule) inherits that cost.
 - Two new wire shapes (30393 and 30394 from this server) are now a contract
   with the search relay and the client.
-- The tagging-target rule (D2) and the title rule (D4) must stay in step with
-  the client's grouping rule (`groupOf`).
+- The tagging-target rule (D2) and the kind names (D4) must stay in step with
+  the client's `groupOf` and per-kind labels, apart from the differences D2 and
+  D4 record.
 - A list unpacks only for readers whose 10040 names the assistant on the 30393
-  and 30394 rows. A 10040 published before the client added those rows unpacks
-  people only, silently.
+  and 30394 rows. A 10040 published before those rows existed (in the client's
+  Activate flow, and in `/setup` per D9) unpacks people only, silently, until
+  it is republished.
+- The honored namespaces (D6) are a value held in two repos.
 
 **Out of scope**
 
 - The client: widening its one search request to 30392–30394 plus the kinds
   they unpack, reading `e`/`a` members, and showing items beside profiles (Loom
   E9.4, Brainstorm-UI). Its tagging fix is Brainstorm-UI#334.
+- The admin "View list" in Brainstorm-UI's run-result card, which reads only
+  kind 30392 (`components/admin/trusted-lists/listMembers.ts`). It needs to
+  read each result's `kind`: Brainstorm-UI#335. Until then, "View list" on a
+  30393 or 30394 result finds nothing.
+- `groupOf`'s 9998-header-by-id gap (D2).
 - A schedule (Loom E9.3).
 - The spawning draft's kinds and keys (Loom E9.5).
 
@@ -342,15 +485,34 @@ newest tagging (decided at Gate A, 2026-11-03).
 
 ## Blast radius
 
-**Touched (expected):** `app/services/tagging_parse.py` (two parsers);
-`app/message_queue_tasks/process_strfry_event.py` (the 39999 dispatch);
-`app/db_models/__init__.py` plus one Alembic revision (event taggings, tagging
-headers, the target cache); `app/repos/tagging_repo.py` (or a sibling for event
-taggings); `app/services/trusted_list_build.py` (D3–D5 builders, the kind-name
-table); `app/services/trusted_list_service.py` (three kinds, retraction across
-kinds); a new target-resolution service (D6);
-`app/schemas/trusted_list_schemas.py`; `app/core/config.py` and `env.example`
-(honored namespaces, target relays); tests beside 0001's.
+**Touched (expected):**
+
+- `app/services/tagging_parse.py`: two parsers (D6).
+- `app/message_queue_tasks/process_strfry_event.py`: the 39999 dispatch.
+- `app/db_models/__init__.py` plus one Alembic revision: event taggings,
+  tagging headers and the target cache.
+- `app/repos/event_tagging_repo.py` (new): those three tables. `tagging_repo.py`
+  keeps tag elements and pubkey taggings.
+- `app/services/tagging_target_service.py` (new): target lookup and caching
+  (D2, D6).
+- `app/services/trusted_list_build.py`: the D3–D5 builders and the kind-name
+  table.
+- `app/services/trusted_list_service.py`: three kinds, retraction across kinds,
+  and the failed-lookup guard (D8).
+- `app/routers/admin/trusted_lists/router.py`: copies the new result fields
+  (`kind`, `tagging_target`, `unresolved_targets`, `unnamed_kinds`) into the
+  response, and updates its description, which still says 30392 only.
+- `app/schemas/trusted_list_schemas.py`: those fields.
+- `app/routers/setup/router.py`: the `"30393"` and `"30394"` rows (D9).
+- `app/core/config.py` and `env.example`: `tagging_honored_namespaces` and
+  `trusted_list_target_relays`.
+- `scripts/backfill_event_taggings.py` (new): the D10 replay.
+- `BIBLE.md` §5: how taggings reach this server (D10).
+- Tests beside 0001's, plus the setup endpoint's (`tests/test_setup_designation.py`).
+
+**Brainstorm-UI consumers of this server's output** (not changed by this
+story): the admin run-result card (Brainstorm-UI#335), My Assistants'
+offered duties (D9), and search (Loom E9.4).
 
 **Not touched:** Vespa and the search router; the kind-30382 publish path;
 `ev_kinds` (kind 39999 already syncs through `tagging_ev_kinds`); the 30392
