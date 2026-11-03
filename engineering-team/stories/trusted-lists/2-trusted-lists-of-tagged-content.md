@@ -211,9 +211,35 @@ test plan.
   script and the runbook (ADR 0002 D10, BIBLE §5).
 - **A schedule** (Loom E9.3). This story keeps the admin action.
 - **The spawning draft's kinds and keys**, including 30396 (Loom E9.5).
-- **Moving pubkey taggings onto the same header-and-`z` shape** as event
-  taggings: wanted, not now (`engineering-team/OPEN.md`, 2026-11-03).
 - NIP-73 external ids (30395).
+
+## Gate-command exception (approved)
+
+`poe check_all` is red on `main` before this story's diff: six tests fail,
+filed as [NosFabrica/brainstorm_server#129](https://github.com/NosFabrica/brainstorm_server/issues/129).
+Four billing reconcile tests seed a subscription with no plan into a column
+that no longer allows it; one billing plan-write test passes an argument the
+function no longer takes; one passkey-vault test gets a 404 and fails alone
+too. None touches Trusted Lists or taggings. Baseline at `90372a9`, test
+database at alembic head: format, imports, lint and types pass; the suite is
+1,770 passed, 6 failed.
+
+**Operator decision (Vinney, 2026-11-03): until #129 is fixed, this story's
+gate is `check_all` with exactly these six tests deselected.** Every other
+stage and test must pass. If #129 lands first, the plain `poe check_all` is
+the gate. J3 runs:
+
+```
+poetry run poe check_fmt && poetry run poe check_imports && \
+  poetry run poe check_lint && poetry run poe check_types && \
+poetry run pytest ./tests \
+  --deselect tests/integration/test_billing_reconcile_candidates_integration.py::test_the_error_clock_runs_from_the_first_failure_of_its_kind \
+  --deselect tests/integration/test_billing_reconcile_candidates_integration.py::test_an_abandoned_checkout_drops_out_and_everything_else_stays \
+  --deselect tests/integration/test_billing_reconcile_candidates_integration.py::test_an_abandoned_checkout_leaves_the_alarming_sections_for_its_own \
+  --deselect tests/integration/test_billing_reconcile_candidates_integration.py::test_a_settled_subscription_stops_being_read_and_the_unsettled_stay \
+  --deselect tests/integration/test_billing_plan_write_integration.py::test_a_plan_write_returns_an_object_whose_timestamps_can_be_read \
+  --deselect tests/test_passkey_vault.py::test_a_new_device_opens_the_vault_with_the_passkey
+```
 
 ## Open questions
 
