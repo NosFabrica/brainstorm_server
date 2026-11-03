@@ -97,8 +97,10 @@ Checked items have a handle. Unchecked items are not covered, with a reason.
       a run whose people dictionary is empty but trustworthy retracts stale
       30392 slots and leaves every 30393/30394 slot alone; a run with a failed
       lookup (AC8) retracts no content slot and still retracts a stale 30392.
-      No AC states the isolation in both directions, and a shared scan over
-      `kinds=[30392, 30393, 30394]` would break it silently.
+      No AC states the isolation in both directions. The one slot scan covers
+      all three kinds (ADR 0002 D8); what must stay separate is the decision
+      per kind, which a single "trusted / untrusted" flag for the whole run
+      would break silently.
 - [x] **S2 — one DList with both item kinds gets two lists.** A DList holding a
       39999 item (by `a`) and a 9999 item (by `e`), both tagged with one Tag,
       yields one 30394 and one 30393 with the same title and `tagging-target`.
