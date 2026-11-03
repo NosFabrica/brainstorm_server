@@ -397,7 +397,9 @@ async def process_nostr_upload_message(message: dict):
     if not scorecards:
         # A failed calc closes this stage in its own consumer.
         if grape_rank_result.get("success"):
-            logger.warning(f"TA publish: run={run_id} has no scorecards, nothing to publish")
+            logger.warning(
+                f"TA publish: run={run_id} has no scorecards, nothing to publish"
+            )
             async with db_session() as db:
                 await update_brainstorm_request_ta_status_by_id_on_db(
                     db,

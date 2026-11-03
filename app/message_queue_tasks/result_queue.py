@@ -98,7 +98,9 @@ async def handle_one(
         try:
             await on_lost(message, f"handler failed: {e}")
         except Exception as lost_error:
-            logger.error(f"{queue}: run={message.get('private_id')} on_lost failed: {lost_error}")
+            logger.error(
+                f"{queue}: run={message.get('private_id')} on_lost failed: {lost_error}"
+            )
 
     # Ack before release: once acked the message is never redelivered.
     await redis_client.lrem(processing_list(queue), 1, raw)
