@@ -195,14 +195,15 @@ title = "<tag element name> <tagging target name>"     e.g. "espresso Books", "s
   (`["names", "GitHub Account", "GitHub Accounts"]` → "GitHub Accounts"),
   falling back to the singular, then to the header's `d`.
 - **An event kind's name** comes from a fixed table in `trusted_list_build`:
-  1 → Notes, 20 → Photos, 30023 → Articles, 30402 → Listings, 39998 → Open
-  lists, and 39999 and 9999 → List items (for an item with no header `z`).
-  These are Brainstorm-UI's per-kind labels (`lib/kindFamily.ts`), pluralized
-  as its `pluralLabel` does, so a list's title and the client's chip say the
-  same thing. The client can also replace a kind's label with an app's own noun
-  (`kindLabel`'s `sourceAppFor`); the server uses the per-kind label only.
-  A kind with no entry gets no list, and the run reports it (D8), so a missing
-  name is seen, not guessed.
+  1 → Notes, 20 → Pictures, 30023 → Articles, 30402 → Listings, 39998 → Lists,
+  and 39999 and 9999 → List items (for an item with no header `z`).
+  - **The table is this server's own.** It names what each kind *is*, by its
+    NIP (NIP-68 calls kind 20 a picture), in the plain words people search
+    with. A title is published data, so it is never taken from a client's
+    display labels. Brainstorm-UI shows its own labels ("Photos", "Open
+    lists"); that's its display choice and doesn't feed back here.
+  - **A kind with no entry gets no list,** and the run reports it (D8), so a
+    missing name is seen, not guessed.
 - **One form of the name is enough.** The probe shows singular and plural match
   each other.
 - `description` carries the Tag element's description, as in 0001 D5.
@@ -337,31 +338,42 @@ newest tagging, so the client's switch from ids to coordinates
 
 ### D9 — The setup endpoint advertises 30393 and 30394 rows
 
-`GET /setup/{pubkey}` (`app/routers/setup/router.py`) returns the rows an
-Observer's kind-10040 should carry. Today it has one bare Trusted List row,
-`"30392"`. The search relay's signer gate is per kind (Context), so a 10040
-that names the assistant only on `30392` unpacks people lists and never content
-lists.
+`GET /setup/{pubkey}` returns the rows an Observer's kind-10040 should carry.
+They come from `app/services/duty_menu_build.py` `designation_rows`, the one list
+of the assistant's duties. The same list, through `offer_rows`, is what the
+assistant's signed Duty Menu offers and what the Treasure Map check
+(`self_map_build`) reads. Today it has one bare Trusted List row, `"30392"`.
+The search relay's signer gate is per kind (Context), so a 10040 that names the
+assistant only on `30392` unpacks people lists and never content lists.
 
 **Options considered:**
 
-- **A (chosen) — add bare `"30393"` and `"30394"` rows** with the same assistant
-  key and relay as the `"30392"` row. The server then advertises exactly what it
-  publishes. Two Brainstorm-UI readers see the change:
-  - `services/trustLists.ts` `designationFor` takes its Trusted List key and
-    relay from the `"30392"` row only, so it is unaffected.
-  - `lib/treasureMap.ts` `offeredDuties` turns **every** `/setup` row into a duty
-    the assistant offers, shown in My Assistants (`hooks/useMyAssistants.ts`).
-    The two new rows appear there as two new offered duties. That's intended:
-    the assistant really does publish those kinds.
+- **A (chosen) — add bare `"30393"` and `"30394"` rows to `designation_rows`**,
+  with the same assistant key and relay as the `"30392"` row. The server then
+  advertises exactly what it publishes. Everything that reads the list sees
+  the change:
+  - **`/setup`** gains the two rows.
+  - **The Duty Menu offers two more duties.** A customer's menu is signed only
+    when they ask (`duty_menu_service`), and the UI shows a menu that differs
+    from the offer as out of date. So every customer's existing menu will show
+    as out of date until they republish it. That's accurate: the assistant now
+    offers more.
+  - **The Treasure Map check** treats Trusted Lists as never live
+    (`self_map_service`: "Trusted Lists are `not-scheduled`"), so the new rows
+    add no self-entries. Nothing changes there.
+  - **Brainstorm-UI:** `services/trustLists.ts` `designationFor` takes its
+    Trusted List key and relay from the `"30392"` row only, so it's
+    unaffected. `lib/treasureMap.ts` `offeredDuties` turns every `/setup` row
+    into an offered duty in My Assistants (`hooks/useMyAssistants.ts`), so the
+    two rows appear there, correctly.
 - **B — leave `/setup` alone, because Brainstorm-UI already writes all three rows
   from the `"30392"` one** (`lib/nip85Declaration.ts`, `LIST_KINDS`).
   **Rejected:** that is a client convention, not something this server says. A
   client that copies `/setup`'s rows into a 10040 verbatim would name 30392
   only, and its content lists would silently never unpack.
 
-Bare rows, not `30393:<name>`, for the reason the router's own comment gives
-for `"30392"`: Tapestry's reader treats a named 3039x row as a reserved
+Bare rows, not `30393:<name>`, for the reason `duty_menu_build`'s own comment
+gives for `"30392"`: Tapestry's reader treats a named 3039x row as a reserved
 override and ignores it.
 
 ### D10 — Replay the taggings already received, once, after deploy
@@ -393,8 +405,7 @@ parse,** and nothing will deliver it again. The acceptance test's data (the
 - **A (chosen) — a one-off replay script, `scripts/backfill_event_taggings.py`.**
   It reads kind-39999 events from `strfry scan` on stdin, runs each through
   `process_event_kind_39999`, and is dry-run by default (`--apply` to write).
-  This is the pattern `scripts/backfill_designations.py` set for kind 10040
-  (on `upstream/claude/serene-cerf-oskqw2`):
+  This is the pattern `scripts/backfill_designations.py` set for kind 10040:
 
   ```
   kubectl -n <ns> exec brainstorm-neofry-0 -c neofry -- \
@@ -449,9 +460,10 @@ and the timing.
   E9.3 (the schedule) inherits that cost.
 - Two new wire shapes (30393 and 30394 from this server) are now a contract
   with the search relay and the client.
-- The tagging-target rule (D2) and the kind names (D4) must stay in step with
-  the client's `groupOf` and per-kind labels, apart from the differences D2 and
-  D4 record.
+- The tagging-target rule (D2) must stay in step with the client's `groupOf`,
+  apart from the differences D2 records. It's the protocol's rule (an item's
+  DList is the header its `z` names), so both sides follow the protocol rather
+  than each other. The kind names (D4) are this server's alone.
 - A list unpacks only for readers whose 10040 names the assistant on the 30393
   and 30394 rows. A 10040 published before those rows existed (in the client's
   Activate flow, and in `/setup` per D9) unpacks people only, silently, until
@@ -503,7 +515,8 @@ and the timing.
   (`kind`, `tagging_target`, `unresolved_targets`, `unnamed_kinds`) into the
   response, and updates its description, which still says 30392 only.
 - `app/schemas/trusted_list_schemas.py`: those fields.
-- `app/routers/setup/router.py`: the `"30393"` and `"30394"` rows (D9).
+- `app/services/duty_menu_build.py`: the `"30393"` and `"30394"` rows in
+  `designation_rows` (D9). `app/routers/setup/router.py` only calls it.
 - `app/core/config.py` and `env.example`: `tagging_honored_namespaces` and
   `trusted_list_target_relays`.
 - `scripts/backfill_event_taggings.py` (new): the D10 replay.
@@ -514,6 +527,7 @@ and the timing.
 story): the admin run-result card (Brainstorm-UI#335), My Assistants'
 offered duties (D9), and search (Loom E9.4).
 
-**Not touched:** Vespa and the search router; the kind-30382 publish path;
+**Not touched:** the search-relay client (`app/core/search_relay.py`) and the
+Open Ranking routes (`app/routers/open_ranking/`); the kind-30382 publish path;
 `ev_kinds` (kind 39999 already syncs through `tagging_ev_kinds`); the 30392
 build, whose output is byte-identical before and after.

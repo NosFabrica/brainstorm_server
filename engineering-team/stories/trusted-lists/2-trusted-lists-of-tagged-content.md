@@ -8,8 +8,8 @@
 **Loom:** E9.2 (build Trusted Lists of tagged content); P-143 (start Tags in search now, and its acceptance test)
 **Classification:** ADR (irreversibility triggers: wire format / event shape,
 schema + migration, cross-repo contract, auth/trust default (the honored
-namespaces, ADR 0002 D6), a value held in more than one repo (the namespaces,
-the tagging-target rule and kind names, kept in step with Brainstorm-UI)). The
+namespaces, ADR 0002 D6), a value held in more than one repo (the namespaces
+and the tagging-target rule, kept in step with Brainstorm-UI)). The
 story runs the **Standard**
 phases per [`workflows/light-profile.md`](../../workflows/light-profile.md)
 §"Gate A".
@@ -136,8 +136,8 @@ test plan.
 - [ ] **AC12: title.** The title is `<Tag name> <tagging target name>`. A
       DList's name is the plural in its header's `names` tag, else the
       singular, else the header's `d`. An event kind's name comes from the
-      fixed table, matching Brainstorm-UI's per-kind labels (1 Notes, 20
-      Photos, 30023 Articles, 30402 Listings, 39998 Open lists, 39999 and 9999
+      server's own fixed table, never a client's display labels (1 Notes, 20
+      Pictures, 30023 Articles, 30402 Listings, 39998 Lists, 39999 and 9999
       List items). A pair whose kind has no name gets no
       list and appears in the run result's `unnamed_kinds`.
 - [ ] **AC13: signing and relay.** Lists are signed by the Observer's assistant
