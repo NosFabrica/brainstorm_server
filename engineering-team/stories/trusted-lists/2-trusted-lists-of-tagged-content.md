@@ -260,6 +260,10 @@ Outside the ADR's declared blast radius, each needed by what is inside it:
   `app/message_queue_tasks/`, `scripts/` `CLAUDE.md`): each describes the
   module it sits beside, and the new tables, repo, services, dispatch and
   script are described there. Docs only.
+- **`CONTEXT.md`:** gains the glossary entry "Tagging target" (what a list is
+  a list *of*: people, an event kind, or one DList), the term this story, its
+  ADR and the code use (`TaggingTarget`, the `tagging-target` tag). The
+  glossary is where a new domain term is defined before it's used. Docs only.
 - **`alembic/versions/e7b3c9d1f2a8_add_event_tagging_tables.py`:** the "one
   Alembic revision" the blast radius names. `alembic check` reports only two
   drifts older than this branch (dropped Vespa-era columns), none from these
