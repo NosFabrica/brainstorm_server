@@ -279,6 +279,12 @@ Outside the ADR's declared blast radius, each needed by what is inside it:
   Alembic revision" the blast radius names. `alembic check` reports only two
   drifts older than this branch (dropped Vespa-era columns), none from these
   tables.
+- **The shared membership predicate** (`compute_members` in
+  `app/services/trusted_list_build.py`): the count rule is dropped for all
+  three kinds, people lists included (operator decision, Vinney, 2026-11-04;
+  ADR 0002 D7). So 30392 output changes for targets the count rule decided,
+  and only those (AC17); story 1's test vectors G and N in
+  `tests/test_trusted_list_membership.py` flip to members.
 
 ## Open questions
 

@@ -636,7 +636,8 @@ and the timing.
 - `app/services/tagging_target_service.py` (new): target lookup and caching
   (D2, D6).
 - `app/services/trusted_list_build.py`: the D3–D5 builders and the kind-name
-  table.
+  table. Also `compute_members`, shared with 30392: the count rule
+  (`applications > disputes`) is dropped for all three kinds (D7).
 - `app/services/trusted_list_service.py`: three kinds, retraction across kinds,
   and the failed-lookup guard (D8).
 - `app/routers/admin/trusted_lists/router.py`: copies the new result fields
