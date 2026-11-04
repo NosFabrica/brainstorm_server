@@ -538,6 +538,74 @@ class NostrUserTagging(Base):
     )
 
 
+class NostrTaggingHeader(Base):
+    """A kind-39999 *tagging header*: the per-Tag descriptor event taggings
+    point at (ADR `trusted-lists/0002` D6).
+
+    Addressable at ``39999:<author_pubkey>:<d_tag>`` and latest-wins on the
+    event's own ``created_at``. Names its Tag element by coordinate
+    (``tag_author_pubkey`` + ``tag_slug``, from `a`) or by event id
+    (``tag_event_id``, from `e`); exactly one of the two is set. Not an FK: a
+    header can arrive before its Tag element and is dropped at read time.
+    """
+
+    __tablename__ = "nostr_tagging_header"
+    author_pubkey: Mapped[str] = mapped_column(String(64), primary_key=True)
+    d_tag: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tag_author_pubkey: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tag_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    tag_event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at_unix: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class NostrEventTagging(Base):
+    """A kind-39999 *event tagging*: an assertion that an event (by id) or an
+    addressable event (by coordinate) holds a Tag (ADR 0002 D6).
+
+    Replaceable on (asserter, d-tag), latest-wins on ``created_at_unix``, as
+    ``NostrUserTagging``. ``header_coordinate`` is the descriptor `z`, the
+    tagging header's coordinate; the Tag is reached through it at read time.
+    """
+
+    __tablename__ = "nostr_event_tagging"
+    asserter_pubkey: Mapped[str] = mapped_column(String(64), primary_key=True)
+    d_tag: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # An event id (slot "e") or a `<kind>:<pubkey>:<d>` coordinate (slot "a").
+    target: Mapped[str] = mapped_column(String, nullable=False)
+    target_slot: Mapped[str] = mapped_column(String(1), nullable=False)
+    target_relay: Mapped[str | None] = mapped_column(String, nullable=True)
+    header_coordinate: Mapped[str] = mapped_column(String, nullable=False)
+    polarity: Mapped[float] = mapped_column(Float, nullable=False, server_default="1")
+    created_at_unix: Mapped[int] = mapped_column(Integer, nullable=False)
+    __table_args__ = (Index("ix_nostr_event_tagging_header", "header_coordinate"),)
+
+
+class NostrTaggedEvent(Base):
+    """What a lookup by event id learned about a tagged event, or about a
+    kind-9998 DList header named by id (ADR 0002 D6).
+
+    Cached forever: an event id names one immutable event. Nothing named by
+    coordinate is stored here; those are fetched fresh each run.
+    """
+
+    __tablename__ = "nostr_tagged_event"
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[int] = mapped_column(Integer, nullable=False)
+    pubkey: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The `d` of an addressable event, so its coordinate can be formed.
+    d_tag: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Every `z` value, for a DList item's header(s).
+    z_values: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    # The `names` tag's values, for a DList header's title.
+    names: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+
+
 class ShortUrl(TimestampMixin, Base):
     """A share link: a short code for an entity `(kind, entity_key)`.
 
