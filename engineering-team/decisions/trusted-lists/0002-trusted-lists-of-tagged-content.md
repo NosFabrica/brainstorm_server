@@ -559,6 +559,9 @@ and the timing.
   Activate flow, and in `/setup` per D9) unpacks people only, silently, until
   it is republished.
 - The honored namespaces (D6) are a value held in two repos.
+- The DList segment of a content list's `d` (D5) is Tapestry's event-taggings
+  rule, a value held in two repos: if Tapestry's draft changes it, these slots
+  change with it, and every list under the old names is retracted in place.
 
 **Out of scope**
 
@@ -627,7 +630,12 @@ and the timing.
   `tests/test_assistant_duty_menu.py` (`EXPECTED_KEYS` gains `"30393"`,
   `"30394"`), and `tests/test_assistant_treasure_map.py` (the duty-line keys
   built from `designation_rows`, at its U14 test and the check endpoint's,
-  gain the two `not-scheduled` lines).
+  gain the two `not-scheduled` lines). The shared tagging fixtures in
+  `tests/integration/tagging_harness.py` gain the new tables.
+- Docs that describe these modules: `CONTEXT.md` (the glossary) and the
+  directory guides `app/services/CLAUDE.md`, `app/repos/CLAUDE.md`,
+  `app/db_models/CLAUDE.md`, `app/message_queue_tasks/CLAUDE.md` and
+  `scripts/CLAUDE.md`.
 
 **Brainstorm-UI consumers of this server's output** (not changed by this
 story): the admin run-result card (Brainstorm-UI#335), My Assistants'

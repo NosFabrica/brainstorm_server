@@ -37,9 +37,9 @@ from app.repos.event_tagging_repo import (
     upsert_event_tagging_on_db,
     upsert_tagging_header_on_db,
 )
-from app.repos.tagging_repo import upsert_tag_element_on_db
+from app.repos.tagging_repo import upsert_tag_element_on_db, upsert_user_tagging_on_db
 from app.services import tagging_target_service as tts
-from app.services.tagging_parse import EventTagging, TagElement, TaggingHeader
+from app.services.tagging_parse import EventTagging, TagElement, TaggingHeader, UserTagging
 from app.services.trusted_list_build import hash8
 from tests.integration.tagging_harness import (
     clean_tagging_tables,
@@ -66,14 +66,14 @@ async def _publish_to(relay: str, keys: Keys, builder: EventBuilder) -> str:
 
 
 async def _read_lists(signing_pubkey: str) -> dict[tuple[int, str], dict]:
-    """The newest 30393 / 30394 per (kind, d) this signer has on the list relay."""
+    """The newest 30392 / 30393 / 30394 per (kind, d) this signer has on the list relay."""
     client = Client()
     await client.add_relay(LIST_RELAY)
     await client.connect()
     try:
         flt = (
             Filter()
-            .kinds([Kind(30393), Kind(30394)])
+            .kinds([Kind(30392), Kind(30393), Kind(30394)])
             .authors([PublicKey.parse(signing_pubkey)])
             .limit(500)
         )
@@ -90,7 +90,7 @@ async def _read_lists(signing_pubkey: str) -> dict[tuple[int, str], dict]:
                 "created_at": raw["created_at"],
                 "author": raw["pubkey"],
                 "title": next((t[1] for t in tags if t[0] == "title"), None),
-                "members": [t[1] for t in tags if t[0] in ("e", "a")],
+                "members": [t[1] for t in tags if t[0] in ("e", "a", "p")],
                 "retracted": ["status", "retracted"] in tags,
             }
         return out
@@ -111,6 +111,9 @@ def test_content_lists_publish_cache_retract_and_empty():
     books = f"39998:{cu}:books"
     item = f"39999:{cu}:dune"
     header_coordinate = f"39999:{ta}:tagging:espresso-tagging"
+    # A person tagged espresso too, so a 30392 sits beside the content lists
+    # through every run: the one slot scan covers all three kinds (ADR 0002 D8).
+    person = Keys.generate().public_key().to_hex()
 
     def tagging(d, target, slot, polarity=1.0, created_at=100):
         return EventTagging(
@@ -181,6 +184,18 @@ def test_content_lists_publish_cache_retract_and_empty():
                         tag_author_pubkey=ta,
                         tag_slug="espresso",
                         tag_event_id=None,
+                        created_at_unix=100,
+                    ),
+                )
+                await upsert_user_tagging_on_db(
+                    db,
+                    UserTagging(
+                        event_id="9" * 64,
+                        asserter_pubkey=asserter,
+                        d_tag="on-person",
+                        target_pubkey=person,
+                        tag_event_id="7" * 64,
+                        polarity=1.0,
                         created_at_unix=100,
                     ),
                 )
@@ -270,10 +285,15 @@ def test_content_lists_publish_cache_retract_and_empty():
     notes_d = (30393, f"tl-tag-notes-{obs8}-{ta8}-espresso-k1")
     items_d = (30394, f"tl-tag-items-{obs8}-{ta8}-espresso-dl{cu8}-books-{hash8(books)}")
 
-    # Run 1 (AC13): both lists, signed by the Observer's assistant, on the
-    # Trusted List relay, titled from the kind table and the DList's names.
+    def people(lists):
+        return [v for (kind, _), v in lists.items() if kind == 30392]
+
+    # Run 1 (AC13): both content lists and the person's 30392, signed by the
+    # Observer's assistant, on the Trusted List relay, titled from the kind
+    # table and the DList's names.
     assert first.content_skipped_reason is None
-    assert first.published == 2 and first.unresolved_targets == 0
+    assert first.published == 3 and first.unresolved_targets == 0
+    assert [p["members"] for p in people(after_first)] == [[person]]
     assert after_first[notes_d]["title"] == "espresso Notes"
     assert after_first[notes_d]["members"] == [note]
     assert after_first[items_d]["title"] == "espresso Books"
@@ -284,13 +304,14 @@ def test_content_lists_publish_cache_retract_and_empty():
     # AC6 / I3: the by-id answer was cached; run 2 didn't ask for it again, but
     # did fetch the item by coordinate.
     assert note in cached
-    assert second.published == 2
+    assert second.published == 3
     assert not any(note in f for f in second_fetches)
     assert any('"#d":["dune"]' in f for f in second_fetches)
 
     # Run 3 (AC15, AC16): the note's list retracted; the item's list emptied
-    # but not retracted. Run 4 retracts nothing more.
+    # but not retracted; the 30392 untouched. Run 4 retracts nothing more.
     assert third.retracted == 1
+    assert [(p["members"], p["retracted"]) for p in people(after_third)] == [([person], False)]
     assert after_third[notes_d]["retracted"] is True
     assert after_third[notes_d]["members"] == []
     assert after_third[items_d]["retracted"] is False

@@ -236,7 +236,10 @@ was folded into another, it is listed here; nothing was dropped.
   story 1's reason: the service's asyncpg pool and Neo4j driver bind to the
   first event loop that touches them, so one live scenario runs in one loop.
   It asserts the cache (I3), the signer and relay (I6), and publish, retract,
-  emptied and idempotent runs (I7, AC16).
+  emptied and idempotent runs (I7, AC16). I7's "all three kinds" is met by a
+  person tagged with the same Tag: their 30392 is published beside the two
+  content lists and is still live, unretracted, after the content retraction
+  and the idempotent fourth run.
 - **U12's DList-name cases** are `test_dlist_name[plural, singular-only,
   d-only]` in `tests/test_tagging_target.py`, where `dlist_name` lives, plus
   `test_content_title_from_a_dlist` in `tests/test_trusted_list_content.py`.
