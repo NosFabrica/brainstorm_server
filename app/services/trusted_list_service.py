@@ -7,7 +7,7 @@ The pipeline, per ADR `trusted-lists/0001` (people) and `0002` (content):
       -> dictionary: Tags used >= min_uses (30392), and (Tag, tagging target)
          pairs used >= min_uses (30393 / 30394), the targets worked out by
          lookups (`tagging_target_service`)
-      -> per entry: membership (applications >= cutoff and > disputes)
+      -> per entry: membership (applications >= cutoff and score >= 1)
       -> signed by the Observer's assistant nsec, published
       -> stale slots retracted, per kind, from a trusted view only
 

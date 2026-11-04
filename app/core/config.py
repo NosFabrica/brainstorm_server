@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     # enter the dictionary. Issue #73 anticipates raising this, so it is not a
     # literal.
     trusted_list_min_tag_uses: int = Field(default=1)
-    # Membership predicate floor: applications >= cutoff (and > disputes).
+    # Membership predicate floor: applications >= cutoff (then score >= 1).
     trusted_list_cutoff: int = Field(default=1)
     # Where TLs are published. Empty = fall back to the TA relay, so retargeting
     # to the nip85.* relays is an env change rather than a diff.

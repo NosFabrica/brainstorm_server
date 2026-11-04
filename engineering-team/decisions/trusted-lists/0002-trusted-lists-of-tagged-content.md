@@ -379,7 +379,20 @@ run.
 
 Same dictionary rule (pairs used at least `trusted_list_min_tag_uses` times by
 a qualifying asserter), same qualifying asserters (0001 D3), same predicate
-(0001 D12), same rigor (0001 D13). `compute_members` already folds over a
+(0001 D12, as drafted), same rigor (0001 D13).
+
+**No count rule, for all three kinds (Vinney, 2026-11-04).** 0001 had added
+Tapestry's `applications > disputes` before the score. It is dropped, for
+30392 as well as 30393 and 30394: a member needs `applications >= cutoff` and
+a score of at least 1, so the trust-weighted balance decides. One apply by a
+0.9-Influence asserter against three disputes at 0.05 scores 37 and is
+listed; under the count rule it was hidden. An equal or heavier dispute still
+keeps a target off (its score rounds to 0). Tapestry keeps the count rule, so
+its lists and ours differ on such targets, deliberately. Rejected: keeping
+the rule for parity with Tapestry, since it lets a crowd of barely trusted
+asserters outvote a highly trusted one, which is the opposite of what the
+weights are for.
+ `compute_members` already folds over a
 string key; the key becomes an event id or coordinate instead of a pubkey. An
 addressable target tagged by id and by coordinate counts once, under its
 coordinate (D2). An asserter who tagged it both ways holds one stance, their
@@ -577,7 +590,14 @@ and the timing.
   read each result's `kind`: Brainstorm-UI#335. Until then, "View list" on a
   30393 or 30394 result finds nothing.
 - `groupOf`'s 9998-header-by-id gap (D2).
-- A schedule (Loom E9.3).
+- A schedule (Loom E9.3). **A requirement it inherits (Vinney, 2026-11-04):**
+  share the answers to by-coordinate lookups across Observers within a sweep.
+  Which coordinates a run asks for depends on the Observer (whose taggings
+  count); the answer for a given coordinate doesn't. Today every run fetches
+  them again, so the cost grows with Observers × runs × tagged coordinates.
+- Which Tags get lists (the dictionary rule, D7: one use by one qualifying
+  asserter). It is crude, and its replacement is being designed separately,
+  as a Loom proposal, not in this story.
 - The spawning draft's kinds and keys (Loom E9.5).
 
 ## Open questions
@@ -629,6 +649,9 @@ and the timing.
   Its `--verify-relay` read goes from kind 30392 to 30392–30394, and `--seed`
   gains an event tagging beside its pubkey tagging, so it exercises what the
   endpoint now builds.
+- 0001's predicate tests in `tests/test_trusted_list_membership.py` (D7: the
+  count-rule vectors G and N become members) and 0001 itself (superseded notes
+  on its count clause).
 - Tests beside 0001's, plus the three that pin the offered rows' exact order:
   `tests/test_setup_designation.py` (Dictionary rows now follow `"30394"`),
   `tests/test_assistant_duty_menu.py` (`EXPECTED_KEYS` gains `"30393"`,

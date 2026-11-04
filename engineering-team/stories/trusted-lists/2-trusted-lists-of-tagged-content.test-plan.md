@@ -33,7 +33,8 @@ hand after deploy.
 | AC8 a hint relay down, configured relays answering: view trusted | U8c | `test_hint_relay_down_leaves_the_view_trusted` (content lists publish normally) | `tests/test_trusted_list_admin.py` | fast |
 | AC9 dictionary of (Tag, target) pairs, per Observer's web of trust | I4 | `test_two_observers_get_different_content_dictionaries_from_same_taggings` (incl. `trusted_list_min_tag_uses` boundary: N−1 uses absent, N present) | `tests/integration/test_trusted_list_content_integration.py` | integration |
 | AC9 taggings without header or Tag element dropped at read, kept at write | I5 | `test_tagging_with_missing_header_or_tag_joins_once_both_arrive` | `tests/integration/test_trusted_list_content_integration.py` | integration |
-| AC10 membership and score are story 1's predicate | U9 | `test_content_membership_uses_the_people_predicate[…]` (cutoff boundary; applications == disputes not a member; weighted score < 1 not a member; rigor applied) | `tests/test_trusted_list_content.py` | fast |
+| AC10 membership and score are story 1's predicate | U9 | `test_content_membership_uses_the_people_predicate[…]` (cutoff boundary; an equal-weight apply and dispute not a member; weighted score < 1 not a member; rigor applied) | `tests/test_trusted_list_content.py` | fast |
+| AC10 no count rule: the weighted balance decides, all three kinds | U9b | `test_the_weighted_balance_decides_not_the_count[…]` (a 0.9 apply against three 0.05 disputes scores 37; against two 0.3 disputes, 13; an equal dispute cancels; a 0.9 dispute buries three 0.05 applies), and story 1's `test_dispute_stress_vectors` G and N flipped to members | `tests/test_trusted_list_membership.py` | fast |
 | AC10 id and coordinate taggings by different asserters merge into one target | U10 | `test_id_and_coordinate_taggings_count_as_one_target` | `tests/test_trusted_list_content.py` | fast |
 | AC10 one stance per asserter per target, newest wins | U10b | `test_one_stance_per_asserter_newest_wins` (apply by id, then dispute by coordinate: counts as one dispute) | `tests/test_trusted_list_content.py` | fast |
 | AC10 order: score descending, then key ascending | U10c | `test_content_members_ordered_by_score_then_key` | `tests/test_trusted_list_content.py` | fast |
@@ -259,6 +260,10 @@ was folded into another, it is listed here; nothing was dropped.
   story 1's stays as it was.
 - **U7** is asserted at both levels: `test_unfound_target_is_counted_and_looked_up_next_run`
   (the lookup) and `test_unresolved_target_is_counted_and_not_cached` (the run).
+- **The count rule was dropped after implementation** (Vinney, 2026-11-04:
+      ADR 0002 D7). U9b is new; story 1's dispute-stress vectors G and N now
+      expect members (scores 44 and 39 unchanged). The 30392 golden file (U17)
+      is unchanged: its fixture never had disputes outnumbering applies.
 - **Hint filtering and the forged-answer check** were added after
       implementation (ADR 0002 D6): `test_a_forged_answer_is_dropped`,
       `test_only_a_public_wss_hint_is_contacted`,

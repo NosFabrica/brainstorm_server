@@ -121,8 +121,10 @@ test plan.
       time, not rejected at write time.
 - [ ] **AC10: membership and score.** Members are decided and scored exactly as
       story 1's AC7–AC8c (polarity buckets, `applications >= cutoff`,
-      `applications > disputes`, weighted score `>= 1`, the Observer's rigor),
-      keyed on the target. An addressable event tagged once by id and once by
+      weighted score `>= 1`, the Observer's rigor), keyed on the target, with
+      **no count rule** (`applications > disputes` is dropped for all three
+      kinds, ADR 0002 D7, Vinney 2026-11-04: one apply at Influence 0.9
+      against three disputes at 0.05 is listed, scoring 37). An addressable event tagged once by id and once by
       coordinate by different asserters counts as one target with both
       taggings. **One stance per asserter per target:** an asserter who tagged
       the same target by id and by coordinate counts once, their newest

@@ -122,14 +122,12 @@ def compute_members(
         certainty = 1 - rigor ** input
         score     = round(max(average * certainty, 0) * 100)   -> 0..100
 
-    Membership is three clauses, not two: `applications >= cutoff` AND
-    `applications > disputes` AND `score >= 1`. The middle clause is inherited
-    — tapestry's `certainty` method chains off `applyDisputesFunction`
-    (refreshPinnedTags.js:112), so the v1 count predicate still gates before
-    the score does. ADR D12 as drafted states only the outer two; the shipped
-    tapestry code has all three, and matching the code is what keeps the two
-    implementations agreeing on a target with more disputes than applications
-    but a high-weight applier.
+    Membership is two clauses: `applications >= cutoff` AND `score >= 1`, as
+    ADR 0001 D12 was drafted. There is no count rule (`applications >
+    disputes`): a heavily trusted applier outweighs a crowd of lightly trusted
+    disputers (Vinney, 2026-11-04; ADR 0002 D7). Tapestry's `certainty` method
+    keeps that rule (it chains off `applyDisputesFunction`), so its lists and
+    ours differ on exactly such targets, deliberately.
 
     Neutral-polarity assertions (the reserved open interval) count as neither
     and contribute no weight. Order is score desc, then pubkey asc — stable
@@ -149,13 +147,13 @@ def compute_members(
 
     members = []
     for pubkey, t in tally.items():
-        if not (t.applications >= cutoff and t.applications > t.disputes):
+        if t.applications < cutoff:
             continue
         score = compute_score(t.weighted_sum, t.weighted_input, rigor)
         if score < 1:
             # Net-negative, zero-mass and exact-split pairs all round to 0 and
-            # drop off the list entirely — the weighted successor of v1's
-            # `applications > disputes`.
+            # drop off the list entirely: the weighted balance, not the count
+            # of disputes, decides.
             continue
         members.append(
             Member(
