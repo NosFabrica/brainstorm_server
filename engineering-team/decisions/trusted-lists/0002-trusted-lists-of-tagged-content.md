@@ -130,8 +130,10 @@ an index:
   for "any configured lookup relay down".
 - **D9** (`/setup` rows): options under D9.
 - **D10** (replay): options A–C under D10.
-- **D4 and D7** take 0001's conventions (title shape, scoring) unchanged; the
-  alternative to each is a second convention for one kind of tagging.
+- **D4** takes 0001's title shape unchanged; the alternative is a second
+  convention for one kind of tagging.
+- **D7** (scoring) takes 0001's weights and score but drops its count rule;
+  keeping the rule for parity with Tapestry is rejected under D7.
 
 ## Decisions
 
@@ -392,8 +394,8 @@ its lists and ours differ on such targets, deliberately. Rejected: keeping
 the rule for parity with Tapestry, since it lets a crowd of barely trusted
 asserters outvote a highly trusted one, which is the opposite of what the
 weights are for.
- `compute_members` already folds over a
-string key; the key becomes an event id or coordinate instead of a pubkey. An
+
+`compute_members` already folds over a string key; the key becomes an event id or coordinate instead of a pubkey. An
 addressable target tagged by id and by coordinate counts once, under its
 coordinate (D2). An asserter who tagged it both ways holds one stance, their
 newest tagging, so the client's switch from ids to coordinates
@@ -576,6 +578,14 @@ and the timing.
   Activate flow, and in `/setup` per D9) unpacks people only, silently, until
   it is republished.
 - The honored namespaces (D6) are a value held in two repos.
+- **The people lists (30392) change for some inputs (D7).** A target whose
+  applies are outnumbered by disputes but outweigh them is now a member: story
+  1's test vectors G and N (scores 44 and 39) are listed where they were not.
+  Every other 30392 is byte-identical. The search relay and Brainstorm-UI
+  read these lists, so their results gain such members once the release runs.
+  It is also a deliberate split from Tapestry, whose pinned-tag lists keep the
+  count rule: ADR 0001 treats any divergence in those vectors as a fork
+  signal, and for G and N this one is intended.
 - The DList segment of a content list's `d` (D5) is Tapestry's event-taggings
   rule, a value held in two repos: if Tapestry's draft changes it, these slots
   change with it, and every list under the old names is retracted in place.
@@ -670,5 +680,6 @@ offered duties (D9), and search (Loom E9.4).
 
 **Not touched:** the search-relay client (`app/core/search_relay.py`) and the
 Open Ranking routes (`app/routers/open_ranking/`); the kind-30382 publish path;
-`ev_kinds` (kind 39999 already syncs through `tagging_ev_kinds`); the 30392
-build, whose output is byte-identical before and after.
+`ev_kinds` (kind 39999 already syncs through `tagging_ev_kinds`). The 30392
+build's output is byte-identical before and after, except where the count rule
+decided membership (D7, and Consequences).

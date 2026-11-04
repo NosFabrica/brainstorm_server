@@ -8,7 +8,8 @@
 **Loom:** E9.2 (build Trusted Lists of tagged content); P-143 (start Tags in search now, and its acceptance test)
 **Classification:** ADR (irreversibility triggers: wire format / event shape,
 schema + migration, cross-repo contract, auth/trust default (the honored
-namespaces, ADR 0002 D6), a value held in more than one repo (the namespaces
+namespaces, ADR 0002 D6; the membership predicate, which drops the count rule
+for 30392 too, D7), a value held in more than one repo (the namespaces
 and the tagging-target rule, kept in step with Brainstorm-UI; the DList slot
 segment, Tapestry's event-taggings rule, ADR 0002 D5)). The
 story runs the **Standard**
@@ -173,8 +174,11 @@ test plan.
 - [ ] **AC16: emptied list republished.** A pair still in the dictionary whose
       members all fall out is republished with no members and **no** retracted
       marker.
-- [ ] **AC17: people lists unchanged.** For the same input, the 30392 events a
-      run produces are identical to story 1's output.
+- [ ] **AC17: people lists unchanged but for the count rule.** For the same
+      input, the 30392 events a run produces are identical to story 1's
+      output, except for targets whose membership the count rule decided
+      (ADR 0002 D7): those with more disputes than applies by count but a
+      score of at least 1 are now members.
 - [ ] **AC17b: replay script.** `scripts/backfill_event_taggings.py --scan -`
       reads `strfry scan` output (one event per line) and runs each kind-39999
       event through `process_event_kind_39999`. Without `--apply` it writes
@@ -201,8 +205,8 @@ test plan.
   unresolved (AC7), never a crash.
 - **Two Tags share a name but have different authors.** Two lists with the same
   title, distinct `d`s. That's already true of 30392.
-- **A DList's `d` is long.** The list's `d` grows with it; check it stays under
-  relay limits (the tag hub rejects filter values over 255 bytes).
+- **A DList's `d` is long.** The list's `d` doesn't grow with it: the DList
+  segment is bounded by the event-taggings rule (ADR 0002 D5).
 - **A Tag element is itself the tagging target** (a tagged tag). Its DList is
   the Tag concept header, named from that header's `names`, like any DList.
 - **One asserter tags the same target by id and by coordinate.** Two taggings
