@@ -112,12 +112,22 @@ def test_setup_s_map_with_scores_live_lists_exactly_the_five_score_rows():
     # In the offer's order, though order never counts.
     assert check.should_say == [(key, PUBLIC_TA) for key in FIVE]
     lines = check.duties
-    assert [line.key for line in lines] == [*FIVE, "30392", "39998", "39999"]
+    assert [line.key for line in lines] == [
+        *FIVE,
+        "30392",
+        "30393",
+        "30394",
+        "39998",
+        "39999",
+    ]
     for line in lines[:5]:
         assert line.status == "live" and line.relay == PUBLIC_TA and line.reason is None
         assert line.entries == ((line.key, PUBLIC_TA),)
-    assert (lines[5].status, lines[5].reason) == ("offered", "not-scheduled")
-    for line in lines[6:]:
+    # The three Trusted List rows: offered, never live (ADR trusted-lists/0002
+    # D9), so they add duty lines and no self-entries.
+    for line in lines[5:8]:
+        assert (line.status, line.reason) == ("offered", "not-scheduled")
+    for line in lines[8:]:
         assert (line.status, line.relay, line.reason) == (
             "offered",
             DICTIONARY,
@@ -743,7 +753,14 @@ def test_the_get_is_the_shape_the_ui_parses(map_client, world):
         "lastLandedAt": None,
         "entries": [["30382:rank", PUBLIC_TA]],
     }
-    assert [d["key"] for d in check["duties"]] == [*FIVE, "30392", "39998", "39999"]
+    assert [d["key"] for d in check["duties"]] == [
+        *FIVE,
+        "30392",
+        "30393",
+        "30394",
+        "39998",
+        "39999",
+    ]
 
 
 def test_the_get_reads_the_remembered_choice(map_client, world):

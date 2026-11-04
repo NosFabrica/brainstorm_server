@@ -231,3 +231,164 @@ def build_trusted_list_content(members: list[Member]) -> str:
             ]
         }
     )
+
+
+# --------------------------------------------------------------------------
+# Trusted Lists of tagged content: kinds 30393 and 30394 (ADR
+# `trusted-lists/0002` D3-D5, D7).
+# --------------------------------------------------------------------------
+EVENT_LIST_KIND = 30393  # members `["e", <id>, "", "<score>"]`
+ADDRESS_LIST_KIND = 30394  # members `["a", <coordinate>, "", "<score>"]`
+CONTENT_LIST_KINDS = (EVENT_LIST_KIND, ADDRESS_LIST_KIND)
+
+_D_KIND_WORD = {EVENT_LIST_KIND: "notes", ADDRESS_LIST_KIND: "items"}
+_MEMBER_TAG = {EVENT_LIST_KIND: "e", ADDRESS_LIST_KIND: "a"}
+_MEMBER_FIELD = {EVENT_LIST_KIND: "id", ADDRESS_LIST_KIND: "address"}
+
+# The names of event kinds in titles (D4). This server's own table: it names
+# what each kind *is*, by its NIP, in the words people search with. A title is
+# published data, so it is never taken from a client's display labels. A kind
+# missing here gets no list and is reported, never guessed.
+KIND_NAMES: dict[int, str] = {
+    1: "Notes",
+    20: "Pictures",
+    30023: "Articles",
+    30402: "Listings",
+    39998: "Lists",
+    39999: "List items",
+    9999: "List items",
+}
+
+
+def content_d_kind_prefix(list_kind: int) -> str:
+    """`tl-tag-notes-` or `tl-tag-items-`."""
+    return f"{D_TAG_PREFIX}-{_D_KIND_WORD[list_kind]}-"
+
+
+def compute_content_d_tag(
+    list_kind: int,
+    observer: str,
+    tag_author_pubkey: str,
+    slug: str,
+    *,
+    kind: int | None = None,
+    dlist_author: str | None = None,
+    dlist_key: str | None = None,
+) -> str:
+    """`tl-tag-notes|items-<observer8>-<tagAuthor8>-<slug>-<target>` (D5).
+
+    `<target>` is `k<kind>` for an event kind, or `dl<headerAuthor8>-<key>` for
+    a DList, where `<key>` is the header's `d` (its event id for a kind-9998
+    header).
+    """
+    if kind is not None:
+        target = f"k{kind}"
+    else:
+        target = f"dl{(dlist_author or '')[:8]}-{dlist_key}"
+    return (
+        f"{content_d_kind_prefix(list_kind)}{observer[:8]}-"
+        f"{tag_author_pubkey[:8]}-{slug}-{target}"
+    )
+
+
+def tag_coordinate(tag_author_pubkey: str, slug: str) -> str:
+    return f"39999:{tag_author_pubkey}:{slug}"
+
+
+@dataclass(frozen=True)
+class ContentStance:
+    """One asserter's live stance on one member under one Tag: the newest of
+    their taggings of it, however they named it (D7)."""
+
+    asserter: str
+    member: str
+    polarity: float
+    created_at_unix: int
+
+
+def one_stance_per_asserter(stances: list[ContentStance]) -> list[ContentStance]:
+    """Keep each asserter's newest stance per member. An asserter who tagged an
+    addressable event once by id and once by coordinate counts once; a tie on
+    `created_at` keeps the dispute, the cautious reading."""
+    newest: dict[tuple[str, str], ContentStance] = {}
+    for stance in stances:
+        key = (stance.asserter, stance.member)
+        held = newest.get(key)
+        if (
+            held is None
+            or held.created_at_unix < stance.created_at_unix
+            or (
+                held.created_at_unix == stance.created_at_unix
+                and stance.polarity < held.polarity
+            )
+        ):
+            newest[key] = stance
+    return sorted(newest.values(), key=lambda s: (s.member, s.asserter))
+
+
+def count_uses(stances: list[ContentStance]) -> int:
+    """Distinct asserters with a non-neutral stance: a pair's uses (D7, as
+    0001's dictionary rule counts a Tag's)."""
+    return len(
+        {s.asserter for s in stances if is_applied(s.polarity) or is_disputed(s.polarity)}
+    )
+
+
+def build_content_list_tags(
+    *,
+    list_kind: int,
+    d_tag: str,
+    observer: str,
+    title: str,
+    description: str,
+    tag_author_pubkey: str,
+    slug: str,
+    tagging_target: str,
+    members: list[Member],
+    cutoff: int,
+    min_rank: int,
+    rigor: float = DEFAULT_RIGOR,
+    retracted: bool = False,
+) -> list[list[str]]:
+    """The kind-30393 / 30394 tag list, per ADR 0002 D5.
+
+    No `a` or `p` back-references: on a 30394 an `a` *is* a member, and the two
+    kinds keep one shape. `source-tag` and `tagging-target` carry the identity
+    instead. `Member.pubkey` holds the member key here, an id or a coordinate.
+    """
+    tags: list[list[str]] = [
+        ["d", d_tag],
+        ["title", title],
+        ["description", description],
+        ["metric", TRUSTED_LIST_METRIC],
+        ["observer", observer],
+        ["source-tag", tag_coordinate(tag_author_pubkey, slug), tag_author_pubkey, slug],
+        ["tagging-target", tagging_target],
+        ["cutoff", str(cutoff)],
+        ["min-rank", str(min_rank)],
+    ]
+    if retracted:
+        tags.append(list(RETRACTED_MARKER))
+        return tags
+    tags.append(["rigor", _format_rigor(rigor)])
+    member_tag = _MEMBER_TAG[list_kind]
+    tags.extend([[member_tag, m.pubkey, "", str(m.score)] for m in members])
+    return tags
+
+
+def build_content_list_content(list_kind: int, members: list[Member]) -> str:
+    """`{"members":[{"id"|"address", "endorsements", "disputes", "score"}]}`."""
+    member_field = _MEMBER_FIELD[list_kind]
+    return json.dumps(
+        {
+            "members": [
+                {
+                    member_field: m.pubkey,
+                    "endorsements": m.applications,
+                    "disputes": m.disputes,
+                    "score": m.score,
+                }
+                for m in members
+            ]
+        }
+    )

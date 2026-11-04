@@ -3,6 +3,10 @@ from neo4j import AsyncSession as AsyncNeoSession
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import redis_client
+from app.repos.event_tagging_repo import (
+    upsert_event_tagging_on_db,
+    upsert_tagging_header_on_db,
+)
 from app.repos.tagging_repo import upsert_tag_element_on_db, upsert_user_tagging_on_db
 from app.services.designation_service import DESIGNATION_KIND, parse_designated_pubkeys
 from app.services.report_graph_service import (
@@ -13,7 +17,9 @@ from app.services.report_graph_service import (
 from app.services.report_relay_service import fetch_author_user_reports
 from app.services.tagging_parse import (
     TAGGING_KIND,
+    parse_event_tagging,
     parse_tag_element,
+    parse_tagging_header,
     parse_user_tagging,
 )
 from app.utils.nostr import p_tag_pubkeys
@@ -349,17 +355,21 @@ async def process_event_kind_5(session: AsyncNeoSession, event: dict):
 
 
 async def process_event_kind_39999(event: dict):
-    """Persist a kind-39999 tag element or tagging.
+    """Persist a kind-39999 tag element, pubkey tagging, tagging header or event
+    tagging.
 
-    Both shapes ride the same kind and are distinguished by their `z` tag; an
-    event matching neither concept is foreign traffic and is dropped silently
-    (kind 39999 is a general Decentralized-Lists item kind, so unrelated events
-    legitimately arrive here). Malformed events are dropped the same way — a bad
-    event must never stall the queue for the good ones behind it.
+    All four ride the same kind and are told apart by their `z` tags; an event
+    matching none is foreign traffic and is dropped silently (kind 39999 is a
+    general Decentralized-Lists item kind, so unrelated events legitimately
+    arrive here). Malformed events are dropped the same way — a bad event must
+    never stall the queue for the good ones behind it. Event taggings and
+    headers: ADR `trusted-lists/0002` D6.
     """
     element = parse_tag_element(event)
     tagging = parse_user_tagging(event)
-    if element is None and tagging is None:
+    header = parse_tagging_header(event)
+    event_tagging = parse_event_tagging(event)
+    if element is None and tagging is None and header is None and event_tagging is None:
         return
 
     async with db_session() as db:
@@ -367,3 +377,7 @@ async def process_event_kind_39999(event: dict):
             await upsert_tag_element_on_db(db, element)
         elif tagging is not None:
             await upsert_user_tagging_on_db(db, tagging)
+        elif header is not None:
+            await upsert_tagging_header_on_db(db, header)
+        elif event_tagging is not None:
+            await upsert_event_tagging_on_db(db, event_tagging)

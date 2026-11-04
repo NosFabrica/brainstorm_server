@@ -28,6 +28,16 @@ OBSERVER = "a" * 64
 SIGNER = "f" * 64
 
 
+@pytest.fixture(autouse=True)
+def _no_event_taggings(monkeypatch):
+    """Story 1's tests run with no event taggings held, so the content lists
+    (ADR trusted-lists/0002) stay out of their way. Story 2's tests override."""
+    monkeypatch.setattr(svc, "count_event_taggings_on_db", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        svc, "get_event_tagging_asserters_on_db", AsyncMock(return_value=[])
+    )
+
+
 @pytest.fixture
 def admin_client(client):
     app.dependency_overrides[verify_admin_access] = lambda: None
