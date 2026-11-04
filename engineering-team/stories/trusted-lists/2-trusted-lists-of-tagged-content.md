@@ -130,7 +130,10 @@ test plan.
 - [ ] **AC11: wire shape.** Each list matches ADR 0002 D5:
       - kind 30393 with `["e", id, "", "<score>"]` members, or kind 30394 with
         `["a", coordinate, "", "<score>"]` members;
-      - `d` = `tl-tag-notes-…` / `tl-tag-items-<observer8>-<tagAuthor8>-<slug>-<target>`;
+      - `d` = `tl-tag-notes-…` / `tl-tag-items-<observer8>-<tagAuthor8>-<slug>-<target>`,
+        where a DList's `<target>` is `dl` plus the event-taggings rule's
+        segment (`<author8>-<d16>-<hash8>` by coordinate, `<id8>` by event id),
+        byte-for-byte as Tapestry's draft defines it;
       - the tags `title`, `description`, `metric` = `tag-membership`,
         `observer`, `source-tag` (Tag coordinate, author, slug),
         `tagging-target`, `cutoff`, `min-rank` and `rigor`;

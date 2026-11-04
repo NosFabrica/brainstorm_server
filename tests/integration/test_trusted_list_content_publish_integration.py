@@ -40,6 +40,7 @@ from app.repos.event_tagging_repo import (
 from app.repos.tagging_repo import upsert_tag_element_on_db
 from app.services import tagging_target_service as tts
 from app.services.tagging_parse import EventTagging, TagElement, TaggingHeader
+from app.services.trusted_list_build import hash8
 from tests.integration.tagging_harness import (
     clean_tagging_tables,
     neo_driver,
@@ -267,7 +268,7 @@ def test_content_lists_publish_cache_retract_and_empty():
 
     obs8, ta8, cu8 = observer[:8], ta[:8], cu[:8]
     notes_d = (30393, f"tl-tag-notes-{obs8}-{ta8}-espresso-k1")
-    items_d = (30394, f"tl-tag-items-{obs8}-{ta8}-espresso-dl{cu8}-books")
+    items_d = (30394, f"tl-tag-items-{obs8}-{ta8}-espresso-dl{cu8}-books-{hash8(books)}")
 
     # Run 1 (AC13): both lists, signed by the Observer's assistant, on the
     # Trusted List relay, titled from the kind table and the DList's names.

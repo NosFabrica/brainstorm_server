@@ -21,6 +21,8 @@ from app.services.trusted_list_build import (
     build_trusted_list_tags,
     compute_content_d_tag,
     compute_members,
+    dlist_target8,
+    hash8,
 )
 from app.services.trusted_list_service import TargetView, plan_content_lists
 
@@ -220,14 +222,76 @@ def test_content_list_has_no_back_references():
         (30394, dict(kind=30402), "tl-tag-items-aaaaaaaa-dddddddd-espresso-k30402"),
         (
             30394,
-            dict(dlist_author=CURATOR, dlist_key="books"),
-            "tl-tag-items-aaaaaaaa-dddddddd-espresso-dlcccccccc-books",
+            dict(dlist=BOOKS),
+            "tl-tag-items-aaaaaaaa-dddddddd-espresso-dlcccccccc-books-f311b315",
+        ),
+        (
+            30394,
+            dict(dlist="f" * 64),
+            "tl-tag-items-aaaaaaaa-dddddddd-espresso-dlffffffff",
         ),
     ],
-    ids=["notes-k1", "items-k30402", "items-dl"],
+    ids=["notes-k1", "items-k30402", "items-dl-coordinate", "items-dl-9998-id"],
 )
 def test_content_d_tag(list_kind, target, expected):
     assert compute_content_d_tag(list_kind, OBSERVER, TAG_AUTHOR, "espresso", **target) == expected
+
+
+# The event-taggings rule (Tapestry protocols/drafts/event-taggings.md, "The
+# assertion d-tag"), with its worked example's full coordinates and hashes.
+WORKED_AUTHOR = "b83a28b7e4e5d20bd960c5faeb6625f95529166b8bdb045d42634a2f35919450"
+
+
+@pytest.mark.parametrize(
+    "d, expected",
+    [
+        ("vcavallo-1i6dn0p", "b83a28b7-vcavallo-1i6dn0p-086cb8ff"),
+        ("aburra16-io3q45", "b83a28b7-aburra16-io3q45-878ce18a"),
+    ],
+)
+def test_dlist_segment_matches_the_event_taggings_worked_example(d, expected):
+    coordinate = f"39999:{WORKED_AUTHOR}:{d}"
+    assert hash8(coordinate) == expected[-8:]
+    assert dlist_target8(coordinate) == expected
+
+
+def test_dlist_segment_keeps_16_characters_of_the_header_d():
+    long = f"39998:{CURATOR}:a-very-long-header-d-that-goes-on"
+    assert dlist_target8(long) == f"cccccccc-a-very-long-head-{hash8(long)}"
+    accented = f"39998:{CURATOR}:{'é' * 20}"
+    assert dlist_target8(accented) == f"cccccccc-{'é' * 16}-{hash8(accented)}"
+    colons = f"39998:{CURATOR}:https://x.io/a"
+    assert dlist_target8(colons) == f"cccccccc-https://x.io/a-{hash8(colons)}"
+
+
+def test_dlist_segment_drops_half_a_character_at_the_cut():
+    # JavaScript's slice keeps a lone surrogate here; no event can carry one.
+    split = f"39998:{CURATOR}:{'x' * 15}\U0001F600z"
+    assert dlist_target8(split) == f"cccccccc-{'x' * 15}-{hash8(split)}"
+
+
+def test_two_dlists_of_one_curator_get_two_slots():
+    a, b = f"39998:{CURATOR}:books", f"39998:{CURATOR}:books-2"
+    d_a = compute_content_d_tag(30394, OBSERVER, TAG_AUTHOR, "espresso", dlist=a)
+    d_b = compute_content_d_tag(30394, OBSERVER, TAG_AUTHOR, "espresso", dlist=b)
+    assert d_a != d_b
+
+
+def test_slot_length_stays_flat_however_long_the_header_d():
+    def slot(header_d):
+        dlist = f"39998:{CURATOR}:{header_d}"
+        return compute_content_d_tag(30394, OBSERVER, TAG_AUTHOR, "espresso", dlist=dlist)
+
+    assert len(slot("x" * 16)) == len(slot("x" * 500))
+
+
+def test_a_hyphenated_slug_no_longer_mimics_a_dlist_slot():
+    # Before the hash, slug "foo" with DList "x-k30402" and slug "foo-dl<author8>-x"
+    # with kind 30402 both gave "...-foo-dlcccccccc-x-k30402".
+    dlist = f"39998:{CURATOR}:x-k30402"
+    by_dlist = compute_content_d_tag(30394, OBSERVER, TAG_AUTHOR, "foo", dlist=dlist)
+    by_kind = compute_content_d_tag(30394, OBSERVER, TAG_AUTHOR, "foo-dlcccccccc-x", kind=30402)
+    assert by_dlist != by_kind
 
 
 def test_same_named_tags_by_different_authors_get_distinct_lists():
@@ -253,7 +317,7 @@ def test_content_title_from_a_dlist():
         BOOKS,
         30394,
     )
-    assert listed.d_tag.endswith("-espresso-dlcccccccc-books")
+    assert listed.d_tag.endswith(f"-espresso-dlcccccccc-books-{hash8(BOOKS)}")
 
 
 @pytest.mark.parametrize(

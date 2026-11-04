@@ -39,7 +39,8 @@ hand after deploy.
 | AC10 order: score descending, then key ascending | U10c | `test_content_members_ordered_by_score_then_key` | `tests/test_trusted_list_content.py` | fast |
 | AC11 wire shape, both kinds | U11 | `test_content_list_wire_shape[30393, 30394]` (every D5 tag, member tag form `["e"/"a", key, "", "<score>"]`, `content` JSON) | `tests/test_trusted_list_content.py` | fast |
 | AC11 no `a`/`p` other than members | U11b | `test_content_list_has_no_back_references` | `tests/test_trusted_list_content.py` | fast |
-| AC11 `d` prefix and target suffix | U11c | `test_content_d_tag[notes-k1, items-k30402, items-dl]` (two Tags with the same name and different authors get distinct `d`s) | `tests/test_trusted_list_content.py` | fast |
+| AC11 `d` prefix and target suffix | U11c | `test_content_d_tag[notes-k1, items-k30402, items-dl-coordinate, items-dl-9998-id]` (two Tags with the same name and different authors get distinct `d`s) | `tests/test_trusted_list_content.py` | fast |
+| AC11 DList segment, event-taggings rule | U11d | `test_dlist_segment_matches_the_event_taggings_worked_example[…]` (the draft's two full coordinates, `086cb8ff` / `878ce18a`), `test_dlist_segment_keeps_16_characters_of_the_header_d`, `test_dlist_segment_drops_half_a_character_at_the_cut`, `test_two_dlists_of_one_curator_get_two_slots`, `test_slot_length_stays_flat_however_long_the_header_d` | `tests/test_trusted_list_content.py` | fast |
 | AC12 title from DList names, with fallbacks | U12 | `test_content_title[plural, singular-only, d-only]` | `tests/test_trusted_list_content.py` | fast |
 | AC12 title from the server's kind table | U12b | `test_content_title_kind_names[1, 20, 30023, 30402, 39998, 39999, 9999]` (asserts the exact table, so a client label like "Photos" or "Open lists" fails it) | `tests/test_trusted_list_content.py` | fast |
 | AC12 unnamed kind: no list, reported | U12c | `test_unnamed_kind_gets_no_list_and_is_reported` | `tests/test_trusted_list_admin.py` | fast |
@@ -128,17 +129,15 @@ Checked items have a handle. Unchecked items are not covered, with a reason.
       ignored and the target stays unresolved:
       `test_lookup_answer_not_matching_the_request_is_ignored`
       (`tests/test_tagging_target.py`).
-- [ ] **Not covered — a long DList `d`.** The story asks that the list's `d`
-      stay under relay limits (the tag hub rejects filter values over 255
-      bytes). ADR 0002 decides no behavior past that limit, so a test could
-      only pin today's unbounded concatenation. It belongs with open question
-      1 (`d` length, Loom P-141).
-- [ ] **Not covered — two pairs producing one `d`.** Hyphens in slugs and in
-      DList `d`s make some `d`s ambiguous: slug `foo` with DList `x-k30402`
-      and slug `foo-dl<author8>-x` with kind 30402 both give
-      `…-foo-dl<author8>-x-k30402`. The same class as the 8-character
-      truncation ADR 0001 D5 accepted. Not tested: the fix is a wire change
-      (open question 1), and a test would only pin the collision.
+- [x] **A long DList `d`.** The DList segment is bounded by the
+      event-taggings rule (ADR 0002 D5), so a header `d` of any length gives
+      the same slot length: `test_slot_length_stays_flat_however_long_the_header_d`.
+      Only the Tag's slug is still unbounded, as on 30392 (open question 1).
+- [x] **Two pairs producing one `d`.** Slug `foo` with DList `x-k30402` and
+      slug `foo-dl<author8>-x` with kind 30402 used to give one `d`. A DList
+      segment now ends in its hash, so no kind or other DList can share its
+      tail short of a hash collision:
+      `test_a_hyphenated_slug_no_longer_mimics_a_dlist_slot`.
 - [x] **An item moved to another DList.** A 39999 item republished with a
       different header `z` joins the new DList's list on the next run, because
       coordinates are never cached (ADR 0002 D6):
@@ -254,6 +253,9 @@ was folded into another, it is listed here; nothing was dropped.
   `test_a_9998_header_that_wasnt_found_leaves_its_items_unresolved`,
   `test_foreign_39999_writes_nothing`, the replay script's
   apply-and-failure cases, and `test_the_response_carries_the_new_fields`.
+- **The DList slot rule changed after J3** (Vinney, 2026-11-04: the
+      event-taggings rule in ADR 0002 D5). U11c's cases were renamed, U11d is
+      new, and the two `d` edge cases above moved from not covered to covered.
 - **Story 1's admin tests** gained one autouse fixture holding the event
   taggings at zero, so their runs stay people-only; no story 1 assertion
   changed. `test_untrustworthy_empty_view_never_retracts` gained the event

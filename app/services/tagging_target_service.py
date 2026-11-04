@@ -213,20 +213,6 @@ def dlist_name(
     return None
 
 
-def dlist_author_and_key(
-    ref: str, by_id: dict[str, TaggedEvent]
-) -> tuple[str, str] | None:
-    """(header author, header `d`, or for a 9998 header its id) for the list's
-    `d` tag (D5)."""
-    coordinate = parse_coordinate(ref)
-    if coordinate is not None:
-        return coordinate.pubkey, coordinate.d_tag
-    facts = by_id.get(ref)
-    if facts is None:
-        return None
-    return facts.pubkey, ref
-
-
 # --- lookups -----------------------------------------------------------------
 
 

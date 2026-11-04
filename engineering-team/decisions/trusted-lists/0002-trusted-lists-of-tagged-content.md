@@ -232,8 +232,28 @@ content         {"members":[{"id"|"address", "endorsements", "disputes", "score"
 ```
 
 - **`<target>` in the `d`** is `k<kind>` for an event kind (`k1`, `k30402`), or
-  `dl<headerAuthor[0:8]>-<header d>` for a DList. A kind-9998 header has no
-  `d`, so its place is taken by the header's event id.
+  `dl<segment>` for a DList, where `<segment>` follows the event-taggings rule
+  (Tapestry `protocols/drafts/event-taggings.md`, "The assertion d-tag
+  (normative)"), exactly as defined there (Vinney, 2026-11-04):
+  - a header named by coordinate (39998) gives `<author8>-<d16>-<hash8>`.
+    `hash8` is the first 8 lowercase hex characters of the SHA-256 of the UTF-8
+    bytes of the full coordinate, exactly as carried; it is the only part that
+    keeps the slot unique. `author8` (the header author's first 8 characters)
+    and `d16` (the first 16 UTF-16 code units of the header's `d`, verbatim)
+    are readable decoration;
+  - a kind-9998 header, named by event id, gives `<id8>`, the id's first 8
+    characters.
+
+  Example: `tl-tag-items-<obs8>-<ta8>-espresso-dl<author8>-books-<hash8>`.
+  Every `d` then has a bounded length whatever the header's `d` holds
+  (colons, spaces, any script), and a tagging of one of these lists stays
+  flat under the same rule. Readers never parse the `d`; `tagging-target`
+  names the DList in full. **One deliberate difference:** where the 16th code
+  unit cuts an emoji in half, JavaScript's `slice` keeps the lone half; no
+  event can carry it as UTF-8, so it is dropped here.
+  - *Superseded 2026-11-04,* before anything shipped: `dl<author8>-<header d>`,
+    with a 9998 header's whole 64-character id in place of its `d`. Unbounded,
+    and a hyphenated slug could mimic a DList slot.
 - **The `tl-tag-` prefix** keeps Tapestry's cleanup, which sweeps `tl-pin-`,
   off these lists, as 0001 D5 does for 30392.
 - **No `a` or `p` back-references,** unlike Tapestry's 30393. On a 30394 an `a`
@@ -244,9 +264,10 @@ content         {"members":[{"id"|"address", "endorsements", "disputes", "score"
   30392 does. Event taggings reach their Tag through a tagging header's `a`
   (D6), so the coordinate is all this path has. It is also the identity OPEN.md
   (2026-09-17) wants for every tagging.
-- **The 8-character truncation** is inherited from 0001 D5. Loom P-141 proposes
-  full-length `d` tags; if it's accepted before this ships, these lists adopt
-  it from the start (open question 1).
+- **The 8-character truncation** of the observer and the tag author is
+  inherited from 0001 D5. Loom P-141 proposes full-length `d` tags; if it's
+  accepted before this ships, those two parts adopt it from the start (open
+  question 1). The DList segment stays on the event-taggings rule either way.
 
 ### D6 — Ingest event taggings and tagging headers; resolve targets at build time
 
@@ -516,9 +537,10 @@ and the timing.
 
 ## Open questions
 
-1. **The `d` tag's length.** Keep 0001's 8-character parts, or start these
-   kinds full-length if Loom P-141 is accepted first? Nothing reads these kinds
-   yet, so this is the cheapest moment to choose.
+1. **The `d` tag's length.** Keep 0001's 8-character observer and tag-author
+   parts, or start these kinds full-length if Loom P-141 is accepted first?
+   Nothing reads these kinds yet, so this is the cheapest moment to choose.
+   (The DList part is settled in D5.)
 2. **The kind-name table (D4).** Which kinds get a name at launch, and does a
    kind with no name stay listless (chosen) or get a generic title?
 3. **Lookup relays (D6).** Is the search relay plus the tagging's hint enough,

@@ -72,7 +72,6 @@ from app.services.tagging_target_service import (
     Lookup,
     LookupFailed,
     coordinate_of,
-    dlist_author_and_key,
     dlist_name,
     header_refs,
     resolve_target,
@@ -512,17 +511,11 @@ def plan_content_lists(
             )
         else:
             target_name = dlist_name(target_value, view.headers, view.by_id)
-            author_key = dlist_author_and_key(target_value, view.by_id)
-            if target_name is None or author_key is None:
+            if target_name is None:
                 unresolved.update(s.member for s in stances)
                 continue
             d_tag = compute_content_d_tag(
-                list_kind,
-                observer,
-                row.tag_author_pubkey,
-                row.slug,
-                dlist_author=author_key[0],
-                dlist_key=author_key[1],
+                list_kind, observer, row.tag_author_pubkey, row.slug, dlist=target_value
             )
         members = compute_members(
             [(s.member, s.polarity, weights.get(s.asserter, 0.0)) for s in stances],

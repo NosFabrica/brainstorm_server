@@ -7,6 +7,7 @@ recorded in ADR `trusted-lists/0001` D5.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -265,6 +266,37 @@ def content_d_kind_prefix(list_kind: int) -> str:
     return f"{D_TAG_PREFIX}-{_D_KIND_WORD[list_kind]}-"
 
 
+def hash8(value: str) -> str:
+    """First 8 lowercase hex characters of the SHA-256 of `value`'s UTF-8
+    bytes: the house `hash8` (Tapestry `src/lib/dtag.js`)."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+
+
+def _js_slice(value: str, units: int) -> str:
+    """`value.slice(0, units)` as JavaScript counts it, in UTF-16 code units.
+
+    A cut through a surrogate pair would leave a lone surrogate, which no
+    event can carry as UTF-8, so the dangling half is dropped (ADR 0002 D5).
+    """
+    cut = value.encode("utf-16-le", "surrogatepass")[: units * 2]
+    return cut.decode("utf-16-le", "ignore")
+
+
+def dlist_target8(ref: str) -> str:
+    """The DList's segment of a list `d`, by the event-taggings rule
+    (Tapestry `protocols/drafts/event-taggings.md`, "The assertion d-tag").
+
+    A header named by coordinate gives `<author8>-<d16>-<hash8>`: `hash8` of the
+    full coordinate exactly as carried is the only part that keeps it unique;
+    `author8` and `d16` (the first 16 UTF-16 units of the header's `d`) are
+    readable decoration. A kind-9998 header, named by event id, gives `<id8>`.
+    """
+    parts = ref.split(":", 2)
+    if len(parts) < 3:
+        return ref[:8]
+    return f"{parts[1][:8]}-{_js_slice(parts[2], 16)}-{hash8(ref)}"
+
+
 def compute_content_d_tag(
     list_kind: int,
     observer: str,
@@ -272,19 +304,18 @@ def compute_content_d_tag(
     slug: str,
     *,
     kind: int | None = None,
-    dlist_author: str | None = None,
-    dlist_key: str | None = None,
+    dlist: str | None = None,
 ) -> str:
     """`tl-tag-notes|items-<observer8>-<tagAuthor8>-<slug>-<target>` (D5).
 
-    `<target>` is `k<kind>` for an event kind, or `dl<headerAuthor8>-<key>` for
-    a DList, where `<key>` is the header's `d` (its event id for a kind-9998
-    header).
+    `<target>` is `k<kind>` for an event kind, or `dl<dlist_target8>` for a
+    DList, where `dlist` is the header's coordinate or, for a kind-9998
+    header, its event id.
     """
     if kind is not None:
         target = f"k{kind}"
     else:
-        target = f"dl{(dlist_author or '')[:8]}-{dlist_key}"
+        target = f"dl{dlist_target8(dlist or '')}"
     return (
         f"{content_d_kind_prefix(list_kind)}{observer[:8]}-"
         f"{tag_author_pubkey[:8]}-{slug}-{target}"
