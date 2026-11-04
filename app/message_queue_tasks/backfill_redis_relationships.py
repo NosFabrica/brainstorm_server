@@ -6,6 +6,7 @@ from app.message_queue_tasks.process_strfry_event import (
     FOLLOWED_BY_KEY_PREFIX,
     MUTED_BY_KEY_PREFIX,
     REPORTED_BY_KEY_PREFIX,
+    VOUCHED_BY_KEY_PREFIX,
 )
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.nostr_event_transferer.nostr_event_transferer import ev_kinds
@@ -23,6 +24,7 @@ _RELATIONSHIP_TO_PREFIX = {
     "FOLLOWS": FOLLOWED_BY_KEY_PREFIX,
     "MUTES": MUTED_BY_KEY_PREFIX,
     "REPORTS": REPORTED_BY_KEY_PREFIX,
+    "VOUCHES": VOUCHED_BY_KEY_PREFIX,
 }
 
 # Written by brainstorm_profile_resolver, not this server; the GrapeRank worker reads it.

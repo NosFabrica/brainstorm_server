@@ -436,6 +436,8 @@ class GrapeRankPreset(TimestampMixin, Base):
     verified_muters_influence_cutoff: Mapped[float] = mapped_column(
         Float, nullable=False
     )
+    vouch_rating: Mapped[float] = mapped_column(Float, nullable=False)
+    vouch_confidence: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 class ObserverWhitelist(TimestampMixin, Base):
@@ -473,6 +475,8 @@ class GrapeRankPresetHistory(Base):
     verified_muters_influence_cutoff: Mapped[float] = mapped_column(
         Float, nullable=False
     )
+    vouch_rating: Mapped[float] = mapped_column(Float, nullable=False)
+    vouch_confidence: Mapped[float] = mapped_column(Float, nullable=False)
     change_type: Mapped[str] = mapped_column(String, nullable=False)
     changed_by: Mapped[str | None] = mapped_column(String, nullable=True)
     changed_at: Mapped[datetime] = mapped_column(

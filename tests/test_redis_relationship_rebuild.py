@@ -4,6 +4,8 @@
 the GrapeRank worker reads for designations; Neo4j holds the same edges. If Redis is wiped,
 nothing else restores them — the resolver skips users it already settled — so the rebuild
 writes them from `DESIGNATES` / `ZAPS_VIA` edges, keyed by source, beside the reverse sets.
+The reverse sets include `vouched_by:` from Neo4j `VOUCHES` edges, so a Redis wipe
+cannot silently drop vouches from subsequent GrapeRank runs.
 """
 
 from __future__ import annotations
@@ -114,6 +116,7 @@ def test_the_rebuild_covers_designations_and_zap_signers(monkeypatch):
     assert ("DESIGNATES", "designates:", True) in asked
     assert ("ZAPS_VIA", "zaps_via:", True) in asked
     assert ("FOLLOWS", "followed_by:", False) in asked
+    assert ("VOUCHES", "vouched_by:", False) in asked
     redis.set.assert_awaited_once_with(mod.DONE_MARKER_KEY, "1")
 
 

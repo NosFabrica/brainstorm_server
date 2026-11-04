@@ -28,15 +28,28 @@ from app.services.verified_cutoffs import (
 
 
 def _load_seeded_presets() -> dict[str, dict[str, float]]:
-    """The factory preset values, read from the seed migration itself."""
-    path = (
-        Path(__file__).resolve().parent.parent
-        / "alembic/versions/4fcfe9570a50_add_graperank_preset_tables.py"
+    """The factory preset values, read from the migrations that write them:
+    the seed migration, plus the vouch-params migration layered on top."""
+    versions = Path(__file__).resolve().parent.parent / "alembic/versions"
+
+    def load(name: str, module_name: str):
+        spec = importlib.util.spec_from_file_location(module_name, versions / name)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    seed_migration = load(
+        "4fcfe9570a50_add_graperank_preset_tables.py", "_preset_seed_migration"
     )
-    spec = importlib.util.spec_from_file_location("_preset_seed_migration", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module._SEED
+    seed = {pid: dict(vals) for pid, vals in seed_migration._SEED.items()}
+    vouch = load(
+        "a7c9e2f41b05_add_vouch_params_to_graperank_presets.py",
+        "_vouch_migration",
+    )._FACTORY
+    for pid, (rating, confidence) in vouch.items():
+        seed[pid]["vouch_rating"] = rating
+        seed[pid]["vouch_confidence"] = confidence
+    return seed
 
 
 SEED = _load_seeded_presets()
@@ -56,6 +69,8 @@ def _params(**overrides) -> GrapeRankPresetParams:
         verifiedFollowersInfluenceCutoff=0.02,
         verifiedReportersInfluenceCutoff=0.1,
         verifiedMutersInfluenceCutoff=0.01,
+        vouchRating=1.0,
+        vouchConfidence=0.4,
     )
     base.update(overrides)
     return GrapeRankPresetParams(**base)

@@ -9,7 +9,7 @@ pipeline.
 
 ## State machine
 
-Per Nostr kind (3, 5, 10000, 1984 — see `ev_kinds`; no kind 0, nothing reads
+Per Nostr kind (3, 5, 10000, 1984, 30000 — see `ev_kinds`; no kind 0, nothing reads
 profiles from neofry), state is stored in
 [`brainstorm_nostr_relay_transfer`](../db_models/__init__.py) (UNIQUE on `kind`):
 
@@ -61,7 +61,7 @@ pattern as the cronjobs and queue consumers. Cancelled on shutdown.
 
 ## Two kind lists, deliberately
 
-`ev_kinds` means "the kinds the follow/mute/report graph is built from".
+`ev_kinds` means "the kinds the follow/mute/report/vouch graph is built from".
 `backfill_redis_relationships._is_graph_db_populated` reads it with exactly
 that meaning — it gates the one-time Redis relationship backfill on *every*
 listed kind having a completed transfer row.
