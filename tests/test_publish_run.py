@@ -146,3 +146,21 @@ def test_full_relay_run_resets_the_backstop(run):
 
     assert len(run.relay.sent) == 2  # "hi" re-asserted though unchanged
     run.repo.reset.assert_awaited_once()
+
+
+def _empty(success: bool) -> dict:
+    return {"private_id": 7, "result": {"scorecards": {}, "duration_seconds": 1.0, "success": success}}
+
+
+def test_a_calc_with_no_scorecards_closes_the_publish_stage(run):
+    # Left Waiting, the run held scheduler admission for everyone until the 7h reap.
+    asyncio.run(upload.process_nostr_upload_message(_empty(success=True)))
+
+    assert run.repo.ta_status.await_args.kwargs["status"] == BrainstormRequestStatus.SUCCESS
+    assert run.relay.sent == []
+
+
+def test_a_failed_calc_leaves_the_publish_stage_to_its_own_consumer(run):
+    asyncio.run(upload.process_nostr_upload_message(_empty(success=False)))
+
+    run.repo.ta_status.assert_not_awaited()
