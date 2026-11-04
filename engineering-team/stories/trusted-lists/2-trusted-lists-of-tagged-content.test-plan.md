@@ -26,7 +26,7 @@ hand after deploy.
 | AC6 tagging target, every row of D2's table | U6 | `test_tagging_target_of[…]` (39999 by `a` with a `39998` header `z`; 39999 by `a` with a 9998 header id `z`; 9999 by `e`; headerless 39999 and 9999 → kind; 30402 by `a`, no fetch; kind-1 note by `e`; addressable event by `e` → its coordinate; a Tag element as target → its concept header's DList) | `tests/test_tagging_target.py` | fast |
 | AC6 addressable event tagged by `e`: the member is its coordinate | U6b | `test_id_tagged_addressable_member_is_its_coordinate` | `tests/test_tagging_target.py` | fast |
 | AC6 item claiming two DLists is in both lists | U6c | `test_two_header_item_joins_both_lists` | `tests/test_tagging_target.py` | fast |
-| AC6 answers cached across runs | I3 | `test_target_lookups_are_cached_across_runs` (second run fetches nothing for targets resolved in the first) | `tests/integration/test_trusted_list_content_publish_integration.py` | integration |
+| AC6 by-id answers cached across runs; coordinates fetched fresh | I3 | `test_target_lookups_are_cached_across_runs` (second run fetches no id resolved in the first, and fetches every 39999 coordinate again) | `tests/integration/test_trusted_list_content_publish_integration.py` | integration |
 | AC7 unfound target skipped, counted, retried | U7 | `test_unfound_target_is_counted_and_looked_up_next_run` (joins no list; `unresolved_targets` = 1; not cached, so run 2 fetches it and, now present, it joins) | `tests/test_tagging_target.py` | fast |
 | AC8 unreachable lookup relays: no content publish, no content retraction, 30392 still published | U8 | `test_unreachable_lookup_relays_skip_content_lists_only` (run result names the reason; publish stub saw 30392s only; retraction stub saw nothing for 30393/30394) | `tests/test_trusted_list_admin.py` | fast |
 | AC8 one configured lookup relay down, a hint relay answering: still a failed lookup | U8b | `test_one_configured_lookup_relay_down_is_a_failed_lookup` (two configured relays, one raises; the hint relay answers every target; result as U8, and a previously published content list is **not** republished emptied) | `tests/test_trusted_list_admin.py` | fast |
@@ -139,10 +139,11 @@ Checked items have a handle. Unchecked items are not covered, with a reason.
       `…-foo-dl<author8>-x-k30402`. The same class as the 8-character
       truncation ADR 0001 D5 accepted. Not tested: the fix is a wire change
       (open question 1), and a test would only pin the collision.
-- [ ] **Not covered — an item moved to another DList.** A 39999 item
-      republished with a different header `z` keeps its cached DList. ADR 0002
-      D6 says answers are cached, with no expiry. Flagged for Gate B as a
-      design question, not a test gap.
+- [x] **An item moved to another DList.** A 39999 item republished with a
+      different header `z` joins the new DList's list on the next run, because
+      coordinates are never cached (ADR 0002 D6):
+      `test_item_moved_to_another_dlist_follows_it_next_run`
+      (`tests/test_tagging_target.py`).
 - [ ] **Not covered — concurrent runs for one Observer.** As story 1:
       last-write-wins converges, and no locking is in scope.
 

@@ -101,7 +101,8 @@ test plan.
       - an `e` id whose event is addressable resolves as a coordinate would,
         and **the member is its coordinate**;
       - an item claiming two DLists is a member of both lists.
-      Answers are cached across runs.
+      Answers to lookups by event id are cached across runs; anything named
+      by coordinate is fetched fresh each run (ADR 0002 D6).
 - [ ] **AC7: unresolved targets are skipped, counted and retried.** A target
       that no lookup relay returns joins no list.
       It's counted in the run result's `unresolved_targets` and looked up again

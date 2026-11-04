@@ -232,7 +232,8 @@ content         {"members":[{"id"|"address", "endorsements", "disputes", "score"
 ```
 
 - **`<target>` in the `d`** is `k<kind>` for an event kind (`k1`, `k30402`), or
-  `dl<headerAuthor[0:8]>-<header d>` for a DList.
+  `dl<headerAuthor[0:8]>-<header d>` for a DList. A kind-9998 header has no
+  `d`, so its place is taken by the header's event id.
 - **The `tl-tag-` prefix** keeps Tapestry's cleanup, which sweeps `tl-pin-`,
   off these lists, as 0001 D5 does for 30392.
 - **No `a` or `p` back-references,** unlike Tapestry's 30393. On a 30394 an `a`
@@ -302,6 +303,14 @@ read time, as 0001 does with a missing element.
 Lookups go to `wss://search.brainstorm.world` (an `include:spam` read; it held
 99 of the 101 ids) and the tagging's relay hint, through a new
 `trusted_list_target_relays` setting.
+
+**What is cached (Vinney, 2026-11-03):** only answers to lookups **by event
+id**, forever: an event id names one immutable event, so its kind, author,
+`d` and `z` tags never change. Anything named **by coordinate** (a 39999 item,
+a 39998 header) is fetched fresh each run, because a replaceable event can be
+republished under another DList or with new `names`. A coordinate of any other
+kind still needs no fetch at all. Today that is about 8 coordinate fetches a
+run.
 
 ### D7 — Membership and scoring are 0001's, keyed on the target
 
