@@ -272,7 +272,9 @@ def _honored(honored: Iterable[str] | None) -> tuple[str, ...]:
     return tuple(settings.tagging_honored_namespaces)
 
 
-def joins_concept(event: dict, concept: str, honored: Iterable[str] | None = None) -> bool:
+def joins_concept(
+    event: dict, concept: str, honored: Iterable[str] | None = None
+) -> bool:
     """Whether any of the event's `z` tags is `39998:<ns>:<concept>` for an
     honored namespace. A tagging counts if it joins any of them."""
     handles = {f"39998:{ns}:{concept}" for ns in _honored(honored)}

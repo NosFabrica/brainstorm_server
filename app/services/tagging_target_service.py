@@ -72,7 +72,11 @@ def facts_of(event: dict) -> TaggedEvent:
         None,
     )
     names = next(
-        (tuple(v for v in t[1:] if isinstance(v, str)) for t in tags if t[0] == "names"),
+        (
+            tuple(v for v in t[1:] if isinstance(v, str))
+            for t in tags
+            if t[0] == "names"
+        ),
         (),
     )
     return TaggedEvent(
@@ -153,7 +157,9 @@ def resolve_target(
         coordinate = parse_coordinate(target)
         if coordinate is None:
             return None
-        return _resolve_coordinate(str(coordinate), coordinate.kind, by_coordinate, None)
+        return _resolve_coordinate(
+            str(coordinate), coordinate.kind, by_coordinate, None
+        )
 
     facts = by_id.get(target)
     if facts is None:
@@ -161,7 +167,9 @@ def resolve_target(
     if is_addressable(facts.kind):
         # Tagged by id though addressable (legacy, Brainstorm-UI#334): the member
         # is its coordinate, so it merges with taggings by coordinate (D2, D7).
-        return _resolve_coordinate(coordinate_of(facts), facts.kind, by_coordinate, facts)
+        return _resolve_coordinate(
+            coordinate_of(facts), facts.kind, by_coordinate, facts
+        )
     if facts.kind == DLIST_ITEM_ID_KIND:
         return Resolution(LIST_KIND_EVENTS, target, _item_targets(facts, facts.kind))
     return Resolution(LIST_KIND_EVENTS, target, (TaggingTarget(kind=facts.kind),))
@@ -193,9 +201,7 @@ def dlist_name(
     the singular, else the header's `d`. A kind-9998 header named by id has no
     `d`, so one that wasn't found, or has no names, can't be named (None)."""
     coordinate = parse_coordinate(ref)
-    facts = (
-        headers_by_coordinate.get(ref) if coordinate is not None else by_id.get(ref)
-    )
+    facts = headers_by_coordinate.get(ref) if coordinate is not None else by_id.get(ref)
     if facts is not None:
         names = [n for n in facts.names if n.strip()]
         if len(names) >= 2:
@@ -267,7 +273,9 @@ async def _fetch_from_relay(url: str, filters: list[Filter]) -> list[dict]:
 class Lookup:
     """One run's lookups. Configured relays must all answer; hints are extras."""
 
-    relays: list[str] = field(default_factory=lambda: list(settings.trusted_list_target_relays))
+    relays: list[str] = field(
+        default_factory=lambda: list(settings.trusted_list_target_relays)
+    )
 
     async def _gather(self, filters: list[Filter], hints: Iterable[str]) -> list[dict]:
         events: list[dict] = []
@@ -285,7 +293,9 @@ class Lookup:
                 logger.warning("Lookup hint relay %s failed: %s", url, exc)
         return events
 
-    async def by_ids(self, ids: Iterable[str], hints: Iterable[str] = ()) -> dict[str, TaggedEvent]:
+    async def by_ids(
+        self, ids: Iterable[str], hints: Iterable[str] = ()
+    ) -> dict[str, TaggedEvent]:
         """The events with these ids. An answer whose id wasn't asked for is
         dropped, so a relay can't substitute one event for another."""
         wanted = sorted(set(ids))
@@ -329,4 +339,3 @@ class Lookup:
             if key in wanted and (key not in newest or newest[key][0] < created_at):
                 newest[key] = (created_at, facts)
         return {key: facts for key, (_, facts) in newest.items()}
-

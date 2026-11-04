@@ -579,9 +579,7 @@ class NostrEventTagging(Base):
     header_coordinate: Mapped[str] = mapped_column(String, nullable=False)
     polarity: Mapped[float] = mapped_column(Float, nullable=False, server_default="1")
     created_at_unix: Mapped[int] = mapped_column(Integer, nullable=False)
-    __table_args__ = (
-        Index("ix_nostr_event_tagging_header", "header_coordinate"),
-    )
+    __table_args__ = (Index("ix_nostr_event_tagging_header", "header_coordinate"),)
 
 
 class NostrTaggedEvent(Base):

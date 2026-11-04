@@ -1,13 +1,15 @@
 """Trusted List generation for one Observer.
 
-The pipeline, per ADR `trusted-lists/0001`:
+The pipeline, per ADR `trusted-lists/0001` (people) and `0002` (content):
 
-    taggings (Postgres)
+    taggings (Postgres): pubkey taggings, and event taggings via their headers
       -> qualifying asserters (Neo4j, this Observer's web of trust)
-      -> dictionary (tags used >= min_uses by a qualifying asserter)
-      -> per tag: membership (applications >= cutoff and > disputes)
-      -> kind-30392 signed by the Observer's assistant nsec, published
-      -> stale slots retracted
+      -> dictionary: Tags used >= min_uses (30392), and (Tag, tagging target)
+         pairs used >= min_uses (30393 / 30394), the targets worked out by
+         lookups (`tagging_target_service`)
+      -> per entry: membership (applications >= cutoff and > disputes)
+      -> signed by the Observer's assistant nsec, published
+      -> stale slots retracted, per kind, from a trusted view only
 
 Failure policy differs by dependency and the difference is deliberate:
 Postgres and Neo4j failures abort the whole run BEFORE anything is published,
@@ -65,7 +67,6 @@ from app.services.graperank_preset_service import (
 from app.services.tagging_parse import parse_coordinate
 from app.services.tagging_target_service import (
     DLIST_HEADER_ID_KIND,
-    DLIST_HEADER_KIND,
     DLIST_ITEM_ID_KIND,
     DLIST_ITEM_KIND,
     Lookup,
@@ -419,7 +420,9 @@ async def gather_target_view(rows: list[EventTaggingRow], lookup: Lookup) -> Tar
     header_coordinates = {r for r in refs if parse_coordinate(r) is not None}
     view.headers = await lookup.by_coordinates(header_coordinates, hints)
     view.by_id.update(
-        await _ids_cached_or_fetched(refs - header_coordinates - set(view.by_id), lookup, hints)
+        await _ids_cached_or_fetched(
+            refs - header_coordinates - set(view.by_id), lookup, hints
+        )
     )
     return view
 
@@ -468,7 +471,9 @@ def plan_content_lists(
     groups: dict[tuple[str, int, str], tuple[EventTaggingRow, list[ContentStance]]] = {}
 
     for row in rows:
-        resolution = resolve_target(row.target, row.target_slot, view.by_id, view.by_coordinate)
+        resolution = resolve_target(
+            row.target, row.target_slot, view.by_id, view.by_coordinate
+        )
         if resolution is None:
             unresolved.add(row.target)
             continue

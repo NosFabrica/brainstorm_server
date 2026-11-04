@@ -160,3 +160,16 @@ def test_dictionary_rows_name_the_dictionary_relay(setup_client, monkeypatch):
     assert {r[2] for r in _rows(client) if r[0] in ("39998", "39999")} == {
         "wss://dictionary.example"
     }
+
+
+def test_content_list_rows_follow_30392_with_its_key_and_relay(setup_client):
+    """ADR trusted-lists/0002 D9: bare 30393 and 30394 rows, straight after
+    30392, with the same Assistant and relay. The search relay's signer gate is
+    per kind, so without them content lists would never unpack."""
+    rows = _rows(setup_client[0])
+    keys = [r[0] for r in rows]
+    at = keys.index("30392")
+    assert keys[at : at + 3] == ["30392", "30393", "30394"]
+    trusted_list_row = rows[at]
+    for row in rows[at + 1 : at + 3]:
+        assert row[1:] == trusted_list_row[1:]

@@ -249,6 +249,22 @@ poetry run pytest ./tests \
   --deselect tests/test_passkey_vault.py::test_a_new_device_opens_the_vault_with_the_passkey
 ```
 
+## Implementation scope notes (J3 item 2)
+
+Outside the ADR's declared blast radius, each needed by what is inside it:
+
+- **`tests/integration/tagging_harness.py`:** cleans the three new tables
+  beside story 1's two (`clean_tagging_tables`), so the integration tests
+  start and end empty.
+- **The directory guides** (`app/db_models/`, `app/repos/`, `app/services/`,
+  `app/message_queue_tasks/`, `scripts/` `CLAUDE.md`): each describes the
+  module it sits beside, and the new tables, repo, services, dispatch and
+  script are described there. Docs only.
+- **`alembic/versions/e7b3c9d1f2a8_add_event_tagging_tables.py`:** the "one
+  Alembic revision" the blast radius names. `alembic check` reports only two
+  drifts older than this branch (dropped Vespa-era columns), none from these
+  tables.
+
 ## Open questions
 
 From ADR 0002, plus one from this story:

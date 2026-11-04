@@ -1,7 +1,14 @@
 """Retraction planning (AC13) and the publish-failure safety rule (AC14)."""
 from __future__ import annotations
 
-from app.services.trusted_list_service import plan_retractions
+import pytest
+
+from app.services.trusted_list_service import (
+    ContentSlot,
+    content_slot_of,
+    plan_content_retractions,
+    plan_retractions,
+)
 
 
 def test_stale_slot_is_retracted():
@@ -73,13 +80,19 @@ def test_untrustworthy_empty_view_never_retracts(monkeypatch):
     )
     monkeypatch.setattr(svc, "get_asserter_pubkeys_on_db", AsyncMock(return_value=[]))
 
-    # Case 1: nothing ingested.
+    # Case 1: nothing ingested, of either kind of tagging.
     monkeypatch.setattr(svc, "count_taggings_on_db", AsyncMock(return_value=0))
+    monkeypatch.setattr(svc, "count_event_taggings_on_db", AsyncMock(return_value=0))
     r1 = asyncio.run(svc.generate_trusted_lists_for_observer("a" * 64))
     assert r1.retracted == 0
 
-    # Case 2: taggings present, but the Observer has no qualifying asserters.
+    # Case 2: taggings present (pubkey and event taggings, ADR 0002), but the
+    # Observer has no qualifying asserters.
     monkeypatch.setattr(svc, "count_taggings_on_db", AsyncMock(return_value=9))
+    monkeypatch.setattr(svc, "count_event_taggings_on_db", AsyncMock(return_value=4))
+    monkeypatch.setattr(
+        svc, "get_event_tagging_asserters_on_db", AsyncMock(return_value=["c" * 64])
+    )
     monkeypatch.setattr(
         svc, "get_asserter_pubkeys_on_db", AsyncMock(return_value=["b" * 64])
     )
@@ -98,3 +111,90 @@ def test_untrustworthy_empty_view_never_retracts(monkeypatch):
     # Neither case may even open a relay connection, let alone publish.
     connect.assert_not_awaited()
     publish.assert_not_awaited()
+
+
+# --- story 2: content slots (ADR trusted-lists/0002 D8) ---------------------
+
+OBSERVER8 = "aaaaaaaa"
+SOURCE = ["source-tag", f"39999:{'d' * 64}:a-b", "d" * 64, "a-b"]
+
+
+def _live(kind=30394, d=f"tl-tag-items-{OBSERVER8}-dddddddd-a-b-dlcccccccc-x-y", extra=()):
+    return {
+        "kind": kind,
+        "tags": [
+            ["d", d],
+            ["title", "a-b Books"],
+            SOURCE,
+            ["tagging-target", f"39998:{'c' * 64}:x-y"],
+            *extra,
+        ],
+    }
+
+
+def test_content_slot_identity_is_read_off_the_live_event():
+    """Slug `a-b` and DList `d` `x-y`: splitting the `d` would misread both."""
+    slot = content_slot_of(_live())
+    assert slot is not None and slot.readable
+    assert slot.source_tag == SOURCE
+    assert slot.tagging_target == f"39998:{'c' * 64}:x-y"
+    assert slot.title == "a-b Books"
+    assert not slot.retracted
+
+
+def test_content_slot_of_skips_what_isnt_ours():
+    assert content_slot_of(_live(kind=30392)) is None
+    assert content_slot_of(_live(d="tl-pin-items-x")) is None
+    # A 30393 must carry the notes prefix, a 30394 the items prefix.
+    assert content_slot_of(_live(kind=30393)) is None
+
+
+def test_retracted_content_slot_is_marked():
+    slot = content_slot_of(_live(extra=[["status", "retracted"]]))
+    assert slot is not None and slot.retracted
+
+
+def _slot(d="x", kind=30394, **over):
+    base = dict(
+        kind=kind,
+        d_tag=d,
+        retracted=False,
+        title="a-b Books",
+        source_tag=SOURCE,
+        tagging_target="1",
+    )
+    base.update(over)
+    return ContentSlot(**base)
+
+
+def test_content_slot_retracted_reading_identity_from_live_event():
+    """AC15: stale = absent from this run's current set, per (kind, d)."""
+    slots = [_slot("keep"), _slot("drop"), _slot("keep", kind=30393)]
+    stale = plan_content_retractions(slots, {(30394, "keep")})
+    assert [(s.kind, s.d_tag) for s in stale] == [(30394, "drop"), (30393, "keep")]
+
+
+def test_failed_content_publish_keeps_its_slot():
+    """A list whose publish failed is still current, so it isn't retracted."""
+    current = {(30393, "ok"), (30393, "failed")}
+    assert plan_content_retractions([_slot("failed", kind=30393)], current) == []
+
+
+def test_already_retracted_content_slot_is_not_retracted_again():
+    assert plan_content_retractions([_slot("old", retracted=True)], set()) == []
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        dict(source_tag=None),
+        dict(tagging_target=None),
+        dict(title=None),
+        dict(source_tag=["source-tag", "not-a-coordinate", "d" * 64, "a-b"]),
+        dict(source_tag=["source-tag", f"39999:{'d' * 64}:a-b"]),
+    ],
+    ids=["no source-tag", "no tagging-target", "no title",
+         "source-tag not a coordinate", "source-tag short"],
+)
+def test_unreadable_live_slot_is_left_in_place(over):
+    assert not _slot(**over).readable

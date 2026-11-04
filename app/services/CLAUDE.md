@@ -180,13 +180,17 @@ process; if/when you horizontally scale the server, push this flag into Redis.
 
 ## Trusted Lists (`tagging_parse.py`, `trusted_list_build.py`, `trusted_list_service.py`)
 
-Three modules, split so the decision logic is testable without any backend.
+Four modules, split so the decision logic is testable without any backend.
+One run builds all three kinds: 30392 for the people a Tag is applied to, and
+30393 (events by id) / 30394 (by coordinate) for tagged content, one list per
+Tag and *tagging target* (an event kind, or one DList).
 
 | Module | Contains | I/O? |
 |---|---|---|
-| `tagging_parse.py` | kind-39999 parsing: tag elements vs taggings (told apart by `z`), polarity bucketing, `LEGACY_Z_TAG_PUBKEY` | none |
-| `trusted_list_build.py` | membership predicate, member ordering, the kind-30392 tag/content composition, `d`-tag identity | none |
-| `trusted_list_service.py` | the per-Observer pipeline: read → rank-filter → dictionary → publish → retract | Postgres, Neo4j, relay |
+| `tagging_parse.py` | kind-39999 parsing: tag elements, pubkey taggings, tagging headers and event taggings (told apart by `z`; the last two count for any of `tagging_honored_namespaces`), polarity bucketing, `LEGACY_Z_TAG_PUBKEY` | none |
+| `tagging_target_service.py` | what was tagged: D2's target rule (`resolve_target`, pure) and the lookups behind it (`Lookup`, over `trusted_list_target_relays` plus the tagging's hint). Lookups by event id are cached forever in `nostr_tagged_event`; coordinates are fetched fresh every run | relay |
+| `trusted_list_build.py` | membership predicate, member ordering, the 30392 and 30393/30394 tag/content composition, `d`-tag identity, the kind-name table for titles (`KIND_NAMES`, this server's own) | none |
+| `trusted_list_service.py` | the per-Observer pipeline: read → rank-filter → dictionary → lookups → publish → retract. `plan_content_lists` is the pure content dictionary | Postgres, Neo4j, relay |
 
 **`LEGACY_Z_TAG_PUBKEY` is not a signing key.** It is tapestry's wire-binding
 literal used *only* to compose `z` tags. Changing it orphans historical taggings
@@ -198,4 +202,14 @@ signed claims that people belong to nothing. Relay failures are per-tag and
 never abort; a tag whose publish failed keeps its `d` slot marked current so the
 retraction pass cannot wipe the healthy list still on the relay.
 
-See `engineering-team/decisions/trusted-lists/0001-trusted-lists-from-taggings.md`.
+**Each kind's view is trusted on its own.** People lists need pubkey taggings
+held; content lists need event taggings held *and* every configured lookup
+relay to answer (a hint relay failing doesn't count). An untrusted view
+publishes and retracts nothing of its kind, while the other kind goes ahead.
+A failed read of the live slots retracts nothing of any kind. A content slot
+is retracted with the identity tags read off the live event (`source-tag`,
+`tagging-target`, title), never parsed from its `d`; one missing them is left
+in place.
+
+See `engineering-team/decisions/trusted-lists/0001-trusted-lists-from-taggings.md`
+and `0002-trusted-lists-of-tagged-content.md`.

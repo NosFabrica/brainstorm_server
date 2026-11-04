@@ -97,7 +97,7 @@ nothing to report; the client only needs success, so there is no body to wrap.
 
 ### `setup/router.py` — Nostr pubkey setup
 
-- **GET** `/{nostr_pubkey}` → kind-10040 designation rows (`list[list[str]]`): the five `30382:<tag>` rows, `30392`, then `39998` and `39999` at `settings.dictionary_relay` when it is set. Built by `services/duty_menu_build.designation_rows`, which the Duty Menu's offer also reads.
+- **GET** `/{nostr_pubkey}` → kind-10040 designation rows (`list[list[str]]`): the five `30382:<tag>` rows, `30392`, `30393` and `30394` (one Trusted List row per kind: the search relay's signer gate is per kind), then `39998` and `39999` at `settings.dictionary_relay` when it is set. Built by `services/duty_menu_build.designation_rows`, which the Duty Menu's offer also reads.
 
 ### `shorturl/router.py` — URL shortener
 

@@ -16,9 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.db_models import (
     NostrEventTagging,
+    NostrTagElement,
     NostrTaggedEvent,
     NostrTaggingHeader,
-    NostrTagElement,
 )
 from app.services.tagging_parse import TAGGING_KIND, EventTagging, TaggingHeader
 
@@ -52,7 +52,9 @@ class TaggedEvent:
     names: tuple[str, ...]
 
 
-async def upsert_tagging_header_on_db(db: AsyncDBSession, header: TaggingHeader) -> None:
+async def upsert_tagging_header_on_db(
+    db: AsyncDBSession, header: TaggingHeader
+) -> None:
     """Insert or replace a tagging header at its coordinate, latest-wins."""
     values = dict(
         event_id=header.event_id,
@@ -150,7 +152,8 @@ async def get_event_taggings_on_db(
             NostrTagElement,
             or_(
                 and_(
-                    NostrTaggingHeader.tag_author_pubkey == NostrTagElement.author_pubkey,
+                    NostrTaggingHeader.tag_author_pubkey
+                    == NostrTagElement.author_pubkey,
                     NostrTaggingHeader.tag_slug == NostrTagElement.slug,
                 ),
                 NostrTaggingHeader.tag_event_id == NostrTagElement.event_id,

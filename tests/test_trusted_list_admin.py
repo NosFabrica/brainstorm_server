@@ -362,3 +362,368 @@ def test_trigger_rejects_unauthenticated_caller():
     raw_client = TestClient(app)
     resp = raw_client.post(f"/admin/trustedLists/{OBSERVER}")
     assert resp.status_code == 401
+
+
+# ===========================================================================
+# Story 2: Trusted Lists of tagged content (ADR trusted-lists/0002 D8)
+#
+# The run with its boundaries patched: the reads, the lookups' one network
+# call (`_fetch_from_relay`, faked by in-memory relays), the publish, and the
+# two live-slot scans. Every assertion is on what was published or retracted.
+# ===========================================================================
+
+from app.repos.event_tagging_repo import EventTaggingRow  # noqa: E402
+from app.repos.tagging_repo import DictionaryEntry  # noqa: E402
+from app.services import tagging_target_service as tts  # noqa: E402
+from app.services.trusted_list_service import ContentSlot  # noqa: E402
+
+ASSERTER = "b" * 64
+TAG_AUTHOR = "d" * 64
+NOTE = "1" * 64
+LOOKUP = "wss://lookup.example"
+HINT = "wss://hint.example"
+NOTE_D = "tl-tag-notes-aaaaaaaa-dddddddd-espresso-k1"
+
+
+def _row(target=NOTE, slot="e", relay=None, polarity=1.0):
+    return EventTaggingRow(
+        asserter_pubkey=ASSERTER,
+        target=target,
+        target_slot=slot,
+        target_relay=relay,
+        polarity=polarity,
+        created_at_unix=1,
+        tag_event_id="c" * 64,
+        tag_author_pubkey=TAG_AUTHOR,
+        slug="espresso",
+        name="espresso",
+        description="",
+    )
+
+
+def _note_event(id_=NOTE, kind=1):
+    return {"id": id_, "kind": kind, "pubkey": "e" * 64, "created_at": 1, "tags": []}
+
+
+def _people_entry(slug="podcaster"):
+    return DictionaryEntry(
+        tag_event_id="c" * 64,
+        tag_author_pubkey=TAG_AUTHOR,
+        slug=slug,
+        name=slug,
+        description="",
+        uses=1,
+    )
+
+
+def _content_slot(d=NOTE_D, kind=30393, **over):
+    base = dict(
+        kind=kind,
+        d_tag=d,
+        retracted=False,
+        title="espresso Notes",
+        source_tag=["source-tag", f"39999:{TAG_AUTHOR}:espresso", TAG_AUTHOR, "espresso"],
+        tagging_target="1",
+    )
+    base.update(over)
+    return ContentSlot(**base)
+
+
+def _content_run(
+    monkeypatch,
+    *,
+    rows,
+    stores=None,
+    down=(),
+    configured=(LOOKUP,),
+    people=(),
+    live_people=None,
+    live_content=(),
+    people_taggings=None,
+    slot_scan=None,
+    publish_fails=(),
+):
+    """Run the service once; returns (result, published, cached)."""
+    from app.core.config import settings
+
+    people_taggings = (1 if people else 0) if people_taggings is None else people_taggings
+    _patch_service_reads(
+        monkeypatch, taggings=people_taggings, asserters=[ASSERTER], qualifying=[ASSERTER]
+    )
+    monkeypatch.setattr(svc, "count_event_taggings_on_db", AsyncMock(return_value=len(rows)))
+    monkeypatch.setattr(
+        svc, "get_event_tagging_asserters_on_db", AsyncMock(return_value=[ASSERTER])
+    )
+    monkeypatch.setattr(svc, "get_event_taggings_on_db", AsyncMock(return_value=list(rows)))
+    monkeypatch.setattr(svc, "get_tagged_events_on_db", AsyncMock(return_value={}))
+    cached = AsyncMock()
+    monkeypatch.setattr(svc, "insert_tagged_events_on_db", cached)
+    monkeypatch.setattr(svc, "get_dictionary_on_db", AsyncMock(return_value=list(people)))
+    monkeypatch.setattr(
+        svc,
+        "get_taggings_for_tag_on_db",
+        AsyncMock(return_value=[("9" * 64, 1.0, ASSERTER)]),
+    )
+    monkeypatch.setattr(settings, "trusted_list_target_relays", list(configured))
+
+    async def fetch(url, filters):
+        if url in down:
+            raise ConnectionError("unreachable")
+        return list((stores or {}).get(url, []))
+
+    monkeypatch.setattr(tts, "_fetch_from_relay", fetch)
+    monkeypatch.setattr(svc, "_connect", AsyncMock(return_value=MagicMock()))
+
+    published: list[tuple[int, list[list[str]]]] = []
+
+    async def publish(_client, tags, _content, kind=30392):
+        published.append((kind, tags))
+        d = next(t[1] for t in tags if t[0] == "d")
+        if d in publish_fails:
+            raise RuntimeError("relay rejected")
+
+    monkeypatch.setattr(svc, "_publish", publish)
+    monkeypatch.setattr(
+        svc,
+        "_fetch_published_tl_slots",
+        slot_scan or AsyncMock(return_value=dict(live_people or {})),
+    )
+    monkeypatch.setattr(
+        svc, "_fetch_published_content_slots", AsyncMock(return_value=list(live_content))
+    )
+    result = asyncio.run(svc.generate_trusted_lists_for_observer(OBSERVER))
+    return result, published, cached
+
+
+def _retractions(published):
+    return [(k, t) for k, t in published if ["status", "retracted"] in t]
+
+
+def _kinds(published):
+    return sorted({k for k, t in published if ["status", "retracted"] not in t})
+
+
+# --- AC14 / U13: one run, three kinds, new result fields ----------------------
+
+
+def test_one_run_builds_three_kinds_and_reports_new_fields(monkeypatch):
+    article = "30023:" + "e" * 64 + ":essay"
+    result, published, _ = _content_run(
+        monkeypatch,
+        rows=[_row(), _row(article, slot="a"), _row("7" * 64)],
+        stores={LOOKUP: [_note_event(), _note_event("7" * 64, kind=7)]},
+        people=[_people_entry()],
+    )
+    assert _kinds(published) == [30392, 30393, 30394]
+    by_kind = {t.kind: t for t in result.tags}
+    assert by_kind[30393].tagging_target == "1"
+    assert by_kind[30394].tagging_target == "30023"
+    assert by_kind[30392].tagging_target is None
+    assert result.unnamed_kinds == [7]
+    assert result.unresolved_targets == 0
+    assert result.content_skipped_reason is None
+    assert result.event_taggings_in_store == 3
+
+
+def test_the_response_carries_the_new_fields(admin_client, monkeypatch):
+    run = _run_result(
+        event_taggings_in_store=3,
+        unresolved_targets=2,
+        unnamed_kinds=[7],
+        tags=[
+            TagResult(
+                slug="espresso",
+                d_tag=NOTE_D,
+                tag_event_id="c" * 64,
+                status="published",
+                kind=30393,
+                tagging_target="1",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.trusted_lists.router.generate_trusted_lists_for_observer",
+        AsyncMock(return_value=run),
+    )
+    data = admin_client.post(f"/admin/trustedLists/{OBSERVER}").json()["data"]
+    assert (data["unresolved_targets"], data["unnamed_kinds"]) == (2, [7])
+    assert data["event_taggings_in_store"] == 3
+    assert data["content_skipped_reason"] is None
+    assert (data["tags"][0]["kind"], data["tags"][0]["tagging_target"]) == (30393, "1")
+
+
+def test_unresolved_target_is_counted_and_not_cached(monkeypatch):
+    """AC7: a target no relay has joins no list, is counted, and isn't cached,
+    so the next run looks it up again. What was found is cached."""
+    result, published, cached = _content_run(
+        monkeypatch,
+        rows=[_row(), _row("2" * 64)],
+        stores={LOOKUP: [_note_event()]},
+    )
+    assert result.unresolved_targets == 1
+    (stored,) = cached.await_args.args[1:]
+    assert [e.event_id for e in stored] == [NOTE]
+    (note_list,) = [t for k, t in published if k == 30393]
+    assert [t[1] for t in note_list if t[0] == "e"] == [NOTE]
+
+
+# --- AC8: a failed lookup ----------------------------------------------------
+
+
+def test_unreachable_lookup_relays_skip_content_lists_only(monkeypatch):
+    result, published, _ = _content_run(
+        monkeypatch,
+        rows=[_row()],
+        down={LOOKUP},
+        people=[_people_entry()],
+        live_people={"tl-tag-aaaaaaaa-dddddddd-gone": False},
+        live_content=[_content_slot("tl-tag-notes-aaaaaaaa-dddddddd-gone-k1")],
+    )
+    assert result.content_skipped_reason.startswith("target_lookup_failed")
+    assert _kinds(published) == [30392]
+    # S1, one direction: the stale people list is still retracted, no content one is.
+    assert [k for k, _ in _retractions(published)] == [30392]
+
+
+def test_one_configured_lookup_relay_down_is_a_failed_lookup(monkeypatch):
+    """The search relay down, a hint relay answering every target: still a
+    failed lookup, so the live list isn't republished emptied."""
+    result, published, _ = _content_run(
+        monkeypatch,
+        rows=[_row(relay=HINT)],
+        configured=(LOOKUP, "wss://second.example"),
+        down={"wss://second.example"},
+        stores={LOOKUP: [], HINT: [_note_event()]},
+        live_content=[_content_slot()],
+    )
+    assert result.content_skipped_reason is not None
+    assert [k for k, _ in published if k != 30392] == []
+
+
+def test_hint_relay_down_leaves_the_view_trusted(monkeypatch):
+    result, published, _ = _content_run(
+        monkeypatch,
+        rows=[_row(relay=HINT)],
+        down={HINT},
+        stores={LOOKUP: [_note_event()]},
+    )
+    assert result.content_skipped_reason is None
+    assert _kinds(published) == [30393]
+
+
+# --- AC15 / AC16 / S1: retraction across kinds ----------------------------
+
+
+def test_stale_content_slot_is_retracted_with_its_live_identity(monkeypatch):
+    stale = _content_slot(
+        "tl-tag-items-aaaaaaaa-dddddddd-a-b-dlcccccccc-x-y",
+        kind=30394,
+        title="a-b Books",
+        source_tag=["source-tag", f"39999:{TAG_AUTHOR}:a-b", TAG_AUTHOR, "a-b"],
+        tagging_target=f"39998:{'c' * 64}:x-y",
+    )
+    _, published, _ = _content_run(
+        monkeypatch,
+        rows=[_row()],
+        stores={LOOKUP: [_note_event()]},
+        live_content=[_content_slot(), stale],
+    )
+    ((kind, tags),) = _retractions(published)
+    assert kind == 30394
+    assert ["title", "a-b Books"] in tags
+    assert ["tagging-target", f"39998:{'c' * 64}:x-y"] in tags
+    assert ["source-tag", f"39999:{TAG_AUTHOR}:a-b", TAG_AUTHOR, "a-b"] in tags
+    assert [t for t in tags if t[0] in ("a", "e", "p")] == []
+
+
+def test_unreadable_live_slot_is_left_while_a_readable_one_is_retracted(monkeypatch):
+    _, published, _ = _content_run(
+        monkeypatch,
+        rows=[_row()],
+        stores={LOOKUP: [_note_event()]},
+        live_content=[
+            _content_slot("tl-tag-notes-aaaaaaaa-dddddddd-old-k1"),
+            _content_slot("tl-tag-notes-aaaaaaaa-dddddddd-garbled-k1", source_tag=None),
+        ],
+    )
+    retracted = [next(t[1] for t in tags if t[0] == "d") for _, tags in _retractions(published)]
+    assert retracted == ["tl-tag-notes-aaaaaaaa-dddddddd-old-k1"]
+
+
+def test_failed_slot_scan_retracts_nothing_across_kinds(monkeypatch):
+    article = "30023:" + "e" * 64 + ":essay"
+    _, published, _ = _content_run(
+        monkeypatch,
+        rows=[_row(), _row(article, slot="a")],
+        stores={LOOKUP: [_note_event()]},
+        people=[_people_entry()],
+        slot_scan=AsyncMock(side_effect=RuntimeError("relay gone")),
+        live_content=[_content_slot("tl-tag-notes-aaaaaaaa-dddddddd-old-k1")],
+    )
+    assert _kinds(published) == [30392, 30393, 30394]
+    assert _retractions(published) == []
+
+
+def test_emptied_content_list_republished_without_marker(monkeypatch):
+    """The pair is still in the dictionary (one dispute is a use) but has no
+    member: republished empty, not retracted (AC16)."""
+    _, published, _ = _content_run(
+        monkeypatch,
+        rows=[_row(polarity=-1.0)],
+        stores={LOOKUP: [_note_event()]},
+        live_content=[_content_slot()],
+    )
+    ((kind, tags),) = published
+    assert kind == 30393
+    assert [t for t in tags if t[0] == "e"] == []
+    assert ["status", "retracted"] not in tags
+
+
+def test_retraction_scans_are_kind_scoped(monkeypatch):
+    """S1, the other direction: a trusted, empty people dictionary retracts a
+    stale 30392 and leaves the current content list alone."""
+    _, published, _ = _content_run(
+        monkeypatch,
+        rows=[_row()],
+        stores={LOOKUP: [_note_event()]},
+        people_taggings=4,
+        live_people={"tl-tag-aaaaaaaa-dddddddd-gone": False},
+        live_content=[_content_slot()],
+    )
+    assert [k for k, _ in _retractions(published)] == [30392]
+    assert _kinds(published) == [30393]
+
+
+def test_failed_content_publish_is_isolated_and_keeps_its_slot(monkeypatch):
+    article = "30023:" + "e" * 64 + ":essay"
+    article_d = "tl-tag-items-aaaaaaaa-dddddddd-espresso-k30023"
+    result, published, _ = _content_run(
+        monkeypatch,
+        rows=[_row(), _row(article, slot="a")],
+        stores={LOOKUP: [_note_event()]},
+        live_content=[_content_slot()],
+        publish_fails={NOTE_D},
+    )
+    by_d = {t.d_tag: t for t in result.tags}
+    assert by_d[NOTE_D].status == "failed"
+    assert by_d[article_d].status == "published"
+    assert _retractions(published) == []
+
+
+# --- read failures abort before any publish, content included ---------------
+
+
+def test_event_tagging_read_failure_aborts_before_publishing(monkeypatch):
+    spy = _patch_publish_spy(monkeypatch)
+    _patch_service_reads(monkeypatch, taggings=5, asserters=["b" * 64], qualifying=["b" * 64])
+    monkeypatch.setattr(svc, "count_event_taggings_on_db", AsyncMock(return_value=3))
+    monkeypatch.setattr(
+        svc, "get_event_tagging_asserters_on_db", AsyncMock(return_value=["b" * 64])
+    )
+    monkeypatch.setattr(svc, "get_dictionary_on_db", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        svc, "get_event_taggings_on_db", AsyncMock(side_effect=RuntimeError("db down"))
+    )
+    with pytest.raises(RuntimeError):
+        asyncio.run(svc.generate_trusted_lists_for_observer(OBSERVER))
+    spy.assert_not_awaited()

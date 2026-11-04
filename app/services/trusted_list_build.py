@@ -330,7 +330,11 @@ def count_uses(stances: list[ContentStance]) -> int:
     """Distinct asserters with a non-neutral stance: a pair's uses (D7, as
     0001's dictionary rule counts a Tag's)."""
     return len(
-        {s.asserter for s in stances if is_applied(s.polarity) or is_disputed(s.polarity)}
+        {
+            s.asserter
+            for s in stances
+            if is_applied(s.polarity) or is_disputed(s.polarity)
+        }
     )
 
 
@@ -362,7 +366,12 @@ def build_content_list_tags(
         ["description", description],
         ["metric", TRUSTED_LIST_METRIC],
         ["observer", observer],
-        ["source-tag", tag_coordinate(tag_author_pubkey, slug), tag_author_pubkey, slug],
+        [
+            "source-tag",
+            tag_coordinate(tag_author_pubkey, slug),
+            tag_author_pubkey,
+            slug,
+        ],
         ["tagging-target", tagging_target],
         ["cutoff", str(cutoff)],
         ["min-rank", str(min_rank)],

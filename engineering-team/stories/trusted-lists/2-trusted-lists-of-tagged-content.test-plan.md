@@ -216,3 +216,50 @@ The J3 gate command is the one in story 2's "Gate-command exception
 (approved)" section: every `check_all` stage, with exactly the six tests of
 NosFabrica/brainstorm_server#129 deselected. Run it in the foreground with the
 exit code captured by brace-redirect, never piped through `tail`.
+
+## Recorded at implementation (for J3 item 3)
+
+Every planned handle exists. Where one landed under another name or file, or
+was folded into another, it is listed here; nothing was dropped.
+
+- **I3, I6, I7 are one test,**
+  `test_content_lists_publish_cache_retract_and_empty`
+  (`tests/integration/test_trusted_list_content_publish_integration.py`), for
+  story 1's reason: the service's asyncpg pool and Neo4j driver bind to the
+  first event loop that touches them, so one live scenario runs in one loop.
+  It asserts the cache (I3), the signer and relay (I6), and publish, retract,
+  emptied and idempotent runs (I7, AC16).
+- **U12's DList-name cases** are `test_dlist_name[plural, singular-only,
+  d-only]` in `tests/test_tagging_target.py`, where `dlist_name` lives, plus
+  `test_content_title_from_a_dlist` in `tests/test_trusted_list_content.py`.
+- **U12c** is in `tests/test_trusted_list_content.py` (the pure plan), and the
+  run result's `unnamed_kinds` is asserted again by U13.
+- **U15c and U15** each have a run-level twin in `tests/test_trusted_list_admin.py`
+  (`test_unreadable_live_slot_is_left_while_a_readable_one_is_retracted`,
+  `test_stale_content_slot_is_retracted_with_its_live_identity`), beside the
+  pure ones in `tests/test_trusted_list_retraction.py`.
+- **U16 and S1** are in `tests/test_trusted_list_admin.py`, not the
+  retraction file: both need a whole run.
+- **"Story 1's read-failure tests, extended":** their publish spy already
+  asserts that nothing of any kind is published. The content read gets its own
+  `test_event_tagging_read_failure_aborts_before_publishing`.
+- **"`test_publish_failure_is_isolated_per_tag` extended to a 30393"** is a
+  new test, `test_failed_content_publish_is_isolated_and_keeps_its_slot`, so
+  story 1's stays as it was.
+- **U7** is asserted at both levels: `test_unfound_target_is_counted_and_looked_up_next_run`
+  (the lookup) and `test_unresolved_target_is_counted_and_not_cached` (the run).
+- **Added beyond the plan:** `test_coordinate_lookup_keeps_the_newest_version`,
+  `test_nothing_to_look_up_contacts_no_relay`, `test_rigor_is_the_observers`,
+  `test_pair_below_min_uses_gets_no_list`, `test_a_neutral_stance_is_no_use`,
+  `test_a_9998_header_that_wasnt_found_leaves_its_items_unresolved`,
+  `test_foreign_39999_writes_nothing`, the replay script's
+  apply-and-failure cases, and `test_the_response_carries_the_new_fields`.
+- **Story 1's admin tests** gained one autouse fixture holding the event
+  taggings at zero, so their runs stay people-only; no story 1 assertion
+  changed. `test_untrustworthy_empty_view_never_retracts` gained the event
+  tagging counts in both its cases, as planned.
+- **Timing in the live test:** a replaceable event is ordered by `created_at`
+  in seconds, so a retraction published in the same second as the list it
+  replaces can lose to it on the relay ("replaced: have newer event"). The live
+  test waits 1.1 s before the run that retracts, as story 1's does. Admin runs
+  are never that close; the same property holds for 30392.

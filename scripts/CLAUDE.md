@@ -92,6 +92,24 @@ designations published before that handler shipped. Reads a `strfry scan` NDJSON
 author's newest. Dry-run by default (author + designation counts); `--apply`
 writes, serially. Idempotent — each author's set is replaced whole.
 
+### `backfill_event_taggings.py`
+
+Replays every kind-39999 neofry holds through the live handler
+(`process_event_kind_39999`), for the event taggings and tagging headers that
+were dropped at parse before their parsers shipped (ADR `trusted-lists/0002`
+D10). Reads a `strfry scan` NDJSON (`--scan -`; the docstring has the
+docker/kubectl lines). Dry-run by default (counts per shape, unreadable lines);
+`--apply` writes. Idempotent — every upsert is latest-wins. Run it after the
+release with the parsers is serving. Production runs are confirmed with the
+cluster operators first.
+
+### `test_admin_trusted_lists.py`
+
+Smoke test for `POST /admin/trustedLists/{observer}`. `--seed` pushes a tag
+element, a pubkey tagging and an event tagging (an article by coordinate, so no
+lookup relay is needed) through the real redis ingest; `--verify-relay` reads
+the Observer's 30392/30393/30394 lists back.
+
 ### `clean_trusted_reporters_props.py`
 
 Strips leftover `trusted_reporters_<observer>` props from `NostrUser` nodes (the
