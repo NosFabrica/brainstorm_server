@@ -43,7 +43,7 @@ async def ingest_follow_list(caller_pubkey: str, signed_event: dict) -> int:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Event must be a kind-3 follow list",
         )
-    if not event.verify_signature():
+    if not event.verify():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid event signature",

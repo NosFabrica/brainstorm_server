@@ -102,7 +102,7 @@ def validate_nwt_token(encoded_token: str) -> str:
     if event.kind().as_u16() != NWT_KIND:
         raise _unauthorized(f"Bad NWT: expected kind {NWT_KIND}")
 
-    if not event.verify_signature():
+    if not event.verify():
         raise _unauthorized("Bad NWT: invalid signature")
 
     now = int(datetime.now(tz=timezone.utc).timestamp())

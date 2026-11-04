@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from nostr_sdk import Keys
+from nostr_sdk import EventBuilder, Keys
 
 from app.utils.observer import default_observer_pubkey
 from tests.conftest import make_nwt
@@ -611,6 +611,22 @@ class TestNWTAuth:
 
     def test_wrong_kind_rejected(self, client):
         token, _pk = make_nwt(kind=1)
+        r = client.post(
+            "/stats/pubkey",
+            json={"pubkey": VALID_PUBKEY_1},
+            headers={"Authorization": f"Nostr {token}"},
+        )
+        assert r.status_code == 401
+
+    def test_forged_token_reusing_a_real_signature_rejected(self, client):
+        import base64
+        import json
+
+        from tests.conftest import TEST_AUD
+
+        note = json.loads(EventBuilder.text_note("gm").sign_with_keys(Keys.generate()).as_json())
+        note.update(kind=27519, tags=[["aud", TEST_AUD], ["exp", str(int(time.time()) + 3600)]])
+        token = base64.urlsafe_b64encode(json.dumps(note).encode()).rstrip(b"=").decode()
         r = client.post(
             "/stats/pubkey",
             json={"pubkey": VALID_PUBKEY_1},

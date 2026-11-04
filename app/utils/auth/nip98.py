@@ -41,7 +41,7 @@ async def validate_nip98_event(request: Request, encoded_event: str) -> str:
     if event.kind().as_u16() != NIP98_KIND:
         raise _unauthorized(f"Bad NIP-98 token: expected kind {NIP98_KIND}")
 
-    if not event.verify_signature():
+    if not event.verify():
         raise _unauthorized("Bad NIP-98 token: invalid signature")
 
     created_at = event.created_at().as_secs()
