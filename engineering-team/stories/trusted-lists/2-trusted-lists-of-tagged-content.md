@@ -1,6 +1,6 @@
 # Story 2: Trusted Lists of tagged content
 
-**Status:** Ready for Gate B (Gate A approved 2026-11-03; J1, J2, J3 approved 2026-11-03)
+**Status:** In progress
 **Created:** 2026-11-03
 **Type:** Feature
 **Source spec:** [NosFabrica/brainstorm_server#128](https://github.com/NosFabrica/brainstorm_server/issues/128)
@@ -9,7 +9,8 @@
 **Classification:** ADR (irreversibility triggers: wire format / event shape,
 schema + migration, cross-repo contract, auth/trust default (the honored
 namespaces, ADR 0002 D6), a value held in more than one repo (the namespaces
-and the tagging-target rule, kept in step with Brainstorm-UI)). The
+and the tagging-target rule, kept in step with Brainstorm-UI; the DList slot
+segment, Tapestry's event-taggings rule, ADR 0002 D5)). The
 story runs the **Standard**
 phases per [`workflows/light-profile.md`](../../workflows/light-profile.md)
 §"Gate A".
@@ -133,7 +134,8 @@ test plan.
       - `d` = `tl-tag-notes-…` / `tl-tag-items-<observer8>-<tagAuthor8>-<slug>-<target>`,
         where a DList's `<target>` is `dl` plus the event-taggings rule's
         segment (`<author8>-<d16>-<hash8>` by coordinate, `<id8>` by event id),
-        byte-for-byte as Tapestry's draft defines it;
+        byte-for-byte as Tapestry's draft defines it, but for the one case
+        D5 records (a character cut in half at the 16th code unit);
       - the tags `title`, `description`, `metric` = `tag-membership`,
         `observer`, `source-tag` (Tag coordinate, author, slug),
         `tagging-target`, `cutoff`, `min-rank` and `rigor`;

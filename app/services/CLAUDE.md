@@ -188,7 +188,7 @@ Tag and *tagging target* (an event kind, or one DList).
 | Module | Contains | I/O? |
 |---|---|---|
 | `tagging_parse.py` | kind-39999 parsing: tag elements, pubkey taggings, tagging headers and event taggings (told apart by `z`; the last two count for any of `tagging_honored_namespaces`), polarity bucketing, `LEGACY_Z_TAG_PUBKEY` | none |
-| `tagging_target_service.py` | what was tagged: D2's target rule (`resolve_target`, pure) and the lookups behind it (`Lookup`, over `trusted_list_target_relays` plus the tagging's hint). Lookups by event id are cached forever in `nostr_tagged_event`; coordinates are fetched fresh every run | relay |
+| `tagging_target_service.py` | what was tagged: D2's target rule (`resolve_target`, pure) and the lookups behind it (`Lookup`, over `trusted_list_target_relays` plus the tagging's hint, dialled only when it is a public `wss://` host; every answer's signature is checked). Lookups by event id are cached forever in `nostr_tagged_event`; coordinates are fetched fresh every run | relay |
 | `trusted_list_build.py` | membership predicate, member ordering, the 30392 and 30393/30394 tag/content composition, `d`-tag identity, the kind-name table for titles (`KIND_NAMES`, this server's own) | none |
 | `trusted_list_service.py` | the per-Observer pipeline: read → rank-filter → dictionary → lookups → publish → retract. `plan_content_lists` is the pure content dictionary | Postgres, Neo4j, relay |
 

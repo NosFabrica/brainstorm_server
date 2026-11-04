@@ -13,13 +13,15 @@ another DList, and a header can be renamed.
 
 **A failed lookup** (any configured relay unreachable) raises `LookupFailed`,
 and the caller treats the whole content view as untrustworthy (D8): it
-publishes and retracts no content list. A hint relay failing is ignored.
+publishes and retracts no content list. A hint relay failing is ignored; a
+hint that is not a public `wss://` host is never dialled (`usable_hint`).
 
 The resolution itself (`resolve_target`, `dlist_name`) is pure, over the facts
 the lookups return, so it is tested without a relay.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -228,6 +230,40 @@ def _is_search_relay(url: str) -> bool:
     return bool(search_host) and urlparse(url).hostname == search_host
 
 
+def verified_events(events: Iterable) -> list[dict]:
+    """The events whose id and signature check out, as dicts. A relay can
+    serve anything; a forged or altered event is dropped here, before its
+    facts are read."""
+    return [json.loads(event.as_json()) for event in events if event.verify()]
+
+
+INTERNAL_HOST_SUFFIXES = (".local", ".localhost", ".internal", ".svc", ".cluster.local")
+
+
+def usable_hint(url: str) -> bool:
+    """Whether a tagging's relay hint may be contacted (ADR 0002 D6).
+
+    Whoever writes a tagging chooses its hint, so this server only dials a
+    public `wss://` host: no plain `ws://`, no IP literal, no `localhost`, no
+    dotless or cluster-internal name (a Kubernetes service is one), so a
+    tagging can't point the lookup at an address inside the cluster.
+    """
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if parsed.scheme != "wss" or "." not in host or host == "localhost":
+        return False
+    if host.endswith(INTERNAL_HOST_SUFFIXES):
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return False
+
+
 async def _fetch_from_relay(url: str, filters: list[Filter]) -> list[dict]:
     """Every event `url` returns for `filters`. Raises when it can't be reached.
 
@@ -244,9 +280,7 @@ async def _fetch_from_relay(url: str, filters: list[Filter]) -> list[dict]:
         events: list[dict] = []
         for flt in filters:
             fetched = await client.fetch_events(flt, timeout=FETCH_TIMEOUT)
-            for event in fetched.to_vec():
-                if event.verify():
-                    events.append(json.loads(event.as_json()))
+            events.extend(verified_events(fetched.to_vec()))
         return events
     finally:
         try:
@@ -273,6 +307,9 @@ class Lookup:
             except Exception as exc:  # noqa: BLE001
                 raise LookupFailed(f"{url}: {exc}") from exc
         for url in sorted(set(hints) - set(self.relays)):
+            if not usable_hint(url):
+                logger.info("Lookup hint relay %r not contacted", url)
+                continue
             try:
                 events.extend(await _fetch_from_relay(url, filters))
             except Exception as exc:  # noqa: BLE001 — best effort

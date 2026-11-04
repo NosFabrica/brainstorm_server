@@ -128,7 +128,12 @@ Checked items have a handle. Unchecked items are not covered, with a reason.
       event whose id, or whose kind, author and `d`, don't match the request is
       ignored and the target stays unresolved:
       `test_lookup_answer_not_matching_the_request_is_ignored`
-      (`tests/test_tagging_target.py`).
+      (`tests/test_tagging_target.py`). A forged one is dropped:
+      `test_a_forged_answer_is_dropped`.
+- [x] **A hint pointing inside the cluster.** A tagging's author chooses its
+      relay hint; only public `wss://` hosts are dialled:
+      `test_only_a_public_wss_hint_is_contacted`,
+      `test_an_unusable_hint_is_never_dialled`.
 - [x] **A long DList `d`.** The DList segment is bounded by the
       event-taggings rule (ADR 0002 D5), so a header `d` of any length gives
       the same slot length: `test_slot_length_stays_flat_however_long_the_header_d`.
@@ -158,10 +163,14 @@ Checked items have a handle. Unchecked items are not covered, with a reason.
 | **Trusted List relay (read)** | the live-slot scan fails | nothing of any kind retracted; publishing goes ahead | U15d |
 | **Trusted List relay (read)** | a live slot lacks or garbles its identity tags | left in place and logged; the run continues | U15c |
 | **Lookup relays** | reachable, target absent | target unresolved, counted, retried | U7 |
-| **Lookup relays** | reachable, wrong or forged answer | ignored; target unresolved | `test_lookup_answer_not_matching_the_request_is_ignored` |
+| **Lookup relays** | reachable, wrong answer (another id, or another kind, author or `d`) | ignored; target unresolved | `test_lookup_answer_not_matching_the_request_is_ignored` |
+| **Lookup relays** | reachable, forged answer (altered content, or a bad signature) | dropped before its facts are read | `test_a_forged_answer_is_dropped` (`tests/test_tagging_target.py`), on the check `_fetch_from_relay` applies to every answer |
+| **Hint relay** | malformed, non-`wss://`, IP literal, `localhost`, dotless or cluster-internal | never dialled, logged; configured relays still decide | `test_only_a_public_wss_hint_is_contacted[…]`, `test_an_unusable_hint_is_never_dialled` (`tests/test_tagging_target.py`) |
+| **Hint relay** | hangs rather than refusing | not covered: bounded by the connect and fetch timeouts already in `_fetch_from_relay`, and a hint can't decide trust (ADR 0002 D6, D8); a test would only wait out a timer | — |
 | **Search relay as a lookup relay** | an anonymous read without `include:spam` returns nothing | every read to it carries `"search": "include:spam"` | `test_search_relay_lookup_carries_include_spam` (`tests/test_tagging_target.py`) |
 | **Trusted List relay (write)** | one list rejected | that list reported failed, the rest continue, its slot stays current | U15b, plus story 1's `test_publish_failure_is_isolated_per_tag` extended to a 30393 |
 | **Redis `strfry:events`** | queue empty | unchanged: the consumer blocks as before | not covered: no new code path |
+| **PostgreSQL** | unreachable while a tagging is ingested | unchanged: the consumer has already popped the message, logs the handler's exception and moves on, as for story 1's pubkey taggings and every other kind; the tagging is recovered by the replay (ADR 0002 D10), which is idempotent | not covered at ingest: no new code path, the consumer's handling is story 1's. The replay's half is covered: `test_backfill_counts_a_failed_event_and_goes_on` (`tests/test_event_tagging_backfill.py`, `--apply` with a failing write: counted, the rest still written) |
 | **Ingest input** | malformed or hostile events | skipped without raising, batch continues | U4, U4b |
 | **Replay input** (`strfry scan` on stdin) | blank or unparseable lines, non-39999 kinds | skipped and counted as ignored | U18b |
 
@@ -216,7 +225,7 @@ The J3 gate command is the one in story 2's "Gate-command exception
 NosFabrica/brainstorm_server#129 deselected. Run it in the foreground with the
 exit code captured by brace-redirect, never piped through `tail`.
 
-## Recorded at implementation (for J3 item 3)
+## Recorded at implementation
 
 Every planned handle exists. Where one landed under another name or file, or
 was folded into another, it is listed here; nothing was dropped.
@@ -247,13 +256,18 @@ was folded into another, it is listed here; nothing was dropped.
   story 1's stays as it was.
 - **U7** is asserted at both levels: `test_unfound_target_is_counted_and_looked_up_next_run`
   (the lookup) and `test_unresolved_target_is_counted_and_not_cached` (the run).
+- **Hint filtering and the forged-answer check** were added after
+      implementation (ADR 0002 D6): `test_a_forged_answer_is_dropped`,
+      `test_only_a_public_wss_hint_is_contacted`,
+      `test_an_unusable_hint_is_never_dialled`; existing tests' hint URL moved
+      from `wss://hint` to `wss://hint.example`.
 - **Added beyond the plan:** `test_coordinate_lookup_keeps_the_newest_version`,
   `test_nothing_to_look_up_contacts_no_relay`, `test_rigor_is_the_observers`,
   `test_pair_below_min_uses_gets_no_list`, `test_a_neutral_stance_is_no_use`,
   `test_a_9998_header_that_wasnt_found_leaves_its_items_unresolved`,
   `test_foreign_39999_writes_nothing`, the replay script's
   apply-and-failure cases, and `test_the_response_carries_the_new_fields`.
-- **The DList slot rule changed after J3** (Vinney, 2026-11-04: the
+- **The DList slot rule changed after implementation** (Vinney, 2026-11-04: the
       event-taggings rule in ADR 0002 D5). U11c's cases were renamed, U11d is
       new, and the two `d` edge cases above moved from not covered to covered.
 - **Story 1's admin tests** gained one autouse fixture holding the event

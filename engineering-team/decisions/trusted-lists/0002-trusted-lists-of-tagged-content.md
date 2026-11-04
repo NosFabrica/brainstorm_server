@@ -112,6 +112,27 @@ people lists on `wss://search.brainstorm.world`:
 plural match each other; part-words match; hyphens split words. This one fact
 drives D1 and D4.
 
+## Options considered
+
+Each decision weighs its own options where it makes them, so this section is
+an index:
+
+- **D1** (lists per Tag and tagging target): options A–C under D1.
+- **D2** (resolving a target): the alternative, keeping whatever the tagging
+  names as the member, would split a target tagged by id and by coordinate
+  across two lists; D2's table and D7 count it once, under its coordinate.
+- **D3** (kinds): 30396 for DList items, rejected under D3.
+- **D5** (wire shape): the DList segment's earlier unbounded form, superseded
+  under D5 by Tapestry's event-taggings rule.
+- **D6** (ingest and namespaces): two option sets under D6 (namespaces A–D;
+  resolving at build time against recording at sync).
+- **D8** (trust): "every lookup relay down" as the guard, rejected under D8
+  for "any configured lookup relay down".
+- **D9** (`/setup` rows): options under D9.
+- **D10** (replay): options A–C under D10.
+- **D4 and D7** take 0001's conventions (title shape, scoring) unchanged; the
+  alternative to each is a second convention for one kind of tagging.
+
 ## Decisions
 
 ### D1 — One list per Observer, Tag and tagging target actually used
@@ -234,7 +255,8 @@ content         {"members":[{"id"|"address", "endorsements", "disputes", "score"
 - **`<target>` in the `d`** is `k<kind>` for an event kind (`k1`, `k30402`), or
   `dl<segment>` for a DList, where `<segment>` follows the event-taggings rule
   (Tapestry `protocols/drafts/event-taggings.md`, "The assertion d-tag
-  (normative)"), exactly as defined there (Vinney, 2026-11-04):
+  (normative)"), as defined there, with the one exception below (Vinney,
+  2026-11-04):
   - a header named by coordinate (39998) gives `<author8>-<d16>-<hash8>`.
     `hash8` is the first 8 lowercase hex characters of the SHA-256 of the UTF-8
     bytes of the full coordinate, exactly as carried; it is the only part that
@@ -248,9 +270,12 @@ content         {"members":[{"id"|"address", "endorsements", "disputes", "score"
   Every `d` then has a bounded length whatever the header's `d` holds
   (colons, spaces, any script), and a tagging of one of these lists stays
   flat under the same rule. Readers never parse the `d`; `tagging-target`
-  names the DList in full. **One deliberate difference:** where the 16th code
-  unit cuts an emoji in half, JavaScript's `slice` keeps the lone half; no
-  event can carry it as UTF-8, so it is dropped here.
+  names the DList in full. **The one exception:** where the 16th code unit
+  cuts a character outside the Basic Multilingual Plane (an emoji, say) in
+  half, JavaScript's `slice` keeps the lone surrogate. JSON could carry it as
+  a `\uXXXX` escape, but this server's signer (nostr-sdk, Rust) holds strings
+  as UTF-8, which cannot represent a lone surrogate, so the half is dropped
+  here and the two `d`s differ in that case only.
   - *Superseded 2026-11-04,* before anything shipped: `dl<author8>-<header d>`,
     with a 9998 header's whole 64-character id in place of its `d`. Unbounded,
     and a hyphenated slug could mimic a DList slot.
@@ -324,6 +349,19 @@ read time, as 0001 does with a missing element.
 Lookups go to `wss://search.brainstorm.world` (an `include:spam` read; it held
 99 of the 101 ids) and the tagging's relay hint, through a new
 `trusted_list_target_relays` setting.
+
+- **Every answer is checked before it is read:** an event whose id or
+  signature doesn't verify is dropped, and an answer that isn't what was
+  asked for (another id, or another kind, author or `d`) is ignored.
+- **A hint is only dialled if it is a public `wss://` host.** Whoever writes a
+  tagging chooses its hint, so a hint with another scheme, an IP literal,
+  `localhost`, a dotless name or a cluster-internal suffix (`.svc`,
+  `.cluster.local`, `.local`, `.internal`) is skipped and logged. This keeps a
+  tagging from pointing the server at an address inside the cluster.
+  Configured relays are trusted as configured.
+- **A slow hint relay costs time, not correctness:** each is bounded by the
+  connect (10 s) and fetch (20 s per filter) timeouts, and hints never decide
+  whether the view is trusted (D8).
 
 **What is cached (Vinney, 2026-11-03):** only answers to lookups **by event
 id**, forever: an event id names one immutable event, so its kind, author,

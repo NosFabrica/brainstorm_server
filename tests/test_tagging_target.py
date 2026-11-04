@@ -8,6 +8,7 @@ whatever wasn't asked for.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from nostr_sdk import Keys
@@ -226,14 +227,14 @@ def test_coordinate_lookup_keeps_the_newest_version(monkeypatch):
 
 
 def test_a_configured_relay_down_fails_the_lookup(monkeypatch):
-    _fake_relays(monkeypatch, {"wss://hint": [_event(1, id="7" * 64)]}, down={"wss://a"})
+    _fake_relays(monkeypatch, {"wss://hint.example": [_event(1, id="7" * 64)]}, down={"wss://a"})
     with pytest.raises(LookupFailed):
-        asyncio.run(Lookup(relays=["wss://a"]).by_ids(["7" * 64], hints=["wss://hint"]))
+        asyncio.run(Lookup(relays=["wss://a"]).by_ids(["7" * 64], hints=["wss://hint.example"]))
 
 
 def test_a_hint_relay_down_is_ignored(monkeypatch):
-    _fake_relays(monkeypatch, {"wss://a": [_event(1, id="7" * 64)]}, down={"wss://hint"})
-    found = asyncio.run(Lookup(relays=["wss://a"]).by_ids(["7" * 64], hints=["wss://hint"]))
+    _fake_relays(monkeypatch, {"wss://a": [_event(1, id="7" * 64)]}, down={"wss://hint.example"})
+    found = asyncio.run(Lookup(relays=["wss://a"]).by_ids(["7" * 64], hints=["wss://hint.example"]))
     assert set(found) == {"7" * 64}
 
 
@@ -286,3 +287,50 @@ def test_search_relay_lookup_carries_include_spam(monkeypatch):
     asyncio.run(tts._fetch_from_relay("wss://dcosl.example", [Filter().kinds([Kind(1)])]))
     assert '"search":"include:spam"' in seen[0]
     assert "search" not in seen[1]
+
+
+# --- a lookup relay's answer is only data (test plan, error paths) -----------
+
+
+def test_a_forged_answer_is_dropped():
+    from nostr_sdk import Event, EventBuilder, Kind
+
+    keys = Keys.generate()
+    genuine = EventBuilder(Kind(1), "hello").sign_with_keys(keys)
+    altered = json.loads(genuine.as_json()) | {"content": "forged"}
+    bad_sig = json.loads(genuine.as_json()) | {"sig": "0" * 128}
+    events = [genuine] + [Event.from_json(json.dumps(e)) for e in (altered, bad_sig)]
+    assert [e["content"] for e in tts.verified_events(events)] == ["hello"]
+
+
+@pytest.mark.parametrize(
+    "url, usable",
+    [
+        ("wss://relay.example.com", True),
+        ("wss://relay.example.com:7777/path", True),
+        ("ws://relay.example.com", False),
+        ("https://relay.example.com", False),
+        ("wss://localhost:7777", False),
+        ("wss://127.0.0.1", False),
+        ("wss://[::1]", False),
+        ("wss://10.0.0.5", False),
+        ("wss://brainstorm-redis:6379", False),
+        ("wss://neofry.brainstorm.svc", False),
+        ("wss://neofry.default.svc.cluster.local", False),
+        ("wss://printer.local", False),
+        ("not a url", False),
+        ("wss://[bad", False),
+        ("", False),
+    ],
+)
+def test_only_a_public_wss_hint_is_contacted(url, usable):
+    assert tts.usable_hint(url) is usable
+
+
+def test_an_unusable_hint_is_never_dialled(monkeypatch):
+    calls = _fake_relays(monkeypatch, {"wss://a": [_event(1, id="7" * 64)]})
+    lookup = Lookup(relays=["wss://a"])
+    hints = ["ws://10.0.0.5", "wss://brainstorm-redis:6379", "garbage"]
+    found = asyncio.run(lookup.by_ids(["7" * 64], hints=hints))
+    assert set(found) == {"7" * 64}
+    assert calls == ["wss://a"]
