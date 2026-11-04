@@ -1,6 +1,6 @@
 # Story 2: Trusted Lists of tagged content
 
-**Status:** Draft (Gate A approved 2026-11-03)
+**Status:** Ready for Gate B (Gate A approved 2026-11-03; J1, J2, J3 approved 2026-11-03)
 **Created:** 2026-11-03
 **Type:** Feature
 **Source spec:** [NosFabrica/brainstorm_server#128](https://github.com/NosFabrica/brainstorm_server/issues/128)

@@ -190,6 +190,8 @@ def test_content_lists_publish_cache_retract_and_empty():
             first = await generate_trusted_lists_for_observer(observer)
             await asyncio.sleep(1)
             after_first = await _read_lists(first.signing_pubkey)
+            # The same read under any other key finds none of them (I6).
+            wrong_signer = await _read_lists(Keys.generate().public_key().to_hex())
             async with async_session_factory() as db:
                 cached = (await db.execute(select(NostrTaggedEvent.event_id))).scalars().all()
 
@@ -221,6 +223,7 @@ def test_content_lists_publish_cache_retract_and_empty():
                 note,
                 first,
                 after_first,
+                wrong_signer,
                 cached,
                 second,
                 second_fetches,
@@ -253,6 +256,7 @@ def test_content_lists_publish_cache_retract_and_empty():
         note,
         first,
         after_first,
+        wrong_signer,
         cached,
         second,
         second_fetches,
@@ -274,6 +278,7 @@ def test_content_lists_publish_cache_retract_and_empty():
     assert after_first[items_d]["title"] == "espresso Books"
     assert after_first[items_d]["members"] == [item]
     assert {v["author"] for v in after_first.values()} == {first.signing_pubkey}
+    assert wrong_signer == {}
 
     # AC6 / I3: the by-id answer was cached; run 2 didn't ask for it again, but
     # did fetch the item by coordinate.
