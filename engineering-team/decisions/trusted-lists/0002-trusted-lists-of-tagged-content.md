@@ -359,6 +359,10 @@ Lookups go to `wss://search.brainstorm.world` (an `include:spam` read; it held
   `.cluster.local`, `.local`, `.internal`) is skipped and logged. This keeps a
   tagging from pointing the server at an address inside the cluster.
   Configured relays are trusted as configured.
+  A public name that resolves to an internal address is **not** blocked
+  (Vinney, 2026-11-04): nothing the server reads goes back to the tagging's author,
+  and checking the resolved address would mean replacing how the relay
+  library connects.
 - **A slow hint relay costs time, not correctness:** each is bounded by the
   connect (10 s) and fetch (20 s per filter) timeouts, and hints never decide
   whether the view is trusted (D8).
