@@ -21,10 +21,11 @@ ev_kinds: list[tuple[Kind, int]] = [
     (Kind(10000), 1800000),
     (Kind(1984), 1800000),
     (Kind(5), 1800000),
+    (Kind(30000), 100000),
 ]
 
 # Taggings sync. DELIBERATELY SEPARATE from `ev_kinds` above — see ADR
-# trusted-lists/0001 D10. `ev_kinds` means "the kinds the follow/mute/report
+# trusted-lists/0001 D10. `ev_kinds` means "the kinds the follow/mute/report/vouch
 # graph is built from", and `backfill_redis_relationships._is_graph_db_populated`
 # reads it with exactly that meaning: it gates the one-time Redis relationship
 # backfill on EVERY listed kind having a completed transfer row. Appending

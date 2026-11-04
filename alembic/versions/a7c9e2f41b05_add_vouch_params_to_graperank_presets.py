@@ -4,7 +4,7 @@ Revision ID: a7c9e2f41b05
 Revises: c5f1d7a9e2b4, d4e5f6a7b8c9
 Create Date: 2026-11-03 09:30:00.000000
 
-Vouches (kind 30003, d="vouches") join follows, mutes and reports as a rating
+Vouches (kind 30000, d="vouches") join follows, mutes and reports as a rating
 kind in GrapeRank: a deliberate, reputationally costly endorsement rather than
 ambient attention. Adds vouch_rating / vouch_confidence to both preset tables
 and sets the factory values per preset:

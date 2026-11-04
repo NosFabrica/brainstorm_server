@@ -1,4 +1,4 @@
-"""kind-30003 vouch-list ingestion: an author's d="vouches" follow set becomes
+"""kind-30000 vouch-list ingestion: an author's d="vouches" follow set becomes
 `VOUCHES` edges and the `vouched_by:<pubkey>` reverse sets GrapeRank reads.
 Any other d-value is an ordinary NIP-51 follow set and is ignored.
 """
@@ -16,8 +16,8 @@ VOUCHED = "b" * 64
 ALSO_VOUCHED = "c" * 64
 
 
-def _event(tags: list) -> dict:
-    return {"kind": 30003, "pubkey": AUTHOR, "tags": tags, "content": ""}
+def _event(tags: list, kind: int = 30000) -> dict:
+    return {"kind": kind, "pubkey": AUTHOR, "tags": tags, "content": ""}
 
 
 def _mock_session(removed: list | None = None) -> MagicMock:
@@ -96,9 +96,7 @@ def test_replacement_removes_dropped_vouches(monkeypatch):
 
 
 def test_empty_vouch_list_clears_the_authors_vouches(monkeypatch):
-    session, log = _ingest(
-        monkeypatch, _event([["d", "vouches"]]), removed=[VOUCHED]
-    )
+    session, log = _ingest(monkeypatch, _event([["d", "vouches"]]), removed=[VOUCHED])
 
     session.run.assert_awaited_once()
     assert "DELETE rel" in session.run.await_args.args[0]
@@ -118,6 +116,16 @@ def test_other_follow_sets_are_ignored(monkeypatch):
 
 def test_a_missing_d_tag_is_ignored(monkeypatch):
     session, log = _ingest(monkeypatch, _event([["p", VOUCHED]]))
+
+    session.run.assert_not_called()
+    assert log == []
+
+
+def test_bookmark_sets_are_ignored_even_with_the_vouch_d_tag(monkeypatch):
+    session, log = _ingest(
+        monkeypatch,
+        _event([["d", "vouches"], ["p", VOUCHED]], kind=30003),
+    )
 
     session.run.assert_not_called()
     assert log == []

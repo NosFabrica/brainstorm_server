@@ -29,11 +29,11 @@ REPORTED_BY_KEY_PREFIX = "reported_by:"
 DESIGNATES_KEY_PREFIX = "designates:"
 VOUCHED_BY_KEY_PREFIX = "vouched_by:"
 
-# A vouch list is a NIP-51 follow set (kind 30003) whose `d` tag is "vouches":
+# A vouch list is a NIP-51 follow set (kind 30000) whose `d` tag is "vouches":
 # the author's deliberate endorsements, as opposed to the ambient attention of
 # their kind-3 follows. Any other d-value is an ordinary follow set and carries
 # no assertion — it is ignored.
-VOUCH_LIST_KIND = 30003
+VOUCH_LIST_KIND = 30000
 VOUCH_LIST_D_TAG = "vouches"
 
 logger = loggr.get_logger(__name__)
@@ -74,7 +74,7 @@ async def process_strfry_event(session: AsyncNeoSession, event: dict):
         return await process_event_kind_10040(session, event)
 
     if kind == VOUCH_LIST_KIND:
-        return await process_event_kind_30003(session, event)
+        return await process_event_kind_30000(session, event)
 
     if kind == TAGGING_KIND:
         # Tag elements and taggings are both kind 39999, told apart by `z`.
@@ -221,7 +221,7 @@ async def process_event_kind_3(session: AsyncNeoSession, event: dict):
     )
 
 
-async def process_event_kind_30003(session: AsyncNeoSession, event: dict):
+async def process_event_kind_30000(session: AsyncNeoSession, event: dict):
     """A vouch list replaces its author's vouches: `VOUCHES` edges in Neo4j and
     the `vouched_by:<pubkey>` reverse sets GrapeRank reads.
 
