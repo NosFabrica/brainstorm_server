@@ -225,7 +225,7 @@ def test_event_that_passes_schema_but_fails_parse_is_400_not_500(
         raise NostrSdkError.Generic("nope")
 
     monkeypatch.setattr(
-        "app.services.onboarding_service.Event.from_json", _boom
+        "app.utils.signed_event.Event.from_json", _boom
     )
     body = {"signed_event": signed_kind3(caller.keys, [])}
 
