@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Per-IP limits on the vault's unauthenticated half (challenge, open).
     passkey_challenge_rate_limit_per_minute: int = Field(default=30)
     passkey_open_rate_limit_per_minute: int = Field(default=20)
+    # Per-IP cap on /.well-known/nostr.json. Generous: verifiers and NAT'd
+    # clients batch lookups; this only stops a loop.
+    nip05_rate_limit_per_minute: int = Field(default=600)
     # Global kill-switch for the tier scheduler. Default off; enable per environment
     scheduler_enabled: bool = Field(default=False)
     # Max scheduled runs whose publishing may be in flight before admission pauses.

@@ -160,6 +160,12 @@ class BrainstormNsec(TimestampMixin, Base):
     nsec: Mapped[str] = mapped_column(String, nullable=False)
     encrypted_nsec: Mapped[str] = mapped_column(String, nullable=True)
     pubkey: Mapped[str] = mapped_column(String, primary_key=True)
+    # The public half of the nsec and its NIP-05 local-part, stored so the
+    # well-known lookup never decrypts. Null only until the startup backfill.
+    assistant_pubkey: Mapped[str | None] = mapped_column(String, nullable=True)
+    nip05_local_part: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
     last_time_triggered_graperank = mapped_column(DateTime, nullable=True)
     last_time_calculated_graperank = mapped_column(DateTime, nullable=True)
     # Freshness clock: set only on a successful TA publish. Drives scheduling.
