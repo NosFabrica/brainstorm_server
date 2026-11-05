@@ -21,9 +21,9 @@ class SignedEventRejected(Exception):
 
 
 def verify_signed_event(raw: Any, *, kind: int, author: str | None = None) -> Event:
-    """Parse, check kind, verify id + signature, check author. Read tags from the result, not `raw`.
+    """Parse, check kind, verify id + sig, check author. Read tags from the result.
 
-    Pass a JSON string as received when there is one: nostr_sdk rejects duplicate keys, `json.loads` doesn't.
+    Pass JSON as received when there is one: nostr_sdk rejects duplicate keys.
     """
     if not isinstance(raw, (str, dict)):
         raise SignedEventRejected(Rejection.MALFORMED)
