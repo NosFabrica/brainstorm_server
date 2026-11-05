@@ -113,6 +113,19 @@ class TestNameResolution:
         assistant_pubkeys_query.assert_not_awaited()
 
 
+class TestRateLimit:
+    def test_a_looping_caller_is_throttled_per_ip(self, make_client, monkeypatch):
+        monkeypatch.setattr(settings, "nip05_rate_limit_per_minute", 3)
+        client = make_client(house_pubkey=HOUSE_PUBKEY)
+
+        codes = [
+            client.get(WELL_KNOWN_PATH, params={"name": "_"}).status_code
+            for _ in range(4)
+        ]
+
+        assert codes == [200, 200, 200, 429]
+
+
 class TestHouseIdentity:
     def test_underscore_resolves_to_the_periodic_graperank_pubkey(self, make_client):
         client = make_client(house_pubkey=HOUSE_PUBKEY)

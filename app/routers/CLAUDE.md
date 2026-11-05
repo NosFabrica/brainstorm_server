@@ -16,7 +16,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/whitelisted/{observer_pubkey}` | `router.py:75-94` | Trusted-pubkey list for an observer; `threshold` query param (default 0.02) |
 | `/shortestPath` | `graph/router.py` | Path network: every shortest directed FOLLOWS path between two pubkeys; `only=hops` for Hops alone (ADR 0004) |
 | `/networkAlerts` | `network_alerts/router.py` | Pubkeys carrying more verified reports than their reach justifies, split into direct-follows / extended-network |
-| `/.well-known/nostr.json` | `nip05/well_known.py` | NIP-05 verification for Assistant pubkeys; resolution in `services/nip05_service.py` |
+| `/.well-known/nostr.json` | `nip05/well_known.py` | NIP-05 verification for Assistant pubkeys; resolution in `services/nip05_service.py`; per-IP `NIP05_RATE_LIMIT_PER_MINUTE` (600) |
 
 ## Subdirs (by URL prefix)
 

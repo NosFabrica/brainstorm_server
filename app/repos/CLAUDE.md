@@ -67,8 +67,10 @@ was removed — the per-observer whitelist now lives in `observer_whitelist_repo
 `select_brainstorm_nsec_by_pubkey_on_db` decrypts the nsec on read via
 `_resolve_plaintext_nsec`. Plaintext fallback exists for unmigrated rows. Don't
 read `BrainstormNsec.nsec` directly outside the repo — go through the helper.
-The Assistant pubkey (public half of the nsec) is derived by `_assistant_pubkey`,
-used by `select_all_assistant_pubkeys_on_db`.
+The Assistant pubkey (public half of the nsec) is derived by `_assistant_pubkey`
+once, when the row is created, and stored with its NIP-05 local-part
+(`assistant_pubkey`, `nip05_local_part`); rows that predate the columns are
+filled at startup by `backfill_assistant_identities_on_db`.
 
 ### Binary-packed pubkey lists
 
@@ -89,7 +91,7 @@ in `brainstorm_nsec.py` are the only safe entry points.
 ### `brainstorm_nsec.py`
 
 - `get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey) → tuple[BrainstormNsec, bool]` (the bool is "created now")
-- `select_all_assistant_pubkeys_on_db(db) → list[str]` — every Assistant pubkey, derived from the rows' nsecs (the Assistant key is not a column; `pubkey` is the owner). Drives the NIP-05 well-known lookup.
+- `select_assistant_pubkey_by_nip05_local_part_on_db(db, local_part) → str | None` — indexed lookup behind the NIP-05 well-known route (`pubkey` is the owner, `assistant_pubkey` the Assistant).
 - Preset getters/setters: `get_graperank_preset_by_pubkey_on_db`, `set_graperank_preset_by_pubkey_on_db`, `get_graperank_custom_params_by_pubkey_on_db`, `set_graperank_custom_params_by_pubkey_on_db` (all auto-create the row if absent)
 - `set_treasure_map_on_by_pubkey_on_db(db, pubkey, on)` — the Assistant's Treasure Map choice; written only by `POST /user/assistantTreasureMap`
 - Timestamp updates: `update_last_time_triggered_graperank_on_db`, `update_last_time_calculated_graperank_on_db`

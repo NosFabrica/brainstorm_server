@@ -92,7 +92,9 @@ check in `user_service.py`.
   (`LOGIN_*_RATE_LIMIT_*`), read per request; never per pubkey, or an attacker
   could spend a victim's bucket. The passkey vault's public half has the same
   shape: `rate_limit_passkey_challenge` / `rate_limit_passkey_open`
-  (`PASSKEY_*_RATE_LIMIT_PER_MINUTE`).
+  (`PASSKEY_*_RATE_LIMIT_PER_MINUTE`). `rate_limit_nip05` caps
+  `/.well-known/nostr.json` (`NIP05_RATE_LIMIT_PER_MINUTE`, generous: it only
+  stops a loop).
 - `validate_subscription_refresh_allowed(pubkey)` (12 / 60s) and
   `validate_flash_record_read_allowed(operator_pubkey)` (30 / 60s) — per-pubkey
   billing throttles. All limiters share `_enforce_window`.
