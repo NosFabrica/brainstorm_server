@@ -111,7 +111,8 @@ async def resync_subscription_endpoint(
     pubkey: str,
     db: AsyncDBSession = Depends(dependency=get_db),
 ):
-    outcome = await apply_entitlement(db, external_ref=pubkey, subscription_id=None)
+    with _flash_failure_as_http():
+        outcome = await apply_entitlement(db, external_ref=pubkey, subscription_id=None)
     logger.info("Operator forced a resync of %s: %s", pubkey, outcome.reason.value)
     return {"applied": outcome.applied, "reason": outcome.reason.value}
 

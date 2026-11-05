@@ -694,6 +694,25 @@ def test_an_operator_can_force_one_subscriber_to_resynchronise(
     assert applied.await_args.kwargs["external_ref"] == PUBKEY
 
 
+def test_a_resync_that_cannot_read_flash_says_why(billing_client, monkeypatch):
+    """The runbook's step after a key rotation, so a dead key must read as one."""
+    from app.core.flash import FlashCredentialError, FlashUnavailable
+
+    for failure, expected in (
+        (FlashUnavailable("socket timed out"), 503),
+        (FlashCredentialError("Flash refused our credentials (401)"), 502),
+    ):
+        monkeypatch.setattr(
+            "app.routers.admin.billing.router.apply_entitlement",
+            AsyncMock(side_effect=failure),
+        )
+        response = billing_client.post(
+            f"/admin/billing/subscriptions/{PUBKEY}/resync"
+        )
+        assert response.status_code == expected
+        assert isinstance(response.json()["detail"], str)
+
+
 # ---------------------------------------------------------------------------
 # The plan editor's pickers — what Flash holds, read live
 # ---------------------------------------------------------------------------
