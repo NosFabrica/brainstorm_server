@@ -145,30 +145,6 @@ def test_a_plan_carries_everything_the_pricing_page_stopped_storing(
     assert plan.not_included == ["priority support"]
 
 
-def test_the_local_fake_answers_without_reaching_flash_or_the_cache(
-    redis, monkeypatch
-):
-    """There is no Flash sandbox, so the fake is how the paid paths are
-    rehearsed locally — including the pricing page they start on. Not cached:
-    the dev endpoint that sets a plan would appear not to work until the TTL
-    ran out.
-    """
-    from app.core import flash_mock
-    from app.core.config import settings
-
-    reader = _flash(monkeypatch)
-    monkeypatch.setattr(settings, "flash_mock_enabled", True)
-    flash_mock.clear()
-    flash_mock.set_plan({"id": "4f2a", "serviceId": SERVICE, "name": "Local", "amount": "1"})
-
-    plans = asyncio.run(cache.read_service_plans(SERVICE))
-
-    assert [plan.name for plan in plans] == ["Local"]
-    reader.assert_not_awaited()
-    assert redis.sets == []
-    flash_mock.clear()
-
-
 def test_one_unreadable_service_does_not_lose_the_others(redis, monkeypatch):
     """Across services the failures are told apart: one Flash cannot be read for
     contributes nothing, and the rest of the catalogue still comes back."""

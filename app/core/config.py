@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # Where checkout sends the user back. Empty = {frontend_url}/billing/return.
     # Must exactly match a URL registered in the Flash dashboard.
     flash_checkout_redirect_url: str = Field(default="")
-    # Routes Flash reads to the in-process fake (app/core/flash_mock.py).
+    # Mounts the in-process fake (app/core/flash_fake.py) under the Flash client.
     # Test-only; with no Flash sandbox this is how the paid paths are exercised.
     flash_mock_enabled: bool = Field(default=False)
     # Per-attempt HTTP timeout for Flash reads.

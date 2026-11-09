@@ -31,6 +31,7 @@ from urllib.parse import quote
 
 import httpx
 
+from app.core import flash_fake
 from app.core.config import settings
 from app.core.loggr import loggr
 
@@ -55,7 +56,8 @@ def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
         _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.flash_http_timeout_seconds)
+            timeout=httpx.Timeout(settings.flash_http_timeout_seconds),
+            transport=flash_fake.transport() if settings.flash_mock_enabled else None,
         )
     return _client
 
@@ -575,11 +577,6 @@ async def fetch_subscription(
     """
     _require_a_handle(subscription_id, ref)
 
-    if settings.flash_mock_enabled:
-        from app.core import flash_mock
-
-        return flash_mock.lookup(subscription_id, ref)
-
     body = await _read_for(subscription_id, ref)
     if body is None:
         return None
@@ -618,11 +615,6 @@ async def cancel_subscription(
     if not subscription_id:
         raise FlashUnavailable("A cancellation needs a subscriptionId")
 
-    if settings.flash_mock_enabled:
-        from app.core import flash_mock
-
-        return flash_mock.cancel(subscription_id)
-
     reason = (reason or "").strip()
     body = await _write_body(
         "POST",
@@ -646,11 +638,6 @@ async def set_subscription_status(
         raise FlashUnavailable("A status change needs a subscriptionId")
     if status not in SETTABLE_STATUSES:
         raise FlashUnavailable(f"Flash does not take a status of {status!r} here")
-
-    if settings.flash_mock_enabled:
-        from app.core import flash_mock
-
-        return flash_mock.set_status(subscription_id, status)
 
     body = await _write_body(
         "PATCH", _subscriptions_url(subscription_id), {"status": status}
@@ -706,12 +693,6 @@ async def fetch_subscription_raw(
     raising means we could not find out.
     """
     _require_a_handle(subscription_id, ref)
-
-    if settings.flash_mock_enabled:
-        from app.core import flash_mock
-
-        rows = flash_mock.lookup_raw(subscription_id, ref)
-        return {"livemode": True, "subscriptions": rows} if rows else None
 
     body = await _read_for(subscription_id, ref)
     if body is None:
@@ -860,11 +841,6 @@ def parse_service(raw: dict) -> FlashService:
 async def fetch_services() -> list[FlashService]:
     """`GET /services` — every service on the account, read live. Admin-only
     caller, so no cache: an operator picking a service wants what Flash holds now."""
-    if settings.flash_mock_enabled:
-        from app.core import flash_mock
-
-        return [parse_service(service) for service in flash_mock.services()]
-
     body = await _read_body(_services_url(), {}) or {}
     raw = body.get("services")
     if not isinstance(raw, list):

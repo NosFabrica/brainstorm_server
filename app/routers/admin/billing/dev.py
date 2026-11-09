@@ -13,46 +13,24 @@ import httpx
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core import flash_mock
+from app.core import flash_fake
 from app.core.config import settings
-from app.core.flash import FlashPricing, FlashSubscription
 from app.services.flash_webhook_service import compute_signature
 
 router = APIRouter()
 
 
-class MockPricingBody(BaseModel):
-    """The price Flash snapshotted at signup — what the subscriber's card is
-    priced from. Omit it to drill a subscription Flash priced nowhere."""
-
-    amount_minor: int | None = None
-    currency: str | None = None
-    billing_interval: str | None = None
-
-
 class MockSubscriptionBody(BaseModel):
+    """One subscription as Flash sends it: its field names, dates as strings."""
+
+    model_config = ConfigDict(extra="allow")
+
     id: str
-    status: str
-    ref: str | None = None
-    subscriber_id: str | None = None
-    service_id: str
-    plan_id: str
-    current_period_start: datetime | None = None
-    current_period_end: datetime | None = None
-    next_billing_date: datetime | None = None
-    trial_end_date: datetime | None = None
-    cancel_effective_date: datetime | None = None
-    portal_url: str | None = None
-    pricing: MockPricingBody | None = None
 
 
 @router.put(path="/subscription", summary="Dev: set one mock Flash subscription")
 async def set_mock_subscription_endpoint(body: MockSubscriptionBody):
-    fields = body.model_dump()
-    fields["pricing"] = (
-        FlashPricing(**fields["pricing"]) if fields["pricing"] is not None else None
-    )
-    flash_mock.set_subscription(FlashSubscription(**fields))
+    flash_fake.set_subscription(body.model_dump())
     return {"ok": True, "mock_enabled": settings.flash_mock_enabled}
 
 
@@ -61,7 +39,7 @@ async def set_mock_subscription_endpoint(body: MockSubscriptionBody):
     summary="Dev: remove one mock Flash subscription",
 )
 async def remove_mock_subscription_endpoint(subscription_id: str):
-    return {"removed": flash_mock.remove_subscription(subscription_id)}
+    return {"removed": flash_fake.remove_subscription(subscription_id)}
 
 
 class MockPlanBody(BaseModel):
@@ -88,7 +66,7 @@ class MockPlanBody(BaseModel):
 
 @router.put(path="/plan", summary="Dev: set one mock Flash plan")
 async def set_mock_plan_endpoint(body: MockPlanBody):
-    flash_mock.set_plan(body.model_dump(by_alias=True))
+    flash_fake.set_plan(body.model_dump(by_alias=True))
     return {"ok": True, "mock_enabled": settings.flash_mock_enabled}
 
 
@@ -96,7 +74,7 @@ async def set_mock_plan_endpoint(body: MockPlanBody):
     path="/plan/{service_id}/{plan_id}", summary="Dev: remove one mock Flash plan"
 )
 async def remove_mock_plan_endpoint(service_id: str, plan_id: str):
-    return {"removed": flash_mock.remove_plan(service_id, plan_id)}
+    return {"removed": flash_fake.remove_plan(service_id, plan_id)}
 
 
 class EmitWebhookBody(BaseModel):

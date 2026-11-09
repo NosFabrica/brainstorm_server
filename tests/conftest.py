@@ -237,6 +237,20 @@ def limiter_redis(monkeypatch) -> _LimiterRedis:
 
 
 @pytest.fixture
+def fake_flash():
+    """The fake Flash under the real client, empty."""
+    import httpx
+
+    from app.core import flash, flash_fake
+
+    flash_fake.clear()
+    flash._client = httpx.AsyncClient(transport=flash_fake.transport())
+    yield flash_fake
+    flash._client = None
+    flash_fake.clear()
+
+
+@pytest.fixture
 def mock_kind3_write(monkeypatch) -> AsyncMock:
     """Patch the reused kind-3 handler + Neo4j session opener.
 

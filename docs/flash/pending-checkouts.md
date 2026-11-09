@@ -6,7 +6,7 @@ payment never confirms, and why the reconcile sweep eventually stops asking abou
 For the whole payment path this sits inside — signup, renewal, cancellation, and what repairs a missed
 event — see [`lifecycle.md`](lifecycle.md).
 
-Source of truth for Flash's own behaviour is the integration document Flash gave us, not
+Source of truth for Flash's own behaviour is Flash's current API docs, not
 `docs.paywithflash.com` — that documents an older product and is actively misleading.
 
 ## What Flash does

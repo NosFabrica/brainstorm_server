@@ -16,9 +16,8 @@ Working docs for the Flash payments integration. Code lives in
 
 Get this right or you will build the wrong thing.
 
-1. **The integration document Flash gave us** — authoritative. Vault base URL,
-   UUID ids, `redirect_uri`/`ref` params, HMAC-SHA256 webhooks. Ask the team for
-   it; it is not published.
+1. **Flash's current API docs** — authoritative. Vault base URL, UUID ids,
+   `redirect_uri`/`ref` params, HMAC-SHA256 webhooks.
 2. `https://paywithflash.com/` — marketing site. Occasionally useful, never
    definitive.
 3. `https://docs.paywithflash.com/` — **outdated and actively misleading.** It

@@ -63,14 +63,6 @@ async def read_service_plans(
     `read_plans_for_services` catches both per service, so one bad id degrades
     the page rather than refusing it.
     """
-    if settings.flash_mock_enabled:
-        # Deliberately ahead of the cache and never written to it: the LOCAL
-        # dev endpoint that sets a plan would otherwise appear not to work
-        # until the TTL ran out.
-        from app.core import flash_mock
-
-        return [parse_plan(plan) for plan in flash_mock.plans_for(service_id)]
-
     if not fresh:
         cached = await _load(fresh_key(service_id))
         if cached is not None:
