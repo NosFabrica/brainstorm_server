@@ -3,7 +3,7 @@ End-to-end validation for POST /admin/trustedLists/{observer_pubkey}.
 
 Triggers Trusted List generation for one Observer and shows you exactly what
 happened at every layer: the run report (dictionary size, per-tag counts,
-empty_reason), and — with --verify-relay — the kind-30392 events actually
+empty_reason), and — with --verify-relay — the kind-30392/30393/30394 events actually
 sitting on the relay afterwards, fetched by the signing key the run reported.
 
 An empty dev box has no taggings, so --seed pushes a synthetic tag element +
@@ -37,13 +37,24 @@ from get_admin_token import fetch_admin_token  # noqa: E402
 
 
 def seed(observer_hex: str) -> dict:
-    """Push a signed tag element + tagging through the real redis ingest, and
-    give the asserter rank in the Observer's web of trust."""
+    """Push a signed tag element, a pubkey tagging and an event tagging (with
+    its tagging header) through the real redis ingest, and give the asserter
+    rank in the Observer's web of trust.
+
+    The event tagging names an article by coordinate, so its tagging target
+    (kind 30023, "Articles") needs no lookup and the 30394 builds on a dev box
+    with no lookup relay (ADR trusted-lists/0002 D2)."""
     import redis as redis_sync
     from neo4j import GraphDatabase
 
     from app.core.config import settings
-    from app.services.tagging_parse import NOSTR_USER_TAG_Z_TAG, TAG_Z_TAG
+    from app.services.tagging_parse import (
+        EVENT_TAG_CONCEPT,
+        LEGACY_Z_TAG_PUBKEY,
+        NOSTR_USER_TAG_Z_TAG,
+        TAG_Z_TAG,
+        TAGGING_HEADER_CONCEPT,
+    )
 
     tag_author = Keys.generate()
     asserter = Keys.generate()
@@ -71,9 +82,34 @@ def seed(observer_hex: str) -> dict:
         .sign_with_keys(asserter)
     )
 
+    header_d = f"tagging:{slug}-tagging"
+    header = (
+        EventBuilder(Kind(39999), "")
+        .tags([
+            Tag.parse(["d", header_d]),
+            Tag.parse(["z", f"39998:{LEGACY_Z_TAG_PUBKEY}:{TAGGING_HEADER_CONCEPT}"]),
+            Tag.parse(["a", f"39999:{tag_author.public_key().to_hex()}:{slug}"]),
+        ])
+        .sign_with_keys(tag_author)
+    )
+    article = f"30023:{target.public_key().to_hex()}:seeded-article"
+    event_tagging = (
+        EventBuilder(Kind(39999), "")
+        .tags([
+            Tag.parse(["d", f"event-tag-{slug}-x"]),
+            Tag.parse(["a", article]),
+            Tag.parse(["z", f"39998:{LEGACY_Z_TAG_PUBKEY}:{EVENT_TAG_CONCEPT}"]),
+            Tag.parse(["z", f"39999:{tag_author.public_key().to_hex()}:{header_d}"]),
+            Tag.parse(["polarity", "1"]),
+        ])
+        .sign_with_keys(asserter)
+    )
+
     r = redis_sync.Redis(host=settings.redis_host, port=int(settings.redis_port))
     r.rpush("strfry:events", element.as_json())
     r.rpush("strfry:events", tagging.as_json())
+    r.rpush("strfry:events", header.as_json())
+    r.rpush("strfry:events", event_tagging.as_json())
 
     drv = GraphDatabase.driver(
         settings.neo4j_db_url,
@@ -86,7 +122,8 @@ def seed(observer_hex: str) -> dict:
             key=f"influence_{observer_hex}",
         )
     drv.close()
-    print(f"seeded: tag '{slug}', asserter rank 90 under this observer")
+    print(f"seeded: tag '{slug}' on a person and on article {article[:24]}…, "
+          "asserter rank 90 under this observer")
     print("  (waiting 3s for the queue consumer to ingest)")
     time.sleep(3)
     return {"slug": slug, "target": target.public_key().to_hex()}
@@ -194,9 +231,9 @@ async def read_relay(signing_pubkey: str) -> list[dict]:
     await client.connect()
     flt = (
         Filter()
-        .kinds([Kind(30392)])
+        .kinds([Kind(30392), Kind(30393), Kind(30394)])
         .authors([PublicKey.parse(signing_pubkey)])
-        .limit(200)
+        .limit(500)
     )
     events = await client.fetch_events(flt, timeout=timedelta(seconds=10))
     out = [json.loads(e.as_json()) for e in events.to_vec()]
@@ -214,7 +251,8 @@ def main() -> None:
                         help="Seed the D12 scenario: one tag, six targets, "
                              "asserters of differing rank — shows mass beating count")
     parser.add_argument("--verify-relay", action="store_true",
-                        help="Read the observer's kind-30392s back off the relay after")
+                        help="Read the observer's kind-30392/30393/30394s back off "
+                             "the relay after")
     args = parser.parse_args()
 
     observer = PublicKey.parse(args.observer).to_hex()
@@ -262,13 +300,15 @@ def main() -> None:
     if args.verify_relay and data.get("signing_pubkey"):
         events = asyncio.run(read_relay(data["signing_pubkey"]))
         print(f"\nOn the relay, signed by {data['signing_pubkey'][:8]}…: "
-              f"{len(events)} kind-30392 event(s)")
-        for ev in events:
+              f"{len(events)} Trusted List event(s)")
+        for ev in sorted(events, key=lambda e: e["kind"]):
             tags = {t[0]: t[1:] for t in ev["tags"]}
-            p_tags = [t for t in ev["tags"] if t[0] == "p"]
+            member_tag = {30392: "p", 30393: "e", 30394: "a"}[ev["kind"]]
+            p_tags = [t for t in ev["tags"] if t[0] == member_tag]
             retracted = ["status", "retracted"] in ev["tags"]
             rigor = tags.get("rigor", ["-"])[0]
-            print(f"  d={tags.get('d', ['?'])[0]}  title={tags.get('title', ['?'])[0]!r}  "
+            print(f"  kind={ev['kind']}  d={tags.get('d', ['?'])[0]}  "
+                  f"title={tags.get('title', ['?'])[0]!r}  "
                   f"members={len(p_tags)}  rigor={rigor}"
                   f"{'  RETRACTED' if retracted else ''}")
             # D12: the score is the 3rd element of the p tag, after an empty
