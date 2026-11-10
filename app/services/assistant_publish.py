@@ -39,6 +39,7 @@ from app.schemas.schemas import AssistantRelayResult
 from app.services.designation_service import fetch_latest
 from app.services.duty_menu_build import RelayTarget, relay_key
 from app.utils.client_tag import CLIENT_TAG, client_tag
+from app.utils.signed_event import SignedEventRejected, verify_signed_event
 
 logger = loggr.get_logger(__name__)
 
@@ -62,16 +63,11 @@ async def assistant(
 
 def is_own(event: Any, author: str, kind: int) -> bool:
     """Is `event` the author's own event of `kind`, validly signed?"""
-    if (
-        not isinstance(event, dict)
-        or event.get("kind") != kind
-        or str(event.get("pubkey") or "").lower() != author.lower()
-    ):
-        return False
     try:
-        return Event.from_json(json.dumps(event)).verify()
-    except Exception:
+        verify_signed_event(event, kind=kind, author=author.lower())
+    except SignedEventRejected:
         return False
+    return True
 
 
 async def read_newest(
