@@ -24,9 +24,6 @@ from app.repos.user_repo import (
 )
 from app.utils.datetimes import utc_now
 
-# Each batch is its own transaction, so fewer, larger batches mean fewer commits.
-BATCH_SIZE = 5000
-
 # Persisted per observer as `<field>_<observer_pubkey>`. `trusted_followers` is
 # here so /networkAlerts reads a property instead of scanning follower edges.
 # Cast: a pre-cutover worker sends hops/counts as floats; Neo4j keeps the type it gets.
@@ -42,7 +39,7 @@ def _keys(observer: str) -> dict[str, str]:
 async def _write_batches(work: Callable[..., Awaitable[None]], items: Iterable) -> None:
     """One session (and transaction) per batch."""
     it = iter(items)
-    while batch := list(islice(it, BATCH_SIZE)):
+    while batch := list(islice(it, settings.neo4j_write_batch_size)):
         async with neo4j_driver.session() as session:
             await work(session, batch)
 

@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     # Clear an observer's out-of-reach Neo4j scores (a label scan) on its first run
     # after this many days since the last clear; forced runs always clear. <= 0 = forced only.
     neo4j_cleanup_interval_days: int = Field(default=30)
+    # Rows per Neo4j score-write transaction. Kept small: a write holds every
+    # property record it walks on each node until commit.
+    neo4j_write_batch_size: int = Field(default=500, gt=0)
     # --- Trusted Lists (kind-30392 from kind-39999 taggings) ---------------
     # Inclusive floor on the asserter's Rank (0-100) in the Observer's own web
     # of trust. Default 3 is exactly issue #73's "rank > 2" — stated as an
