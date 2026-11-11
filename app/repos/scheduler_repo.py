@@ -6,7 +6,7 @@ platform observer and anyone with a run in flight. The pure ranking/eligibility
 decisions live in app/services/scheduler.py.
 """
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import execute_db_statement
@@ -37,6 +37,29 @@ async def load_scheduler_candidates_on_db(
         .correlate(BrainstormNsec)
         .scalar_subquery()
     )
+    last_success_at = (
+        select(func.max(BrainstormRequest.updated_at))
+        .where(
+            BrainstormRequest.pubkey == BrainstormNsec.pubkey,
+            BrainstormRequest.status == BrainstormRequestStatus.SUCCESS.value,
+        )
+        .correlate(BrainstormNsec)
+        .scalar_subquery()
+    )
+    consecutive_failures = (
+        select(func.count())
+        .select_from(BrainstormRequest)
+        .where(
+            BrainstormRequest.pubkey == BrainstormNsec.pubkey,
+            BrainstormRequest.status == BrainstormRequestStatus.FAILURE.value,
+            or_(
+                last_success_at.is_(None),
+                BrainstormRequest.updated_at > last_success_at,
+            ),
+        )
+        .correlate(BrainstormNsec)
+        .scalar_subquery()
+    )
     in_flight = (
         select(BrainstormRequest.private_id)
         .where(
@@ -56,6 +79,7 @@ async def load_scheduler_candidates_on_db(
             func.coalesce(Scheduling.enabled, default_enabled).label("enabled"),
             BrainstormNsec.last_time_published_graperank.label("last_published"),
             last_failed_at.label("last_failed_at"),
+            consecutive_failures.label("consecutive_failures"),
         )
         .outerjoin(Scheduling, Scheduling.id == BrainstormNsec.scheduling_id)
         .where(BrainstormNsec.pubkey != platform_pubkey, ~in_flight)
@@ -69,6 +93,7 @@ async def load_scheduler_candidates_on_db(
             enabled=bool(row.enabled),
             last_published=as_naive_utc(row.last_published),
             last_failed_at=as_naive_utc(row.last_failed_at),
+            consecutive_failures=int(row.consecutive_failures or 0),
         )
         for row in result.all()
     ]

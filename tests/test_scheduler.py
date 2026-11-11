@@ -14,6 +14,7 @@ from app.services.scheduler import (
     is_overdue,
     rank_overdue_candidates,
     request_in_pipeline,
+    retry_backoff,
 )
 from app.services.leader_lock import SCHEDULER_LOCK_KEY, acquire_or_renew_leader
 
@@ -41,8 +42,9 @@ DAY = 86400
 
 
 def _cand(pubkey="a", priority=0, interval=DAY, last_published=None,
-          last_failed_at=None, enabled=True):
+          last_failed_at=None, enabled=True, consecutive_failures=1):
     return SchedulerCandidate(
+        consecutive_failures=consecutive_failures,
         pubkey=pubkey,
         priority=priority,
         interval_seconds=interval,
@@ -93,6 +95,20 @@ def test_recently_failed_user_excluded_until_backoff_elapses():
     ranked = rank_overdue_candidates([just_failed, failed_long_ago], NOW,
                                      retry_backoff_seconds=1800)
     assert [c.pubkey for c in ranked] == ["old"]
+
+
+def test_retry_backoff_doubles_per_consecutive_failure_up_to_cap():
+    assert [retry_backoff(n, base=3600, cap=8 * 3600) for n in (0, 1, 2, 3, 4, 5, 100)] == [
+        3600, 3600, 7200, 14400, 28800, 28800, 28800,
+    ]
+
+
+def test_repeatedly_failing_user_waits_longer_before_retry():
+    failed_at = NOW - timedelta(hours=3)
+    once = _cand(pubkey="once", last_failed_at=failed_at, consecutive_failures=1)
+    thrice = _cand(pubkey="thrice", last_failed_at=failed_at, consecutive_failures=3)
+    ranked = rank_overdue_candidates([once, thrice], NOW, retry_backoff_seconds=3600)
+    assert [c.pubkey for c in ranked] == ["once"]
 
 
 def test_admission_budget_is_target_minus_inflight():

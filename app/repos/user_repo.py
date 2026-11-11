@@ -123,10 +123,12 @@ async def count_following_user(session: AsyncNeoSession, pubkey: str) -> int:
     return record["count"] if record else 0
 
 
-# Number of users that a given pubkey follows
+# Number of other users a given pubkey follows. A self-follow doesn't count: the
+# worker's reach excludes the observer, so it leaves nobody to score.
 async def count_user_follows(session: AsyncNeoSession, pubkey: str) -> int:
     query = """
-    MATCH (user:NostrUser {pubkey: $pubkey})-[:FOLLOWS]->(:NostrUser)
+    MATCH (user:NostrUser {pubkey: $pubkey})-[:FOLLOWS]->(other:NostrUser)
+    WHERE other <> user
     RETURN COUNT(*) AS count
     """
 
@@ -135,15 +137,15 @@ async def count_user_follows(session: AsyncNeoSession, pubkey: str) -> int:
     return record["count"] if record else 0
 
 
-# Which of the given pubkeys follow at least one user (i.e. are schedulable).
+# Which of the given pubkeys follow at least one other user (i.e. are schedulable).
 async def pubkeys_following_someone(
     session: AsyncNeoSession, pubkeys: list[str]
 ) -> set[str]:
     if not pubkeys:
         return set()
     query = """
-    MATCH (user:NostrUser)-[:FOLLOWS]->(:NostrUser)
-    WHERE user.pubkey IN $pubkeys
+    MATCH (user:NostrUser)-[:FOLLOWS]->(other:NostrUser)
+    WHERE user.pubkey IN $pubkeys AND other <> user
     RETURN DISTINCT user.pubkey AS pubkey
     """
     result = await session.run(query, pubkeys=pubkeys)
