@@ -19,6 +19,7 @@ from nostr_sdk import EventBuilder, Keys, Kind, Tag, Timestamp
 
 from app.services import dictionary_relay_reader
 from app.services.dictionary_relay_reader import fetch_newest_headers
+from app.utils.signed_event import Rejection, SignedEventRejected, verify_signed_event
 
 
 class GuardTimeout(Exception):
@@ -216,3 +217,27 @@ def test_a_header_whose_first_d_has_no_value_isnt_read_as_its_next_ds():
     no_coordinate = signed_tags(a, [["d"], ["d", "x"]], 2)
     found = _read(_relay_sending(good, no_coordinate), [hexkey(a)], ["x"])
     assert found == {(hexkey(a), "x"): good}
+
+
+# W11 (after the merge with staging): each event is checked through
+# `verify_signed_event`, the one way the server accepts a signed event from
+# outside (#135), at the kind and author it would be filed under. One it
+# rejects is skipped.
+def test_each_event_is_checked_through_verify_signed_event(monkeypatch):
+    a = Keys.generate()
+    good, rejected = signed(a, "x", 1), signed(a, "x", 2)
+    checked = []
+
+    def verify(raw, *, kind, author=None):
+        checked.append((raw["id"], kind, author))
+        if raw["id"] == rejected["id"]:
+            raise SignedEventRejected(Rejection.BAD_SIGNATURE)
+        return verify_signed_event(raw, kind=kind, author=author)
+
+    monkeypatch.setattr(dictionary_relay_reader, "verify_signed_event", verify)
+    found = _read(_relay_sending(good, rejected), [hexkey(a)], ["x"])
+    assert found == {(hexkey(a), "x"): good}
+    assert checked == [
+        (good["id"], 39998, hexkey(a)),
+        (rejected["id"], 39998, hexkey(a)),
+    ]

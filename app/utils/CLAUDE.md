@@ -74,7 +74,7 @@ Tiny Nostr helpers: `generate_random_nsec`, the one tag reader (`tag_values` / `
 
 ## signed_event.py
 
-`verify_signed_event(raw, *, kind, author=None) -> Event` — every signed event that arrives from outside (NIP-98, NWT, login, onboarding kind-3, the Assistant's relay read-backs in `is_own`) goes through it. Takes the JSON string as received (NIP-98, NWT: nostr_sdk rejects duplicate keys, `json.loads` would silently keep the last) or an already-parsed dict. Checks in order: parse, kind, `.verify()` (id **and** sig; `verify_signature()` alone lets a forged event through), exact-hex author. Raises `SignedEventRejected(reason: Rejection)`; each caller maps the reason to its own HTTP error. Read tags from the returned `Event`, not the raw dict. Time windows and tag rules stay with the caller.
+`verify_signed_event(raw, *, kind, author=None) -> Event` — every signed event that arrives from outside (NIP-98, NWT, login, onboarding kind-3, the Assistant's relay read-backs in `is_own`, the community headers the Dictionary reads in `dictionary_relay_reader`) goes through it. Takes the JSON string as received (NIP-98, NWT: nostr_sdk rejects duplicate keys, `json.loads` would silently keep the last) or an already-parsed dict. Checks in order: parse, kind, `.verify()` (id **and** sig; `verify_signature()` alone lets a forged event through), exact-hex author. Raises `SignedEventRejected(reason: Rejection)`; each caller maps the reason to its own HTTP error. Read tags from the returned `Event`, not the raw dict. Time windows and tag rules stay with the caller.
 
 ## rate_limiting/
 

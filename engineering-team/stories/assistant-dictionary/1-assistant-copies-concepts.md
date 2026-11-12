@@ -289,3 +289,22 @@ On 2026-10-31, after Gate B's PASS, the branch was rebased from `e2ca872` (#110'
   added, and the line counts are current. `assistant_publish.py`'s row and module docstring name the Dictionary as one
   of its users.
 - The story's own files are byte-identical to before the rebase (`59aec9f`).
+
+## The merge with staging
+
+On 2026-11-12, `staging` at `a896204` was merged into the branch (`d5d37e2`), not rebased. It brought #123, #127,
+#130, #132, #134, #135 and #138.
+
+- **One conflict**, in `BIBLE.md` §4's Assistant paragraph. It keeps staging's text, which spells out `30393` and
+  `30394`, with this story's Dictionary sentence added. Five more files merged cleanly: `app/routers/CLAUDE.md`,
+  `app/schemas/schemas.py`, `app/services/CLAUDE.md`, `assistant_publish.py` and `self_map_build.py`.
+- **`assistant_publish.py` is 237 lines** (`3426eff`): #135 moved `is_own` onto `verify_signed_event`.
+- **The reader checks through `verify_signed_event`.** #135 made `app/utils/signed_event.py` the one way the server
+  accepts a signed event from outside, and `_verified` had been calling `Event.verify()` itself. It now calls
+  `verify_signed_event` at kind 39998 and the author the event is filed under, and skips one it rejects. What the
+  reader keeps doesn't change: it already checked the kind and author, and `.verify()` already checked the id and
+  signature. W11 pins it (test plan, § Added after the merge with staging), and `app/utils/CLAUDE.md` lists the reader
+  among its callers. Nothing in D1–D7 changes.
+- **Gates**, as CI runs them: black, isort, flake8 and mypy are clean, and 1,914 tests pass, `staging`'s 1,792 plus
+  this story's 122. Integration tests need live services, so locally all 166 fail, on `staging` and on this branch
+  alike: the same node ids, compared id for id.

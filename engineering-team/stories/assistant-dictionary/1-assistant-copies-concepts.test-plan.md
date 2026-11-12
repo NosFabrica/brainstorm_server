@@ -70,7 +70,7 @@ These come from the ADR's decisions, not from any acceptance criterion:
 | Dictionary relay (strict read) | takes the REQ, then says nothing | W7 | the reader raises within its bound, not hanging and not returning what it has |
 | Dictionary relay (strict read) | closes the socket before EOSE | W8 | the reader raises, never returns a partial read as if the relay held nothing |
 | Dictionary relay (strict read) | holds nothing | W4, R10 | `{}`; `not_found` for an add |
-| Dictionary relay (strict read) | invalid event | W3 | skipped |
+| Dictionary relay (strict read) | invalid event | W3, W11 | skipped |
 | Dictionary relay (strict read) | malformed event (`created_at`, `tags`, `d`) | W9 | skipped; the read still answers |
 | Dictionary relay (strict read) | a header whose first `d` has no value | W10 | at no `d`; never read as its next `d`'s |
 | Publish relays (nostr-sdk `Client`) | one can't be reached (connect fails) | R23 | its line has `ok: false` and the reason; the others still take it |
@@ -182,6 +182,16 @@ The re-review passed, with four non-blocking findings. These handles pin the fix
 | B5 (one more case) | `test_anything_else_is_not_a_concept_coordinate` | a `d` holding a lone surrogate isn't a coordinate |
 | B5b | `test_a_d_beyond_the_basic_plane_is_still_a_concept_coordinate` | an emoji `d` still parses: the check refuses only what isn't UTF-8 |
 | R29 | `test_a_coordinate_that_isnt_valid_utf8_is_refused_by_the_schema` | the schema refuses it, so no work is done. Its 422 can't be written (FastAPI echoes the input, and Starlette won't encode it), so the route answers 500, as every route does for such a body |
+
+## Added after the merge with staging
+
+Staging's #135 made `verify_signed_event` the one way the server accepts a signed event from outside, and the reader
+now checks through it. W11 fails against `3426eff`, the merge: the reader there doesn't use `verify_signed_event`, so
+the test can't patch it (`AttributeError`).
+
+| Handle | Test | Pins |
+| --- | --- | --- |
+| W11 | `test_each_event_is_checked_through_verify_signed_event` | each event the reader would keep is checked through `verify_signed_event`, at kind 39998 and the author it's filed under, and one it rejects is skipped |
 
 ## Verification
 

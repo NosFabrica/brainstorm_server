@@ -7,9 +7,10 @@ EOSE, a timeout or a `CLOSED` — and never reads as one holding nothing. A
 plain REQ-until-EOSE over one websocket, as `designation_service`
 `fetch_latest_designation` reads kind 10040: the nostr_sdk `Client` returns
 before its socket is open, so an immediate `fetch_events` silently comes back
-empty. An event whose signature doesn't verify, or that isn't shaped like one,
-is skipped and never fails the read. A header's `d` is its first `d` tag's
-value (`d_of`), so one whose first `d` has none is at no `d` at all.
+empty. Each event is checked through `verify_signed_event`, as every signed
+event from outside is: one it rejects, or that isn't shaped like an event, is
+skipped and never fails the read. A header's `d` is its first `d` tag's value
+(`d_of`), so one whose first `d` has none is at no `d` at all.
 """
 
 from __future__ import annotations
@@ -19,19 +20,21 @@ import json
 from typing import Any
 
 import websockets
-from nostr_sdk import Event  # type: ignore
 
 from app.services.dictionary_copy_build import HEADER_KIND, d_of
+from app.utils.signed_event import SignedEventRejected, verify_signed_event
 
 # The whole read's bound (D3). Read when a read starts, so a test can shrink it.
 READ_TIMEOUT_SECONDS = 5.0
 
 
-def _verified(event: dict[str, Any]) -> bool:
+def _verified(event: dict[str, Any], author: str) -> bool:
+    """Is `event` a validly signed header by `author`, the one it's filed under?"""
     try:
-        return Event.from_json(json.dumps(event)).verify()
-    except Exception:
+        verify_signed_event(event, kind=HEADER_KIND, author=author)
+    except SignedEventRejected:
         return False
+    return True
 
 
 def _newer(event: dict[str, Any], than: dict[str, Any] | None) -> bool:
@@ -74,7 +77,7 @@ async def fetch_newest_headers(
                         and d in wanted_ds
                         # Verified before compared: a malformed event can't
                         # verify, and must be skipped, not fail the read.
-                        and _verified(event)
+                        and _verified(event, key[0])
                         and _newer(event, newest.get(key))
                     ):
                         newest[key] = event
