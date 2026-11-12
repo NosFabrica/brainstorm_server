@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 from datetime import timedelta
 from unittest.mock import AsyncMock
 
@@ -248,3 +249,26 @@ def test_nip98_requests_are_unaffected_by_revocation(api, versions, monkeypatch)
     r = api.get("/whoami", headers=_nip98(keys, "GET", "/whoami"))
 
     assert r.status_code == 200
+
+
+def test_nip98_forged_from_a_real_signature_is_rejected(api, monkeypatch):
+    from app.utils import api_validators
+
+    monkeypatch.setattr(
+        api_validators,
+        "brainstorm_nsec_exists_by_pubkey_on_db",
+        AsyncMock(return_value=True),
+    )
+    note = json.loads(EventBuilder.text_note("gm").sign_with_keys(Keys.generate()).as_json())
+    note.update(
+        kind=27235,
+        tags=[
+            ["u", f"{settings.public_base_url.rstrip('/')}/whoami"],
+            ["method", "GET"],
+        ],
+    )
+    encoded = base64.b64encode(json.dumps(note).encode()).decode()
+
+    r = api.get("/whoami", headers={"Authorization": f"Nostr {encoded}"})
+
+    assert r.status_code == 401

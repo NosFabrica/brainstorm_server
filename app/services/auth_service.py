@@ -1,9 +1,7 @@
-import json
 import secrets
 from datetime import timedelta
 
 from fastapi import HTTPException, Request, status
-from nostr_sdk import Event
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.admin_whitelist import get_whitelisted_pubkeys
@@ -16,8 +14,9 @@ from app.repos.brainstorm_nsec import (
 from app.schemas.schemas import AuthSuccessfulToken
 from app.services.session_service import current_session_version
 from app.utils.auth.auth_util import create_jwt_token
-from app.utils.nostr import first_tag_value
+from app.utils.nostr import event_tags, first_tag_value
 from app.utils.rate_limiting.rate_limiting import rate_limit_login_new_observer
+from app.utils.signed_event import Rejection, SignedEventRejected, verify_signed_event
 
 CHALLENGE_TTL = 300  # seconds
 LOGIN_KIND = 22242
@@ -56,21 +55,16 @@ async def verify_nostr_auth_challenge(
 ) -> AuthSuccessfulToken:
     """Consume the challenge the signed login event answers, then mint a session token."""
     try:
-        signed_event = Event.from_json(json.dumps(raw_event))
-    except Exception:
+        signed_event = verify_signed_event(raw_event, kind=LOGIN_KIND, author=pubkey)
+    except SignedEventRejected as exc:
+        if exc.reason is Rejection.WRONG_AUTHOR:
+            raise _unauthorized("Submited event has wrong author")
         raise _unauthorized()
-
-    if signed_event.kind().as_u16() != LOGIN_KIND:
-        raise _unauthorized()
-    if signed_event.author().to_hex() != pubkey:
-        raise _unauthorized("Submited event has wrong author")
-    tags = raw_event.get("tags") or []
+    tags = event_tags(signed_event)
     if first_tag_value(tags, "t") != "brainstorm_login":
         raise _unauthorized()
     challenge = first_tag_value(tags, "challenge")
     if not challenge:
-        raise _unauthorized()
-    if not signed_event.verify():
         raise _unauthorized()
 
     issued_for = await redis_client.getdel(_challenge_key(challenge))

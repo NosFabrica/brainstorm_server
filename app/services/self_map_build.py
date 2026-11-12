@@ -11,7 +11,7 @@ Ported from Tapestry's `src/lib/self-map/index.js` (ADRs assistant-self-map/
 0001–0003), with two changes for Brainstorm:
 
 - **The offer is per key.** `duty_menu_build.offer_rows` offers `30382:rank` …
-  `30382:hops`, `30392`, `39998` and `39999`, so it is read by Duty Menus § 6.2's
+  `30382:hops`, `30392`, `30393`, `30394`, `39998` and `39999`, so it is read by Duty Menus § 6.2's
   covering: a probe's relay is its most specific matching row's, and a key's is
   the most specific row covering it. Tapestry reads bare-kind rows only, which
   would leave Scores not offered here. A key no row covers, such as a bare

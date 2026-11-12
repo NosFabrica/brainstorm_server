@@ -24,9 +24,6 @@ from app.repos.user_repo import (
 )
 from app.utils.datetimes import utc_now
 
-# Each batch is its own transaction, so fewer, larger batches mean fewer commits.
-BATCH_SIZE = 5000
-
 # Persisted per observer as `<field>_<observer_pubkey>`. `trusted_followers` is
 # here so /networkAlerts reads a property instead of scanning follower edges.
 # Cast: a pre-cutover worker sends hops/counts as floats; Neo4j keeps the type it gets.
@@ -42,7 +39,7 @@ def _keys(observer: str) -> dict[str, str]:
 async def _write_batches(work: Callable[..., Awaitable[None]], items: Iterable) -> None:
     """One session (and transaction) per batch."""
     it = iter(items)
-    while batch := list(islice(it, BATCH_SIZE)):
+    while batch := list(islice(it, settings.neo4j_write_batch_size)):
         async with neo4j_driver.session() as session:
             await work(session, batch)
 
@@ -79,6 +76,15 @@ async def process_neo4j_write_message(message: dict):
     grape_rank_result: GrapeRankResult = message["result"]
     scorecards = grape_rank_result.get("scorecards")
     if not scorecards:
+        # A failed calc closes this stage in its own consumer.
+        if is_success:
+            async with db_session() as db:
+                await update_brainstorm_request_internal_publication_status_by_id_on_db(
+                    db,
+                    brainstorm_request_id=run_id,
+                    status=BrainstormRequestStatus.SUCCESS,
+                )
+                await db.commit()
         return
 
     observer = next(iter(scorecards.values()))["observer"]

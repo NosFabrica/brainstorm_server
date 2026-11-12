@@ -126,6 +126,9 @@ rate_limit_passkey_challenge = rate_limit_per_ip(
 rate_limit_passkey_open = rate_limit_per_ip(
     "passkey_open", lambda: settings.passkey_open_rate_limit_per_minute, 60
 )
+rate_limit_nip05 = rate_limit_per_ip(
+    "nip05", lambda: settings.nip05_rate_limit_per_minute, 60
+)
 
 
 # Generous enough for the pending-checkout poll (every few seconds), tight

@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Per-IP limits on the vault's unauthenticated half (challenge, open).
     passkey_challenge_rate_limit_per_minute: int = Field(default=30)
     passkey_open_rate_limit_per_minute: int = Field(default=20)
+    # Per-IP cap on /.well-known/nostr.json. Generous: verifiers and NAT'd
+    # clients batch lookups; this only stops a loop.
+    nip05_rate_limit_per_minute: int = Field(default=600)
     # Global kill-switch for the tier scheduler. Default off; enable per environment
     scheduler_enabled: bool = Field(default=False)
     # Max scheduled runs whose publishing may be in flight before admission pauses.
@@ -128,6 +131,9 @@ class Settings(BaseSettings):
     # Clear an observer's out-of-reach Neo4j scores (a label scan) on its first run
     # after this many days since the last clear; forced runs always clear. <= 0 = forced only.
     neo4j_cleanup_interval_days: int = Field(default=30)
+    # Rows per Neo4j score-write transaction. Kept small: a write holds every
+    # property record it walks on each node until commit.
+    neo4j_write_batch_size: int = Field(default=500, gt=0)
     # --- Trusted Lists (kind-30392 from kind-39999 taggings) ---------------
     # Inclusive floor on the asserter's Rank (0-100) in the Observer's own web
     # of trust. Default 3 is exactly issue #73's "rank > 2" — stated as an
@@ -138,11 +144,30 @@ class Settings(BaseSettings):
     # enter the dictionary. Issue #73 anticipates raising this, so it is not a
     # literal.
     trusted_list_min_tag_uses: int = Field(default=1)
-    # Membership predicate floor: applications >= cutoff (and > disputes).
+    # Membership predicate floor: applications >= cutoff (then score >= 1).
     trusted_list_cutoff: int = Field(default=1)
     # Where TLs are published. Empty = fall back to the TA relay, so retargeting
     # to the nip85.* relays is an env change rather than a diff.
     trusted_list_relay: str = Field(default="")
+    # Which concept namespaces count for event taggings and tagging headers
+    # (ADR trusted-lists/0002 D6): a tagging counts if its concept `z` names
+    # any of them. A trust default, so a setting, not a literal. Defaults to
+    # the two Brainstorm-UI writes (`config/tagging.config.json`
+    # `zHandlePubkeys`): the legacy canonical namespace, then the house
+    # instance's. A change to the client's list needs this changed too.
+    tagging_honored_namespaces: list[str] = Field(
+        default=[
+            "82b75e474dda005e912bcbb910391c60c2b89cc7faf5d3c30b7c59a324973833",
+            "a68dbf561cfe3da1b76f1e65c7d4d9cc116f79921b38a815fd75cb5460b4b599",
+        ]
+    )
+    # Where a tagged event is looked up to learn its kind or DList (ADR 0002
+    # D6), besides the tagging's own relay hint. Every one must answer for a run
+    # to trust its view of content (D8). A relay on `search_relay_url`'s host is
+    # read with `"search": "include:spam"`, which it needs for anonymous reads.
+    trusted_list_target_relays: list[str] = Field(
+        default=["wss://search.brainstorm.world"]
+    )
     # Where the Assistant keeps the customer's Dictionary (kind 39998/39999):
     # the relay `/setup` designates for those kinds and the Duty Menu offers.
     dictionary_relay: str = Field(default="wss://dcosl.brainstorm.world")

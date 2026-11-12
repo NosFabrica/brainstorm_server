@@ -10,6 +10,8 @@ only by which concept their `z` tag names.
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TypeGuard
 
@@ -181,6 +183,213 @@ def parse_user_tagging(event: dict) -> UserTagging | None:
         d_tag=d_tag,
         target_pubkey=target,
         tag_event_id=tag_event_id,
+        polarity=read_polarity(event),
+        created_at_unix=int(event.get("created_at") or 0),
+    )
+
+
+# --------------------------------------------------------------------------
+# Event taggings (ADR `trusted-lists/0002` D6).
+#
+# A tagging of a note, article, listing or DList item doesn't name its Tag
+# directly. It names a per-Tag *tagging header* in a descriptor `z`
+# (`39999:<headerAuthor>:tagging:<slug>-tagging`), and the header's `a` names
+# the Tag element. Both are kind 39999 and are told apart by a concept `z`,
+# `39998:<namespace>:<concept>`, for one of the honored namespaces.
+# --------------------------------------------------------------------------
+TAGGING_HEADER_CONCEPT = "tagging-with-specific-tag"
+EVENT_TAG_CONCEPT = "nostr-event-tag"
+
+_COORDINATE = re.compile(r"^([0-9]+):([0-9a-f]{64}):(.*)$")
+TAG_ELEMENT_KIND = 39999
+
+
+@dataclass(frozen=True)
+class Coordinate:
+    kind: int
+    pubkey: str
+    d_tag: str
+
+    def __str__(self) -> str:
+        return f"{self.kind}:{self.pubkey}:{self.d_tag}"
+
+
+def parse_coordinate(value: object) -> Coordinate | None:
+    """`<kind>:<64-hex>:<d>` for an addressable kind, or None.
+
+    Split on the first two colons only: a `d` may itself hold colons (an
+    article whose `d` is a URL).
+    """
+    if not isinstance(value, str):
+        return None
+    match = _COORDINATE.match(value)
+    if match is None:
+        return None
+    kind = int(match.group(1))
+    if not 30000 <= kind < 40000:
+        return None
+    return Coordinate(kind, match.group(2), match.group(3))
+
+
+@dataclass(frozen=True)
+class TaggingHeader:
+    event_id: str
+    author_pubkey: str
+    d_tag: str
+    # The Tag element, by coordinate (`a`, what the client writes) or by event
+    # id (`e`). Exactly one of the two is set.
+    tag_author_pubkey: str | None
+    tag_slug: str | None
+    tag_event_id: str | None
+    created_at_unix: int
+
+    @property
+    def coordinate(self) -> str:
+        return f"{TAGGING_KIND}:{self.author_pubkey}:{self.d_tag}"
+
+
+@dataclass(frozen=True)
+class EventTagging:
+    event_id: str
+    asserter_pubkey: str
+    d_tag: str
+    # An event id (slot "e") or an addressable coordinate (slot "a").
+    target: str
+    target_slot: str
+    # The relay hint on the target tag, if any; a lookup tries it after the
+    # configured relays (D6).
+    target_relay: str | None
+    header_coordinate: str
+    polarity: float
+    created_at_unix: int
+
+
+def _honored(honored: Iterable[str] | None) -> tuple[str, ...]:
+    if honored is not None:
+        return tuple(honored)
+    from app.core.config import settings
+
+    return tuple(settings.tagging_honored_namespaces)
+
+
+def joins_concept(
+    event: dict, concept: str, honored: Iterable[str] | None = None
+) -> bool:
+    """Whether any of the event's `z` tags is `39998:<ns>:<concept>` for an
+    honored namespace. A tagging counts if it joins any of them."""
+    handles = {f"39998:{ns}:{concept}" for ns in _honored(honored)}
+    return any(
+        isinstance(value, str) and value in handles
+        for value in tag_values(event.get("tags") or [], "z")
+    )
+
+
+def _single(event: dict, key: str) -> list | None:
+    """The one `key` tag (the whole tag), or None if there are none or several."""
+    found = [
+        t
+        for t in event.get("tags") or []
+        if isinstance(t, list) and len(t) >= 2 and t[0] == key
+    ]
+    return found[0] if len(found) == 1 else None
+
+
+def parse_tagging_header(
+    event: dict, honored: Iterable[str] | None = None
+) -> TaggingHeader | None:
+    """A kind-39999 tagging header, or None if it isn't one / is malformed."""
+    if event.get("kind") != TAGGING_KIND:
+        return None
+    if not joins_concept(event, TAGGING_HEADER_CONCEPT, honored):
+        return None
+    event_id = event.get("id")
+    author = event.get("pubkey")
+    if not _is_hex64(event_id) or not _is_hex64(author):
+        return None
+    d_tag = _first_tag_value(event, "d")
+    if d_tag is None:
+        return None
+
+    tag_author = tag_slug = tag_event_id = None
+    coordinate = parse_coordinate(_first_tag_value(event, "a"))
+    if coordinate is not None:
+        if coordinate.kind != TAG_ELEMENT_KIND or not coordinate.d_tag:
+            return None
+        tag_author, tag_slug = coordinate.pubkey, coordinate.d_tag
+    else:
+        element_id = _first_tag_value(event, "e")
+        if not _is_hex64(element_id):
+            return None
+        tag_event_id = element_id.lower()
+
+    return TaggingHeader(
+        event_id=event_id,
+        author_pubkey=author,
+        d_tag=d_tag,
+        tag_author_pubkey=tag_author,
+        tag_slug=tag_slug,
+        tag_event_id=tag_event_id,
+        created_at_unix=int(event.get("created_at") or 0),
+    )
+
+
+def parse_event_tagging(
+    event: dict, honored: Iterable[str] | None = None
+) -> EventTagging | None:
+    """A kind-39999 event tagging, or None if it isn't one / is malformed.
+
+    Needs a descriptor `z` naming a tagging header's coordinate and exactly one
+    target: an `a` coordinate or an `e` id, never both.
+    """
+    if event.get("kind") != TAGGING_KIND:
+        return None
+    if not joins_concept(event, EVENT_TAG_CONCEPT, honored):
+        return None
+    event_id = event.get("id")
+    asserter = event.get("pubkey")
+    if not _is_hex64(event_id) or not _is_hex64(asserter):
+        return None
+
+    descriptor = next(
+        (
+            c
+            for c in (
+                parse_coordinate(v) for v in tag_values(event.get("tags") or [], "z")
+            )
+            if c is not None and c.kind == TAGGING_KIND and c.d_tag
+        ),
+        None,
+    )
+    if descriptor is None:
+        return None
+
+    a_tag, e_tag = _single(event, "a"), _single(event, "e")
+    has_a = any(isinstance(t, list) and t[:1] == ["a"] for t in event.get("tags") or [])
+    has_e = any(isinstance(t, list) and t[:1] == ["e"] for t in event.get("tags") or [])
+    if has_a and has_e:
+        return None
+    if a_tag is not None:
+        if parse_coordinate(a_tag[1]) is None:
+            return None
+        target, slot = str(a_tag[1]), "a"
+    elif e_tag is not None:
+        if not _is_hex64(e_tag[1]):
+            return None
+        target, slot = e_tag[1].lower(), "e"
+    else:
+        return None
+    hint = (a_tag or e_tag or [])[2:3]
+    relay = hint[0] if hint and isinstance(hint[0], str) and hint[0] else None
+
+    d_tag = _first_tag_value(event, "d") or (str(descriptor) + ":" + target)
+    return EventTagging(
+        event_id=event_id,
+        asserter_pubkey=asserter,
+        d_tag=d_tag,
+        target=target,
+        target_slot=slot,
+        target_relay=relay,
+        header_coordinate=str(descriptor),
         polarity=read_polarity(event),
         created_at_unix=int(event.get("created_at") or 0),
     )

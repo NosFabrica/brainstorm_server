@@ -22,6 +22,10 @@ First, modify the DB files
 
 - poetry run alembic revision --autogenerate -m "Your new modification"
 
+## Authenticating (for client apps)
+
+See [docs/authentication.md](docs/authentication.md): how a new user signs in, session tokens vs NIP-98, and the `client` tag.
+
 ## How to check the API project's documentation
 
 Access the URL `http://0.0.0.0:8000/docs`

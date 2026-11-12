@@ -16,7 +16,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/whitelisted/{observer_pubkey}` | `router.py:75-94` | Trusted-pubkey list for an observer; `threshold` query param (default 0.02) |
 | `/shortestPath` | `graph/router.py` | Path network: every shortest directed FOLLOWS path between two pubkeys; `only=hops` for Hops alone (ADR 0004) |
 | `/networkAlerts` | `network_alerts/router.py` | Pubkeys carrying more verified reports than their reach justifies, split into direct-follows / extended-network |
-| `/.well-known/nostr.json` | `nip05/well_known.py` | NIP-05 verification for Assistant pubkeys; resolution in `services/nip05_service.py` |
+| `/.well-known/nostr.json` | `nip05/well_known.py` | NIP-05 verification for Assistant pubkeys; resolution in `services/nip05_service.py`; per-IP `NIP05_RATE_LIMIT_PER_MINUTE` (600) |
 
 ## Subdirs (by URL prefix)
 
@@ -97,7 +97,7 @@ nothing to report; the client only needs success, so there is no body to wrap.
 
 ### `setup/router.py` — Nostr pubkey setup
 
-- **GET** `/{nostr_pubkey}` → kind-10040 designation rows (`list[list[str]]`): the five `30382:<tag>` rows, `30392`, then `39998` and `39999` at `settings.dictionary_relay` when it is set. Built by `services/duty_menu_build.designation_rows`, which the Duty Menu's offer also reads.
+- **GET** `/{nostr_pubkey}` → kind-10040 designation rows (`list[list[str]]`): the five `30382:<tag>` rows, `30392`, `30393` and `30394` (one Trusted List row per kind: the search relay's signer gate is per kind), then `39998` and `39999` at `settings.dictionary_relay` when it is set. Built by `services/duty_menu_build.designation_rows`, which the Duty Menu's offer also reads.
 
 ### `shorturl/router.py` — URL shortener
 

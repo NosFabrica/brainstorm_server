@@ -2,7 +2,14 @@ from datetime import datetime
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from fastapi_pagination import Page
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    computed_field,
+    model_validator,
+)
 
 from app.core.flash import SettableStatus, is_whole_day_boundary
 from app.schemas.error_codes import ErrorCode
@@ -68,9 +75,18 @@ class CreatedAndUpdatedAtModel(BaseModel):
     updated_at: datetime
 
 
+# Outcomes caused by the user's own graph, not a fault on our side.
+WARNING_ERROR_CODES = frozenset({ErrorCode.NO_ELIGIBLE_USERS})
+
+
 class GrapeRankError(BaseModel):
     code: ErrorCode
     message: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def severity(self) -> Literal["warning", "error"]:
+        return "warning" if self.code in WARNING_ERROR_CODES else "error"
 
     @model_validator(mode="before")
     @classmethod

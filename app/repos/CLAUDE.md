@@ -14,6 +14,7 @@ never touch SQLAlchemy `Select`s or Cypher strings directly.
 | `brainstorm_nostr_transferer.py` | PostgreSQL (`brainstorm_nostr_relay_transfer`) | Relay-sync state machine (per-kind cursor + completion) |
 | `short_url_repo.py` | PostgreSQL (`short_url`) | Share-link records: resolve by code, dedup lookup by (pubkey, relay-set fingerprint), insert |
 | `passkey_vault_repo.py` | PostgreSQL (`passkey_vault`) | Passkey vault rows: by credential hash, by owner, an owner-only `ON CONFLICT DO UPDATE` upsert (returns nothing for someone else's hash; resets the counter), a conditional mark-used that only moves the counter forward, owner-scoped delete |
+| `tagging_repo.py` / `event_tagging_repo.py` | PostgreSQL (`nostr_tag_element`, `nostr_user_tagging` / `nostr_tagging_header`, `nostr_event_tagging`, `nostr_tagged_event`) | Trusted Lists input: tag elements and pubkey taggings; tagging headers, event taggings and the by-id lookup cache. See the sections below |
 | `user_repo.py` | **Neo4j** | All Cypher queries for the social graph (follows/mutes/reports + influence-weighted counts/paginations) |
 | `billing_plan_repo.py` | PostgreSQL (`billing_plan`) | Mapping CRUD — Flash plan → scheduling policy, and whether we sell it. Listed by `id`, which is a stable order rather than a meaningful one: display order is Flash's `sortOrder`. `is_active` means *sellable*: only the plans-for-sale listing filters on it, never the entitlement lookup. There is **no** scheduling-id → plan lookup — a subscriber's tier is their policy, read straight off the assignment |
 | `support_repo.py` | PostgreSQL (`support_ticket`, `support_message`, `support_event`) | Ticket list statement builders (newest activity first), the unclosed-ticket count behind the cap and the per-pubkey advisory lock that makes it hold, plain inserts, the thread reads — messages and events ordered by **`id`**, not `created_at`, which ties when two rows land in the same millisecond — `lock_support_ticket_on_db` (the `FOR UPDATE` read every mutation opens with), and `build_admin_support_tickets_stmt` — the queue, with each filter applied only when given, so an unfiltered queue constrains nothing. `build_expired_diagnostics_stmt` / `clear_expired_support_diagnostics_on_db` clear the snapshot past its retention window — dated from filing, skipping rows already cleared. `select_user_support_digest_on_db` / `select_admin_support_digest_on_db` back the conditional GET: `max(updated_at), count(*)` over the same rows the listing would return, through the shared `_admin_support_filters` so the two can never disagree about scope. **`updated_at`, never `last_message_at`** — resolving, recategorizing and a message-less reopen change what the client renders while touching no message, and a validator keyed on message activity reports those as unchanged forever. **Unindexed on purpose (for now):** nothing indexes `updated_at`, `status` or `category`, so the admin digest is a scan. It is still strictly cheaper than the listing it guards — same rows, no sort, no limit, no serialization — which is the bar. If polling ever shows up in slow queries, `(pubkey, updated_at desc)` and `(updated_at desc)` are the indexes to reach for; pick them off a real plan rather than a guess. No ticket-field writes beyond insert — the service's private helpers own those |
@@ -66,8 +67,10 @@ was removed — the per-observer whitelist now lives in `observer_whitelist_repo
 `select_brainstorm_nsec_by_pubkey_on_db` decrypts the nsec on read via
 `_resolve_plaintext_nsec`. Plaintext fallback exists for unmigrated rows. Don't
 read `BrainstormNsec.nsec` directly outside the repo — go through the helper.
-The Assistant pubkey (public half of the nsec) is derived by `_assistant_pubkey`,
-used by `select_all_assistant_pubkeys_on_db`.
+The Assistant pubkey (public half of the nsec) is derived by `_assistant_pubkey`
+once, when the row is created, and stored with its NIP-05 local-part
+(`assistant_pubkey`, `nip05_local_part`); rows that predate the columns are
+filled at startup by `backfill_assistant_identities_on_db`.
 
 ### Binary-packed pubkey lists
 
@@ -88,7 +91,7 @@ in `brainstorm_nsec.py` are the only safe entry points.
 ### `brainstorm_nsec.py`
 
 - `get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, pubkey) → tuple[BrainstormNsec, bool]` (the bool is "created now")
-- `select_all_assistant_pubkeys_on_db(db) → list[str]` — every Assistant pubkey, derived from the rows' nsecs (the Assistant key is not a column; `pubkey` is the owner). Drives the NIP-05 well-known lookup.
+- `select_assistant_pubkey_by_nip05_local_part_on_db(db, local_part) → str | None` — indexed lookup behind the NIP-05 well-known route (`pubkey` is the owner, `assistant_pubkey` the Assistant).
 - Preset getters/setters: `get_graperank_preset_by_pubkey_on_db`, `set_graperank_preset_by_pubkey_on_db`, `get_graperank_custom_params_by_pubkey_on_db`, `set_graperank_custom_params_by_pubkey_on_db` (all auto-create the row if absent)
 - `set_treasure_map_on_by_pubkey_on_db(db, pubkey, on)` — the Assistant's Treasure Map choice; written only by `POST /user/assistantTreasureMap`
 - Timestamp updates: `update_last_time_triggered_graperank_on_db`, `update_last_time_calculated_graperank_on_db`
@@ -191,3 +194,15 @@ double-counting. Reads are therefore plain aggregates.
 `get_dictionary_on_db` joins through to the element table, so a tagging
 referencing an element we never ingested is dropped rather than producing a
 Trusted List with an empty title.
+
+## `event_tagging_repo.py`
+
+Tagging headers, event taggings and the by-id lookup cache (ADR
+`trusted-lists/0002` D6). Same write-time replaceability as `tagging_repo`:
+headers latest-wins at their coordinate, event taggings at (asserter, d-tag).
+`get_event_taggings_on_db` joins each tagging through its header (by the
+descriptor coordinate) to its Tag element (by coordinate or by event id), so a
+tagging whose header or Tag hasn't arrived is dropped at read time. Neutral
+polarities are returned: a newest neutral stance still replaces an older one.
+`nostr_tagged_event` holds only lookups **by event id** (immutable, so cached
+forever, and insert-only); nothing named by coordinate is stored.
