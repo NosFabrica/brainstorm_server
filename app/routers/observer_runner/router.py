@@ -92,7 +92,7 @@ async def decrypt_endpoint(
 ) -> ObserverRunnerPlaintextResponse:
     body = await _body(request, ObserverRunnerDecryptBody)
     return ObserverRunnerPlaintextResponse(
-        data=await decrypt_as_assistant(db, body.owner, body.peer, body.ciphertext)
+        data=await decrypt_as_assistant(db, body.owner, body.event)
     )
 
 

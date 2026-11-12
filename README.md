@@ -112,8 +112,10 @@ any owner's Assistant**, so:
   missing or wrong token, every route answers 404, as a path that doesn't exist.
   Keep the token in a Secret shared only with the worker.
 - `sign` signs two kinds only (35128 `d=observer` `p=<owner>`, and 24242
-  `t=upload` expiring within 10 minutes); `decrypt` takes the owner or the
-  Assistant itself as peer, nothing else. See `app/services/observer_runner_service.py`.
+  `t=upload` expiring within 10 minutes); `decrypt` takes a whole signed event,
+  never a bare ciphertext, and opens only the owner's schedule (34817 naming the
+  owner's Assistant as its one `p`) or the Assistant's own kind 12000. See
+  `app/services/observer_runner_service.py`.
 
 ## GrapeRank request rate limiting
 

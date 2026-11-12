@@ -1,5 +1,5 @@
 import json
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Any, ClassVar
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -71,9 +71,11 @@ _HEX_PUBKEY = r"^[0-9a-f]{64}$"
 
 
 class ObserverRunnerDecryptBody(BaseModel):
+    """A whole signed event: the owner's schedule (34817) or the Assistant's
+    own AI keys (12000). Its shape and signature are the service's to check."""
+
     owner: str = Field(pattern=_HEX_PUBKEY)
-    peer: Literal["owner", "self"]
-    ciphertext: str = Field(min_length=1, max_length=MAX_NIP44_PAYLOAD)
+    event: dict[str, Any]
 
 
 class ObserverRunnerUnsignedEvent(BaseModel):

@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from nostr_sdk import Event, Keys
+from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag
 
 from app.api import app
 from app.core.config import settings
@@ -84,11 +84,41 @@ def runner(monkeypatch, rows):
     app.dependency_overrides.pop(get_db, None)
 
 
-def _decrypt(client, owner: str, peer: str, ciphertext: str, headers=AUTH):
+def _decrypt(client, owner: str, event: dict, headers=AUTH):
     return client.post(
         "/internal/observerRunner/decrypt",
-        json={"owner": owner, "peer": peer, "ciphertext": ciphertext},
+        json={"owner": owner, "event": event},
         headers=headers,
+    )
+
+
+def _event(signer: Keys, kind: int, content: str, tags=()) -> dict:
+    return json.loads(
+        EventBuilder(Kind(kind), content)
+        .tags([Tag.parse(list(t)) for t in tags])
+        .allow_self_tagging()
+        .sign_with_keys(signer)
+        .as_json()
+    )
+
+
+def _schedule(owner: "Owner", runner_pubkey: str | None = None, tags=None) -> dict:
+    """The owner's kind 34817, encrypted owner -> their Assistant, naming it."""
+    p = runner_pubkey or owner.assistant_pubkey
+    return _event(
+        owner.keys,
+        34817,
+        nip44.encrypt(owner.keys, owner.assistant_pubkey, SCHEDULE),
+        tags if tags is not None else [["d", "observer"], ["p", p]],
+    )
+
+
+def _ai_keys(owner: "Owner") -> dict:
+    """The Assistant's own kind 12000, encrypted to itself."""
+    return _event(
+        owner.assistant,
+        12000,
+        nip44.encrypt(owner.assistant, owner.assistant_pubkey, AI_KEYS),
     )
 
 
@@ -130,7 +160,7 @@ ROUTES = [
     (
         "POST",
         "/internal/observerRunner/decrypt",
-        {"owner": "0" * 64, "peer": "self", "ciphertext": "x"},
+        {"owner": "0" * 64, "event": {}},
     ),
     ("POST", "/internal/observerRunner/sign", {"owner": "0" * 64, "event": {}}),
 ]
@@ -242,56 +272,177 @@ def test_assistants_refuses_a_bad_page(runner, query):
 # --- decrypt ----------------------------------------------------------------------
 
 
-def test_decrypt_a_schedule_from_the_owner(runner, a):
-    ciphertext = nip44.encrypt(a.keys, a.assistant_pubkey, SCHEDULE)
-    r = _decrypt(runner, a.pubkey, "owner", ciphertext)
-    assert r.status_code == 200, r.text
-    assert r.json()["data"] == {"plaintext": SCHEDULE}
+def _plaintext(response) -> str:
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["plaintext"]
 
 
-def test_decrypt_the_assistants_own_list(runner, a):
-    ciphertext = nip44.encrypt(a.assistant, a.assistant_pubkey, AI_KEYS)
-    r = _decrypt(runner, a.pubkey, "self", ciphertext)
-    assert r.status_code == 200, r.text
-    assert r.json()["data"] == {"plaintext": AI_KEYS}
+def test_decrypt_the_owners_schedule(runner, a):
+    assert _plaintext(_decrypt(runner, a.pubkey, _schedule(a))) == SCHEDULE
 
 
-@pytest.mark.parametrize("peer", ["assistant", "other", "OWNER", "", "0" * 64])
-def test_decrypt_takes_no_other_peer(runner, a, peer):
-    ciphertext = nip44.encrypt(a.keys, a.assistant_pubkey, SCHEDULE)
-    r = _decrypt(runner, a.pubkey, peer, ciphertext)
-    assert r.status_code == 422
-    assert SCHEDULE not in r.text and ciphertext not in r.text
+def test_decrypt_the_assistants_own_ai_keys(runner, a):
+    assert _plaintext(_decrypt(runner, a.pubkey, _ai_keys(a))) == AI_KEYS
 
 
-def test_decrypt_for_one_owner_never_opens_anothers(runner, a, b):
-    """B's schedule (B -> B's Assistant), or one a stranger sent A's Assistant,
-    named as A's: neither A's Assistant with A, nor with itself, opens it."""
+def _resigned(event: dict, signer: Keys) -> dict:
+    """`event` with its fields as given, re-signed by `signer`."""
+    return _event(signer, event["kind"], event["content"], event["tags"])
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        # Another kind, even one sealed between the same two keys.
+        lambda a, b: _event(
+            a.keys,
+            4,
+            nip44.encrypt(a.keys, a.assistant_pubkey, SCHEDULE),
+            [["p", a.assistant_pubkey]],
+        ),
+        lambda a, b: _event(
+            a.keys,
+            14,
+            nip44.encrypt(a.keys, a.assistant_pubkey, SCHEDULE),
+            [["p", a.assistant_pubkey]],
+        ),
+        lambda a, b: _event(
+            a.keys,
+            34818,
+            nip44.encrypt(a.keys, a.assistant_pubkey, SCHEDULE),
+            [["p", a.assistant_pubkey]],
+        ),
+        lambda a, b: {**_schedule(a), "kind": "34817"},
+        lambda a, b: {**_schedule(a), "kind": 34817.0},
+        # A bad signature, a bad id, a missing signature.
+        lambda a, b: {**_schedule(a), "sig": _schedule(b)["sig"]},
+        lambda a, b: {**_schedule(a), "id": "0" * 64},
+        lambda a, b: {**_schedule(a), "created_at": _schedule(a)["created_at"] + 1},
+        lambda a, b: {k: v for k, v in _schedule(a).items() if k != "sig"},
+        # A schedule by another author: a stranger, A's Assistant, B.
+        lambda a, b: _resigned(_schedule(a), Keys.generate()),
+        lambda a, b: _resigned(_schedule(a), a.assistant),
+        lambda a, b: _resigned(_schedule(a), b.keys),
+        # No `p`, two `p`, a `p` naming another Assistant or the owner.
+        lambda a, b: _schedule(a, tags=[["d", "observer"]]),
+        lambda a, b: _schedule(
+            a, tags=[["p", a.assistant_pubkey], ["p", a.assistant_pubkey]]
+        ),
+        lambda a, b: _schedule(
+            a, tags=[["p", a.assistant_pubkey], ["p", b.assistant_pubkey]]
+        ),
+        lambda a, b: _schedule(a, runner_pubkey=b.assistant_pubkey),
+        lambda a, b: _schedule(a, runner_pubkey=a.pubkey),
+        lambda a, b: _schedule(a, tags=[["p"]]),
+        # A 12000 by another Assistant, by the owner, by a stranger.
+        lambda a, b: _ai_keys(b),
+        lambda a, b: _resigned(_ai_keys(a), a.keys),
+        lambda a, b: _resigned(_ai_keys(a), Keys.generate()),
+        # Not an event at all.
+        lambda a, b: {},
+        lambda a, b: {"kind": 34817, "content": _schedule(a)["content"]},
+    ],
+    ids=[
+        "kind-4",
+        "kind-14",
+        "kind-34818",
+        "kind-as-string",
+        "kind-as-float",
+        "bad-sig",
+        "bad-id",
+        "tampered-created_at",
+        "no-sig",
+        "stranger-author",
+        "assistant-author",
+        "other-owner-author",
+        "no-p",
+        "two-p-same",
+        "two-p",
+        "p-other-assistant",
+        "p-owner",
+        "empty-p",
+        "12000-other-assistant",
+        "12000-by-owner",
+        "12000-by-stranger",
+        "empty",
+        "unsigned",
+    ],
+)
+def test_decrypt_refuses_anything_but_the_two_events(runner, a, b, app_logs, make):
+    event = make(a, b)
+    r = _decrypt(runner, a.pubkey, event)
+    assert r.status_code == 403, r.text
+    assert "plaintext" not in r.text and SCHEDULE not in r.text
+    assert "sk-or-v1-very-secret" not in r.text
+    assert any(f"owner={a.pubkey}" in line and "refused" in line for line in app_logs)
+
+
+def test_a_owner_with_bs_schedule_is_refused(runner, a, b):
+    """B's schedule, naming B's Assistant, sent as A's: refused, and A's
+    Assistant decrypts nothing. Sent as B's, it opens with B's Assistant."""
+    schedule = _schedule(b)
+    assert _decrypt(runner, a.pubkey, schedule).status_code == 403
+    assert _decrypt(runner, a.pubkey, _ai_keys(b)).status_code == 403
+    assert _plaintext(_decrypt(runner, b.pubkey, schedule)) == SCHEDULE
+
+
+def test_b_schedule_naming_as_assistant_is_refused_for_either_owner(runner, a, b):
+    """Anyone can tag any Assistant: B naming A's Assistant prints nothing."""
+    schedule = _event(
+        b.keys,
+        34817,
+        nip44.encrypt(b.keys, a.assistant_pubkey, SCHEDULE),
+        [["d", "observer"], ["p", a.assistant_pubkey]],
+    )
+    assert _decrypt(runner, a.pubkey, schedule).status_code == 403
+    assert _decrypt(runner, b.pubkey, schedule).status_code == 403
+
+
+def test_a_valid_event_whose_content_isnt_for_the_pair_is_a_422(runner, a):
+    """Signed by A and naming A's Assistant, but sealed to someone else."""
     stranger = Keys.generate()
-    for ciphertext in (
-        nip44.encrypt(b.keys, b.assistant_pubkey, SCHEDULE),
-        nip44.encrypt(b.assistant, b.assistant_pubkey, AI_KEYS),
-        nip44.encrypt(stranger, a.assistant_pubkey, SCHEDULE),
-    ):
-        for peer in ("owner", "self"):
-            r = _decrypt(runner, a.pubkey, peer, ciphertext)
-            assert r.status_code == 422, r.text
-            assert "plaintext" not in r.text
+    schedule = _event(
+        a.keys,
+        34817,
+        nip44.encrypt(a.keys, stranger.public_key().to_hex(), SCHEDULE),
+        [["d", "observer"], ["p", a.assistant_pubkey]],
+    )
+    r = _decrypt(runner, a.pubkey, schedule)
+    assert r.status_code == 422
+    assert SCHEDULE not in r.text
+
+
+def test_decrypt_takes_no_bare_ciphertext(runner, a):
+    """The old `{peer, ciphertext}` body is gone: no oracle for the pair."""
+    ciphertext = nip44.encrypt(a.keys, a.assistant_pubkey, SCHEDULE)
+    r = runner.post(
+        "/internal/observerRunner/decrypt",
+        json={"owner": a.pubkey, "peer": "owner", "ciphertext": ciphertext},
+        headers=AUTH,
+    )
+    assert r.status_code == 422
+    assert SCHEDULE not in r.text
 
 
 def test_decrypt_for_an_owner_with_no_assistant_is_a_404(runner):
-    r = _decrypt(runner, "f" * 64, "owner", "AgAA")
+    stranger = Owner()
+    r = _decrypt(runner, stranger.pubkey, _schedule(stranger))
     assert r.status_code == 404
     assert r.headers["X-Reason"] == "no-assistant"
 
 
-def test_decrypt_logs_no_plaintext_or_ciphertext(runner, a, app_logs):
-    ciphertext = nip44.encrypt(a.assistant, a.assistant_pubkey, AI_KEYS)
-    _decrypt(runner, a.pubkey, "self", ciphertext)
-    _decrypt(runner, a.pubkey, "owner", ciphertext)  # fails: wrong peer
+def test_decrypt_logs_no_plaintext_or_ciphertext(runner, a, b, app_logs):
+    schedule, ai_keys = _schedule(a), _ai_keys(a)
+    _decrypt(runner, a.pubkey, schedule)
+    _decrypt(runner, a.pubkey, ai_keys)
+    _decrypt(runner, a.pubkey, _schedule(b))  # refused
     joined = "\n".join(app_logs)
-    assert f"owner={a.pubkey} peer=self outcome=ok" in joined
-    assert "sk-or-v1-very-secret" not in joined and ciphertext not in joined
+    assert f"owner={a.pubkey} kind=34817 outcome=ok" in joined
+    assert f"owner={a.pubkey} kind=12000 outcome=ok" in joined
+    for secret in (SCHEDULE, AI_KEYS, "sk-or-v1-very-secret"):
+        assert secret not in joined
+    for ciphertext in (schedule["content"], ai_keys["content"]):
+        assert ciphertext not in joined
 
 
 # --- sign ---------------------------------------------------------------------------
