@@ -522,3 +522,21 @@ async def bump_session_version_on_db(db: AsyncDBSession, pubkey: str) -> int | N
     )
     result = await execute_db_statement(db, statement, __name__)
     return result.scalar_one_or_none()
+
+
+async def select_owner_assistant_pairs_on_db(
+    db: AsyncDBSession, after: str | None, limit: int
+) -> list[tuple[str, str]]:
+    """`(owner, assistant)` for every owner with an Assistant, by owner pubkey,
+    after `after`, at most `limit`. Reads the stored `assistant_pubkey`, so no
+    nsec is decrypted; a row the startup backfill hasn't filled is left out."""
+    statement = (
+        select(BrainstormNsec.pubkey, BrainstormNsec.assistant_pubkey)
+        .where(BrainstormNsec.assistant_pubkey.is_not(None))
+        .order_by(BrainstormNsec.pubkey)
+        .limit(limit)
+    )
+    if after is not None:
+        statement = statement.where(BrainstormNsec.pubkey > after)
+    result = await execute_db_statement(db, statement, __name__)
+    return [(owner, assistant) for owner, assistant in result.all()]

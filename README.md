@@ -98,6 +98,23 @@ Requests must include a valid auth token (JWT) and the token's pubkey must be in
 
 - `GET /admin/brainstormPubkey/{nostr_pubkey}` — trigger a GrapeRank calculation for any pubkey
 
+## Internal routes (`/internal/*`) — never expose them publicly
+
+`/internal/observerRunner/{assistants,decrypt,sign}` serve the Observer print
+worker, which runs beside this server on the internal network and prints a
+reader's Nostr Observer as their Brainstorm Assistant. They **decrypt and sign as
+any owner's Assistant**, so:
+
+- **The public ingress must not route `/internal/`.** The worker reaches the
+  service directly (cluster-internal Service), never through the public host.
+- They answer only `Authorization: Bearer <OBSERVER_RUNNER_TOKEN>` (compared in
+  constant time). With `OBSERVER_RUNNER_TOKEN` empty — the default — or a
+  missing or wrong token, every route answers 404, as a path that doesn't exist.
+  Keep the token in a Secret shared only with the worker.
+- `sign` signs two kinds only (35128 `d=observer` `p=<owner>`, and 24242
+  `t=upload` expiring within 10 minutes); `decrypt` takes the owner or the
+  Assistant itself as peer, nothing else. See `app/services/observer_runner_service.py`.
+
 ## GrapeRank request rate limiting
 
 Per-user throttling for `POST /graperank`. When enabled, a user cannot trigger a new calculation if their latest one is more recent than the configured window.

@@ -15,6 +15,7 @@ app/utils/
 │   └── nip98.py             # NIP-98 signed-event validation
 ├── bip39_english.txt        # Vendored BIP-39 wordlist used by assistant_nip05
 ├── encryption.py            # Fernet symmetric encryption for nsec storage
+├── nip44.py                 # NIP-44 v2 encrypt/decrypt through nostr-sdk; errors carry no text (pure)
 ├── neo4j_values.py          # safe_float / safe_int — inf/nan coercion on graph reads
 ├── nostr.py                 # Tiny Nostr helpers (constants, format conversions)
 ├── signed_event.py          # The one parse + kind + id/sig + author check for outside events (pure)

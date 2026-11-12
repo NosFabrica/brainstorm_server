@@ -852,6 +852,48 @@ class PublishedAssistantDutyMenu(BaseModel):
     relays: list[AssistantRelayResult]
 
 
+# The Assistant's AI keys (its NIP-FA list). camelCase, as Brainstorm-UI reads it.
+
+
+class AssistantAgentKeys(BaseModel):
+    """`GET /user/assistantAgentKeys`: the Assistant's list, re-encrypted to its
+    owner. Both null when the Assistant has no kind 12000 yet."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    assistant: str
+    # NIP-44 v2, Assistant -> owner on record, of the list's private tag array.
+    ciphertext: str | None
+    created_at: int | None = Field(serialization_alias="createdAt")
+
+
+class PublishedAssistantAgentKeys(BaseModel):
+    """`POST /user/assistantAgentKeys`: the version signed, and how each relay took it."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    created_at: int = Field(serialization_alias="createdAt")
+    relays: list[AssistantRelayResult]
+
+
+# The Observer print worker's internal endpoints (`/internal/observerRunner`).
+
+
+class ObserverRunnerAssistant(BaseModel):
+    owner: str
+    assistant: str
+
+
+class ObserverRunnerAssistants(BaseModel):
+    items: list[ObserverRunnerAssistant]
+    # The last owner of this page when there may be more; pass it as `after`.
+    next: str | None
+
+
+class ObserverRunnerPlaintext(BaseModel):
+    plaintext: str
+
+
 # Your Assistant's Treasure Map. camelCase, as Brainstorm-UI's
 # `lib/assistantTreasureMap.ts` reads it.
 

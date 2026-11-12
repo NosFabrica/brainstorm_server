@@ -1,5 +1,5 @@
 import json
-from typing import ClassVar
+from typing import Annotated, ClassVar, Literal
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -7,6 +7,8 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictInt,
+    StrictStr,
     field_validator,
     model_validator,
 )
@@ -46,6 +48,46 @@ class SetAssistantTreasureMapBody(BaseModel):
     comes from the session, never from the request."""
 
     on: StrictBool
+
+
+# A NIP-44 payload is at most 65,535 bytes of plaintext, about 87.5 KB of base64.
+MAX_NIP44_PAYLOAD = 90_000
+
+
+class PublishAssistantAgentKeysBody(BaseModel):
+    """The Assistant's new AI key list, NIP-44 encrypted owner -> Assistant, and
+    the `createdAt` of the version it was edited from (null when there was
+    none). Whose Assistant comes from the session, never from the request."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ciphertext: str = Field(min_length=1, max_length=MAX_NIP44_PAYLOAD)
+    previous_created_at: StrictInt | None = Field(
+        default=None, alias="previousCreatedAt"
+    )
+
+
+_HEX_PUBKEY = r"^[0-9a-f]{64}$"
+
+
+class ObserverRunnerDecryptBody(BaseModel):
+    owner: str = Field(pattern=_HEX_PUBKEY)
+    peer: Literal["owner", "self"]
+    ciphertext: str = Field(min_length=1, max_length=MAX_NIP44_PAYLOAD)
+
+
+class ObserverRunnerUnsignedEvent(BaseModel):
+    kind: StrictInt = Field(ge=0, le=65535)
+    created_at: StrictInt = Field(ge=0)
+    tags: list[Annotated[list[StrictStr], Field(min_length=1)]] = Field(
+        max_length=10_000
+    )
+    content: StrictStr = Field(max_length=1_000_000)
+
+
+class ObserverRunnerSignBody(BaseModel):
+    owner: str = Field(pattern=_HEX_PUBKEY)
+    event: ObserverRunnerUnsignedEvent
 
 
 class SetGrapeRankPresetBody(BaseModel):

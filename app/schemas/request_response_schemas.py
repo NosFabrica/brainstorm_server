@@ -10,6 +10,7 @@ from app.schemas.graperank_schemas import (
 )
 from app.schemas.schemas import (
     AdminStats,
+    AssistantAgentKeys,
     AssistantDutyMenuOffer,
     AssistantTreasureMapCheck,
     AuthSuccessfulToken,
@@ -18,11 +19,14 @@ from app.schemas.schemas import (
     BrainstormRequestInstance,
     CreatedShortUrl,
     FollowListIngestResult,
+    ObserverRunnerAssistants,
+    ObserverRunnerPlaintext,
     OwnUserData,
     PaginatedUserConnections,
     PasskeyVaultBlob,
     PasskeyVaultChallenge,
     PasskeyVaultEntry,
+    PublishedAssistantAgentKeys,
     PublishedAssistantDutyMenu,
     PublishedAssistantTreasureMap,
     RefreshedSubscriptionView,
@@ -165,6 +169,27 @@ class GetAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
 
 class PublishAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
     data: PublishedAssistantTreasureMap
+
+
+class GetAssistantAgentKeysResponse(SuccessfulResponseDataSchema):
+    data: AssistantAgentKeys
+
+
+class PublishAssistantAgentKeysResponse(SuccessfulResponseDataSchema):
+    data: PublishedAssistantAgentKeys
+
+
+class ObserverRunnerAssistantsResponse(SuccessfulResponseDataSchema):
+    data: ObserverRunnerAssistants
+
+
+class ObserverRunnerPlaintextResponse(SuccessfulResponseDataSchema):
+    data: ObserverRunnerPlaintext
+
+
+class ObserverRunnerSignedResponse(SuccessfulResponseDataSchema):
+    # The signed event, as nostr-sdk serialised it.
+    data: dict[str, Any]
 
 
 class AdminStatsResponse(SuccessfulResponseDataSchema):

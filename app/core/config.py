@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # Per-IP cap on /.well-known/nostr.json. Generous: verifiers and NAT'd
     # clients batch lookups; this only stops a loop.
     nip05_rate_limit_per_minute: int = Field(default=600)
+    # Bearer token of the Observer print worker, for `/internal/observerRunner/*`
+    # (decrypt and sign as an owner's Assistant). Empty = those routes answer
+    # 404. Never route that prefix through the public ingress.
+    observer_runner_token: str = Field(default="")
     # Global kill-switch for the tier scheduler. Default off; enable per environment
     scheduler_enabled: bool = Field(default=False)
     # Max scheduled runs whose publishing may be in flight before admission pauses.
