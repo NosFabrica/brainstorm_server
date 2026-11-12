@@ -133,7 +133,11 @@ async def process_message(message: dict):
             brainstorm_request_id=message["private_id"],
             status=status,
             count_values=json.dumps(number_by_confidence_by_hops),
-            error=GrapeRankError.model_validate(error).model_dump() if error else None,
+            error=(
+                GrapeRankError.model_validate(error).model_dump(exclude={"severity"})
+                if error
+                else None
+            ),
         )
         if status == BrainstormRequestStatus.FAILURE:
             # Calc failed -> the publish + neo4j-write stages never run; mark
@@ -192,7 +196,7 @@ async def _fail_result_stage(message: dict, reason: str) -> None:
             count_values=json.dumps({name: {} for name in TIER_NAMES}),
             error=GrapeRankError(
                 code=ErrorCode.RESULT_PAYLOAD_LOST, message=reason
-            ).model_dump(),
+            ).model_dump(exclude={"severity"}),
         )
         await db.commit()
 

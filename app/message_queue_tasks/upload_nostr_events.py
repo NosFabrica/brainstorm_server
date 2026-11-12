@@ -393,10 +393,22 @@ async def process_nostr_upload_message(message: dict):
 
     grape_rank_result: GrapeRankResult = message["result"]
     scorecards = grape_rank_result.get("scorecards")
+    run_id = message["private_id"]
     if not scorecards:
+        # A failed calc closes this stage in its own consumer.
+        if grape_rank_result.get("success"):
+            logger.warning(
+                f"TA publish: run={run_id} has no scorecards, nothing to publish"
+            )
+            async with db_session() as db:
+                await update_brainstorm_request_ta_status_by_id_on_db(
+                    db,
+                    brainstorm_request_id=run_id,
+                    status=BrainstormRequestStatus.SUCCESS,
+                )
+                await db.commit()
         return
     observer = next(iter(scorecards.values()))["observer"]
-    run_id = message["private_id"]
     timings: dict[str, float] = {}
     counts: dict[str, int | float] = {"n_scorecards": len(scorecards)}
     run_start = time.perf_counter()

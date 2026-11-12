@@ -42,12 +42,11 @@ def classify_tier(
     graph yet. Keep the two in step —
     tests/integration/test_tier_classifier_matches_cypher.py fails otherwise.
 
-    Fallthrough: bands apply only strictly above `verified_line`; at or below it
-    a subject is `low`, or flagged with 2+ trusted reporters. No influence → low.
+    Fallthrough: bands apply only strictly above `verified_line`; at or below it,
+    or with no influence (out of reach, or at or below the persist floor), a
+    subject is `low`, or flagged with 2+ trusted reporters.
     """
-    if influence is None:
-        return "low"
-    if influence > verified_line:
+    if influence is not None and influence > verified_line:
         if influence >= TIER_HIGH:
             return "high"
         if influence >= TIER_MEDIUM_HIGH:

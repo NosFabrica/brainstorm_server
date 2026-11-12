@@ -64,6 +64,7 @@ Per-user state. Pubkey is the PK (one row per user).
 | `graperank_custom_params` | JSONB | the user's CUSTOM params (used only if `graperank_preset == "CUSTOM"`) |
 | `last_published_pubkeys` | bytes (LargeBinary) | concatenated 32-byte hex pubkeys, no separator — see [../repos/CLAUDE.md](../repos/CLAUDE.md) for the safe accessors |
 | `last_published_graperank_request_id` | int FK → `brainstorm_request.private_id` | back-link to the latest publishing job |
+| `treasure_map_on` | bool, default false | the customer's choice for their Assistant's Treasure Map (its own kind 10040): list its live duties, or none. Written only by `POST /user/assistantTreasureMap` |
 
 **Watch out**: the `nsec` *vs* `encrypted_nsec` duality is a migration artefact. New code should write `encrypted_nsec` and ignore `nsec`. The repo helpers handle the fallback for old rows.
 
@@ -160,6 +161,24 @@ UNIQUE `(kind, entity_key)` is what makes minting idempotent: a concurrent
 double-mint loses the race in the database rather than creating a second code
 for the same entity.
 
+### `PasskeyVault` — `passkey_vault`
+
+A passkey-locked copy of a user's key, so a synced passkey can sign them in on a
+new device. One row per passkey. The server cannot open `blob`; why it holds one
+at all: [ADR 0005](../../docs/adr/0005-passkey-vault.md).
+
+| Column | Type | Notes |
+|---|---|---|
+| `credential_id_hash` | str(64) PK | sha256 of the raw credential id, hex: a fixed-width key whatever the id's length |
+| `credential_id` | str(1024) | the raw id, base64url. Public; listed back to the owner so a new passkey can exclude it (an authenticator otherwise overwrites one with the same user handle) |
+| `pubkey` | str(64), indexed | the owner. Every write and delete is scoped to it |
+| `credential_public_key` | text | SPKI DER, base64url, from the browser's `getPublicKey()` |
+| `alg` | int | COSE alg: -7 ES256, -8 EdDSA, -257 RS256 |
+| `blob` | text | the client's sealed record (≤4KB), checked for owner + credential, never decrypted |
+| `label` | str(64), nullable | the passkey's provider as the client named it ("iCloud Keychain") |
+| `sign_count` | bigint | the authenticator's counter; synced passkeys stay 0. Reset when the public key changes |
+| `last_used_at` | DateTime, nullable | last successful open, stamped with the database's `now()` like `created_at` (one clock) |
+
 ### `SupportTicket` — `support_ticket`
 
 A user's support ticket. `status` / `category` / `last_message_author` are open sets stored as `String`, no CHECK — `SupportTicketStatus` / `SupportAuthor` name the known values. `last_message_at` is **stored**: it is the `ORDER BY` of both ticket lists (`ix_support_ticket_pubkey_last_message_at`, `ix_support_ticket_last_message_at`, both DESC). Naive `DateTime`, like `scheduling`. **Personal data**: `notify_email` (optional) and the user-written `subject`; `diagnostics` is a flat `{label: value}` snapshot capped at the schema layer.
@@ -190,6 +209,17 @@ A ticket's thread and its lifecycle log; both append-only (no `TimestampMixin`),
   `(asserter_pubkey, d_tag)`, which is what gives each asserter exactly one live
   stance per (target, tag).
 
-Both carry `created_at_unix` — the *event's* clock, not ingest time — because
-replaceability is decided on it. `tag_event_id` is deliberately **not** an FK:
-taggings legitimately arrive before the element they reference.
+- **`NostrTaggingHeader`** — a per-Tag tagging header (ADR `trusted-lists/0002`
+  D6). Keyed by its coordinate `(author_pubkey, d_tag)`; names its Tag element
+  by coordinate (`tag_author_pubkey` + `tag_slug`) or by `tag_event_id`.
+- **`NostrEventTagging`** — an assertion that an event (by id, `target_slot`
+  `e`) or an addressable event (by coordinate, `a`) holds a Tag, reached
+  through `header_coordinate`. Keyed `(asserter_pubkey, d_tag)`, as above.
+- **`NostrTaggedEvent`** — the by-id lookup cache: kind, author, `d`, `z`
+  values and `names` of an event looked up by id. Insert-only, never expired:
+  an id names one immutable event. Coordinates are never stored.
+
+All but the cache carry `created_at_unix` — the *event's* clock, not ingest
+time — because replaceability is decided on it. No reference between them is
+an FK: taggings legitimately arrive before the header or element they
+reference, and are dropped at read time until they do.

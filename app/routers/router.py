@@ -17,6 +17,10 @@ from app.routers.graph.router import router as graph_router
 from app.routers.network_alerts.router import router as network_alerts_router
 from app.routers.nip05.router import router as nip05_router
 from app.routers.open_ranking.router import router as open_ranking_router
+from app.routers.passkey_vault.router import (
+    public_router as passkey_vault_public_router,
+)
+from app.routers.passkey_vault.router import router as passkey_vault_router
 from app.routers.setup.router import router as setup_router
 from app.routers.shorturl.router import router as shorturl_router
 from app.routers.support.router import router as support_router
@@ -139,6 +143,23 @@ router.include_router(
     router=shorturl_router,
     prefix=SHORTURL_ROUTER_PREFIX,
     tags=["shorturl"],
+)
+
+PASSKEY_VAULT_ROUTER_PREFIX = "/passkeyVault"
+
+# The public half first: its fixed /challenge path must not be read as a
+# credential hash by the owner's routes (the hash pattern refuses it anyway).
+router.include_router(
+    router=passkey_vault_public_router,
+    prefix=PASSKEY_VAULT_ROUTER_PREFIX,
+    tags=["passkey_vault"],
+)
+
+router.include_router(
+    dependencies=[Depends(verify_token)],
+    router=passkey_vault_router,
+    prefix=PASSKEY_VAULT_ROUTER_PREFIX,
+    tags=["passkey_vault"],
 )
 
 USER_ROUTER_PREFIX = "/user"

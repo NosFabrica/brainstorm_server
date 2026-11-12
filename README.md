@@ -22,6 +22,10 @@ First, modify the DB files
 
 - poetry run alembic revision --autogenerate -m "Your new modification"
 
+## Authenticating (for client apps)
+
+See [docs/authentication.md](docs/authentication.md): how a new user signs in, session tokens vs NIP-98, and the `client` tag.
+
 ## How to check the API project's documentation
 
 Access the URL `http://0.0.0.0:8000/docs`
@@ -265,7 +269,7 @@ Static enum on purpose — adding a preset name is a code change, not a config c
 
 ## Scripts
 
-Scripts live in `scripts/` and are excluded from the Docker image via `.dockerignore`. Run from your local machine.
+Scripts live in `scripts/` and ship in the server image (`.dockerignore` drops only `test_*.py` files, so the `test_admin_*` smoke scripts stay out). Most run from your local machine; the data backfills can also run inside a server pod.
 
 ### Setup
 

@@ -15,7 +15,28 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import settings
-from app.db_models import NostrTagElement, NostrUserTagging
+from app.db_models import (
+    NostrEventTagging,
+    NostrTaggedEvent,
+    NostrTaggingHeader,
+    NostrTagElement,
+    NostrUserTagging,
+)
+
+# Every table the tagging tests write, story 1's and story 2's.
+TAGGING_TABLES = (
+    NostrUserTagging,
+    NostrTagElement,
+    NostrEventTagging,
+    NostrTaggingHeader,
+    NostrTaggedEvent,
+)
+
+
+async def clean_tagging_tables(db) -> None:
+    for table in TAGGING_TABLES:
+        await db.execute(delete(table))
+    await db.commit()
 
 
 def run_with_db(work):
@@ -27,18 +48,14 @@ def run_with_db(work):
         factory = async_sessionmaker(bind=engine, expire_on_commit=False, future=True)
         try:
             async with factory() as db:
-                await db.execute(delete(NostrUserTagging))
-                await db.execute(delete(NostrTagElement))
-                await db.commit()
+                await clean_tagging_tables(db)
             async with factory() as db:
                 result = await work(db)
                 await db.commit()
             return result
         finally:
             async with factory() as db:
-                await db.execute(delete(NostrUserTagging))
-                await db.execute(delete(NostrTagElement))
-                await db.commit()
+                await clean_tagging_tables(db)
             await engine.dispose()
 
     return asyncio.run(_go())
@@ -73,9 +90,7 @@ def run_with_db_and_graph(work, nodes: dict[str, float | None], observer: str):
                             inf=influence,
                         )
             async with factory() as db:
-                await db.execute(delete(NostrUserTagging))
-                await db.execute(delete(NostrTagElement))
-                await db.commit()
+                await clean_tagging_tables(db)
             async with factory() as db:
                 result = await work(db)
                 await db.commit()
@@ -88,9 +103,7 @@ def run_with_db_and_graph(work, nodes: dict[str, float | None], observer: str):
                     )
             await neo.close()
             async with factory() as db:
-                await db.execute(delete(NostrUserTagging))
-                await db.execute(delete(NostrTagElement))
-                await db.commit()
+                await clean_tagging_tables(db)
             await engine.dispose()
 
     return asyncio.run(_go())

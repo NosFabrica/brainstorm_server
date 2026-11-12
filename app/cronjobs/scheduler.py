@@ -42,6 +42,14 @@ _INSTANCE_ID = f"{socket.gethostname()}:{uuid.uuid4()}"
 _admitted_counts: dict[int, int] = {}
 
 
+async def has_grapevine(pubkey: str) -> bool:
+    """Would the scheduler run this user? Only one who follows someone: with no
+    follows there is no grapevine to score. The Treasure Map reads Scores as
+    kept up to date by this same rule."""
+    async with neo4j_driver.session() as session:
+        return await count_user_follows(session, pubkey) > 0
+
+
 async def _run_cycle(db) -> None:
     inflight = await count_scheduled_publishing_inflight_on_db(db)
     interactive = await any_interactive_in_pipeline_on_db(db)
@@ -79,9 +87,8 @@ async def _run_cycle(db) -> None:
         else:
             lane = max(active)  # strict highest-priority-first
         candidate = lanes[lane].pop(0)
-        async with neo4j_driver.session() as session:
-            if await count_user_follows(session, candidate.pubkey) <= 0:
-                continue  # no grapevine — picked up once they follow someone
+        if not await has_grapevine(candidate.pubkey):
+            continue  # no grapevine — picked up once they follow someone
         await create_brainstorm_request(
             db=db,
             algorithm="graperank",

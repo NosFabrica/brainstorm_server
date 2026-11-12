@@ -41,6 +41,7 @@ from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
     create_brainstorm_request,
 )
+from app.services.publish_drift import RESYNC_TARGETS, ResyncTarget
 from app.services.relay_audit_service import audit_observer_relay
 from app.services.session_service import revoke_sessions
 
@@ -214,16 +215,19 @@ async def get_user_history_endpoint(
 )
 async def resync_observer_endpoint(
     pubkey: str,
+    target: ResyncTarget = Query("both"),
     db: AsyncDBSession = Depends(dependency=get_db),
 ) -> BrainstormRequestResponse:
-    # One single-observer recompute, never a fan-out; the consumer reads the
-    # flag off the row and re-asserts the full above-cutoff state on the relay.
+    force = RESYNC_TARGETS[target]
+    # One single-observer recompute, never a fan-out; the consumers read the
+    # flags off the row and re-assert the full state on each targeted sink.
     result = await create_brainstorm_request(
         db=db,
         algorithm="graperank",
         parameters=pubkey,
         pubkey=pubkey,
-        force_full_relay=True,
+        force_full_relay=force.relay,
+        force_full_neo4j=force.neo4j,
         trigger_source=TriggerSource.ADMIN.value,
     )
     return BrainstormRequestResponse(data=result)

@@ -3,13 +3,19 @@ import hashlib
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, Request, status
-from nostr_sdk import Event
 
 from app.core.config import settings
 from app.utils.nostr import event_tags, first_tag_value
+from app.utils.signed_event import Rejection, SignedEventRejected, verify_signed_event
 
 NIP98_KIND = 27235
 NIP98_MAX_CLOCK_SKEW_SECONDS = 60
+
+_NIP98_REJECTIONS = {
+    Rejection.MALFORMED: "Bad NIP-98 token: invalid event JSON",
+    Rejection.WRONG_KIND: f"Bad NIP-98 token: expected kind {NIP98_KIND}",
+    Rejection.BAD_SIGNATURE: "Bad NIP-98 token: invalid signature",
+}
 
 
 def _expected_request_url(request: Request) -> str:
@@ -34,15 +40,9 @@ async def validate_nip98_event(request: Request, encoded_event: str) -> str:
         raise _unauthorized("Bad NIP-98 token: invalid base64")
 
     try:
-        event = Event.from_json(decoded)
-    except Exception:
-        raise _unauthorized("Bad NIP-98 token: invalid event JSON")
-
-    if event.kind().as_u16() != NIP98_KIND:
-        raise _unauthorized(f"Bad NIP-98 token: expected kind {NIP98_KIND}")
-
-    if not event.verify_signature():
-        raise _unauthorized("Bad NIP-98 token: invalid signature")
+        event = verify_signed_event(decoded, kind=NIP98_KIND)
+    except SignedEventRejected as exc:
+        raise _unauthorized(_NIP98_REJECTIONS.get(exc.reason, "Bad NIP-98 token"))
 
     created_at = event.created_at().as_secs()
     now = int(datetime.now(tz=timezone.utc).timestamp())

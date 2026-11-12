@@ -25,12 +25,18 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request, status
-from nostr_sdk import Event
 
 from app.core.config import settings
 from app.utils.nostr import event_tags, first_tag_value, tag_values
+from app.utils.signed_event import Rejection, SignedEventRejected, verify_signed_event
 
 NWT_KIND = 27519
+
+_NWT_REJECTIONS = {
+    Rejection.MALFORMED: "Bad NWT: invalid event JSON",
+    Rejection.WRONG_KIND: f"Bad NWT: expected kind {NWT_KIND}",
+    Rejection.BAD_SIGNATURE: "Bad NWT: invalid signature",
+}
 
 # Recommended clock skew per the NWT spec ("Verifiers SHOULD allow a small
 # clock skew, e.g. ±60 seconds"). Applied symmetrically to nbf / exp and as
@@ -95,15 +101,9 @@ def validate_nwt_token(encoded_token: str) -> str:
         raise _unauthorized("Bad NWT: invalid base64url")
 
     try:
-        event = Event.from_json(decoded)
-    except Exception:
-        raise _unauthorized("Bad NWT: invalid event JSON")
-
-    if event.kind().as_u16() != NWT_KIND:
-        raise _unauthorized(f"Bad NWT: expected kind {NWT_KIND}")
-
-    if not event.verify_signature():
-        raise _unauthorized("Bad NWT: invalid signature")
+        event = verify_signed_event(decoded, kind=NWT_KIND)
+    except SignedEventRejected as exc:
+        raise _unauthorized(_NWT_REJECTIONS.get(exc.reason, "Bad NWT"))
 
     now = int(datetime.now(tz=timezone.utc).timestamp())
 

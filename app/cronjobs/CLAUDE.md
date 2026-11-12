@@ -9,14 +9,18 @@ driven by `asyncio.sleep` instead of Redis blpops.
 
 ### `fail_stale_ongoing_brainstorm_requests.py`
 
-Sweeps stuck GrapeRank jobs. A request that's been ONGOING longer than
-`settings.stale_brainstorm_request_threshold_minutes` is flipped to FAILURE
-with a synthetic error so callers see a real terminal state instead of
-"hung forever."
+Reaps stuck GrapeRank runs. A run still in the pipeline — calc `waiting`/`ongoing`, or
+calc done with the TA publish `waiting`/`ongoing` — whose row hasn't changed for
+`settings.stale_ongoing_brainstorm_request_threshold_hours` (7) is set to FAILURE, so a job
+lost before or during the worker (e.g. a worker restarted by a deploy) can't block scheduler
+admission. The Neo4j stage is not swept: it never blocks admission.
 
-- Loop: `while True: await sweep(); await asyncio.sleep(settings.stale_sweep_interval_seconds)`.
-- Delegates to `fail_stale_ongoing_brainstorm_requests_on_db` (repo). Logs the rowcount each cycle.
-- **Safe to run on N replicas** — the UPDATE filters by `status=ONGOING AND updated_at < cutoff` so concurrent writers race-OK (worst case: one row written twice with the same terminal status).
+- Loop: sweep, then sleep `stale_ongoing_brainstorm_request_check_interval_minutes` (30).
+- Delegates to `fail_stale_in_pipeline_brainstorm_requests_on_db` (repo). Logs the reaped run ids.
+- A reaped run stays failed: the calc status is only written from `waiting`/`ongoing`, so a late
+  worker can't set it back to `ongoing` or `success`.
+- **Safe to run on N replicas** — the UPDATE filters on the in-pipeline condition and `updated_at`,
+  so concurrent sweeps race-OK.
 
 ### `expire_support_diagnostics.py`
 

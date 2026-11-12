@@ -599,7 +599,9 @@ was drafted the day before their PR landed:
    but not exactly, which is the worst of both worlds: plausible numbers that
    silently disagree.
 
-2. **The membership predicate has three clauses, not two.** Tapestry's
+2. *(Superseded 2026-11-04 by ADR 0002 D7: the count clause is dropped, and
+   the predicate is the two-clause v2 above, for all three list kinds.)*
+   **The membership predicate has three clauses, not two.** Tapestry's
    `certainty` method chains off `applyDisputesFunction`
    (`refreshPinnedTags.js:112`), so v1's `applications > disputes` still gates
    before the score does. The predicate is
@@ -652,7 +654,9 @@ Two further points settled with tapestry on 2026-09-01:
   is not zero. Weighting governs confidence *within* a list; the floor is the
   spam valve, and they do different jobs.
 
-- **G and N are the predicate's regression guards.** `90@+1, 3@-1` scores 44
+- *(Superseded 2026-11-04 by ADR 0002 D7: G and N are now members, and guard
+  against the count clause coming back.)*
+  **G and N are the predicate's regression guards.** `90@+1, 3@-1` scores 44
   and `40,40@+1 / 3,3@-1` scores 39 — both would be published by a two-clause
   predicate and both must be excluded by the three-clause one. They are the
   only cheap way to catch a silent regression from three clauses back to two,

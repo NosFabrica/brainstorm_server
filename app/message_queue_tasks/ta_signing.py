@@ -22,6 +22,11 @@ DELETION_COORDS_PER_EVENT = 200
 # The algorithm's "no path from the Observer" hops value. Keyed on here rather
 # than on the current hop limit (8) so raising that limit needs no edit.
 UNREACHABLE_HOPS = 999
+# The metric tags `ta_tags` writes, in its order; `hops` only for a reachable
+# Observee. Everything that names a TA's metrics reads this one list: `/setup`'s
+# `30382:<metric>` rows, the Duty Menu's offer and the Treasure Map's supported
+# Scores.
+TA_METRIC_TAGS: tuple[str, ...] = ("rank", "followers", "reporters", "muters", "hops")
 DELETION_KIND = 5
 DELETION_CONTENT = "dropped below cutoff"
 

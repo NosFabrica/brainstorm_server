@@ -10,6 +10,8 @@ from app.schemas.graperank_schemas import (
 )
 from app.schemas.schemas import (
     AdminStats,
+    AssistantDutyMenuOffer,
+    AssistantTreasureMapCheck,
     AuthSuccessfulToken,
     BillingPlansData,
     BrainstormPubkeyInstance,
@@ -18,6 +20,11 @@ from app.schemas.schemas import (
     FollowListIngestResult,
     OwnUserData,
     PaginatedUserConnections,
+    PasskeyVaultBlob,
+    PasskeyVaultChallenge,
+    PasskeyVaultEntry,
+    PublishedAssistantDutyMenu,
+    PublishedAssistantTreasureMap,
     RefreshedSubscriptionView,
     RelayAudit,
     ShortUrlEntity,
@@ -142,6 +149,22 @@ class PublishAssistantProfileData(BaseModel):
 
 class PublishAssistantProfileResponse(SuccessfulResponseDataSchema):
     data: PublishAssistantProfileData
+
+
+class GetAssistantDutyMenuResponse(SuccessfulResponseDataSchema):
+    data: AssistantDutyMenuOffer
+
+
+class PublishAssistantDutyMenuResponse(SuccessfulResponseDataSchema):
+    data: PublishedAssistantDutyMenu
+
+
+class GetAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
+    data: AssistantTreasureMapCheck
+
+
+class PublishAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
+    data: PublishedAssistantTreasureMap
 
 
 class AdminStatsResponse(SuccessfulResponseDataSchema):
@@ -316,3 +339,23 @@ class ResolveSupportTicketResponse(SuccessfulResponseDataSchema):
 
 class GetRelayAuditResponse(SuccessfulResponseDataSchema):
     data: RelayAudit
+
+
+class PasskeyVaultChallengeResponse(SuccessfulResponseDataSchema):
+    data: PasskeyVaultChallenge
+
+
+class PasskeyVaultEntryResponse(SuccessfulResponseDataSchema):
+    data: PasskeyVaultEntry
+
+
+class PasskeyVaultListResponse(SuccessfulResponseDataSchema):
+    data: list[PasskeyVaultEntry]
+
+
+class PasskeyVaultBlobResponse(SuccessfulResponseDataSchema):
+    data: PasskeyVaultBlob
+
+
+class PasskeyVaultDeletedResponse(SuccessfulResponseDataSchema):
+    data: None = None

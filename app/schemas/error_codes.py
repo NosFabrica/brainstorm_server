@@ -20,6 +20,10 @@ class ErrorCode(str, Enum):
     # Unclassified RuntimeException from the algorithm path - likely a bug.
     ALGORITHM_EXCEPTION = "ALGORITHM_EXCEPTION"
 
+    # The worker running the job was lost (restart, crash, OOM) too many times;
+    # the worker's job lease stopped re-queuing it.
+    WORKER_LOST = "WORKER_LOST"
+
     # Python-only: the run's stored result payload was gone (evicted/expired) or
     # its consumer kept dying, so this stage never processed it.
     RESULT_PAYLOAD_LOST = "RESULT_PAYLOAD_LOST"

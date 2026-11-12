@@ -17,6 +17,7 @@ The GrapeRank algorithm's output, used both internally and as the queue-message 
   - `scorecards: dict[str, ScoreCard] | None` — keyed by observee pubkey.
   - `rounds: int | None`, `duration_seconds: float`, `success: bool` — run telemetry.
   - `changedScorePubkeys: list[str]` — incremental-publish hint (only these need new TA events). Deletes are computed from the `fell_off` diff, not an algo hint.
+  - `neo4jWritePubkeys: list[str] | None` — scorecards whose Neo4j-persisted fields (rounded `influence`, `hops`, `trusted_followers`) differ from what Neo4j held when the run started. None/absent (older worker) = write all.
   - `error: dict | None` — structured failure; validated into `GrapeRankError` ([`app/schemas/schemas.py`](../schemas/schemas.py)) only when written to the run row.
 
 Consumed in [../message_queue_tasks/upload_nostr_events.py](../message_queue_tasks/upload_nostr_events.py). When changing fields, also touch:

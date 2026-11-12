@@ -47,6 +47,7 @@ from app.services.flash_webhook_service import (
     describe_rotation_state,
     validate_flash_config,
 )
+from app.services.nip05_service import backfill_assistant_identities
 from app.services.nsec_encryption_service import bootstrap_keys
 from app.services.support_notifier import drain_notifications
 from app.utils.auth.auth_util import warn_if_session_secret_short
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI):
     warn_if_session_secret_short(settings.auth_secret_key)
 
     await bootstrap_keys()
+    await backfill_assistant_identities()
 
     # initialize admin whitelist cache and log config
     init_admin_whitelist()

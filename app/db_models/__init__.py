@@ -2,6 +2,7 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -133,6 +134,11 @@ class BrainstormRequest(TimestampMixin, Base):
     force_full_relay: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True, server_default="false"
     )
+    # Same for the Neo4j score write: true = write every scorecard and clear the
+    # Observer's scores on nodes it no longer reaches.
+    force_full_neo4j: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, server_default="false"
+    )
 
 
 class BrainstormNostrRelayTransfer(TimestampMixin, Base):
@@ -154,6 +160,12 @@ class BrainstormNsec(TimestampMixin, Base):
     nsec: Mapped[str] = mapped_column(String, nullable=False)
     encrypted_nsec: Mapped[str] = mapped_column(String, nullable=True)
     pubkey: Mapped[str] = mapped_column(String, primary_key=True)
+    # The public half of the nsec and its NIP-05 local-part, stored so the
+    # well-known lookup never decrypts. Null only until the startup backfill.
+    assistant_pubkey: Mapped[str | None] = mapped_column(String, nullable=True)
+    nip05_local_part: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
     last_time_triggered_graperank = mapped_column(DateTime, nullable=True)
     last_time_calculated_graperank = mapped_column(DateTime, nullable=True)
     # Freshness clock: set only on a successful TA publish. Drives scheduling.
@@ -179,6 +191,10 @@ class BrainstormNsec(TimestampMixin, Base):
     runs_since_full: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
     )
+    # Last clear of this observer's out-of-reach Neo4j scores (NEO4J_CLEANUP_INTERVAL_DAYS).
+    last_neo4j_cleanup_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
     # The scheduling policy this user is assigned to (see the Scheduling table).
     # NULL = the default policy (is_default row). Assigned by admins / a future
     # service; NULL avoids any backfill for pre-existing users.
@@ -197,6 +213,12 @@ class BrainstormNsec(TimestampMixin, Base):
     # Session tokens minted under an older version are rejected (sign out everywhere).
     session_version: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
+    )
+    # The customer's choice for their Assistant's Treasure Map (its own kind
+    # 10040): list its live duties, or none. Off until the first Turn on; only
+    # POST /user/assistantTreasureMap writes it.
+    treasure_map_on: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
     )
     # See SchedulingSource. Billing only overwrites when this isn't ADMIN, so a
     # comped user survives a lapse and stays distinguishable from a bug.
@@ -522,6 +544,74 @@ class NostrUserTagging(Base):
     )
 
 
+class NostrTaggingHeader(Base):
+    """A kind-39999 *tagging header*: the per-Tag descriptor event taggings
+    point at (ADR `trusted-lists/0002` D6).
+
+    Addressable at ``39999:<author_pubkey>:<d_tag>`` and latest-wins on the
+    event's own ``created_at``. Names its Tag element by coordinate
+    (``tag_author_pubkey`` + ``tag_slug``, from `a`) or by event id
+    (``tag_event_id``, from `e`); exactly one of the two is set. Not an FK: a
+    header can arrive before its Tag element and is dropped at read time.
+    """
+
+    __tablename__ = "nostr_tagging_header"
+    author_pubkey: Mapped[str] = mapped_column(String(64), primary_key=True)
+    d_tag: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tag_author_pubkey: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tag_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    tag_event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at_unix: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class NostrEventTagging(Base):
+    """A kind-39999 *event tagging*: an assertion that an event (by id) or an
+    addressable event (by coordinate) holds a Tag (ADR 0002 D6).
+
+    Replaceable on (asserter, d-tag), latest-wins on ``created_at_unix``, as
+    ``NostrUserTagging``. ``header_coordinate`` is the descriptor `z`, the
+    tagging header's coordinate; the Tag is reached through it at read time.
+    """
+
+    __tablename__ = "nostr_event_tagging"
+    asserter_pubkey: Mapped[str] = mapped_column(String(64), primary_key=True)
+    d_tag: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # An event id (slot "e") or a `<kind>:<pubkey>:<d>` coordinate (slot "a").
+    target: Mapped[str] = mapped_column(String, nullable=False)
+    target_slot: Mapped[str] = mapped_column(String(1), nullable=False)
+    target_relay: Mapped[str | None] = mapped_column(String, nullable=True)
+    header_coordinate: Mapped[str] = mapped_column(String, nullable=False)
+    polarity: Mapped[float] = mapped_column(Float, nullable=False, server_default="1")
+    created_at_unix: Mapped[int] = mapped_column(Integer, nullable=False)
+    __table_args__ = (Index("ix_nostr_event_tagging_header", "header_coordinate"),)
+
+
+class NostrTaggedEvent(Base):
+    """What a lookup by event id learned about a tagged event, or about a
+    kind-9998 DList header named by id (ADR 0002 D6).
+
+    Cached forever: an event id names one immutable event. Nothing named by
+    coordinate is stored here; those are fetched fresh each run.
+    """
+
+    __tablename__ = "nostr_tagged_event"
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[int] = mapped_column(Integer, nullable=False)
+    pubkey: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The `d` of an addressable event, so its coordinate can be formed.
+    d_tag: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Every `z` value, for a DList item's header(s).
+    z_values: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    # The `names` tag's values, for a DList header's title.
+    names: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+
+
 class ShortUrl(TimestampMixin, Base):
     """A share link: a short code for an entity `(kind, entity_key)`.
 
@@ -543,6 +633,32 @@ class ShortUrl(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("kind", "entity_key", name="uq_short_url_kind_entity_key"),
     )
+
+
+class PasskeyVault(TimestampMixin, Base):
+    """A passkey-locked copy of a user's key, for signing in on a new device.
+
+    One row per passkey. ``blob`` is ciphertext the server cannot open: its key
+    is derived from the passkey's PRF output, which never leaves the browser.
+    See docs/adr/0005-passkey-vault.md.
+    """
+
+    __tablename__ = "passkey_vault"
+    # sha256 of the raw credential id, hex: a fixed-width key for any id length.
+    credential_id_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # The raw id, base64url: public, and what a client lists in excludeCredentials
+    # so a new passkey can't silently replace one made on another device.
+    credential_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    pubkey: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # SPKI DER, base64url, as the browser's getPublicKey() returned it.
+    credential_public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    alg: Mapped[int] = mapped_column(Integer, nullable=False)
+    blob: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sign_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class SupportTicket(TimestampMixin, Base):

@@ -57,6 +57,18 @@ def test_bad_signature_is_rejected_401(client, caller, mock_kind3_write):
     assert mock_kind3_write.await_count == 0
 
 
+def test_forged_event_reusing_a_real_signature_is_rejected_401(
+    client, caller, mock_kind3_write
+):
+    event = signed_event(caller.keys, kind=1)
+    event.update(kind=3, tags=[["p", Keys.generate().public_key().to_hex()]])
+
+    response = client.post("/user/followList", json={"signed_event": event})
+
+    assert response.status_code == 401
+    assert mock_kind3_write.await_count == 0
+
+
 def test_author_mismatch_is_rejected_403(client, caller, mock_kind3_write):
     # Validly signed by someone other than the authenticated caller.
     other = Keys.generate()
@@ -213,7 +225,7 @@ def test_event_that_passes_schema_but_fails_parse_is_400_not_500(
         raise NostrSdkError.Generic("nope")
 
     monkeypatch.setattr(
-        "app.services.onboarding_service.Event.from_json", _boom
+        "app.utils.signed_event.Event.from_json", _boom
     )
     body = {"signed_event": signed_kind3(caller.keys, [])}
 

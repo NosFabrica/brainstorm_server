@@ -17,7 +17,9 @@ app/utils/
 ├── encryption.py            # Fernet symmetric encryption for nsec storage
 ├── neo4j_values.py          # safe_float / safe_int — inf/nan coercion on graph reads
 ├── nostr.py                 # Tiny Nostr helpers (constants, format conversions)
+├── signed_event.py          # The one parse + kind + id/sig + author check for outside events (pure)
 ├── shorturl_entities.py     # Short-link entity kinds: key normalisation + on-site path (pure)
+├── webauthn.py              # WebAuthn get() assertion verification for the passkey vault (pure)
 ├── rate_limiting/
 │   └── rate_limiting.py     # Redis-backed rate limiter + trusted-proxy client IP
 ├── datetimes.py             # utc_now() for the naive timestamp columns
@@ -51,7 +53,7 @@ admin-specific). It chains after `verify_token` and checks
 - **`auth_models.py`** — `JWTData` (pubkey, optional `is_admin`, `session_version`).
 - **`nip98.py`** — validates a NIP-98 signed event:
   - method/URL tags match the inbound request
-  - signature verifies against the claimed pubkey
+  - id + signature verify (via `signed_event.py`)
   - event is fresh (created_at within tolerance)
   - returns the pubkey on success, raises on failure
 
@@ -69,6 +71,10 @@ or you'll have rows that can't be decrypted.
 ## nostr.py
 
 Tiny Nostr helpers: `generate_random_nsec`, the one tag reader (`tag_values` / `first_tag_value` over raw JSON tags, or `event_tags(event)` for a parsed `Event`), and `resolve_pubkey_or_400` (hex or npub in, canonical hex out, 400 on anything else — shared by `/networkAlerts` and `/shortestPath`). Treat it as a place to drop small helpers; if it grows past ~50 LOC, split by topic.
+
+## signed_event.py
+
+`verify_signed_event(raw, *, kind, author=None) -> Event` — every signed event that arrives from outside (NIP-98, NWT, login, onboarding kind-3, the Assistant's relay read-backs in `is_own`) goes through it. Takes the JSON string as received (NIP-98, NWT: nostr_sdk rejects duplicate keys, `json.loads` would silently keep the last) or an already-parsed dict. Checks in order: parse, kind, `.verify()` (id **and** sig; `verify_signature()` alone lets a forged event through), exact-hex author. Raises `SignedEventRejected(reason: Rejection)`; each caller maps the reason to its own HTTP error. Read tags from the returned `Event`, not the raw dict. Time windows and tag rules stay with the caller.
 
 ## rate_limiting/
 
@@ -89,7 +95,11 @@ check in `user_service.py`.
   for verifies that would create an Observer row), all built by
   `rate_limit_per_ip(key_prefix, limit, window)`. Limits are settings
   (`LOGIN_*_RATE_LIMIT_*`), read per request; never per pubkey, or an attacker
-  could spend a victim's bucket.
+  could spend a victim's bucket. The passkey vault's public half has the same
+  shape: `rate_limit_passkey_challenge` / `rate_limit_passkey_open`
+  (`PASSKEY_*_RATE_LIMIT_PER_MINUTE`). `rate_limit_nip05` caps
+  `/.well-known/nostr.json` (`NIP05_RATE_LIMIT_PER_MINUTE`, generous: it only
+  stops a loop).
 - `validate_subscription_refresh_allowed(pubkey)` (12 / 60s) and
   `validate_flash_record_read_allowed(operator_pubkey)` (30 / 60s) — per-pubkey
   billing throttles. All limiters share `_enforce_window`.
