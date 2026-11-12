@@ -82,16 +82,22 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 
 ## Run locally
 
-The full local stack (Postgres, Redis, Neo4j, neofry, strfry, the GrapeRank
-worker, the UI) is
+The local stack is
 [brainstorm_one_click_deployment](https://github.com/NosFabrica/brainstorm_one_click_deployment)'s
 compose plus its local override, which builds this server from a sibling
-`../brainstorm_server` checkout:
+`../brainstorm_server` checkout. It runs Postgres, Redis, Neo4j, neofry, strfry,
+the GrapeRank worker and the UI:
 
 ```bash
 # in ../brainstorm_one_click_deployment
 docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
 ```
+
+It can lag this server, so expect some tinkering to make it run, and it leaves
+out some services that staging and production run. When checked on 2026-11-12,
+its `main` was last changed on 2026-07-21 and still deployed Vespa, which this
+server no longer uses: its local override makes `brainstorm-server` wait on
+`vespa-deploy`.
 
 This repo's own `docker-compose.yml` is not that stack: it defines only the
 server (`web`) and Postgres, and `web` depends on a `brainstorm-neo4j` service

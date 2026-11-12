@@ -84,10 +84,12 @@ poetry run pytest
 
 ## How to run everything with docker
 
-The whole stack runs from
+The local stack runs from
 [brainstorm_one_click_deployment](https://github.com/NosFabrica/brainstorm_one_click_deployment),
 checked out next to this repo; its local override builds this server from
-`../brainstorm_server`:
+`../brainstorm_server`. It can lag this server and leaves out some services
+that staging and production run, so expect some tinkering (CLAUDE.md § Run
+locally):
 
 ```bash
 # in ../brainstorm_one_click_deployment
