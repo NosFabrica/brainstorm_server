@@ -54,9 +54,15 @@ class Settings(BaseSettings):
     # clients batch lookups; this only stops a loop.
     nip05_rate_limit_per_minute: int = Field(default=600)
     # Bearer token of the Observer print worker, for `/internal/observerRunner/*`
-    # (decrypt and sign as an owner's Assistant). Empty = those routes answer
-    # 404. Never route that prefix through the public ingress.
+    # (decrypt and sign as an owner's Assistant). Stripped; at least 32
+    # characters, or the internal API stays off (logged at startup). Empty =
+    # off, the default.
     observer_runner_token: str = Field(default="")
+    # The internal API's own port (`app/internal_api.py`), served beside the
+    # public one only while the token is set. Never the public port (8000,
+    # `start.sh`), and never the ingress backend's: the worker reaches it
+    # directly on the internal network.
+    observer_runner_port: int = Field(default=8001, ge=1, le=65535)
     # Global kill-switch for the tier scheduler. Default off; enable per environment
     scheduler_enabled: bool = Field(default=False)
     # Max scheduled runs whose publishing may be in flight before admission pauses.

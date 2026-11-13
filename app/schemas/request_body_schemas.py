@@ -72,10 +72,13 @@ _HEX_PUBKEY = r"^[0-9a-f]{64}$"
 
 class ObserverRunnerDecryptBody(BaseModel):
     """A whole signed event: the owner's schedule (34817) or the Assistant's
-    own AI keys (12000). Its shape and signature are the service's to check."""
+    own AI keys (12000). With a 12000, `schedule` is required: the owner's
+    signed 34817 naming that Assistant, the print the keys are opened for. The
+    shapes and signatures are the service's to check."""
 
     owner: str = Field(pattern=_HEX_PUBKEY)
     event: dict[str, Any]
+    schedule: dict[str, Any] | None = None
 
 
 class ObserverRunnerUnsignedEvent(BaseModel):

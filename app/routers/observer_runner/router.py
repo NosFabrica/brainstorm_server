@@ -1,18 +1,21 @@
 """`/internal/observerRunner/*`: the Observer print worker's calls.
 
-INTERNAL ONLY. The worker runs beside this server on the internal network and
-reaches it directly; the public ingress must never route `/internal/`. Rules
-and allow-lists are `services/observer_runner_service.py`'s.
+INTERNAL ONLY. Served by the internal app (`app/internal_api.py`) on its own
+port, `OBSERVER_RUNNER_PORT`, never by the public app, which answers 404 for
+`/internal/` before routing. The worker runs beside this server on the
+internal network and reaches that port directly. Rules and allow-lists are
+`services/observer_runner_service.py`'s.
 
 Auth is `Authorization: Bearer <OBSERVER_RUNNER_TOKEN>`, compared in constant
-time. With the setting empty, or a missing or wrong token, every route answers
-the same 404 a path that doesn't exist answers. The bodies are parsed after
-that check, so a malformed body from a stranger is a 404 too, not a 422 that
-would say the route is here. Kept out of the OpenAPI document.
+time by `guard.RequireRunnerToken` before routing: with the setting empty or
+too short, or a missing or wrong token, every method and path answers the same
+404 a path that doesn't exist answers (no 405, no redirect, no 422). The
+dependency below checks it again, should the router ever be mounted without
+the middleware. Bodies are parsed only after that. Kept out of the OpenAPI
+document.
 """
 from __future__ import annotations
 
-import hmac
 from typing import TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -20,8 +23,8 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
-from app.core.config import settings
 from app.core.database import get_db
+from app.routers.observer_runner.guard import bearer_matches
 from app.schemas.request_body_schemas import (
     ObserverRunnerDecryptBody,
     ObserverRunnerSignBody,
@@ -48,13 +51,7 @@ def _not_found() -> HTTPException:
 
 async def verify_observer_runner_token(request: Request) -> None:
     """404 unless the request carries the configured worker token."""
-    expected = settings.observer_runner_token
-    if not expected:
-        raise _not_found()
-    scheme, _, given = request.headers.get("authorization", "").partition(" ")
-    if scheme.lower() != "bearer" or not hmac.compare_digest(
-        given.strip().encode(), expected.encode()
-    ):
+    if not bearer_matches(request.headers.get("authorization", "")):
         raise _not_found()
 
 
@@ -92,7 +89,7 @@ async def decrypt_endpoint(
 ) -> ObserverRunnerPlaintextResponse:
     body = await _body(request, ObserverRunnerDecryptBody)
     return ObserverRunnerPlaintextResponse(
-        data=await decrypt_as_assistant(db, body.owner, body.event)
+        data=await decrypt_as_assistant(db, body.owner, body.event, body.schedule)
     )
 
 

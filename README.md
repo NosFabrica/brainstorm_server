@@ -98,24 +98,36 @@ Requests must include a valid auth token (JWT) and the token's pubkey must be in
 
 - `GET /admin/brainstormPubkey/{nostr_pubkey}` — trigger a GrapeRank calculation for any pubkey
 
-## Internal routes (`/internal/*`) — never expose them publicly
+## Internal API (`/internal/*`, its own port) — never expose it publicly
 
 `/internal/observerRunner/{assistants,decrypt,sign}` serve the Observer print
 worker, which runs beside this server on the internal network and prints a
 reader's Nostr Observer as their Brainstorm Assistant. They **decrypt and sign as
-any owner's Assistant**, so:
+any owner's Assistant**, so they are not part of the public app at all:
 
-- **The public ingress must not route `/internal/`.** The worker reaches the
-  service directly (cluster-internal Service), never through the public host.
-- They answer only `Authorization: Bearer <OBSERVER_RUNNER_TOKEN>` (compared in
-  constant time). With `OBSERVER_RUNNER_TOKEN` empty — the default — or a
-  missing or wrong token, every route answers 404, as a path that doesn't exist.
-  Keep the token in a Secret shared only with the worker.
+- **Their own app and port.** `app/internal_api.py` serves them on
+  `OBSERVER_RUNNER_PORT` (default `8001`), started from the public app's lifespan
+  in the same process, and only while `OBSERVER_RUNNER_TOKEN` is set. It has no
+  CORS, no OpenAPI document and no other routes. The public app (port 8000, the
+  ingress backend) answers **404 for `/internal` and everything under it**, token
+  or not, before routing.
+- **Never point the ingress, or any Service it routes to, at the internal port.**
+  Expose `OBSERVER_RUNNER_PORT` only to the worker: a cluster-internal Service (or
+  the pod's port) the worker dials directly, ideally behind a NetworkPolicy that
+  admits only the worker. The server refuses to start the internal API on 8000.
+- **The token.** Every request needs `Authorization: Bearer <OBSERVER_RUNNER_TOKEN>`,
+  compared in constant time, checked before routing: without it every method and
+  path answers the same 404 (no `405` + `Allow`, no slash redirect, no `422`).
+  The token is stripped, so a Secret ending in a newline works. It must be at
+  least 32 characters: a shorter one leaves the internal API off, and startup
+  logs why. Empty, the default, is off. Keep it in a Secret shared only with the
+  worker (`openssl rand -hex 32`).
 - `sign` signs two kinds only (35128 `d=observer` `p=<owner>`, and 24242
-  `t=upload` expiring within 10 minutes); `decrypt` takes a whole signed event,
-  never a bare ciphertext, and opens only the owner's schedule (34817 naming the
-  owner's Assistant as its one `p`) or the Assistant's own kind 12000. See
-  `app/services/observer_runner_service.py`.
+  `t=upload` expiring within 10 minutes, naming no Assistant in a `p`);
+  `decrypt` takes a whole signed event, never a bare ciphertext, and opens only
+  the owner's schedule (34817 naming the owner's Assistant as its one `p`) or the
+  Assistant's own kind 12000, and that only beside such a schedule (`schedule`).
+  See `app/services/observer_runner_service.py`.
 
 ## GrapeRank request rate limiting
 

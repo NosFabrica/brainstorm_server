@@ -16,7 +16,6 @@ from app.routers.graperank.router import router as graperank_router
 from app.routers.graph.router import router as graph_router
 from app.routers.network_alerts.router import router as network_alerts_router
 from app.routers.nip05.router import router as nip05_router
-from app.routers.observer_runner.router import router as observer_runner_router
 from app.routers.open_ranking.router import router as open_ranking_router
 from app.routers.passkey_vault.router import (
     public_router as passkey_vault_public_router,
@@ -163,14 +162,9 @@ router.include_router(
     tags=["passkey_vault"],
 )
 
-# The Observer print worker's calls (decrypt and sign as an owner's Assistant).
-# INTERNAL ONLY: the public ingress must never route /internal/. Its own bearer
-# token (OBSERVER_RUNNER_TOKEN); unset, or wrong, every route is a 404.
-router.include_router(
-    router=observer_runner_router,
-    prefix="/internal/observerRunner",
-    tags=["internal"],
-)
+# The Observer print worker's /internal/observerRunner/* is NOT mounted here:
+# it is the internal app's (app/internal_api.py), on its own port, and the
+# public app answers 404 for /internal/ before routing.
 
 USER_ROUTER_PREFIX = "/user"
 

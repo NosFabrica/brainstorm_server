@@ -19,9 +19,10 @@ from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag
 from app.api import app
 from app.core.config import settings
 from app.core.database import get_db
+from app.internal_api import internal_app
 from app.utils import nip44
 
-TOKEN = "runner-token-0123456789abcdef"
+TOKEN = "runner-token-0123456789abcdef-0123456789"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 SCHEDULE = '[["task","observer"],["param","key","https://openrouter.ai/api/v1","a3f9"]]'
 AI_KEYS = '[["key","sk-or-v1-very-secret","https://openrouter.ai/api/v1"]]'
@@ -79,17 +80,16 @@ def runner(monkeypatch, rows):
     async def _fake_db():
         yield MagicMock()
 
-    app.dependency_overrides[get_db] = _fake_db
-    yield TestClient(app)
-    app.dependency_overrides.pop(get_db, None)
+    internal_app.dependency_overrides[get_db] = _fake_db
+    yield TestClient(internal_app)
+    internal_app.dependency_overrides.pop(get_db, None)
 
 
-def _decrypt(client, owner: str, event: dict, headers=AUTH):
-    return client.post(
-        "/internal/observerRunner/decrypt",
-        json={"owner": owner, "event": event},
-        headers=headers,
-    )
+def _decrypt(client, owner: str, event: dict, headers=AUTH, schedule=None):
+    body = {"owner": owner, "event": event}
+    if schedule is not None:
+        body["schedule"] = schedule
+    return client.post("/internal/observerRunner/decrypt", json=body, headers=headers)
 
 
 def _event(signer: Keys, kind: int, content: str, tags=()) -> dict:
@@ -216,7 +216,7 @@ def test_the_token_is_compared_in_constant_time(runner, monkeypatch):
         calls.append((given, expected))
         return given == expected
 
-    monkeypatch.setattr("app.routers.observer_runner.router.hmac.compare_digest", _spy)
+    monkeypatch.setattr("app.routers.observer_runner.guard.hmac.compare_digest", _spy)
     runner.get(
         "/internal/observerRunner/assistants", headers={"Authorization": "Bearer nope"}
     )
@@ -224,8 +224,182 @@ def test_the_token_is_compared_in_constant_time(runner, monkeypatch):
 
 
 def test_the_routes_are_not_in_the_public_api_document(runner):
-    paths = runner.get("/openapi.json").json()["paths"]
+    paths = TestClient(app).get("/openapi.json").json()["paths"]
     assert not [p for p in paths if p.startswith("/internal")]
+    assert runner.get("/openapi.json", headers=AUTH).status_code == 404
+    assert runner.get("/docs", headers=AUTH).status_code == 404
+
+
+# --- The public app: /internal/ doesn't exist there --------------------------------
+
+
+@pytest.mark.parametrize("method, path, body", ROUTES)
+@pytest.mark.parametrize("suffix", ["", "/"])
+@pytest.mark.parametrize("verb", ["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+def test_the_public_app_answers_404_for_internal_even_with_the_token(
+    runner, method, path, body, suffix, verb
+):
+    public = TestClient(app, follow_redirects=False)
+    r = public.request(verb, path + suffix, json=body, headers=AUTH)
+    assert r.status_code == 404, (verb, path, r.status_code)
+    assert r.json() == {"detail": "Not Found"}
+    assert "allow" not in r.headers and "location" not in r.headers
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/internal", "/internal/", "//internal/observerRunner/assistants", "/INTERNAL/x"],
+)
+def test_the_public_app_refuses_any_internal_spelling(runner, path):
+    r = TestClient(app, follow_redirects=False).get(path, headers=AUTH)
+    assert r.status_code == 404
+
+
+def test_the_public_app_still_serves_its_own_routes(runner):
+    assert TestClient(app).get("/health").json() == 1
+
+
+# --- Before routing: no 405, no redirect, no 422 -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("GET", "/internal/observerRunner/decrypt"),
+        ("GET", "/internal/observerRunner/sign"),
+        ("POST", "/internal/observerRunner/assistants"),
+        ("DELETE", "/internal/observerRunner/assistants"),
+        ("PUT", "/internal/observerRunner/sign"),
+    ],
+)
+def test_a_wrong_method_without_the_token_is_a_404_not_a_405(runner, method, path):
+    for headers in ({}, {"Authorization": "Bearer wrong"}):
+        r = runner.request(method, path, headers=headers)
+        assert r.status_code == 404, r.status_code
+        assert "allow" not in r.headers
+        assert r.json() == {"detail": "Not Found"}
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("GET", "/internal/observerRunner/assistants/"),
+        ("POST", "/internal/observerRunner/decrypt/"),
+        ("POST", "/internal/observerRunner/sign/"),
+    ],
+)
+def test_a_trailing_slash_is_a_404_not_a_redirect(runner, method, path):
+    client = TestClient(internal_app, follow_redirects=False)
+    for headers in ({}, AUTH):
+        r = client.request(method, path, json={}, headers=headers)
+        assert r.status_code == 404, (headers, r.status_code)
+        assert "location" not in r.headers
+
+
+def test_a_wrong_method_with_the_token_is_a_405(runner):
+    r = runner.get("/internal/observerRunner/sign", headers=AUTH)
+    assert r.status_code == 405
+
+
+def test_any_other_path_on_the_internal_app_is_a_404_without_the_token(runner):
+    for path in ("/", "/health", "/internal", "/internal/observerRunner"):
+        assert runner.get(path).status_code == 404
+
+
+# --- The token's spelling and length -------------------------------------------------
+
+
+def test_a_token_with_a_trailing_newline_still_works(runner, monkeypatch):
+    """A k8s Secret mounted from a file ends in a newline."""
+    monkeypatch.setattr(settings, "observer_runner_token", f"{TOKEN}\n")
+    monkeypatch.setattr(
+        "app.services.observer_runner_service.select_owner_assistant_pairs_on_db",
+        lambda *_, **__: _async([]),
+    )
+    for headers in (AUTH, {"Authorization": f"Bearer  {TOKEN} "}):
+        r = runner.get("/internal/observerRunner/assistants", headers=headers)
+        assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("token", ["x" * 31, " " + "x" * 31 + "\n"])
+def test_a_short_token_enables_nothing(runner, monkeypatch, token):
+    monkeypatch.setattr(settings, "observer_runner_token", token)
+    for method, path, body in ROUTES:
+        r = runner.request(
+            method, path, json=body, headers={"Authorization": f"Bearer {token}"}
+        )
+        assert r.status_code == 404
+
+
+def test_the_internal_api_doesnt_start_without_a_usable_token(monkeypatch, app_logs):
+    from app import internal_api
+
+    for token, logged in (
+        ("", "internal API off: OBSERVER_RUNNER_TOKEN is not set"),
+        (
+            "x" * 31,
+            "internal API not started: OBSERVER_RUNNER_TOKEN is shorter than 32",
+        ),
+    ):
+        monkeypatch.setattr(settings, "observer_runner_token", token)
+        assert asyncio.run(internal_api.start_internal_api()) is None
+        assert any(logged in line for line in app_logs), app_logs
+    assert not any("x" * 31 in line for line in app_logs)  # The token isn't logged.
+
+
+def test_the_internal_api_never_takes_the_public_port(monkeypatch, app_logs):
+    from app import internal_api
+
+    monkeypatch.setattr(settings, "observer_runner_token", TOKEN)
+    monkeypatch.setattr(settings, "observer_runner_port", internal_api.PUBLIC_API_PORT)
+    assert asyncio.run(internal_api.start_internal_api()) is None
+    assert any("the public API's port" in line for line in app_logs)
+
+
+def test_the_internal_api_serves_on_its_own_port(runner, monkeypatch):
+    """Started as the lifespan starts it, on a port of its own: the token
+    opens it, and the public app's routes aren't there."""
+    import socket
+
+    import httpx
+
+    from app import internal_api
+
+    monkeypatch.setattr(
+        "app.services.observer_runner_service.select_owner_assistant_pairs_on_db",
+        lambda *_, **__: _async([("a" * 64, "b" * 64)]),
+    )
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    async def scenario() -> list[int]:
+        running = await internal_api.start_internal_api(host="127.0.0.1", port=port)
+        assert running is not None
+        try:
+            for _ in range(100):
+                if running.server.started:
+                    break
+                await asyncio.sleep(0.02)
+            base = f"http://127.0.0.1:{port}"
+            async with httpx.AsyncClient(base_url=base, trust_env=False) as http:
+                return [
+                    (await http.get(path, headers=headers)).status_code
+                    for path, headers in (
+                        ("/internal/observerRunner/assistants", AUTH),
+                        ("/internal/observerRunner/assistants", {}),
+                        ("/health", AUTH),
+                    )
+                ]
+        finally:
+            await internal_api.stop_internal_api(running)
+            assert running.task.done()
+
+    assert asyncio.run(scenario()) == [200, 404, 404]
+
+
+async def _async(value):
+    return value
 
 
 # --- assistants -----------------------------------------------------------------
@@ -282,7 +456,68 @@ def test_decrypt_the_owners_schedule(runner, a):
 
 
 def test_decrypt_the_assistants_own_ai_keys(runner, a):
-    assert _plaintext(_decrypt(runner, a.pubkey, _ai_keys(a))) == AI_KEYS
+    r = _decrypt(runner, a.pubkey, _ai_keys(a), schedule=_schedule(a))
+    assert _plaintext(r) == AI_KEYS
+
+
+def test_a_schedule_sent_beside_a_schedule_is_ignored(runner, a, b):
+    r = _decrypt(runner, a.pubkey, _schedule(a), schedule=_schedule(b))
+    assert _plaintext(r) == SCHEDULE
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda a, b: None,
+        lambda a, b: {},
+        # Another owner's schedule, even one naming A's Assistant.
+        lambda a, b: _schedule(b),
+        lambda a, b: _event(
+            b.keys,
+            34817,
+            nip44.encrypt(b.keys, a.assistant_pubkey, SCHEDULE),
+            [["d", "observer"], ["p", a.assistant_pubkey]],
+        ),
+        # A's schedule naming another runner, no runner, two.
+        lambda a, b: _schedule(a, runner_pubkey=b.assistant_pubkey),
+        lambda a, b: _schedule(a, tags=[["d", "observer"]]),
+        lambda a, b: _schedule(
+            a, tags=[["p", a.assistant_pubkey], ["p", b.assistant_pubkey]]
+        ),
+        # Not a verified 34817.
+        lambda a, b: {**_schedule(a), "sig": _schedule(b)["sig"]},
+        lambda a, b: {**_schedule(a), "created_at": _schedule(a)["created_at"] + 1},
+        lambda a, b: _event(
+            a.keys,
+            34818,
+            nip44.encrypt(a.keys, a.assistant_pubkey, SCHEDULE),
+            [["p", a.assistant_pubkey]],
+        ),
+        lambda a, b: _ai_keys(a),
+    ],
+    ids=[
+        "no-schedule",
+        "empty",
+        "other-owners",
+        "other-owner-naming-a",
+        "other-runner",
+        "no-runner",
+        "two-runners",
+        "bad-sig",
+        "tampered",
+        "kind-34818",
+        "the-12000-itself",
+    ],
+)
+def test_the_ai_keys_open_only_beside_the_owners_schedule_naming_the_assistant(
+    runner, a, b, app_logs, make
+):
+    r = _decrypt(runner, a.pubkey, _ai_keys(a), schedule=make(a, b))
+    assert r.status_code == 403, r.text
+    assert "sk-or-v1-very-secret" not in r.text
+    assert any(
+        f"owner={a.pubkey} kind=12000 outcome=refused" in line for line in app_logs
+    )
 
 
 def _resigned(event: dict, signer: Keys) -> dict:
@@ -370,7 +605,8 @@ def _resigned(event: dict, signer: Keys) -> dict:
 )
 def test_decrypt_refuses_anything_but_the_two_events(runner, a, b, app_logs, make):
     event = make(a, b)
-    r = _decrypt(runner, a.pubkey, event)
+    # A valid schedule beside it, so a 12000 is refused for what it is.
+    r = _decrypt(runner, a.pubkey, event, schedule=_schedule(a))
     assert r.status_code == 403, r.text
     assert "plaintext" not in r.text and SCHEDULE not in r.text
     assert "sk-or-v1-very-secret" not in r.text
@@ -434,7 +670,7 @@ def test_decrypt_for_an_owner_with_no_assistant_is_a_404(runner):
 def test_decrypt_logs_no_plaintext_or_ciphertext(runner, a, b, app_logs):
     schedule, ai_keys = _schedule(a), _ai_keys(a)
     _decrypt(runner, a.pubkey, schedule)
-    _decrypt(runner, a.pubkey, ai_keys)
+    _decrypt(runner, a.pubkey, ai_keys, schedule=schedule)
     _decrypt(runner, a.pubkey, _schedule(b))  # refused
     joined = "\n".join(app_logs)
     assert f"owner={a.pubkey} kind=34817 outcome=ok" in joined
@@ -524,6 +760,15 @@ def test_sign_refuses_a_site_that_isnt_the_owners_observer(runner, a, mutate):
         lambda now: [["t", "upload"], ["expiration", str(now + 86400)]],
         lambda now: [["t", "upload"], ["expiration", str(now - 1)]],
         lambda now: [["t", "upload"], ["expiration", "soon"]],
+        lambda now: [["t", "upload"], ["expiration", "\u00b2"]],
+        lambda now: [["t", "upload"], ["expiration", "\u00b9" + str(now + 60)[1:]]],
+        lambda now: [
+            ["t", "upload"],
+            ["expiration", "".join(chr(0x0660 + int(c)) for c in str(now + 60))],
+        ],
+        lambda now: [["t", "upload"], ["expiration", f" {now + 60}"]],
+        lambda now: [["t", "upload"], ["expiration", f"+{now + 60}"]],
+        lambda now: [["t", "upload"], ["expiration", "1" * 11]],
         lambda now: [
             ["t", "upload"],
             ["expiration", str(now + 60)],
@@ -540,12 +785,31 @@ def test_sign_refuses_a_site_that_isnt_the_owners_observer(runner, a, mutate):
         "a-day",
         "expired",
         "not-a-number",
+        "superscript-two",
+        "superscript-digit",
+        "arabic-indic-digits",
+        "leading-space",
+        "plus-sign",
+        "eleven-digits",
         "two-expirations",
     ],
 )
 def test_sign_refuses_any_blossom_auth_but_a_short_upload(runner, a, tags):
     r = _sign(runner, a.pubkey, 24242, tags(int(time.time())))
     assert r.status_code == 403
+
+
+def test_sign_refuses_a_blossom_auth_naming_the_assistant(runner, a, app_logs):
+    """nostr-sdk would drop the `p` naming the signer, and the event would then
+    fail its own check as a 500. It's refused, a 403, before anything is signed."""
+    tags = [*_upload_tags(int(time.time()) + 300), ["p", a.assistant_pubkey]]
+    r = _sign(runner, a.pubkey, 24242, tags)
+    assert r.status_code == 403
+    assert "p tag" in r.json()["detail"]
+    assert not any("failed its own check" in line for line in app_logs)
+    # A `p` naming someone else is the worker's business.
+    tags = [*_upload_tags(int(time.time()) + 300), ["p", a.pubkey]]
+    assert _signed(_sign(runner, a.pubkey, 24242, tags))["tags"][-2] == ["p", a.pubkey]
 
 
 def test_sign_refuses_an_event_dated_far_ahead(runner, a):

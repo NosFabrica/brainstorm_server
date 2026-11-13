@@ -40,7 +40,8 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 
 | Path | What's inside |
 |---|---|
-| [`app/api.py`](app/api.py) | FastAPI app + lifespan. Spawns all the background asyncio tasks. |
+| [`app/api.py`](app/api.py) | FastAPI app + lifespan. Spawns all the background asyncio tasks. Refuses `/internal/` with a 404 before routing. |
+| [`app/internal_api.py`](app/internal_api.py) | The internal API: the Observer print worker's `/internal/observerRunner/*`, its own ASGI app on `OBSERVER_RUNNER_PORT`, started by the lifespan only while `OBSERVER_RUNNER_TOKEN` is set. Never behind the ingress. |
 | [`app/core/`](app/core/CLAUDE.md) | Shared infra: config, search-relay client, redis, neo4j driver, logging. |
 | [`app/cronjobs/`](app/cronjobs/CLAUDE.md) | Time-based recurring tasks (stale-job sweep, periodic graperank trigger). |
 | [`app/db_models/`](app/db_models/CLAUDE.md) | SQLAlchemy models (PostgreSQL). |

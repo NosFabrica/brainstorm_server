@@ -23,6 +23,7 @@ from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
 )
 from app.cronjobs.periodic_graperank_trigger import periodic_graperank_trigger_cronjob
 from app.cronjobs.scheduler import scheduler_cronjob
+from app.internal_api import start_internal_api, stop_internal_api
 from app.message_queue_tasks.backfill_redis_relationships import (
     backfill_redis_relationships_if_needed,
 )
@@ -41,6 +42,7 @@ from app.nostr_event_transferer.nostr_event_transferer import (  # noqa: F401
     nostr_event_recent_transferer_cronjob,
     nostr_event_transferer,
 )
+from app.routers.observer_runner.guard import RefuseInternalPaths
 from app.routers.open_ranking.errors import install_ore_error_handlers
 from app.routers.router import router as main_router
 from app.services.flash_webhook_service import (
@@ -135,11 +137,15 @@ async def lifespan(app: FastAPI):
     scheduler_task = asyncio.create_task(scheduler_cronjob())
     billing_sync_task = asyncio.create_task(billing_sync_cronjob())
     support_diagnostics_task = asyncio.create_task(expire_support_diagnostics_cronjob())
+    # The Observer print worker's API, on its own port, only when its token is
+    # set (app/internal_api.py). Never on this app or its port.
+    internal_api = await start_internal_api()
 
     try:
         yield
     finally:
         # Graceful shutdown
+        await stop_internal_api(internal_api)
         listener_task.cancel()
         listener_nostr_upload_task.cancel()
         listener_neo4j_write_task.cancel()
@@ -229,3 +235,8 @@ if settings.deploy_environment == DEPLOY_ENVIRONMENT_LOCAL:
     add_sql_admin_panel(app)
 
 add_pagination(app)
+
+# Outermost, so before CORS and routing: /internal/ doesn't exist on the public
+# app, whatever the method, slash or token. The internal API has its own app
+# and port (app/internal_api.py).
+app.add_middleware(RefuseInternalPaths)
