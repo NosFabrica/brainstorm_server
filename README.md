@@ -109,15 +109,18 @@ What they share with it:
 - **`brainstorm_nsec`**, read the way `app/repos/brainstorm_nsec.py` reads it: `pubkey`,
   `assistant_pubkey`, `encrypted_nsec` (decrypted with the key file; a value already
   starting `nsec1` is used as it is) and, only when that is null or empty, `nsec`
-  (`_plaintext_nsec`). Their database role is granted those four columns and nothing else
-  of the table:
+  (`_plaintext_nsec`). Each has its own database role, granted those four columns and nothing
+  else of the table; the Observer service's role also owns its own `observer` schema:
   ```sql
   CREATE ROLE assistant_runner LOGIN PASSWORD '…';
   GRANT SELECT (pubkey, assistant_pubkey, encrypted_nsec, nsec) ON brainstorm_nsec TO assistant_runner;
-  CREATE SCHEMA IF NOT EXISTS assistant_runner AUTHORIZATION assistant_runner;
+
+  CREATE ROLE observer_service LOGIN PASSWORD '…';
+  GRANT SELECT (pubkey, assistant_pubkey, encrypted_nsec, nsec) ON brainstorm_nsec TO observer_service;
+  CREATE SCHEMA IF NOT EXISTS observer AUTHORIZATION observer_service;
   ```
-  The role and the grant are ops', not a migration's. The `assistant_runner` schema is
-  theirs; this server never reads or writes it.
+  The roles and the grants are ops', not a migration's. The `observer` schema is the
+  Observer service's; this server never reads or writes it. The runner writes nothing.
 - **The Fernet key file** (`/run/secrets/nsec_encryption_keys`): this server writes and
   rotates it; they mount it read-only and re-read it when it changes. It must be on a
   volume all three can read.
