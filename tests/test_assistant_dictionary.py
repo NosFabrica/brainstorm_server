@@ -21,12 +21,12 @@ import pytest
 from fastapi.testclient import TestClient
 from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag, Timestamp
 from pydantic import ValidationError
-from websockets.exceptions import ConnectionClosedOK
 
 from app.api import app
 from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.request_body_schemas import AssistantDictionaryBody
+from app.services.dictionary_relay_reader import RelayDidNotAnswer
 
 SERVICE = "app.services.assistant_dictionary_service"
 ADD = "/user/assistantDictionary"
@@ -464,25 +464,33 @@ def test_the_relay_report_is_per_concept_and_names_a_relay_that_refused(
     assert lines[OUTBOX[0]]["message"] == "rate-limited: slow down"
 
 
-# R17 (D3): whatever the strict reader raises, as W5–W8 make it raise
+# R17 (D3): the strict reader's `RelayDidNotAnswer`, as W5–W8 and W13 make it raise
 @pytest.mark.parametrize("path", [ADD, WITHDRAW])
-@pytest.mark.parametrize(
-    "error",
-    [
-        ConnectionError("unreachable"),
-        TimeoutError(),
-        RuntimeError("relay closed the request: auth-required: sign in"),
-        ConnectionClosedOK(None, None),
-    ],
-    ids=["unreachable", "quiet", "closed-request", "closed-before-eose"],
-)
 def test_when_the_dictionary_relay_cant_be_read_nothing_is_published_and_the_answer_is_502(
-    dict_client, relays, curator, path, error
+    dict_client, relays, curator, path
 ):
     relays.held.append(community(curator))
-    relays.read_error = error
+    relays.read_error = RelayDidNotAnswer(
+        "relay closed the request: auth-required: sign in"
+    )
     response = post(dict_client, path, concept(curator))
     assert response.status_code == 502
+    assert relays.sent == []
+
+
+# R30 (Enes's review of #122): a bug in the reader isn't the relay failing
+@pytest.mark.parametrize("path", [ADD, WITHDRAW])
+@pytest.mark.parametrize("error", [TypeError("a bug"), KeyError("a bug")])
+def test_a_bug_in_the_reader_isnt_answered_as_the_relay_failing(
+    dict_client, relays, curator, path, error
+):
+    """It reaches the framework as itself, which answers 500 and logs its
+    traceback (the test client raises it instead), not 502 "Couldn't read the
+    Dictionary relay" with only a warning logged."""
+    relays.held.append(community(curator))
+    relays.read_error = error
+    with pytest.raises(type(error)):
+        post(dict_client, path, concept(curator))
     assert relays.sent == []
 
 

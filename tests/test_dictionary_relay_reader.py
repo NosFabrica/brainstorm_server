@@ -10,6 +10,8 @@ must not publish over a header it couldn't see.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import socket
 import time
@@ -18,7 +20,7 @@ import pytest
 from nostr_sdk import EventBuilder, Keys, Kind, Tag, Timestamp
 
 from app.services import dictionary_relay_reader
-from app.services.dictionary_relay_reader import fetch_newest_headers
+from app.services.dictionary_relay_reader import RelayDidNotAnswer, fetch_newest_headers
 from app.utils.signed_event import Rejection, SignedEventRejected, verify_signed_event
 
 
@@ -135,7 +137,7 @@ def test_a_closed_request_raises():
         async for _ in ws:
             pass
 
-    with pytest.raises(Exception):
+    with pytest.raises(RelayDidNotAnswer, match="auth-required"):
         _read(relay, [hexkey(a)], ["x"])
 
 
@@ -144,7 +146,7 @@ def test_a_relay_that_cant_be_reached_raises():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    with pytest.raises(Exception):
+    with pytest.raises(RelayDidNotAnswer):
         asyncio.run(
             fetch_newest_headers(
                 f"ws://127.0.0.1:{port}", [hexkey(Keys.generate())], ["x"]
@@ -165,9 +167,8 @@ def test_a_relay_that_takes_the_request_and_goes_quiet_raises_within_the_bound(
             pass
 
     started = time.monotonic()
-    with pytest.raises(Exception) as raised:
+    with pytest.raises(RelayDidNotAnswer):  # so not the guard's `GuardTimeout`
         _read(relay, [hexkey(a)], ["x"], guard=3.0)
-    assert not isinstance(raised.value, GuardTimeout)
     assert time.monotonic() - started < 2.0
 
 
@@ -181,9 +182,8 @@ def test_a_relay_that_closes_before_eose_raises_rather_than_reading_as_partial()
         await ws.send(json.dumps(["EVENT", sub_id, event]))
         await ws.close()
 
-    with pytest.raises(Exception) as raised:
+    with pytest.raises(RelayDidNotAnswer):  # so not the guard's `GuardTimeout`
         _read(relay, [hexkey(a)], ["x"], guard=3.0)
-    assert not isinstance(raised.value, GuardTimeout)
 
 
 # W9 (Gate B review: a malformed event is skipped, never fails the read; the
@@ -241,3 +241,86 @@ def test_each_event_is_checked_through_verify_signed_event(monkeypatch):
         (good["id"], 39998, hexkey(a)),
         (rejected["id"], 39998, hexkey(a)),
     ]
+
+
+def _ws_frame(text: str) -> bytes:
+    """One unmasked text frame, as a server sends it (as in
+    `test_designated_pubkeys.py`)."""
+    data = text.encode()
+    n = len(data)
+    head = bytes([0x81, n]) if n < 126 else bytes([0x81, 126]) + n.to_bytes(2, "big")
+    return head + data
+
+
+async def _read_ws_frame(reader: asyncio.StreamReader) -> str:
+    """One frame from the client, unmasked."""
+    _, b2 = await reader.readexactly(2)
+    n = b2 & 0x7F
+    if n == 126:
+        n = int.from_bytes(await reader.readexactly(2), "big")
+    elif n == 127:
+        n = int.from_bytes(await reader.readexactly(8), "big")
+    mask = await reader.readexactly(4) if b2 & 0x80 else bytes(4)
+    data = await reader.readexactly(n)
+    return bytes(c ^ mask[i % 4] for i, c in enumerate(data)).decode()
+
+
+# W12 (Enes's review of #122): the close is bounded, and outside the deadline
+def test_a_relay_that_stalls_the_close_keeps_its_answer(monkeypatch):
+    """A relay that answers, then never acknowledges the close. websockets waits
+    10 s for that by default, so with the close inside the read's deadline, an
+    answer read in time was lost to the deadline, and the request answered 502.
+    The deadline is shorter here than the close's own bound, so a close still
+    inside the deadline fails this too."""
+    monkeypatch.setattr(dictionary_relay_reader, "READ_TIMEOUT_SECONDS", 0.3)
+    a = Keys.generate()
+    event = signed(a, "x", 1)
+
+    async def stalled(reader, writer):
+        head = await reader.readuntil(b"\r\n\r\n")
+        key = next(
+            line.split(b":", 1)[1].strip()
+            for line in head.split(b"\r\n")
+            if line.lower().startswith(b"sec-websocket-key:")
+        )
+        accept = base64.b64encode(
+            hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest()
+        )
+        writer.write(
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+            b"Connection: Upgrade\r\nSec-WebSocket-Accept: " + accept + b"\r\n\r\n"
+        )
+        _, sub_id, _ = json.loads(await _read_ws_frame(reader))
+        writer.write(_ws_frame(json.dumps(["EVENT", sub_id, event])))
+        writer.write(_ws_frame(json.dumps(["EOSE", sub_id])))
+        await writer.drain()
+        await asyncio.sleep(30)  # never answers the close
+
+    async def run():
+        server = await asyncio.start_server(stalled, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            return await fetch_newest_headers(
+                f"ws://127.0.0.1:{port}", [hexkey(a)], ["x"]
+            )
+        finally:
+            server.close()
+
+    started = time.monotonic()
+    assert asyncio.run(run()) == {(hexkey(a), "x"): event}
+    assert time.monotonic() - started < 3
+
+
+# W13 (Enes's review of #122): a relay that sends something that isn't JSON
+# didn't answer, so the request still answers 502 rather than 500
+def test_a_relay_that_sends_something_that_isnt_json_didnt_answer():
+    a = Keys.generate()
+
+    async def relay(ws):
+        await ws.recv()
+        await ws.send("not json")
+        async for _ in ws:
+            pass
+
+    with pytest.raises(RelayDidNotAnswer):
+        _read(relay, [hexkey(a)], ["x"], guard=3.0)

@@ -62,7 +62,7 @@ from app.services.dictionary_copy_build import (
     withdraw_outcome,
     withdrawn_tags,
 )
-from app.services.dictionary_relay_reader import fetch_newest_headers
+from app.services.dictionary_relay_reader import RelayDidNotAnswer, fetch_newest_headers
 from app.services.duty_menu_build import publish_targets, relay_key
 
 logger = loggr.get_logger(__name__)
@@ -173,7 +173,8 @@ async def _read(
     dict[tuple[str, str], dict[str, Any]], dict[tuple[str, str], dict[str, Any]]
 ]:
     """The community headers (for an add) and the Assistant's headers at the
-    concepts' `d`s, from the dictionary relay only (D3)."""
+    concepts' `d`s, from the dictionary relay only (D3). A relay that didn't
+    answer is a 502; any other error is a bug, and propagates as itself."""
     relay = settings.dictionary_relay
     ds = sorted({d for _, _, d in named})
     authors = sorted({author for _, author, _ in named if author != assistant})
@@ -184,7 +185,7 @@ async def _read(
             else {}
         )
         held = await fetch_newest_headers(relay, [assistant], ds)
-    except Exception as e:
+    except RelayDidNotAnswer as e:
         logger.warning(f"dictionary read on {relay} failed for {assistant}: {e!r}")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=NOT_READ
