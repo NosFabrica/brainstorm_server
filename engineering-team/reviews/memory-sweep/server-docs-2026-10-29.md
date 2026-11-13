@@ -846,4 +846,28 @@ call.
 
 As before, the operator gives Gate B's verdict. This section is uncommitted.
 
-**Operator's verdict on the re-review (Gate B):** pending
+**Operator's verdict on the re-review (Gate B):** see "Operator verdict on the re-review (2026-11-13)" at the end of
+this file.
+
+## Operator verdict on the re-review (2026-11-13)
+
+**PASS**, given in the session as "Fix, then pass": take the re-review's four non-blocking findings first, then pass. The
+authoring session took all four in `e60ac46` and recorded the verdict here on the operator's word.
+
+- **Non-blocking 1.** After the strfry paragraph, the README now says that five billing tests fail whatever the setup
+  until #142, which fixes them. It gives the reason from the tests, as R32 asked: one passes columns the billing code
+  has dropped, and four insert a NULL `billing_plan_id`, which the schema forbids. Since #142 fixes the tests, the
+  OPEN.md row the finding suggested isn't needed.
+- **Non-blocking 2.** The README says to leave `TRUSTED_LIST_RELAY` unset, and why.
+- **Non-blocking 3.** The fast-suite note now lists three things. The third is `FRONTEND_URL`, together with
+  `PASSKEY_ORIGINS`, which `allowed_origins()` checks first (`passkey_vault_service.py:104–107`). Checked on this
+  branch: `test_a_new_device_opens_the_vault_with_the_passkey` fails under `FRONTEND_URL=http://localhost:29997`, and
+  under a `PASSKEY_ORIGINS` that names only `http://localhost:5173`. With `http://localhost:3000` added to it, the
+  file passes 35 of 35.
+- **Non-blocking 4.** `OPEN.md:16` names `protocols/drafts/treasure-maps.md`, and CLAUDE.md's host-server recipe says to
+  leave out the three Flash keys.
+
+The four fixes are Markdown only, and they weren't re-reviewed: the operator passed the PR with them in. Not taken: the
+first round's Non-blocking 2, 4, 5 and 6, and its harness friction 1–4, which the re-review lists as still open. The
+re-review section above is as its reviewer wrote it, committed in `a201c01`. Its closing "This section is
+uncommitted" was written before that commit.
