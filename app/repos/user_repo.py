@@ -275,9 +275,10 @@ async def get_qualifying_asserters_for_observer(
 #
 # Notes on the Cypher patterns below:
 # - Match pattern direction "in" = (other)-[:REL]->(user); "out" = (user)-[:REL]->(other).
-# - Neo4j quirk: `WITH other[$dynamic_key] AS inf` aliases the value as Infinity
-#   for every row. Inline `other[$influence_key]` in CASE WHEN / RETURN to get
-#   real values. Wrapping in `coalesce(other[$key], default)` also works.
+# - Read a node's Influence once per row (`_bind_score`) and reuse the bound
+#   name: every `other[$influence_key]` walks the node's whole property list.
+# - Never alias a value as `inf`, `infinity` or `nan`: Cypher reads those as the
+#   float literals, so `WITH x AS inf` yields Infinity on every row.
 
 
 def _scoped_match_pattern(rel_type: str, direction: str) -> str:
@@ -368,11 +369,13 @@ async def get_outbound_counts_and_influence(
     MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
     CALL (user) {{
         MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
+        {_bind_score()}
         WHERE {_expand(_TIER_PREDICATES[FLAGGED_TIER])}
         RETURN count(DISTINCT other) AS flagged_count
     }}
+    {_bind_score("user", "following", "muting", "reporting", "flagged_count")}
     RETURN
-        user[$influence_key] AS influence,
+        {_score("user")} AS influence,
         following,
         muting,
         reporting,
@@ -422,9 +425,10 @@ async def get_trust_signals_for_pubkeys(
     query = f"""
     UNWIND $pubkeys AS pk
     OPTIONAL MATCH (user:NostrUser {{pubkey: pk}})
+    {_bind_score("user", "pk")}
     RETURN
         pk AS pubkey,
-        user[$influence_key] AS influence,
+        {_score("user")} AS influence,
         coalesce({_expand(_VERIFIED_LINE, "user")}, false) AS verified,
         coalesce({_expand(_TIER_PREDICATES[FLAGGED_TIER], "user")}, false) AS flagged
     """
@@ -460,7 +464,7 @@ _UNVERIFIED_LINE = "(__INF__ IS NULL OR __INF__ <= $verified_line)"
 _TIER_PREDICATES: dict[str, str] = {
     # Bucket names match the GR result writer's count_values keys (see
     # message_queue_consumer.py). Placeholders:
-    #   __INF__ → other[$influence_key]
+    #   __INF__ → the node's bound Influence (`_bind_score`)
     #   __TR__  → the live verified-reporter count of `other`
     # Parameter names $tier_high/$tier_medium_high/$tier_medium are the upper
     # bounds of high/medium_high/medium respectively — kept stable as API
@@ -484,6 +488,17 @@ _TIER_PREDICATES: dict[str, str] = {
 }
 
 
+def _score(node: str = "other") -> str:
+    """The name `_bind_score` gives `node`'s Influence."""
+    return f"{node}_score"
+
+
+def _bind_score(node: str = "other", *keep: str) -> str:
+    """A WITH that reads `node`'s Influence once; `keep` stays in scope with it."""
+    kept = ", ".join((node, *keep))
+    return f"WITH {kept}, {node}[$influence_key] AS {_score(node)}"
+
+
 def _live_reporters(node: str = "other") -> str:
     """Reporters of `node` strictly above the observer's preset reporter cutoff."""
     return (
@@ -493,10 +508,11 @@ def _live_reporters(node: str = "other") -> str:
 
 
 def _expand(predicate: str, node: str = "other") -> str:
-    """Bind the __INF__ / __TR__ placeholders to a node."""
+    """Bind the __INF__ / __TR__ placeholders to a node whose Influence the
+    query has already bound with `_bind_score`."""
     return (
         "("
-        + predicate.replace("__INF__", f"{node}[$influence_key]").replace(
+        + predicate.replace("__INF__", _score(node)).replace(
             "__TR__", _live_reporters(node)
         )
         + ")"
@@ -536,10 +552,11 @@ def _tier_case(node: str = "other") -> str:
 
 
 def _row_map(*extra: str) -> str:
-    """A connection row's Cypher map over `other`, plus any `extra` fields."""
+    """A connection row's Cypher map over `other`, plus any `extra` fields.
+    `other`'s Influence must already be bound."""
     fields = [
         "pubkey: other.pubkey",
-        "influence: other[$influence_key]",
+        f"influence: {_score()}",
         f"trusted_reporters: {_live_reporters()}",
         *extra,
     ]
@@ -565,23 +582,28 @@ def _cursor_params(cursor_inf: float | None, cursor_pk: str | None) -> dict:
 
 def _flagged_single_pass_query(scan: str, where: str, row: str, order: str) -> str:
     """Flagged sets are small (>= 2 verified reports), so collect them once in
-    sort order and take both the cursor page and the total from that list."""
+    sort order and take both the cursor page and the total from that list. The
+    bound Influence rides along in the list, so the page does not read it again."""
     after = _after_cursor(order, "r.sort_inf", "r.pubkey")
+    score = _score()
     return f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}})
     CALL (user) {{
         {scan}
-        WITH other, coalesce(other[$influence_key], -1.0) AS sort_inf
+        {_bind_score()}
+        WITH other, {score}, coalesce({score}, -1.0) AS sort_inf
         WHERE {where}
-        WITH other, sort_inf
+        WITH other, {score}, sort_inf
         {_order_by(order)}
-        RETURN collect({{other: other, pubkey: other.pubkey, sort_inf: sort_inf}}) AS flagged
+        RETURN collect({{
+            other: other, pubkey: other.pubkey, sort_inf: sort_inf, score: {score}
+        }}) AS flagged
     }}
     WITH [r IN flagged WHERE $cursor_pk IS NULL OR {after}][..$limit] AS page,
          size(flagged) AS total
     CALL (page) {{
         UNWIND page AS r
-        WITH r.other AS other, r.sort_inf AS sort_inf
+        WITH r.other AS other, r.sort_inf AS sort_inf, r.score AS {score}
         RETURN collect({row}) AS rows
     }}
     RETURN rows, total
@@ -677,7 +699,12 @@ async def get_paginated_section_connections(
         if params["cursor_pk"] is not None:
             page_parts.append(_after_cursor(order))
         page_where = ("WHERE " + " AND ".join(page_parts)) if page_parts else ""
-        count_where = ("WHERE " + " AND ".join(filter_parts)) if filter_parts else ""
+        # The plain total reads no score; a filtered one binds it first.
+        count_where = (
+            (_bind_score() + " WHERE " + " AND ".join(filter_parts))
+            if filter_parts
+            else ""
+        )
 
         # Both subqueries end in an aggregation (collect / count), so each always
         # yields exactly one row — even on an empty/last page. A plain row-streaming
@@ -698,9 +725,10 @@ async def get_paginated_section_connections(
     MATCH (user:NostrUser {{pubkey: $pubkey}})
     CALL (user) {{
         MATCH {scoped_pattern}
-        WITH other, coalesce(other[$influence_key], -1.0) AS sort_inf
+        {_bind_score()}
+        WITH other, {_score()}, coalesce({_score()}, -1.0) AS sort_inf
         {page_where}
-        WITH other, sort_inf
+        WITH other, {_score()}, sort_inf
         {_order_by(order)}
         LIMIT $limit
         RETURN collect({row}) AS rows
@@ -833,6 +861,7 @@ async def get_all_section_stats(
             f"""
         CALL (user) {{
             MATCH {pattern}
+            {_bind_score()}
             RETURN {", ".join(counts)}
         }}"""
         )
@@ -884,31 +913,37 @@ async def get_user_graph_data(
 
     CALL (user) {{
         MATCH (other:NostrUser)-[:FOLLOWS]->(user)
+        {_bind_score()}
         RETURN collect({row}) AS followed_by
     }}
 
     CALL (user) {{
         MATCH (user)-[:FOLLOWS]->(other:NostrUser)
+        {_bind_score()}
         RETURN collect({row}) AS following
     }}
 
     CALL (user) {{
         MATCH (other:NostrUser)-[:MUTES]->(user)
+        {_bind_score()}
         RETURN collect({row}) AS muted_by
     }}
 
     CALL (user) {{
         MATCH (user)-[:MUTES]->(other:NostrUser)
+        {_bind_score()}
         RETURN collect({row}) AS muting
     }}
 
     CALL (user) {{
         MATCH (other:NostrUser)-[:REPORTS]->(user)
+        {_bind_score()}
         RETURN collect({row}) AS reported_by
     }}
 
     CALL (user) {{
         MATCH (user)-[:REPORTS]->(other:NostrUser)
+        {_bind_score()}
         RETURN collect({row}) AS reporting
     }}
 
@@ -987,8 +1022,9 @@ async def get_ta_observees_for_observer(
     per-observer property can't be indexed."""
     query = """
     MATCH (user:NostrUser)
-    WHERE user[$influence_key] >= $floor
-    RETURN user.pubkey AS pubkey, user[$influence_key] AS influence
+    WITH user, user[$influence_key] AS score
+    WHERE score >= $floor
+    RETURN user.pubkey AS pubkey, score AS influence
     """
     result = await session.run(
         query, influence_key=f"influence_{observer_pubkey}", floor=cutoff - 0.01
@@ -1019,8 +1055,9 @@ async def get_top_inbound_by_influence(
     influence_key = f"influence_{observer_pubkey}"
     query = f"""
     MATCH (other:NostrUser)-[:{relation}]->(user:NostrUser {{pubkey: $pubkey}})
-    WITH other, coalesce(other[$influence_key], -1.0) AS sort_inf
-    RETURN other.pubkey AS pubkey, other[$influence_key] AS influence
+    WITH other, other[$influence_key] AS score
+    WITH other, score, coalesce(score, -1.0) AS sort_inf
+    RETURN other.pubkey AS pubkey, score AS influence
     ORDER BY sort_inf DESC, other.pubkey ASC
     LIMIT $limit
     """
@@ -1277,8 +1314,7 @@ async def count_above_cutoff_followers_capped(
     MATCH (bob:NostrUser {pubkey: pk})
     CALL (bob) {
         MATCH (f:NostrUser)-[:FOLLOWS]->(bob)
-        WHERE f[$influence_key] IS NOT NULL
-          AND f[$influence_key] > $cutoff
+        WHERE f[$influence_key] > $cutoff
         WITH f
         LIMIT $cap
         RETURN count(f) AS capped_followers
@@ -1318,8 +1354,7 @@ async def count_verified_muters(
     MATCH (bob:NostrUser {pubkey: pk})
     CALL (bob) {
         MATCH (m:NostrUser)-[:MUTES]->(bob)
-        WHERE m[$influence_key] IS NOT NULL
-          AND m[$influence_key] > $verified_threshold
+        WHERE m[$influence_key] > $verified_threshold
         RETURN count(m) AS verified_muters
     }
     RETURN pk AS pubkey, verified_muters
