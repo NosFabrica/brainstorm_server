@@ -125,8 +125,11 @@ any owner's Assistant**, so they are not part of the public app at all:
 - `sign` signs two kinds only (35128 `d=observer` `p=<owner>`, and 24242
   `t=upload` expiring within 10 minutes, naming no Assistant in a `p`);
   `decrypt` takes a whole signed event, never a bare ciphertext, and opens only
-  the owner's schedule (34817 naming the owner's Assistant as its one `p`) or the
-  Assistant's own kind 12000, and that only beside such a schedule (`schedule`).
+  the owner's schedule (34817 naming the owner's Assistant as its one `p`; a
+  `["p"]` with no value isn't one, a blank `["p", ""]` is) or the Assistant's own
+  kind 12000, and that only beside such a schedule (`schedule`) that isn't
+  paused, publicly or privately. It can't tell whether that schedule is the
+  owner's newest version (it reads no relay): the worker checks that.
   See `app/services/observer_runner_service.py`.
 
 ## GrapeRank request rate limiting

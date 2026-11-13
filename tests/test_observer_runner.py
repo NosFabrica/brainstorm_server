@@ -613,6 +613,106 @@ def test_decrypt_refuses_anything_but_the_two_events(runner, a, b, app_logs, mak
     assert any(f"owner={a.pubkey}" in line and "refused" in line for line in app_logs)
 
 
+# --- What counts as a `p`, and a schedule that no longer asks for a print ----------
+
+
+def test_a_p_without_a_value_isnt_a_p(runner, a):
+    """`["p"]` names nobody (NIP-FB): beside the Assistant's `p`, the schedule
+    still names exactly the Assistant, as Quartz reads it."""
+    schedule = _schedule(a, tags=[["d", "observer"], ["p"], ["p", a.assistant_pubkey]])
+    assert _plaintext(_decrypt(runner, a.pubkey, schedule)) == SCHEDULE
+    r = _decrypt(runner, a.pubkey, _ai_keys(a), schedule=schedule)
+    assert _plaintext(r) == AI_KEYS
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        [["d", "observer"], ["p", ""]],
+        [["d", "observer"], ["p", ""], ["p", "{assistant}"]],
+        [["d", "observer"], ["p", "{assistant}"], ["p", ""]],
+        # Not the lowercase key: no runner, as Quartz reads it.
+        [["d", "observer"], ["p", "{ASSISTANT}"]],
+    ],
+    ids=["blank", "blank-then-assistant", "assistant-then-blank", "uppercase"],
+)
+def test_a_blank_p_is_a_p_that_isnt_the_assistant(runner, a, app_logs, tags):
+    """`["p", ""]` counts (NIP-FB): it stops the owner's devices and nobody runs
+    the task, so the Assistant opens neither the schedule nor its keys."""
+    tags = [
+        [
+            v.format(assistant=a.assistant_pubkey, ASSISTANT=a.assistant_pubkey.upper())
+            for v in t
+        ]
+        for t in tags
+    ]
+    schedule = _schedule(a, tags=tags)
+    assert [t for t in schedule["tags"] if t[0] == "p"] == [
+        t for t in tags if t[0] == "p"
+    ]
+    assert _decrypt(runner, a.pubkey, schedule).status_code == 403
+    r = _decrypt(runner, a.pubkey, _ai_keys(a), schedule=schedule)
+    assert r.status_code == 403
+    assert "sk-or-v1-very-secret" not in r.text
+
+
+def _schedule_with(owner: "Owner", private: str, tags=None) -> dict:
+    return _event(
+        owner.keys,
+        34817,
+        nip44.encrypt(owner.keys, owner.assistant_pubkey, private),
+        tags
+        if tags is not None
+        else [["d", "observer"], ["p", owner.assistant_pubkey]],
+    )
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda a: _schedule(
+            a, tags=[["d", "observer"], ["p", a.assistant_pubkey], ["paused"]]
+        ),
+        lambda a: _schedule_with(a, '[["task","observer"],["paused"]]'),
+    ],
+    ids=["public-paused", "private-paused"],
+)
+def test_a_paused_schedule_opens_no_ai_keys(runner, a, app_logs, make):
+    """Paused, the owner asked for no print: the keys stay shut. The schedule
+    itself still opens, so the worker can see it's paused."""
+    schedule = make(a)
+    assert _decrypt(runner, a.pubkey, schedule).status_code == 200
+    r = _decrypt(runner, a.pubkey, _ai_keys(a), schedule=schedule)
+    assert r.status_code == 403, r.text
+    assert "sk-or-v1-very-secret" not in r.text
+    assert any(
+        f"owner={a.pubkey} kind=12000 outcome=refused (schedule paused)" in line
+        for line in app_logs
+    )
+
+
+def test_a_schedule_the_assistant_cant_read_opens_no_ai_keys(runner, a):
+    """Sealed to someone else: the runner can't read it, so it can't run it."""
+    stranger = Keys.generate()
+    schedule = _event(
+        a.keys,
+        34817,
+        nip44.encrypt(a.keys, stranger.public_key().to_hex(), SCHEDULE),
+        [["d", "observer"], ["p", a.assistant_pubkey]],
+    )
+    r = _decrypt(runner, a.pubkey, _ai_keys(a), schedule=schedule)
+    assert r.status_code == 403
+    assert "sk-or-v1-very-secret" not in r.text
+
+
+def test_a_schedule_with_no_private_tags_opens_the_ai_keys(runner, a):
+    schedule = _event(a.keys, 34817, "", [["d", "observer"], ["p", a.assistant_pubkey]])
+    assert (
+        _plaintext(_decrypt(runner, a.pubkey, _ai_keys(a), schedule=schedule))
+        == AI_KEYS
+    )
+
+
 def test_a_owner_with_bs_schedule_is_refused(runner, a, b):
     """B's schedule, naming B's Assistant, sent as A's: refused, and A's
     Assistant decrypts nothing. Sent as B's, it opens with B's Assistant."""
@@ -803,6 +903,12 @@ def test_sign_refuses_a_blossom_auth_naming_the_assistant(runner, a, app_logs):
     """nostr-sdk would drop the `p` naming the signer, and the event would then
     fail its own check as a 500. It's refused, a 403, before anything is signed."""
     tags = [*_upload_tags(int(time.time()) + 300), ["p", a.assistant_pubkey]]
+    r = _sign(runner, a.pubkey, 24242, tags)
+    assert r.status_code == 403
+    assert "p tag" in r.json()["detail"]
+    assert not any("failed its own check" in line for line in app_logs)
+    # In capitals too: nostr-sdk reads it as the same key.
+    tags = [*_upload_tags(int(time.time()) + 300), ["p", a.assistant_pubkey.upper()]]
     r = _sign(runner, a.pubkey, 24242, tags)
     assert r.status_code == 403
     assert "p tag" in r.json()["detail"]

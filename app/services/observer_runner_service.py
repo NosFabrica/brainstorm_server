@@ -14,8 +14,18 @@ Strict allow-lists:
   one `p`, the owner's Assistant; the owner is the peer) or the Assistant's own
   AI keys (12000 by the Assistant; itself is the peer), and the AI keys only
   beside the owner's schedule naming that Assistant (`schedule`, checked as a
-  34817 is, not decrypted): the keys open only for a print the owner asked
-  this Assistant for. Anything else is a 403.
+  34817 is, and not paused, publicly or in its private tags): the keys open
+  only for a print the owner asked this Assistant for. Anything else is a 403.
+  A `p` is a `p` tag with a value, as NIP-FB and Quartz count them: `["p"]`
+  is none, and a blank `["p", ""]` is one that isn't the Assistant.
+- What this server can't tell is whether `schedule` is the owner's NEWEST
+  version: it reads no relay, and it keeps no 34817. An older version naming
+  the Assistant, replayed after the owner took printing back, still opens the
+  keys here; the worker is what refuses it (it reads the newest version by
+  author, with a quorum, and again right before spending). Nor is there an age
+  limit: the runner never rewrites the owner's schedule, so a schedule set
+  months ago and left alone is old and current, and a limit would stop its
+  prints.
 - `sign` signs two kinds: the Assistant's Observer site (35128, exactly one
   `d` = `observer`, exactly one `p`, the owner) and a Blossom upload
   authorization (24242, exactly one `t` = `upload`, an `expiration` in the next
@@ -25,6 +35,7 @@ Logs carry owner, kind and outcome; never a plaintext or a ciphertext.
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any
@@ -86,16 +97,46 @@ def _refuse_decrypt(owner: str, kind: Any, why: str) -> HTTPException:
     )
 
 
+def _runner_values(tags: list[list[str]]) -> list[str]:
+    """The value of every `p` that counts (NIP-FB): one with a value, a blank
+    one included; `["p"]` names nobody."""
+    return [t[1] for t in tags if len(t) > 1 and t[0] == "p"]
+
+
 def _schedule_refusal(event: Event, owner: str, assistant: str) -> str | None:
-    """Why a verified 34817 isn't `owner`'s schedule naming `assistant`, or None."""
+    """Why a verified 34817 isn't `owner`'s schedule naming `assistant`, or None.
+    The `p` must be the Assistant's key exactly, lowercase, as Quartz's runner
+    rule reads it."""
     if event.author().to_hex() != owner:
         return "author"
-    p_tags = [t for t in event_tags(event) if t and t[0] == "p"]
-    if len(p_tags) != 1:
+    runners = _runner_values(event_tags(event))
+    if len(runners) != 1:
         return "p count"
-    if p_tags[0][1:2] != [assistant]:
+    if runners[0] != assistant:
         return "p"
     return None
+
+
+def _is_paused(tags: list[Any]) -> bool:
+    return any(isinstance(t, list) and t and t[0] == "paused" for t in tags)
+
+
+def _paused_refusal(schedule: Event, keys: Any, owner: str) -> str | None:
+    """Why `schedule` (verified, naming the Assistant) asks for no print now:
+    paused, publicly or in its private tags, or private tags this Assistant
+    can't read (then the runner can't run it either). None when it may."""
+    if _is_paused(event_tags(schedule)):
+        return "paused"
+    content = schedule.content()
+    if not content.strip():
+        return None
+    try:
+        private = json.loads(nip44.decrypt(keys, owner, content))
+    except (nip44.Nip44Error, ValueError):
+        return "content"
+    if not isinstance(private, list):
+        return "content"
+    return "paused" if _is_paused(private) else None
 
 
 async def decrypt_as_assistant(
@@ -135,6 +176,8 @@ async def decrypt_as_assistant(
         except SignedEventRejected as e:
             raise _refuse_decrypt(owner, kind, f"schedule {e.reason.value}") from None
         why = _schedule_refusal(schedule, row.pubkey, assistant)
+        if why is None:
+            why = _paused_refusal(schedule, keys, row.pubkey)
         if why is not None:
             raise _refuse_decrypt(owner, kind, f"schedule {why}")
         peer = assistant
@@ -183,8 +226,9 @@ def signing_refusal(
     # BLOSSOM_AUTH_KIND
     if _values(tags, "t") != [BLOSSOM_UPLOAD]:
         return "A Blossom authorization is signed for upload only."
-    if assistant in _values(tags, "p"):
-        # nostr-sdk would drop it, and the event then fails its own check.
+    if assistant in (v.lower() for v in _values(tags, "p")):
+        # nostr-sdk would drop it (in any case: it reads the key), and the
+        # event then fails its own check.
         return "A Blossom authorization can't name the Assistant in a p tag."
     expirations = _values(tags, "expiration")
     if len(expirations) != 1 or not _SECONDS.fullmatch(expirations[0]):
