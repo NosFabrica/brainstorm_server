@@ -162,10 +162,6 @@ router.include_router(
     tags=["passkey_vault"],
 )
 
-# The Observer print worker's /internal/observerRunner/* is NOT mounted here:
-# it is the internal app's (app/internal_api.py), on its own port, and the
-# public app answers 404 for /internal/ before routing.
-
 USER_ROUTER_PREFIX = "/user"
 
 router.include_router(

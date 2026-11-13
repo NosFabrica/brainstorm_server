@@ -880,24 +880,6 @@ class PublishedAssistantAgentKeys(BaseModel):
     relays: list[AssistantRelayResult]
 
 
-# The Observer print worker's internal endpoints (`/internal/observerRunner`).
-
-
-class ObserverRunnerAssistant(BaseModel):
-    owner: str
-    assistant: str
-
-
-class ObserverRunnerAssistants(BaseModel):
-    items: list[ObserverRunnerAssistant]
-    # The last owner of this page when there may be more; pass it as `after`.
-    next: str | None
-
-
-class ObserverRunnerPlaintext(BaseModel):
-    plaintext: str
-
-
 # Your Assistant's Treasure Map. camelCase, as Brainstorm-UI's
 # `lib/assistantTreasureMap.ts` reads it.
 

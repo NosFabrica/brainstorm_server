@@ -1,8 +1,8 @@
 """The Assistant's AI keys: `GET`/`POST /user/assistantAgentKeys`.
 
 The Assistant holds its own NIP-FA list (kind 12000, signed by the Assistant,
-private tags encrypted to itself), which the Observer print worker reads
-through `/internal/observerRunner/decrypt` to print for the owner. The owner
+private tags encrypted to itself), which the Observer service decrypts itself
+(with the key from the `assistant_keys_v1` view) to print for the owner. The owner
 gives it a key from Brainstorm-UI's AI key screen; nothing else writes it.
 
 Both routes find the Assistant from the login token's pubkey alone

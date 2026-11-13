@@ -98,39 +98,30 @@ Requests must include a valid auth token (JWT) and the token's pubkey must be in
 
 - `GET /admin/brainstormPubkey/{nostr_pubkey}` — trigger a GrapeRank calculation for any pubkey
 
-## Internal API (`/internal/*`, its own port) — never expose it publicly
+## The Assistant runner reads this database
 
-`/internal/observerRunner/{assistants,decrypt,sign}` serve the Observer print
-worker, which runs beside this server on the internal network and prints a
-reader's Nostr Observer as their Brainstorm Assistant. They **decrypt and sign as
-any owner's Assistant**, so they are not part of the public app at all:
+The Brainstorm Assistants' scheduled tasks (NIP-FB) run outside this server:
+[`NosFabrica/assistant-runner`](https://github.com/NosFabrica/assistant-runner) wakes a
+task's service (the Observer's is in `NosFabrica/the-nostr-observer`), and both decrypt
+and sign as the owner's Assistant themselves. This server is never called during a run.
+What they share with it:
 
-- **Their own app and port.** `app/internal_api.py` serves them on
-  `OBSERVER_RUNNER_PORT` (default `8001`), started from the public app's lifespan
-  in the same process, and only while `OBSERVER_RUNNER_TOKEN` is set. It has no
-  CORS, no OpenAPI document and no other routes. The public app (port 8000, the
-  ingress backend) answers **404 for `/internal` and everything under it**, token
-  or not, before routing.
-- **Never point the ingress, or any Service it routes to, at the internal port.**
-  Expose `OBSERVER_RUNNER_PORT` only to the worker: a cluster-internal Service (or
-  the pod's port) the worker dials directly, ideally behind a NetworkPolicy that
-  admits only the worker. The server refuses to start the internal API on 8000.
-- **The token.** Every request needs `Authorization: Bearer <OBSERVER_RUNNER_TOKEN>`,
-  compared in constant time, checked before routing: without it every method and
-  path answers the same 404 (no `405` + `Allow`, no slash redirect, no `422`).
-  The token is stripped, so a Secret ending in a newline works. It must be at
-  least 32 characters: a shorter one leaves the internal API off, and startup
-  logs why. Empty, the default, is off. Keep it in a Secret shared only with the
-  worker (`openssl rand -hex 32`).
-- `sign` signs two kinds only (35128 `d=observer` `p=<owner>`, and 24242
-  `t=upload` expiring within 10 minutes, naming no Assistant in a `p`);
-  `decrypt` takes a whole signed event, never a bare ciphertext, and opens only
-  the owner's schedule (34817 naming the owner's Assistant as its one `p`; a
-  `["p"]` with no value isn't one, a blank `["p", ""]` is) or the Assistant's own
-  kind 12000, and that only beside such a schedule (`schedule`) that isn't
-  paused, publicly or privately. It can't tell whether that schedule is the
-  owner's newest version (it reads no relay): the worker checks that.
-  See `app/services/observer_runner_service.py`.
+- **`assistant_keys_v1`**, a view (migration `a7c3e9d1f2b4`): `owner`, `assistant`,
+  `encrypted_nsec`, and `legacy_nsec` (the plaintext `nsec`, only where `encrypted_nsec`
+  is null or empty, as `_plaintext_nsec` falls back). Their database role is granted
+  SELECT on the view only, never on `brainstorm_nsec`:
+  ```sql
+  CREATE ROLE assistant_runner LOGIN PASSWORD '…';
+  GRANT SELECT ON assistant_keys_v1 TO assistant_runner;
+  CREATE SCHEMA IF NOT EXISTS assistant_runner AUTHORIZATION assistant_runner;
+  ```
+  The role and the grant are ops', not a migration's. The `assistant_runner` schema is
+  theirs; this server never reads or writes it.
+- **The Fernet key file** (`/run/secrets/nsec_encryption_keys`): this server writes and
+  rotates it; they mount it read-only and re-read it when it changes. It must be on a
+  volume all three can read.
+
+Changing the view's columns breaks them: add `assistant_keys_v2` beside it instead.
 
 ## GrapeRank request rate limiting
 

@@ -1,5 +1,5 @@
 import json
-from typing import Annotated, Any, ClassVar
+from typing import ClassVar
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -8,7 +8,6 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
-    StrictStr,
     field_validator,
     model_validator,
 )
@@ -73,31 +72,6 @@ class PublishAssistantAgentKeysBody(BaseModel):
     previous_id: str | None = Field(
         default=None, alias="previousId", pattern=_HEX_PUBKEY
     )
-
-
-class ObserverRunnerDecryptBody(BaseModel):
-    """A whole signed event: the owner's schedule (34817) or the Assistant's
-    own AI keys (12000). With a 12000, `schedule` is required: the owner's
-    signed 34817 naming that Assistant, the print the keys are opened for. The
-    shapes and signatures are the service's to check."""
-
-    owner: str = Field(pattern=_HEX_PUBKEY)
-    event: dict[str, Any]
-    schedule: dict[str, Any] | None = None
-
-
-class ObserverRunnerUnsignedEvent(BaseModel):
-    kind: StrictInt = Field(ge=0, le=65535)
-    created_at: StrictInt = Field(ge=0)
-    tags: list[Annotated[list[StrictStr], Field(min_length=1)]] = Field(
-        max_length=10_000
-    )
-    content: StrictStr = Field(max_length=1_000_000)
-
-
-class ObserverRunnerSignBody(BaseModel):
-    owner: str = Field(pattern=_HEX_PUBKEY)
-    event: ObserverRunnerUnsignedEvent
 
 
 class SetGrapeRankPresetBody(BaseModel):
