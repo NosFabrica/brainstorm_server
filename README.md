@@ -106,13 +106,14 @@ task's service (the Observer's is in `NosFabrica/the-nostr-observer`), and both 
 and sign as the owner's Assistant themselves. This server is never called during a run.
 What they share with it:
 
-- **`assistant_keys_v1`**, a view (migration `a7c3e9d1f2b4`): `owner`, `assistant`,
-  `encrypted_nsec`, and `legacy_nsec` (the plaintext `nsec`, only where `encrypted_nsec`
-  is null or empty, as `_plaintext_nsec` falls back). Their database role is granted
-  SELECT on the view only, never on `brainstorm_nsec`:
+- **`brainstorm_nsec`**, read the way `app/repos/brainstorm_nsec.py` reads it: `pubkey`,
+  `assistant_pubkey`, `encrypted_nsec` (decrypted with the key file; a value already
+  starting `nsec1` is used as it is) and, only when that is null or empty, `nsec`
+  (`_plaintext_nsec`). Their database role is granted those four columns and nothing else
+  of the table:
   ```sql
   CREATE ROLE assistant_runner LOGIN PASSWORD '…';
-  GRANT SELECT ON assistant_keys_v1 TO assistant_runner;
+  GRANT SELECT (pubkey, assistant_pubkey, encrypted_nsec, nsec) ON brainstorm_nsec TO assistant_runner;
   CREATE SCHEMA IF NOT EXISTS assistant_runner AUTHORIZATION assistant_runner;
   ```
   The role and the grant are ops', not a migration's. The `assistant_runner` schema is
@@ -121,7 +122,9 @@ What they share with it:
   rotates it; they mount it read-only and re-read it when it changes. It must be on a
   volume all three can read.
 
-Changing the view's columns breaks them: add `assistant_keys_v2` beside it instead.
+**Those four columns are a contract.** A migration that renames or drops one, or changes
+what they hold (for example moving keys elsewhere, or dropping `nsec` once every row is
+encrypted), breaks the runner and the Observer service: change them together.
 
 ## GrapeRank request rate limiting
 

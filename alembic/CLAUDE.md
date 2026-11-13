@@ -97,7 +97,6 @@ file. Briefly:
 | `a7c2e9f1d4b3_add_force_full_neo4j.py` | `brainstorm_request.force_full_neo4j` — per-run forced Neo4j write + stale-score cleanup; `brainstorm_nsec.last_neo4j_cleanup_at` — time-based cleanup clock |
 | `d8f2a1c4e6b9_add_passkey_vault.py` | `passkey_vault` — passkey-sealed key copies, one row per credential (see `docs/adr/0005-passkey-vault.md`) |
 | `c5f1d7a9e2b4_add_treasure_map_on.py` | `brainstorm_nsec.treasure_map_on` — the Assistant's Treasure Map choice, default false |
-| `a7c3e9d1f2b4_add_assistant_keys_view.py` | `assistant_keys_v1` view (owner, assistant, encrypted_nsec, legacy_nsec) — what NosFabrica/assistant-runner and the Observer service read; a contract, changed only by a `_v2` beside it |
 
 **Orphaned columns (intentional):** `brainstorm_request.force_full_vespa` and
 `brainstorm_nsec.is_observer_search_available` stay in the database but are no longer mapped or used
