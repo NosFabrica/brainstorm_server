@@ -7,6 +7,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictInt,
     field_validator,
     model_validator,
 )
@@ -46,6 +47,31 @@ class SetAssistantTreasureMapBody(BaseModel):
     comes from the session, never from the request."""
 
     on: StrictBool
+
+
+# A NIP-44 payload is at most 65,535 bytes of plaintext, about 87.5 KB of base64.
+MAX_NIP44_PAYLOAD = 90_000
+
+
+_HEX_PUBKEY = r"^[0-9a-f]{64}$"
+
+
+class PublishAssistantAgentKeysBody(BaseModel):
+    """The Assistant's new AI key list, NIP-44 encrypted owner -> Assistant, and
+    the version it was edited from: the GET's `id` as `previousId` and its
+    `createdAt` as `previousCreatedAt`. Both null or absent when there was none;
+    each one given must match the newest version. Whose Assistant comes from the
+    session, never from the request."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ciphertext: str = Field(min_length=1, max_length=MAX_NIP44_PAYLOAD)
+    previous_created_at: StrictInt | None = Field(
+        default=None, alias="previousCreatedAt"
+    )
+    previous_id: str | None = Field(
+        default=None, alias="previousId", pattern=_HEX_PUBKEY
+    )
 
 
 class SetGrapeRankPresetBody(BaseModel):

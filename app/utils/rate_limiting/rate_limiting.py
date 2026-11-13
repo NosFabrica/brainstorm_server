@@ -171,3 +171,18 @@ async def validate_support_message_allowed(pubkey: str) -> None:
         SUPPORT_MESSAGE_RATE_LIMIT,
         SUPPORT_MESSAGE_WINDOW_SECONDS,
     )
+
+
+# The Assistant's AI keys: a person editing a list on one screen, not a poll.
+# Per pubkey, as the other authenticated per-account throttles; every call reads
+# the Assistant's outbox relays, and a POST also publishes to them.
+AGENT_KEYS_RATE_LIMIT = 30
+AGENT_KEYS_WINDOW_SECONDS = 60
+
+
+async def validate_agent_keys_allowed(pubkey: str) -> None:
+    await _enforce_window(
+        f"rate_limit:assistant_agent_keys:{pubkey}",
+        AGENT_KEYS_RATE_LIMIT,
+        AGENT_KEYS_WINDOW_SECONDS,
+    )

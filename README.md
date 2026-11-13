@@ -98,6 +98,37 @@ Requests must include a valid auth token (JWT) and the token's pubkey must be in
 
 - `GET /admin/brainstormPubkey/{nostr_pubkey}` — trigger a GrapeRank calculation for any pubkey
 
+## The Assistant runner reads this database
+
+The Brainstorm Assistants' scheduled tasks (NIP-FB) run outside this server:
+[`NosFabrica/assistant-runner`](https://github.com/NosFabrica/assistant-runner) wakes a
+task's service (the Observer's is in `NosFabrica/the-nostr-observer`), and both decrypt
+and sign as the owner's Assistant themselves. This server is never called during a run.
+What they share with it:
+
+- **`brainstorm_nsec`**, read the way `app/repos/brainstorm_nsec.py` reads it: `pubkey`,
+  `assistant_pubkey`, `encrypted_nsec` (decrypted with the key file; a value already
+  starting `nsec1` is used as it is) and, only when that is null or empty, `nsec`
+  (`_plaintext_nsec`). Each has its own database role, granted those four columns and nothing
+  else of the table; the Observer service's role also owns its own `observer` schema:
+  ```sql
+  CREATE ROLE assistant_runner LOGIN PASSWORD '…';
+  GRANT SELECT (pubkey, assistant_pubkey, encrypted_nsec, nsec) ON brainstorm_nsec TO assistant_runner;
+
+  CREATE ROLE observer_service LOGIN PASSWORD '…';
+  GRANT SELECT (pubkey, assistant_pubkey, encrypted_nsec, nsec) ON brainstorm_nsec TO observer_service;
+  CREATE SCHEMA IF NOT EXISTS observer AUTHORIZATION observer_service;
+  ```
+  The roles and the grants are ops', not a migration's. The `observer` schema is the
+  Observer service's; this server never reads or writes it. The runner writes nothing.
+- **The Fernet key file** (`/run/secrets/nsec_encryption_keys`): this server writes and
+  rotates it; they mount it read-only and re-read it when it changes. It must be on a
+  volume all three can read.
+
+**Those four columns are a contract.** A migration that renames or drops one, or changes
+what they hold (for example moving keys elsewhere, or dropping `nsec` once every row is
+encrypted), breaks the runner and the Observer service: change them together.
+
 ## GrapeRank request rate limiting
 
 Per-user throttling for `POST /graperank`. When enabled, a user cannot trigger a new calculation if their latest one is more recent than the configured window.

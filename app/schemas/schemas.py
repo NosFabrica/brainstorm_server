@@ -852,6 +852,34 @@ class PublishedAssistantDutyMenu(BaseModel):
     relays: list[AssistantRelayResult]
 
 
+# The Assistant's AI keys (its NIP-FA list). camelCase, as Brainstorm-UI reads it.
+
+
+class AssistantAgentKeys(BaseModel):
+    """`GET /user/assistantAgentKeys`: the Assistant's list, re-encrypted to its
+    owner. All null when the Assistant has no kind 12000 yet."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    assistant: str
+    # NIP-44 v2, Assistant -> owner on record, of the list's private tag array.
+    ciphertext: str | None
+    created_at: int | None = Field(serialization_alias="createdAt")
+    # The version's event id: what the POST takes back as `previousId`.
+    id: str | None = None
+
+
+class PublishedAssistantAgentKeys(BaseModel):
+    """`POST /user/assistantAgentKeys`: the version signed, and how each relay took it."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    created_at: int = Field(serialization_alias="createdAt")
+    # The new version's event id: the next POST's `previousId`.
+    id: str
+    relays: list[AssistantRelayResult]
+
+
 # Your Assistant's Treasure Map. camelCase, as Brainstorm-UI's
 # `lib/assistantTreasureMap.ts` reads it.
 
