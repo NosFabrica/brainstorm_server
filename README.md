@@ -43,8 +43,10 @@ Access the URL `http://0.0.0.0:8000/admin`
 ## How to run the tests
 
 The suite splits into **fast** tests (service-mocked, no external services — the
-app's lifespan never runs) and **integration** tests (marked `integration`,
-require the real local stack: Postgres, Neo4j and Redis).
+app's lifespan never runs) and **integration** tests (marked `integration`).
+The integration tests need the local stack's Postgres, Neo4j and Redis, a `.env`
+pointing at them, and the schema migrated to head. Three of them also need the
+stack's strfry relay.
 
 Fast tests — the default, run anywhere:
 
@@ -52,31 +54,56 @@ Fast tests — the default, run anywhere:
 poetry run pytest -m "not integration"
 ```
 
-> Note: the fast suite expects `PUBLIC_BASE_URL`'s host to be `localhost` — the
-> Open Ranking tests that sign an NWT use that audience. `tests/conftest.py`
-> reads `.env` itself, and a value already in `.env` or the environment wins over
-> its dummies, so a `PUBLIC_BASE_URL` naming any other host fails those tests.
-> Keep `env.example`'s `http://localhost:8000`, and don't source a deployment's
-> `.env` into the shell that runs the tests.
+> Note: `tests/conftest.py` reads `.env` itself, and a value already in `.env`
+> or the environment wins over its dummies. Two things in `env.example` matter:
+>
+> - The fast suite expects `PUBLIC_BASE_URL`'s host to be `localhost`: the Open
+>   Ranking tests that sign an NWT use that audience, and any other host fails
+>   them. Keep `env.example`'s `http://localhost:8000`.
+> - Leave `FLASH_ENABLED`, `FLASH_API_KEY` and `FLASH_WEBHOOK_SECRET` out of
+>   `.env`. `env.example`'s values (billing off, both keys empty) fail the
+>   billing and Flash tests. Left out, the tests get conftest's dummies, and a
+>   server started from the same `.env` keeps billing off, its default.
+>
+> And don't source a deployment's `.env` into the shell that runs the tests.
 
-Integration tests — bring the local stack up first, then run only that marker.
-The stack is the one-click deployment's (this repo's own `docker-compose.yml`
-has only the server and Postgres — see CLAUDE.md § Run locally); its stores are
-enough:
+Integration tests run against the one-click deployment's stack (this repo's own
+`docker-compose.yml` has only the server and Postgres — see CLAUDE.md § Run
+locally). They need a `.env` (or the same values in the environment), because
+conftest's dummies don't match the stack's credentials: copy `env.example`,
+leave out the three Flash keys as above, and change two values.
+
+- `NEO4J_DB_URL=bolt://localhost:7688`. The one-click stack remaps Neo4j's bolt
+  port to host 7688, not 7687, so anything run on the host (pytest, uvicorn)
+  needs this. The dockerized server is unaffected: it reaches Neo4j over the
+  compose network at `neo4j:7687`.
+- `NOSTR_TRANSFER_FROM_RELAY=ws://localhost:7778`, the stack's strfry.
+  `env.example` names the public `wss://wot.grapevine.network`, and
+  `test_trusted_list_content_publish_integration.py` publishes its test events
+  to this relay.
+
+Then start the stores and strfry, migrate, and run only that marker:
 
 ```bash
 # in ../brainstorm_one_click_deployment
-docker compose -f docker-compose.yml -f docker-compose.local.yml up -d postgres redis_strfry neo4j
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d postgres redis_strfry neo4j strfry
 # back here
+poetry run alembic upgrade head    # nothing in tests/ creates the schema
 poetry run pytest -m integration
 ```
 
-> Note: in the one-click local stack Neo4j's bolt port is remapped to host
-> **7688** (not 7687). Host-run processes (pytest/uvicorn) need
-> `NEO4J_DB_URL=bolt://localhost:7688` in `.env`. The dockerized server is
-> unaffected — it reaches Neo4j over the compose network at `neo4j:7687`.
+The three tests that need strfry are `test_relay_deletions_integration.py` and
+`test_trusted_list_publish_integration.py`, which use the TA relay
+(`NOSTR_UPLOAD_TA_EVENTS_RELAY`, `ws://localhost:7778` in `env.example`), and
+`test_trusted_list_content_publish_integration.py`, which also looks its test
+events up on `NOSTR_TRANSFER_FROM_RELAY`. Without strfry, those three fail.
 
-Everything together (needs the stack up):
+The tests empty the tagging tables of the database that `DB_URL` names.
+`env.example`'s `DB_URL` names none, so that's the database named after its
+user, `postgres`, not the stack server's `brainstorm-database`. A server run on
+the host from the same `.env` uses it too.
+
+Everything together (the same `.env`, the stack up and the migration run):
 
 ```bash
 poetry run pytest

@@ -95,9 +95,11 @@ docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
 
 It can lag this server, so expect some tinkering to make it run, and it leaves
 out some services that staging and production run. When checked on 2026-11-12,
-its `main` was last changed on 2026-07-21 and still deployed Vespa, which this
-server no longer uses: its local override makes `brainstorm-server` wait on
-`vespa-deploy`.
+its `main` was last changed on 2026-07-21 and still deployed Vespa (`vespa`,
+`vespa-deploy`), which this server no longer uses. Its base file makes
+`brainstorm-server` wait on `vespa-deploy`, among others, but the local
+override's `depends_on: !reset` drops all of the server's dependencies, so
+under the override it waits on none of them, Postgres included.
 
 This repo's own `docker-compose.yml` is not that stack: it defines only the
 server (`web`) and Postgres, and `web` depends on a `brainstorm-neo4j` service
