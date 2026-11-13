@@ -180,6 +180,8 @@ the `{name: value}` map in Python and `set_observer_scores` does `SET n += row.p
 ## Gotchas
 
 - **No commits in repos** (except the one noted above). If your DB writes mysteriously don't persist, you forgot `async with db_session() as db:` around the call.
+- **Read a node's Influence once per row.** Every `node[$influence_key]` walks the node's whole property list, and a scored node carries thousands of properties. Bind it with `_bind_score` and use `_score(node)` afterwards; `tests/test_score_read_once.py` holds the tier fragments to that.
+- **Never alias a Cypher value as `inf`, `infinity` or `nan`.** They are float literals: `WITH x AS inf RETURN inf` returns Infinity on every row.
 - **`InvalidParameterError` on Cypher with dynamic property keys** means you string-interpolated when you should've parametrized — use `user[$key]`.
 - **`fastapi_pagination.paginate` requires a `Select`**, not a coroutine. Build the statement in the repo, hand the statement (not the result) to the router.
 
