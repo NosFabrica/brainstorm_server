@@ -54,10 +54,15 @@ class SetAssistantTreasureMapBody(BaseModel):
 MAX_NIP44_PAYLOAD = 90_000
 
 
+_HEX_PUBKEY = r"^[0-9a-f]{64}$"
+
+
 class PublishAssistantAgentKeysBody(BaseModel):
     """The Assistant's new AI key list, NIP-44 encrypted owner -> Assistant, and
-    the `createdAt` of the version it was edited from (null when there was
-    none). Whose Assistant comes from the session, never from the request."""
+    the version it was edited from: the GET's `id` as `previousId` and its
+    `createdAt` as `previousCreatedAt`. Both null or absent when there was none;
+    each one given must match the newest version. Whose Assistant comes from the
+    session, never from the request."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -65,9 +70,9 @@ class PublishAssistantAgentKeysBody(BaseModel):
     previous_created_at: StrictInt | None = Field(
         default=None, alias="previousCreatedAt"
     )
-
-
-_HEX_PUBKEY = r"^[0-9a-f]{64}$"
+    previous_id: str | None = Field(
+        default=None, alias="previousId", pattern=_HEX_PUBKEY
+    )
 
 
 class ObserverRunnerDecryptBody(BaseModel):

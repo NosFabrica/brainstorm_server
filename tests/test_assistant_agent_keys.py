@@ -6,6 +6,7 @@ fake holding every event. Signing and NIP-44 are real.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
@@ -14,7 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
-from nostr_sdk import Event, EventBuilder, Keys, Kind, Timestamp
+from nostr_sdk import EventBuilder, Keys, Kind, Timestamp
 
 from app.api import app
 from app.core.database import get_db
@@ -50,51 +51,96 @@ class Owner:
 
 
 class Relays:
-    """Every outbox relay, faked as one store."""
+    """Every outbox relay, faked as one store, behind fake websockets: the
+    real `RelayGroup` reads and sends through them."""
 
     def __init__(self) -> None:
         self.held: list[dict] = []
-        self.silent: set[str] = set()
-        self.refusing: set[str] = set()
-        self.sent: list[tuple[list[str], Event]] = []
+        self.silent: set[str] = set()  # Never connect.
+        self.hanging: set[str] = set()  # Connect, never answer a REQ.
+        self.refusing: set[str] = set()  # Answer an EVENT with OK false.
+        self.sent: list[tuple[str, dict]] = []
+        self.connects: list[str] = []
+        self.closed = 0
 
-    def client(self, *_, **__):
-        relays = self
-
-        class _FakeClient:
-            def __init__(self) -> None:
-                self.pending: list[str] = []
-
-            async def add_relay(self, url):
-                self.pending.append(url)
-
-            async def try_connect(self, _timeout):
-                tried, self.pending = self.pending, []
-                return SimpleNamespace(success=tried, failed={})
-
-            async def send_event_to(self, urls, event):
-                relays.sent.append((list(urls), event))
-                ok = [u for u in urls if u not in relays.refusing]
-                if ok:
-                    relays.held.append(json.loads(event.as_json()))
-                return SimpleNamespace(
-                    success=ok, failed={u: "blocked" for u in urls if u not in ok}
-                )
-
-            async def disconnect(self):
-                pass
-
-        return _FakeClient()
-
-    async def fetch_latest(self, relay: str, flt: dict):
-        if relay in self.silent:
+    async def open(self, url: str):
+        if url in self.silent:
             raise TimeoutError()
-        found = [
-            e
-            for e in self.held
-            if e["kind"] in flt["kinds"] and e["pubkey"] in flt["authors"]
-        ]
-        return max(found, key=lambda e: e["created_at"], default=None)
+        self.connects.append(url)
+        return _FakeSocket(self, url)
+
+    def event_ids_sent(self) -> set[str]:
+        return {event["id"] for _, event in self.sent}
+
+
+class _FakeSocket:
+    def __init__(self, relays: Relays, url: str) -> None:
+        self.relays, self.url = relays, url
+        self.inbox: asyncio.Queue[str] = asyncio.Queue()
+
+    def _answer(self, *msg) -> None:
+        self.inbox.put_nowait(json.dumps(list(msg)))
+
+    async def send(self, text: str) -> None:
+        msg = json.loads(text)
+        relays = self.relays
+        if msg[0] == "REQ":
+            if self.url in relays.hanging:
+                return
+            sub, flt = msg[1], msg[2]
+            found = sorted(
+                (
+                    e
+                    for e in relays.held
+                    if e["kind"] in flt["kinds"] and e["pubkey"] in flt["authors"]
+                ),
+                key=lambda e: -e["created_at"],
+            )
+            for event in found[: flt.get("limit", len(found))]:
+                self._answer("EVENT", sub, event)
+            self._answer("EOSE", sub)
+        elif msg[0] == "EVENT":
+            event = msg[1]
+            relays.sent.append((self.url, event))
+            if self.url in relays.refusing:
+                self._answer("OK", event["id"], False, "blocked: no")
+                return
+            if event["id"] not in {e["id"] for e in relays.held}:
+                relays.held.append(event)
+            self._answer("OK", event["id"], True, "")
+
+    async def recv(self) -> str:
+        return await self.inbox.get()
+
+    async def close(self) -> None:
+        self.relays.closed += 1
+
+
+class LockRedis:
+    """The edit lock's Redis: `SET NX EX` and the compare-and-delete script."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def set(self, key, value, nx=False, ex=None):
+        assert nx and ex == agent_keys_service.LOCK_TTL_SECONDS
+        if key in self.values:
+            return None
+        self.values[key] = value
+        return True
+
+    async def eval(self, _script, _numkeys, key, token):
+        if self.values.get(key) == token:
+            del self.values[key]
+            return 1
+        return 0
+
+
+@pytest.fixture(autouse=True)
+def lock_redis(monkeypatch) -> LockRedis:
+    fake = LockRedis()
+    monkeypatch.setattr("app.services.agent_keys_service.redis_client", fake)
+    return fake
 
 
 @pytest.fixture
@@ -110,10 +156,7 @@ def b() -> Owner:
 @pytest.fixture
 def relays(monkeypatch) -> Relays:
     fake = Relays()
-    monkeypatch.setattr("app.services.assistant_publish.Client", fake.client)
-    monkeypatch.setattr(
-        "app.services.assistant_publish.fetch_latest", fake.fetch_latest
-    )
+    monkeypatch.setattr("app.services.relay_session._open", fake.open)
     monkeypatch.setattr(
         "app.services.agent_keys_service.assistant_relay_list", lambda: list(OUTBOX)
     )
@@ -182,8 +225,8 @@ def _post(client, ciphertext: str, previous, **extra):
 
 
 def _give(client, owner: Owner, tags=LIST) -> dict:
-    previous = _get(client)["createdAt"]
-    r = _post(client, owner.seal(tags), previous)
+    got = _get(client)
+    r = _post(client, owner.seal(tags), got["createdAt"], previousId=got["id"])
     assert r.status_code == 200, r.text
     return r.json()["data"]
 
@@ -196,6 +239,7 @@ def test_no_list_yet_is_null_and_null(as_user, a):
         "assistant": a.assistant_pubkey,
         "ciphertext": None,
         "createdAt": None,
+        "id": None,
     }
 
 
@@ -205,6 +249,7 @@ def test_a_given_list_reads_back_to_the_owner(as_user, a, relays):
     got = _get(as_user(a))
     assert got["assistant"] == a.assistant_pubkey
     assert got["createdAt"] == published["createdAt"]
+    assert got["id"] == published["id"] == relays.held[-1]["id"]
     assert a.open(got["ciphertext"]) == LIST
 
 
@@ -242,7 +287,7 @@ def test_no_token_no_answer(method):
 def test_the_route_is_not_the_profile_lookup(as_user, a, monkeypatch):
     profile = MagicMock(side_effect=AssertionError("hit /user/{pubkey}"))
     monkeypatch.setattr("app.routers.user.router.get_user_graph_data", profile)
-    assert set(_get(as_user(a))) == {"assistant", "ciphertext", "createdAt"}
+    assert set(_get(as_user(a))) == {"assistant", "ciphertext", "createdAt", "id"}
 
 
 def test_an_owner_with_no_assistant_is_a_404_no_assistant(as_user, db_rows, a):
@@ -294,7 +339,7 @@ def test_a_token_writes_its_own_assistant_whatever_the_body_names(
     )
     assert r.status_code == 200, r.text
 
-    assert relays.sent[-1][1].author().to_hex() == a.assistant_pubkey
+    assert relays.sent[-1][1]["pubkey"] == a.assistant_pubkey
     b_after = _get(as_user(b))
     assert b_after["createdAt"] == b_before["createdAt"]
     assert b.open(b_after["ciphertext"]) == [
@@ -344,7 +389,7 @@ def test_a_stale_previous_created_at_is_a_409(as_user, a, relays):
     assert r.status_code == 409
     r = _post(as_user(a), a.seal([]), None)
     assert r.status_code == 409
-    assert len(relays.sent) == 1
+    assert len(relays.event_ids_sent()) == 1
 
 
 def test_half_the_relays_answering_is_not_enough(as_user, a, relays):
@@ -431,6 +476,24 @@ def test_keys_never_reach_the_logs(as_user, a, relays, app_logs):
         ("sk", "http://10.0.0.1/v1", False),
         ("sk", "https:///nohost", False),
         ("", "ws://x.example", False),
+        # Quartz's AgentKeyTag.isUrlAllowed, case for case.
+        ("sk", "http://evil.example@localhost/v1", False),
+        ("sk", "http://localhost@evil.example/v1", False),
+        ("sk", "https://user@api.example/v1", True),
+        ("sk", "https://exa mple.com/v1", False),
+        ("sk", "https://api.example/v1 with space", False),
+        ("sk", "https://api.example/\tv1", False),
+        ("sk", "https://api.example/v1\x01", False),
+        ("sk", "https://api.example/\u00a0v1", False),
+        ("sk", " https://api.example/v1\n", True),  # Trimmed first, as Quartz.
+        ("sk", "http://[0:0:0:0:0:0:0:1]", False),
+        ("sk", "http://[0:0:0:0:0:0:0:1]:8080/v1", False),
+        ("sk", "http://127.1/v1", False),
+        ("sk", "http://127.0.0.256/v1", False),
+        ("sk", "http://127.0.0.1.evil.example/v1", False),
+        ("sk", "http://localhost.evil.example/v1", False),
+        ("sk", "HTTP://LOCALHOST:11434/v1", True),
+        ("", "http://[0:0:0:0:0:0:0:1]", True),
     ],
 )
 def test_the_nip_fa_url_rule(key, url, ok):
@@ -456,14 +519,166 @@ def test_an_empty_list_is_brackets():
     assert agent_keys_build.serialize([]) == "[]"
 
 
-def test_the_service_holds_no_lock_after_a_failure(as_user, a, relays):
+def test_the_service_holds_no_lock_after_a_failure(as_user, a, relays, lock_redis):
     relays.silent = set(OUTBOX)
     assert _post(as_user(a), a.seal(LIST), None).status_code == 502
-    assert agent_keys_service._editing == set()
+    assert lock_redis.values == {}
+    relays.silent = set()
+    assert _give(as_user(a), a)["createdAt"]  # The next edit goes through.
+    assert lock_redis.values == {}
 
 
-def test_a_second_edit_while_one_is_under_way_is_a_409(as_user, a, relays, monkeypatch):
-    monkeypatch.setattr(agent_keys_service, "_editing", {a.assistant_pubkey})
+def test_a_second_edit_while_one_is_under_way_is_a_409(
+    as_user, a, b, relays, lock_redis
+):
+    """The lock is in Redis, so it holds across replicas: another replica's
+    edit of A's Assistant blocks this one, and nothing is read or sent."""
+    key = f"lock:assistant_agent_keys:{a.assistant_pubkey}"
+    lock_redis.values[key] = "another replica's token"
     r = _post(as_user(a), a.seal(LIST), None)
     assert r.status_code == 409
+    assert relays.sent == [] and relays.connects == []
+    assert lock_redis.values == {key: "another replica's token"}  # Not ours to free.
+    # B's Assistant has its own lock.
+    assert _give(as_user(b), b)["createdAt"]
+
+
+def test_an_unreachable_redis_is_a_503_and_nothing_is_sent(
+    as_user, a, relays, monkeypatch
+):
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    class _Down:
+        async def set(self, *_, **__):
+            raise RedisConnectionError("down")
+
+    monkeypatch.setattr("app.services.agent_keys_service.redis_client", _Down())
+    assert _post(as_user(a), a.seal(LIST), None).status_code == 503
     assert relays.sent == []
+
+
+# --- previousId -------------------------------------------------------------------
+
+
+def test_a_previous_id_that_isnt_the_newest_is_a_409(as_user, a, relays):
+    published = _give(as_user(a), a)
+    # Another version, signed in the same second: the same created_at.
+    other = json.loads(
+        EventBuilder(Kind(12000), nip44.encrypt(a.assistant, a.assistant_pubkey, "[]"))
+        .custom_created_at(Timestamp.from_secs(published["createdAt"]))
+        .sign_with_keys(a.assistant)
+        .as_json()
+    )
+    relays.held = [other]
+    assert other["id"] != published["id"]
+
+    # The createdAt alone can't tell the two apart; the id can.
+    r = _post(
+        as_user(a),
+        a.seal([]),
+        published["createdAt"],
+        previousId=published["id"],
+    )
+    assert r.status_code == 409
+    r = _post(as_user(a), a.seal([]), None, previousId=published["id"])
+    assert r.status_code == 409
+    assert relays.event_ids_sent() == {published["id"]}
+
+
+def test_previous_id_alone_or_with_created_at_edits_the_newest(as_user, a, relays):
+    first = _give(as_user(a), a)
+    r = _post(as_user(a), a.seal([]), None, previousId=first["id"])
+    assert r.status_code == 200, r.text
+    second = r.json()["data"]
+    r = _post(as_user(a), a.seal(LIST), second["createdAt"], previousId=second["id"])
+    assert r.status_code == 200, r.text
+    # previousCreatedAt may be left out altogether.
+    third = r.json()["data"]
+    r = as_user(a).post(
+        "/user/assistantAgentKeys",
+        json={"ciphertext": a.seal([]), "previousId": third["id"]},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_no_previous_version_named_is_a_409_once_one_exists(as_user, a, relays):
+    _give(as_user(a), a)
+    r = as_user(a).post("/user/assistantAgentKeys", json={"ciphertext": a.seal([])})
+    assert r.status_code == 409
+
+
+@pytest.mark.parametrize("previous_id", ["xyz", "A" * 64, "0" * 63, 7])
+def test_a_malformed_previous_id_is_a_422(as_user, a, relays, previous_id):
+    r = _post(as_user(a), a.seal(LIST), None, previousId=previous_id)
+    assert r.status_code == 422
+    assert relays.sent == []
+
+
+@pytest.mark.parametrize(
+    "current, previous_id, previous_at, ok",
+    [
+        (None, None, None, True),
+        (None, "a" * 64, None, False),
+        (None, None, 5, False),
+        ({"id": "a" * 64, "created_at": 5}, None, None, False),
+        ({"id": "a" * 64, "created_at": 5}, "a" * 64, None, True),
+        ({"id": "a" * 64, "created_at": 5}, None, 5, True),
+        ({"id": "a" * 64, "created_at": 5}, "a" * 64, 5, True),
+        ({"id": "a" * 64, "created_at": 5}, "b" * 64, 5, False),
+        ({"id": "a" * 64, "created_at": 5}, "a" * 64, 4, False),
+    ],
+)
+def test_is_expected_version(current, previous_id, previous_at, ok):
+    assert agent_keys_build.is_expected_version(current, previous_id, previous_at) is ok
+
+
+# --- The relays: a majority and a grace, one connect -------------------------------
+
+
+def test_the_read_returns_once_a_majority_answered(as_user, a, relays, monkeypatch):
+    """A relay that connects and never answers no longer holds the GET to the
+    read's 5 s: two of three answered, and the grace is all that is waited."""
+    monkeypatch.setattr("app.services.relay_session.QUORUM_GRACE_SECONDS", 0.05)
+    _give(as_user(a), a)
+    relays.hanging = {OUTBOX[2]}
+    started = time.monotonic()
+    got = _get(as_user(a))
+    assert time.monotonic() - started < 1.5
+    assert a.open(got["ciphertext"]) == LIST
+
+
+def test_without_a_majority_the_read_waits_and_fails(as_user, a, relays, monkeypatch):
+    monkeypatch.setattr("app.services.relay_session.READ_TIMEOUT_SECONDS", 0.3)
+    relays.hanging = {OUTBOX[1], OUTBOX[2]}
+    assert as_user(a).get("/user/assistantAgentKeys").status_code == 502
+
+
+def test_the_post_connects_once_per_relay_and_sends_to_late_ones(
+    as_user, a, relays, monkeypatch
+):
+    """The read and the send share one socket per relay; a relay whose answer
+    wasn't waited for still gets the new version."""
+    monkeypatch.setattr("app.services.relay_session.QUORUM_GRACE_SECONDS", 0.05)
+    relays.hanging = {OUTBOX[2]}
+    r = _post(as_user(a), a.seal(LIST), None)
+    assert r.status_code == 200, r.text
+    assert sorted(relays.connects) == sorted(OUTBOX)
+    assert sorted(url for url, _ in relays.sent) == sorted(OUTBOX)
+    assert relays.closed == len(OUTBOX)
+    assert all(line["ok"] for line in r.json()["data"]["relays"])
+
+
+def test_a_relay_that_cant_be_reached_is_reported_so(as_user, a, relays):
+    relays.silent = {OUTBOX[1]}
+    data = _give(as_user(a), a)
+    assert [(line["url"], line["ok"], line["message"]) for line in data["relays"]] == [
+        (OUTBOX[0], True, None),
+        (OUTBOX[1], False, "couldn't connect"),
+        (OUTBOX[2], True, None),
+    ]
+
+
+def test_relay_nostr_band_is_not_in_the_outbox():
+    from app.services.assistant_profile_service import assistant_relay_list
+
+    assert not [url for url in assistant_relay_list() if "nostr.band" in url]

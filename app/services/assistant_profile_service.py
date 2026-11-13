@@ -22,7 +22,9 @@ KIND_0_PUBLISH_RELAYS: list[str] = [
     "wss://relay.damus.io",
     "wss://relay.primal.net",
     "wss://nos.lol",
-    "wss://relay.nostr.band",
+    # Not relay.nostr.band: unreachable when checked on 2026-11-12 (the TLS
+    # handshake never completes, nor does nostr.band's own site), so it
+    # only made every majority read of the Assistant's outbox wait for its timeout.
 ]
 
 # Served as static files by Brainstorm-UI (client/public/). JPEG over the WebP

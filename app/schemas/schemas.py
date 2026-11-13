@@ -857,7 +857,7 @@ class PublishedAssistantDutyMenu(BaseModel):
 
 class AssistantAgentKeys(BaseModel):
     """`GET /user/assistantAgentKeys`: the Assistant's list, re-encrypted to its
-    owner. Both null when the Assistant has no kind 12000 yet."""
+    owner. All null when the Assistant has no kind 12000 yet."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -865,6 +865,8 @@ class AssistantAgentKeys(BaseModel):
     # NIP-44 v2, Assistant -> owner on record, of the list's private tag array.
     ciphertext: str | None
     created_at: int | None = Field(serialization_alias="createdAt")
+    # The version's event id: what the POST takes back as `previousId`.
+    id: str | None = None
 
 
 class PublishedAssistantAgentKeys(BaseModel):
@@ -873,6 +875,8 @@ class PublishedAssistantAgentKeys(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     created_at: int = Field(serialization_alias="createdAt")
+    # The new version's event id: the next POST's `previousId`.
+    id: str
     relays: list[AssistantRelayResult]
 
 

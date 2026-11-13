@@ -424,7 +424,11 @@ async def publish_assistant_agent_keys_endpoint(
     jwt_data: JWTData = request.state.jwt_data
     await validate_agent_keys_allowed(jwt_data.nostr_pubkey)
     published = await publish_assistant_agent_keys(
-        db, jwt_data.nostr_pubkey, body.ciphertext, body.previous_created_at
+        db,
+        jwt_data.nostr_pubkey,
+        body.ciphertext,
+        body.previous_created_at,
+        body.previous_id,
     )
     return PublishAssistantAgentKeysResponse(data=published)
 
