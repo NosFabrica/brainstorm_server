@@ -539,3 +539,311 @@ committed this file on the operator's word. The fix takes both blocking findings
 back to this reviewer for re-review. Before the commit, the authoring session shortened two local paths in this file,
 the worktree's and the gate log's, and the checker note about the second, since this repo is public. Nothing else in
 the review changed.
+
+## Re-review (2026-11-12)
+
+**Reviewer:** Claude (acting as Reviewer, independent of the authoring session and of the fix)
+**Fix:** `1f1aee6` ("docs: what the integration tests need; how one-click's override resolves"), the PR head, on top of
+this review's commit `1ff77ad`. It changes five Markdown files, +54/−24: `README.md`, `CLAUDE.md`, `BIBLE.md`,
+`engineering-team/OPEN.md` and `engineering-team/workflows/light-profile.md`. It leaves this file alone.
+**Read:**
+
+- this file, all of it, and the fix commit with its message;
+- the rewritten PR description, diffed against the copy the first round read (at head `6d0b17d`);
+- this repo's `light-profile.md` § Gate B, and tapestry at `59d0e7a6d`: `roles/reviewer.md` (step 10),
+  `workflows/5-review.md`, and `templates/review-checklist.md` with its docs-mode variant;
+- the precedent, "Re-review (2026-10-28)" in `f0a856f`'s `reviews/assistant-dictionary/1-assistant-copies-concepts.md`;
+- for the claims: `tests/conftest.py`, every module in `tests/integration/`, `env.example`, `app/core/config.py`,
+  `alembic/env.py`, the app code each relay and URL setting reaches, and one-click's `origin/main` (`ec6f282`),
+  exported with `git archive`.
+
+**Independence:** the PR description, the commit message and this file are the only author-side text I read. I didn't
+open the authoring session's scratch files. From the first round's folders I read one file, the PR JSON the first
+reviewer saved, for the earlier description.
+**Environment:** Docker Engine 29.2.1 and Compose 5.1.0; the project venv's Python 3.12.12, pytest 7.4.4, asyncpg
+0.29.0, nostr-sdk 0.41.0, alembic 1.18.4 and SQLAlchemy 2.0.49.
+**Method:**
+
+- **One-click** was read only from the export: `docker compose config` on the two files merged and on the base alone,
+  with `--format json` for the checks.
+- **Throwaway stores.** The README's integration steps ran against one compose project of my own, `pr120rr`:
+  - one-click's four store images (`postgres:15`, `redis:7`, `neo4j:5`, `ghcr.io/hoytech/strfry:latest`), all already
+    on this Mac, with `pull_policy: never` and `up --pull never`;
+  - one-click's credentials and `POSTGRES_DB`, and its four-line `strfry.conf`, given inline as a compose config;
+  - published only on 127.0.0.1, on spare host ports.
+  - **What differs, on purpose:** the host ports, no `container_name`, a 1 GB Neo4j heap and 512 MB page cache
+    (one-click asks for 4 GB and 8 GB), and health checks so `up --wait` could gate. One-click's own file couldn't run
+    as written here: its container names and host ports belong to the operator's stack, which is running on this Mac.
+- **Settings.** Every run was under `env -i`, with the values on the command line, built from `env.example`:
+  - the README's two changes, on my ports;
+  - the three Flash keys left out (the "README profile") or kept (a "straight copy");
+  - every store and relay setting naming my project or a dead localhost port, for safety.
+    - `TRUSTED_LIST_RELAY` named my strfry outright, which is what blank resolves to here.
+    - `NOSTR_TRANSFER_TO_RELAY`, `TRUSTED_LIST_TARGET_RELAYS`, `SEARCH_RELAY_URL` and `FLASH_BASE_URL` named dead
+      ports.
+    - `FRONTEND_URL` and `PUBLIC_BASE_URL` kept the host `localhost`, on dead ports. The app never connects to either.
+    - `DICTIONARY_RELAY` kept its default, which the app only writes into rows.
+- **The worktree stayed clean.** There's no `.env` in it. `PYTHONDONTWRITEBYTECODE=1` and `-p no:cacheprovider` kept
+  the runs from writing to it: after them, `git status` was empty and no file was newer than the runs. This section is
+  the only change since.
+- **Clean-up.** `docker compose -p pr120rr down -v`. No `pr120rr` container, volume or network remains, and the
+  operator's containers show the same names and statuses before and after.
+- **GitHub:** four reads in all, one at a time: the PR, `repos/nous-clawds4/tapestry`, and a `curl -I` of each tapestry
+  link.
+- **The run files** (junit XML and logs) are in this session's scratch directory, under `pr120-rereview/runs/`,
+  uncommitted.
+
+### Checks run (by the reviewer, not trusted)
+
+| Check | How | Result |
+| --- | --- | --- |
+| Only Markdown changed | `git diff --name-only a896204 1f1aee6`; `git rev-parse {a896204,1f1aee6}:{app,tests,alembic,scripts,pyproject.toml,poetry.lock}` | Six `.md` files: the five docs and this review. Every code tree hash is identical, so the first round's gate run still stands, and I didn't re-run it |
+| One-click's override | `config --format json` on the export, merged and base alone | Merged: 11 services, and `brainstorm-server` has no `depends_on`, `links`, `network_mode` or `volumes_from`. Base: six dependencies, `vespa-deploy` (`service_completed_successfully`) and `postgres` (`service_healthy`) among them. `postgres`, `redis_strfry`, `neo4j` and `strfry` are image-only, with no `depends_on`, in both |
+| Collection | `pytest -m integration --collect-only` | 166 of 1,958. One test in each of the three relay modules; five billing tests (1 + 4) |
+| Run A: no migration | README profile, stores and strfry up, `pytest -m integration` | 47 failed, 119 passed. 45 raise `UndefinedTableError`. Two fail with "Event loop is closed" after a failed neighbour: the resync test, which passes once migrated, and the error-clock test, one of the five (Non-blocking 1) |
+| Migration | `alembic upgrade head`, README profile | Exit 0, at head `db78462cf11c`. 21 tables in the `postgres` database, none in `brainstorm-database` |
+| Run B: the README's steps | as A, migrated | **161 passed, 5 failed** in 12.66s. The five are the billing tests (Non-blocking 1) |
+| Run C: strfry stopped | as B | 158 passed, 8 failed: the five, and exactly the three relay tests. Two can't connect to strfry; relay-deletions fails `init_nostr_client`'s connect assertion (`upload_nostr_events.py:262`) |
+| The five, two setups | the five alone, README profile and straight copy; the error-clock test alone | The same five fail for the same reasons both ways. Alone, the error-clock test fails on the NOT NULL, not on the event loop |
+| Run E: everything together | README profile, bare `pytest` | 1,952 passed, 6 failed: the five, and `test_passkey_vault.py::test_a_new_device_opens_the_vault_with_the_passkey`, from my `FRONTEND_URL` (Non-blocking 3) |
+| Fast suite, README profile | `-m "not integration"` | 1,791 passed, 1 failed: that passkey test |
+| Fast suite, straight copy | the same, Flash keys kept | 71 failed: `test_billing_admin.py` 43, `test_flash_webhook.py` 23, `test_flash_client.py` 3, `test_billing_dev.py` 1, and the passkey test |
+| Fast suite, a non-`localhost` host | README profile with `PUBLIC_BASE_URL=http://127.0.0.1:29996` | 12 failed: 11 in `test_open_ranking_e2e.py` (ten reject the NWT's `aud`, one gets 403 where it expects 422), and the passkey test |
+| The passkey file under CI's settings | conftest's dummies only (`FRONTEND_URL` `http://localhost:3000`) | 35 passed |
+| The tagging tables are emptied | a sentinel row in `nostr_tagged_event`, then one tagging test | 1 row before, 0 after |
+| Links | `curl -I` of the new and the old tapestry link; `gh api repos/nous-clawds4/tapestry` | New: 200. `nousclawds4/tapestry/…`: 301 to the new one. `nous-clawds4/tapestry`: a public fork, `pushed_at` 2026-10-19T13:59:15Z |
+| The docstrings' specs | the local tapestry clone, `github/main` (`59d0e7a6d`, fetched 2026-11-12) | `protocols/drafts/duty-menus.md` and `treasure-maps.md` both there; § 9.2 "Self-Maps" at `treasure-maps.md:361` |
+| Structure | fence counts; anchors; `awk` on OPEN.md | README 24 fences, CLAUDE.md 4. `## Run locally` (`CLAUDE.md:83`) and `## How to run the tests` (`README.md:43`) exist. Every OPEN row has 4 cells; the new row is last, in date order |
+| This file | tapestry's `scripts/lib/review-verdict.awk` (the working-tree copy, identical to `59d0e7a6d`'s); `grep` for local paths | Parsed as CR before this section. No absolute local path remains |
+
+### Blocking 1: resolved
+
+Each asked change is in, and each holds when re-derived (R1–R16 below):
+
+- **The `.env`** (`README.md:47–48`, `:72–74`). Copying `env.example`, leaving out the Flash keys and making the two
+  changes is all the run needs. Run B made exactly those, on its own ports.
+- **The relays.** The three tests are named (`:95–99`) and the command starts strfry (`:89`). Run C shows those three,
+  and only those, need it.
+- **`NOSTR_TRANSFER_FROM_RELAY`** now points at the stack's strfry (`:80–83`). So the content-publish test's three
+  events go there, not to `wss://wot.grapevine.network`.
+- **The migration** (`:91`) runs against the tests' own database: `alembic/env.py:64` takes `settings.db_url`.
+- **`:47–49` and `:106`** now agree.
+
+### Blocking 2: resolved
+
+`CLAUDE.md:98–102` now says what compose does (R17–R19):
+
+- the base file makes the server wait on six services, `vespa-deploy` and Postgres among them;
+- under the override it has no `depends_on` at all.
+
+The wording is close to the first round's suggestion. Per step 10, I re-derived it from `docker compose config` rather
+than recognising it.
+
+### The first round's non-blocking items taken
+
+- **Non-blocking 1.**
+  - Both links resolve directly (200), and the old address only redirects.
+  - The description's tapestry sentence holds.
+  - The new OPEN row is accurate and well formed, apart from a nit (Non-blocking 4 below).
+- **Non-blocking 3.** The Flash bullet (`README.md:63–66`) re-derives:
+  - a straight copy fails exactly the 70;
+  - left out, the fast suite gets conftest's dummies and is green, apart from my own `FRONTEND_URL` change.
+  - The first round's open question is now answered. Leaving the keys out works for the integration suite (run B), and
+    the five billing failures don't depend on the keys.
+
+**Gate A classification: unchanged.** The fix is five Markdown files, and none of the profile's triggers applies.
+
+### This file after `1ff77ad`
+
+- The pointer at `:522` and the closing "Operator verdict (2026-11-12)" agree with each other.
+- The two shortened paths (`:48`, `:167`) and the reworded checker note (`:478`) read correctly. The gate log `:167`
+  names is in the first round's folder under that name.
+- "On PASS" (`:524–533`) still says the file is uncommitted and leaves the commit to the operator. That was true when
+  it was written, and the closing section records the commit on the operator's word. It reads as history, so I'd leave
+  it.
+- "Nothing else in the review changed" can't be checked: there's no copy of the uncommitted original.
+- Tapestry's rule takes the last verdict-shaped token, and it parsed the committed file as CR. With this section
+  appended, the last token is this section's recommendation, until the operator records a verdict on the re-review.
+
+### Probes beyond the fix
+
+- **Premise: a reader who follows the steps gets a green run.** They don't: five billing tests fail whatever the setup
+  (Non-blocking 1).
+- **Error paths**, each run or read:
+  - no migration: 47 fail;
+  - no strfry: the three;
+  - a non-`localhost` host: the 11;
+  - a straight copy: the 70;
+  - another `FRONTEND_URL`: one passkey test (Non-blocking 3);
+  - `TRUSTED_LIST_RELAY` set: both trusted-list tests publish their lists there (Non-blocking 2, from the code);
+  - `PGDATABASE` set in the shell: asyncpg uses it before the user name, so the tests would empty that database's
+    tagging tables instead. That's a narrow edge, so it's a qualifier in R15, not a finding.
+- **Collateral.**
+  - A host server on the same `.env` also gets `NOSTR_TRANSFER_FROM_RELAY` at strfry. That's harmless day to day: the
+    relay sync runs only under `PERFORM_NOSTR_FULL_SYNC` (`app/api.py:106–111`), which `env.example` sets false.
+  - CLAUDE.md's host-server recipe still makes the `.env` the Flash note warns against (Non-blocking 4).
+  - Every other delete the integration tests make, in Postgres, Neo4j or Redis, is scoped to their own rows, nodes or
+    keys. So their deletes leave a running stack's own Neo4j and Redis data alone.
+
+### Claims-adherence table (fresh claims)
+
+The verdicts are as in the first round: "holds", "partly", "wrong" or "unverified", each from the evidence named.
+
+#### README.md, "How to run the tests"
+
+| # | Claim | Where | Evidence | Verdict |
+| --- | --- | --- | --- | --- |
+| R1 | The integration tests need the stack's Postgres, Neo4j and Redis, a `.env` pointing at them, and the schema at head. Three also need the stack's strfry | `README.md:47–49`; PR body | Runs A, B and C. conftest's dummies can't reach the stack (R7) | **Holds** |
+| R2 | `tests/conftest.py` reads `.env` itself, and a value in `.env` or the environment beats its dummies | `:57–58` | `conftest.py:37–45` and `:81–82`, both `setdefault` | **Holds** |
+| R3 | "Two things in `env.example` matter" to the fast suite | `:58` | With `FRONTEND_URL` moved off `http://localhost:3000`, one passkey test fails. Its origin is hard-coded (`test_passkey_vault.py:35`), and the vault's origins default to `FRONTEND_URL` (`passkey_vault_service.py:107`). `env.example` already has the right value | **Partly.** A third value matters the same way (Non-blocking 3) |
+| R4 | `PUBLIC_BASE_URL`'s host must be `localhost`, or the NWT Open Ranking tests fail (the body: "the 11") | `:60–62`; PR body | Host `127.0.0.1`: those 11 fail, all in `test_open_ranking_e2e.py`, on the NWT's audience. Host `localhost` on port 29996: they pass | **Holds** |
+| R5 | `env.example`'s Flash values (billing off, both keys empty) fail the billing and Flash tests (the body: 70) | `:63–65`; PR body | Straight copy: 70 in four files, 43 + 23 + 3 + 1. `env.example:61`, `:64–65` | **Holds** |
+| R6 | Left out, the tests get conftest's dummies, and a server started from the same `.env` keeps billing off | `:65–66` | `conftest.py:71–73`. `config.py:8` reads `.env`, and `:66` defaults `flash_enabled` to False. README profile: green, apart from my `FRONTEND_URL` | **Holds** |
+| R7 | The integration run needs a `.env` or the same values in the environment, because conftest's dummies don't match the stack's credentials | `:72–73` | Dummies: `u:p@localhost:5432/test` (`conftest.py:48`), and Neo4j on 7687 with password `neo4j` (`:56–58`). One-click: `postgres`/`postgrespw` (base `:76–77`), bolt on host 7688 (`:104`), `neo4j/password` (`:106`). My runs passed the values in the environment | **Holds** |
+| R8 | Copy `env.example`, leave out the Flash keys, and change two values | `:73–74` | `env.example`'s Postgres URL, Neo4j credentials, Redis and TA relay already match one-click's (`:1`, `:11–14`, `:21`). Run B changed only those two, mapped to its ports. `NOSTR_TRANSFER_TO_RELAY` was dead, and no test needed it | **Holds** |
+| R9 | `NEO4J_DB_URL=bolt://localhost:7688`: one-click remaps bolt to host 7688, and the dockerized server reaches `neo4j:7687` | `:76–79` | One-click base `:104` (`7688:7687`) and `:20` (`bolt://neo4j:7687`) | **Holds** |
+| R10 | `NOSTR_TRANSFER_FROM_RELAY=ws://localhost:7778` is the stack's strfry; `env.example` names a public relay; the content-publish test publishes its test events to this relay | `:80–83`; PR body | One-click base `:158` (strfry on `7778:7777`; neofry is on 7777, `:125`). `env.example:19`. The test's `:52` and `:146–162` | **Holds** |
+| R11 | `up -d postgres redis_strfry neo4j strfry` starts the stores and strfry | `:89`; PR body ("the command now starts") | In the merged config all four exist, are image-only and have no `depends_on`, so `up` starts exactly these four and builds nothing. One-click's own file wasn't run (Method) | **Holds**, from the resolved config |
+| R12 | Migrate first; nothing in `tests/` creates the schema | `:91`; PR body | Run A. A `grep` for `create_all`, `metadata.create` and `command.upgrade` in `tests/` finds nothing (`test_alembic_heads.py` reads only the script directory). `alembic/env.py:64` migrates `settings.db_url` | **Holds** |
+| R13 | The three tests that need strfry: relay-deletions and trusted-list publish use the TA relay; content-publish also looks its events up on `NOSTR_TRANSFER_FROM_RELAY`; without strfry those three fail | `:95–99`; PR body | One test per module. Run C. `upload_nostr_events.py:184–188` (the TA relay only), `test_trusted_list_publish_integration.py:40`, and content-publish `:52`, `:141`. But both trusted-list tests publish their lists to `TRUSTED_LIST_RELAY` when it's set (`trusted_list_service.py:152`; content-publish `:53`) | **Holds** while `TRUSTED_LIST_RELAY` is blank, as `env.example` leaves it (Non-blocking 2) |
+| R14 | The tests empty the tagging tables of the database `DB_URL` names | `:101` | `tagging_harness.py:27–39`: an unconditional `delete` on five tables, before and after each tagging test. Observed with a sentinel row. Every other delete in `tests/integration/` is scoped to the test's own rows, nodes or keys (by pubkey, short code, service id, or a uuid Redis prefix) | **Holds** |
+| R15 | `env.example`'s `DB_URL` names no database, so the tests use `postgres`, not `brainstorm-database`, and so does a host server on the same `.env` | `:102–104` | `env.example:1`. The migration put 21 tables in `postgres` and none in `brainstorm-database`. asyncpg 0.29.0 takes `PGDATABASE`, then the user name (`connect_utils.py:439–442`); `config.py:8` | **Holds**, with `PGDATABASE` unset |
+| R16 | Everything together: the same `.env`, the stack up and the migration run, then `poetry run pytest` | `:106–110` | Run E: 1,952 passed, 6 failed: the five billing tests, and the passkey test my `FRONTEND_URL` broke. That file passes 35 of 35 under `http://localhost:3000` | **Holds** as instructions. The run isn't green (Non-blocking 1) |
+
+#### CLAUDE.md § Run locally
+
+| # | Claim | Where | Evidence | Verdict |
+| --- | --- | --- | --- | --- |
+| R17 | One-click still deploys Vespa (`vespa`, `vespa-deploy`) | `CLAUDE.md:98–99` | Both are in the merged and the base service lists | **Holds** |
+| R18 | Its base file makes `brainstorm-server` wait on `vespa-deploy`, among others | `:99–100` | Base config: six dependencies, `vespa-deploy` among them | **Holds** |
+| R19 | The override's `depends_on: !reset` drops all of the server's dependencies, so under it the server waits on none, Postgres included | `:100–102`; PR body; commit message | Merged config: no `depends_on`, `links`, `network_mode` or `volumes_from`. The base gives Postgres `service_healthy` | **Holds** |
+
+#### BIBLE.md, light-profile.md and OPEN.md
+
+| # | Claim | Where | Evidence | Verdict |
+| --- | --- | --- | --- | --- |
+| R20 | Tapestry's harness is at `github.com/TapestryProtocol/tapestry/tree/main/engineering-team` | `BIBLE.md:89`; `light-profile.md:3` | `curl -I`: 200 | **Holds** |
+| R21 | Tapestry moved there from `nousclawds4/tapestry`, which now only redirects | PR body | `curl -I` of the old link: 301 to the new one | **Holds** |
+| R22 | Story and decision files that cite an older address as history are left alone | PR body | `git grep` at `1f1aee6`: six lines in five story, decision and intake files, as the first round counted. Besides those, only `.claude/agents/gate-judge.md:3` (provenance) and the two docstrings the new row records | **Holds** |
+| R23 | Two code docstrings still give `nous-clawds4/tapestry` as where their specs live: `duty_menu_build.py` (`duty-menus.md`) and `self_map_build.py` (§ 9.2) | `OPEN.md:16`; PR body | `duty_menu_build.py:5–6`; `self_map_build.py:4–5`, where the § 9.2 is `treasure-maps.md`'s | **Holds** (a nit: Non-blocking 4) |
+| R24 | That repo is a stale copy, last pushed 2026-10-19 | `OPEN.md:16`; PR body | `gh api`: a public fork, `pushed_at` 2026-10-19T13:59:15Z | **Holds** |
+| R25 | Tapestry is now `TapestryProtocol/tapestry`; fix both in the next code change to either file | `OPEN.md:16` | Both specs are on its `main` (as fetched on 2026-11-12, `59d0e7a6d`), with § 9.2 at `treasure-maps.md:361`. So the fix is an address swap | **Holds** |
+| R26 | The row is well formed | `OPEN.md:16` | Four cells; dated 2026-11-12, after the 2026-10-31 row; its source links #120 | **Holds** |
+
+#### The PR description and the commit message
+
+| # | Claim | Where | Evidence | Verdict |
+| --- | --- | --- | --- | --- |
+| R27 | The first round had two blocking findings, as summarised | PR body | This file's Findings | **Holds** |
+| R28 | `1f1aee6` fixes both, and takes non-blocking 1 and 3 | PR body; commit message | This section | **Holds** |
+| R29 | The steps were run against a throwaway copy of the stores, with one-click's images on spare ports | PR body | I can't see the author's run. Mine used the same four images and reproduced every count it reports | **Unverified** as the author's run; reproduced |
+| R30 | 161 of the 166 integration tests pass | PR body; commit message | Run B | **Holds** |
+| R31 | The other five are billing tests that fail whatever the setup | PR body; commit message | Run B and the two-setup run: the same five, for the same reasons, with the Flash keys out or kept. Both reasons are in the tests | **Holds** |
+| R32 | …because they no longer match the billing code and schema | PR body; commit message | The plan-write test passes `amount_minor` and `currency` (`:62–63`). `insert_billing_plan_on_db` stopped taking them in `a8d0e40` (2026-09-02), the day after the test was written (`73ca8bc`). The four reconcile tests insert a NULL `billing_plan_id` (`:72`). That column has been NOT NULL in the model and in every migration since before their first version (`8ddcebd`, 2026-08-27), and no commit ever made it nullable | **Partly.** One no longer matches the code; the other four never matched the schema |
+| R33 | Without the migration, 47 fail on missing tables | PR body | Run A: 47 failed. 45 raise `UndefinedTableError`; two fail with "Event loop is closed" after a failed neighbour | **Holds** |
+| R34 | Without strfry, the three relay tests fail | PR body | Run C | **Holds** |
+| R35 | Docs only; no code changes | PR body | The names and tree hashes | **Holds** |
+
+### Evidence table
+
+| Source or command | What it showed |
+| --- | --- |
+| `git diff 1ff77ad 1f1aee6`; `git show --stat 1f1aee6` | Five Markdown files, +54/−24. This file untouched |
+| `git diff --name-only a896204 1f1aee6`; `git rev-parse` of the code paths at both | Six `.md` files; identical code trees |
+| `gh pr view 120 --json …` | Head `1f1aee6`, base `staging`, open, not a draft. The same three comments, none new. The body, diffed against the first round's copy, for R20–R35 |
+| One-click `ec6f282`, exported: `docker compose config`, merged and base alone | As the checks table |
+| `docker images` | The four store images, all present |
+| `pytest --collect-only -m integration` | 166: one test in each relay module, and five billing tests |
+| A `grep` for deletes, truncates and flushes in `tests/integration/` | Only `clean_tagging_tables` is unscoped |
+| A `grep` of `app/` for each relay and URL setting | `NOSTR_TRANSFER_TO_RELAY` reaches the sync, designation, report-relay and self-Map code, which no integration test calls. `DICTIONARY_RELAY` only goes into rows, and `FRONTEND_URL` and `PUBLIC_BASE_URL` only into strings |
+| Runs A, B, C and E; the two-setup billing run; the three fast-suite runs | As the checks table. The junit XML is in the session's scratch directory |
+| The passkey file under conftest's dummies | 35 passed |
+| A sentinel row, then one tagging test | The row is gone |
+| `git log` on the two billing test files, `billing_plan_repo.py`, the billing migration and the model | `73ca8bc` (2026-09-01) and `a8d0e40` (2026-09-02). `8ddcebd` (2026-08-27). `billing_plan_id` is NOT NULL at `7ea0859` and at `f31fada`, and never nullable |
+| `.github/workflows/build.yml:58` | CI deselects the integration marker, so nothing there runs the five |
+| asyncpg 0.29.0, `connect_utils.py:439–442` | With no database in the URL: `PGDATABASE`, then the user name |
+| `app/api.py:106–111` | The relay sync runs only under `PERFORM_NOSTR_FULL_SYNC` |
+| The tapestry clone, `github/main` | Both spec files, and § 9.2 "Self-Maps" |
+| `gh api repos/nous-clawds4/tapestry`; `curl -I` of both links | As the checks table |
+| `review-verdict.awk` on this file | CR before this section |
+
+### Findings
+
+#### Blocking
+
+None.
+
+#### Non-blocking
+
+1. **`README.md:85–110`: following the steps leaves five failures the README doesn't mention.** This is new, and I'd
+   take it before merge.
+   - **What the reader gets.** Run B ends "5 failed, 161 passed", and `poetry run pytest` gives the same five (run E).
+   - **The five.**
+     - `test_billing_plan_write_integration.py`'s one test: `insert_billing_plan_on_db() got an unexpected keyword
+       argument 'amount_minor'`.
+     - The four in `test_billing_reconcile_candidates_integration.py`: a NOT NULL violation on
+       `user_subscription.billing_plan_id`. In suite order, the first of them shows "Event loop is closed" instead,
+       evidently a knock-on: the plan-write test before it uses the shared engine and never disposes it. Alone, it
+       fails on the NOT NULL.
+   - **Why it misleads.** The only billing failures the README explains are the Flash note's (`:63–65`), and these
+     aren't those: they fail the same way with the keys out or kept. A reader who followed the note would hunt for a
+     setup error that isn't there.
+   - **Why nothing caught it.** CI deselects the marker (`.github/workflows/build.yml:58`).
+   - **Where it's recorded.** The PR description and the commit message record the five. The README, where the next
+     reader looks, doesn't, and putting things there is this PR's own aim.
+   - **Suggested.**
+     - One sentence after the run command, naming the five and why: one passes arguments the billing code no longer
+       takes, and four insert a NULL the schema forbids.
+     - An OPEN.md row for fixing the tests, which a docs-only PR can't do.
+     - Mind R32: "no longer match" is right for the first, not for the other four. Re-derive the wording from the
+       tests rather than taking it from here.
+2. **`README.md:95–99`: the two trusted-list tests publish to `TRUSTED_LIST_RELAY` when it's set.** This is new.
+   - `trusted_list_service.py:152` publishes to `trusted_list_relay or nostr_upload_ta_events_relay`. The
+     content-publish test's list relay is the same expression (`:53`).
+   - `env.example` leaves the setting commented out (`:138–140`), so the README's recipe publishes nothing beyond the
+     stack's strfry. But that comment suggests pointing it "at the nip85.* relays to mirror there". A `.env` that does
+     would send both tests' lists there, signed by throwaway keys. The publish test would then fail as well, since it
+     reads back from the TA relay (`:40`).
+   - This is from the code, not observed: my runs named my own strfry for it.
+   - **Suggested.** "Leave `TRUSTED_LIST_RELAY` unset", beside the `NOSTR_TRANSFER_FROM_RELAY` bullet or in the
+     three-tests paragraph.
+3. **`README.md:58–62`: `FRONTEND_URL` matters to the fast suite the way `PUBLIC_BASE_URL` does.** This is new, and
+   minor.
+   - `test_passkey_vault.py:35` hard-codes `ORIGIN = "http://localhost:3000"`, and the vault's allowed origins default
+     to `FRONTEND_URL` (`passkey_vault_service.py:107`).
+   - Under any other `FRONTEND_URL` origin, `test_a_new_device_opens_the_vault_with_the_passkey` fails. With
+     `http://localhost:29997` it got a 404. Under `http://localhost:3000` the file passes 35 of 35.
+   - `env.example`'s value is the right one, so a straight copy is fine. But the note's "two things" undercounts by one:
+     "keep `env.example`'s `FRONTEND_URL` too" would complete it.
+4. **Two residues of the items taken.** Both minor.
+   - **`OPEN.md:16`.** "(§ 9.2)" doesn't say of what; the docstring's spec is `protocols/drafts/treasure-maps.md`.
+     Suggested: "(`protocols/drafts/treasure-maps.md` § 9.2)".
+   - **`CLAUDE.md:112`**, an unchanged line in the section the PR rewrote. The host-server recipe's
+     `cp env.example .env` still makes the `.env` the README's note now warns against. Its pointer to README § How to
+     run the tests (`:108–109`) is for the Neo4j port. One clause would close it: "and leave out the three Flash keys
+     (README § How to run the tests)".
+
+**Still open from the first round, and not re-reviewed here:** its Non-blocking 2 (the four sibling checkouts), 4 (the
+route-comparison recipe), 5 (the two README sections, now at `README.md:5–17` and `:158–171`) and 6 (`OPEN.md:14`'s
+live evidence), and its Harness friction 1–4. The fix doesn't touch the lines they cite.
+
+The optional independent check before the commit (`5-review.md`) wasn't applied to this section. That's the operator's
+call.
+
+### Recommendation
+
+**PASS** (the reviewer's recommendation; mergeable as-is)
+
+- **Both blocking findings are resolved,** each re-derived rather than recognised.
+  - The README's integration steps work as written: 161 of 166 pass, and the five that don't fail in their own code.
+  - CLAUDE.md's override sentence is what compose resolves.
+- **The first round's Non-blocking 1 and 3 are taken correctly.** The links resolve directly, the docstrings have their
+  row, and the Flash note's numbers re-derive: the 70, and the 11.
+- **Only Markdown changed,** so the first round's code gate stands.
+- **The new findings are non-blocking.** No sentence they touch is wrong, and the recipe as written publishes nothing
+  beyond the stack's strfry. I'd take Non-blocking 1 before merge: a sentence and an OPEN row. Otherwise the README
+  leaves five failures unexplained, right beside a note that blames the Flash keys.
+
+As before, the operator gives Gate B's verdict. This section is uncommitted.
+
+**Operator's verdict on the re-review (Gate B):** pending
