@@ -308,3 +308,33 @@ On 2026-11-12, `staging` at `a896204` was merged into the branch (`d5d37e2`), no
 - **Gates**, as CI runs them: black, isort, flake8 and mypy are clean, and 1,914 tests pass, `staging`'s 1,792 plus
   this story's 122. Integration tests need live services, so locally all 166 fail, on `staging` and on this branch
   alike: the same node ids, compared id for id.
+
+## Changes from Enes's review
+
+On 2026-11-13, Enes approved #122 with two comments. Both are taken in `fa4bcb6`.
+
+- **A relay that answers and then stalls the close keeps its answer.** The read's 5-second bound wrapped the whole
+  websocket, close included, and websockets waits 10 s for a close handshake by default. So a relay that answered,
+  then never acknowledged the close, turned an answer read in time into a timeout, and the request into a 502. That
+  is the shape `73de814` fixed in `designation_service`, and the fix is the same: the deadline covers opening the
+  socket and the answer, and the close has its own 1-second bound (`CLOSE_TIMEOUT_SECONDS`). W12 pins it.
+- **Only a relay that didn't answer is a 502.** `_read` caught every exception, so a bug in the reader, such as a
+  `TypeError` or a `KeyError`, answered 502 "Couldn't read the Dictionary relay", logged only as a warning. The
+  reader now raises `RelayDidNotAnswer` for each way a relay fails to answer: it can't be reached, closes the socket
+  or the request before EOSE, runs past the deadline, or sends something that isn't JSON. `_read` catches only that,
+  and any other error propagates as itself, a 500 with its traceback logged. W5–W8 now expect `RelayDidNotAnswer`,
+  W13 pins the message that isn't JSON, which still answers 502, and R30 pins the bug (test plan, § Added after
+  Enes's review).
+- **D3 and D6 don't change.** D3's "a read that raises" is a raise on a transport error, a timeout or a `CLOSED`,
+  which is now exactly `RelayDidNotAnswer`. A read's worst case grows from 5 s to about 6 s, the deadline plus the
+  close. D6's 52-second ceiling still holds, since the 40-second send deadline counts from before the reads.
+- **Line counts:** `dictionary_relay_reader.py` is 124 lines and `assistant_dictionary_service.py` 323, in
+  `app/services/CLAUDE.md`, whose reader row now names `RelayDidNotAnswer` and the close's bound.
+- **Gates**, as CI runs them: black, isort, flake8 and mypy are clean, and 1,914 tests pass, as before. R17 runs 2
+  cases rather than 8, and W12, W13 and R30's four make up the six. Each fix was then broken in `app/` seven ways,
+  one at a time, and each time a test failed:
+  - the close back inside the deadline, or without its own bound: W12;
+  - `_read` catching every exception again: R30;
+  - a `CLOSED` raising `RuntimeError` again: W5;
+  - a message that isn't JSON, a socket closed before EOSE, or an unreachable relay and the deadline, each left
+    unconverted: W13, W8, then W6 and W7.

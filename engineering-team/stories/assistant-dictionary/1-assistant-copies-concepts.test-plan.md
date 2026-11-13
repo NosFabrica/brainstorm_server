@@ -64,11 +64,14 @@ These come from the ADR's decisions, not from any acceptance criterion:
 
 | Dependency | Failure | Handle | Expected |
 | --- | --- | --- | --- |
-| Dictionary relay (strict read) | unreachable | W6, R17 | the reader raises; the request answers 502 with nothing sent (both routes) |
-| Dictionary relay (strict read) | any error the reader raises | R17 | 502 with nothing sent, for each of `ConnectionError`, `TimeoutError`, `RuntimeError` (a `CLOSED`) and `ConnectionClosedOK` (closed before EOSE), on both routes |
-| Dictionary relay (strict read) | `CLOSED` | W5 | the reader raises |
-| Dictionary relay (strict read) | takes the REQ, then says nothing | W7 | the reader raises within its bound, not hanging and not returning what it has |
-| Dictionary relay (strict read) | closes the socket before EOSE | W8 | the reader raises, never returns a partial read as if the relay held nothing |
+| Dictionary relay (strict read) | unreachable | W6, R17 | the reader raises `RelayDidNotAnswer`; the request answers 502 with nothing sent (both routes) |
+| Dictionary relay (strict read) | the reader's `RelayDidNotAnswer` | R17 | 502 with nothing sent, on both routes. W5–W8 and W13 pin that each way a relay fails to answer raises it |
+| Dictionary relay (strict read) | a bug in the reader: any other error | R30 | not a 502: the error reaches the framework as itself, a 500, with nothing sent, on both routes |
+| Dictionary relay (strict read) | `CLOSED` | W5 | the reader raises `RelayDidNotAnswer`, with the relay's reason |
+| Dictionary relay (strict read) | takes the REQ, then says nothing | W7 | the reader raises `RelayDidNotAnswer` within its bound, not hanging and not returning what it has |
+| Dictionary relay (strict read) | closes the socket before EOSE | W8 | the reader raises `RelayDidNotAnswer`, never returns a partial read as if the relay held nothing |
+| Dictionary relay (strict read) | sends something that isn't JSON | W13 | the reader raises `RelayDidNotAnswer`, so the request answers 502, not 500 |
+| Dictionary relay (strict read) | answers, then never acknowledges the close | W12 | the answer is kept, in about a second, not lost to the read's deadline |
 | Dictionary relay (strict read) | holds nothing | W4, R10 | `{}`; `not_found` for an add |
 | Dictionary relay (strict read) | invalid event | W3, W11 | skipped |
 | Dictionary relay (strict read) | malformed event (`created_at`, `tags`, `d`) | W9 | skipped; the read still answers |
@@ -192,6 +195,30 @@ the test can't patch it (`AttributeError`).
 | Handle | Test | Pins |
 | --- | --- | --- |
 | W11 | `test_each_event_is_checked_through_verify_signed_event` | each event the reader would keep is checked through `verify_signed_event`, at kind 39998 and the author it's filed under, and one it rejects is skipped |
+
+## Added after Enes's review
+
+Enes's review of #122 found that a stalled close lost an answer read in time, and that `_read` answered a bug in the
+reader with 502 (the story, § Changes from Enes's review). Against `f0a856f`, with `RelayDidNotAnswer` defined but
+never raised:
+
+- W12 fails with `TimeoutError` at its 0.3 s deadline: the close was still inside it.
+- W5–W8 and W13 fail on the error the reader raised itself: `RuntimeError`, `ConnectionRefusedError`, `TimeoutError`,
+  `ConnectionClosedOK` and `JSONDecodeError`.
+- R30 fails with "DID NOT RAISE": `_read` answered the bug with 502.
+
+W5–W8 now expect `RelayDidNotAnswer` rather than any exception. R17 fakes `RelayDidNotAnswer` rather than the four
+errors the reader used to raise, so it runs 2 cases rather than 8.
+
+W12 runs on a raw asyncio server, as `test_designated_pubkeys.py` does, since a websockets server acknowledges every
+close. It sets `READ_TIMEOUT_SECONDS` to 0.3 s, below the close's own 1 s bound, so a close still inside the deadline
+fails it as well as an unbounded one.
+
+| Handle | Test | Pins |
+| --- | --- | --- |
+| W12 | `test_a_relay_that_stalls_the_close_keeps_its_answer` | a relay that answers, then never acknowledges the close: the answer is kept, in under 3 s (`CLOSE_TIMEOUT_SECONDS` is 1 s), not lost to the read's deadline |
+| W13 | `test_a_relay_that_sends_something_that_isnt_json_didnt_answer` | a message that isn't JSON raises `RelayDidNotAnswer`, so the request still answers 502, not 500 |
+| R30 | `test_a_bug_in_the_reader_isnt_answered_as_the_relay_failing` | a `TypeError` or `KeyError` from the reader reaches the framework as itself, a 500, not 502 "Couldn't read the Dictionary relay", on both routes, with nothing sent |
 
 ## Verification
 
