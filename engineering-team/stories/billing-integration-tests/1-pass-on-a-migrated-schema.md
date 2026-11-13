@@ -45,16 +45,21 @@ Against a schema migrated to head, with any settings:
 
 - **AC1.** Against a schema migrated to head, the five tests pass alone, together, and in the full integration run
   (`pytest -m integration`).
-- **AC2.** Each test still fails with its own message when the behaviour it covers is broken in `app/`:
-  - `update_billing_plan` without `db.refresh(plan)`: the plan-write test fails with `MissingGreenlet`;
-  - `record_sync_failure_on_db` restarting `sync_error_since` on every failure;
-  - `select_reconcile_candidates_on_db` still sweeping abandoned checkouts;
-  - `select_failing_syncs_on_db` listing abandoned checkouts;
-  - `select_reconcile_candidates_on_db` re-reading settled subscriptions.
+- **AC2.** Each test still fails with its own message when the behaviour it covers is broken in `app/`. Each line gives
+  the edit, then the message:
+  - `update_billing_plan` without `db.refresh(plan)`: `MissingGreenlet`, in the plan-write test;
+  - `record_sync_failure_on_db` setting `sync_error_since` to now on every failure: "a repeat restarted the clock";
+  - `select_reconcile_candidates_on_db` without its abandoned exclusion: "abandoned checkout still swept";
+  - `select_failing_syncs_on_db` without its abandoned exclusion: "abandoned checkout crowds the failures";
+  - `select_reconcile_candidates_on_db` without its settled exclusion: "still re-reading a settled subscription";
+  - `AbandonRule.condition` and `.matches` ignoring the grant: "stopped watching a subscriber with a policy";
+  - `settled_condition` ignoring the grant: "stopped watching a live tier".
+
+  The last two pin the probes this change rewrote, the ones that hold a policy (`granted=True`).
 - **AC3.** The probes rely only on what a fresh migration creates: no fixed policy id, and no column the schema
   doesn't have.
-- **AC4.** Each test deletes every probe row it could have left before it starts, so a run after a failed one starts
-  clean. When a test passes, it leaves none behind.
+- **AC4.** No test leaves a probe row behind, whether it passes or fails. Each deletes them before it starts, and again
+  in a `finally` when it ends.
 - **AC5.** The change is test-only: nothing outside the two files changes, and `poe check_all` gives the same result as
   on `staging`.
 
@@ -66,13 +71,17 @@ Against a schema migrated to head, with any settings:
 - **Chosen:** the plan-write test creates a mapping from the columns a mapping has (service, plan, policy, on sale), and
   its edit takes the mapping off sale. The edit changes a real column, so the UPDATE runs and expires `updated_at`,
   which is the path the test guards.
-- **Chosen:** the plan-write test disposes the shared engine in a `finally`, as the reconcile tests already did.
+- **Chosen:** every test ends in a `finally` that removes its probe rows and disposes the shared engine. The plan-write
+  test gained the disposal, which the reconcile tests already had. After review, the reconcile tests gained the
+  cleanup, which until then ran only when a test passed.
 - **Rejected:** creating a policy with id 4 in the tests. It would keep the old numbers, but it ties the probes to an id
   a fresh migration doesn't make, and that id could collide with a real policy on a database that has more.
 - **Rejected:** making `billing_plan_id` nullable. The tests would pass, but production always has a plan when it writes
   a subscription (`_grant_and_record`), so the tests would pin a state production never creates.
-- **Blast radius:** two test files. The probes write only rows they own (their own pubkeys, service id and plan id), and
-  delete them. They read the first `scheduling` row and change nothing in it.
+- **Blast radius:** two test files. The probes write only rows they own (their own pubkeys, service ids and plan ids),
+  and delete them, a failed test's included. They read the first `scheduling` row and change nothing in it. While a
+  test runs, though, its probe plan is an on-sale mapping onto that policy, so a server reading the same database leaves
+  that policy's free row out of `/billing/plans`.
 
 ## Out of scope
 
@@ -80,6 +89,8 @@ Against a schema migrated to head, with any settings:
 - The billing code itself, in which these tests found no fault.
 - black's layout of the reconcile file. `check_all` lints only `app/`, and `staging` already has that layout.
 - The other 161 integration tests.
+- PR #120's README paragraph saying these five fail "until #142". Once both have landed it's stale, and whichever of
+  the two merges second removes it.
 
 ## Edge cases and regression sentinels
 
@@ -90,14 +101,20 @@ Against a schema migrated to head, with any settings:
 - A database with several policies: the probes use the lowest id, and pass whichever it is.
 - Cleanup order: the probe subscriptions are deleted before the probe plan they reference.
 - Suite order: the plan-write test runs just before the reconcile file, so a leaked connection shows up there first.
+- A database that already holds real billing rows: the abandoned-section check compares only the probes, so a real
+  abandoned checkout doesn't fail it.
+- A test that fails midway leaves nothing behind. Its cleanup runs in a fresh session, which still works when the
+  test's own session failed on a statement.
 
 ## AC→handle lines
 
 - AC1 → `pytest -m integration` against stores migrated to head; also each file alone, and the pair.
-- AC2 → for each behaviour, break it in `app/`, run its test, expect a failure with that test's message, then restore.
+- AC2 → each of the seven edits AC2 lists, made in `app/` one at a time: run both files, expect that message, restore.
 - AC3 → `_probe_plan` and `_seed` in the reconcile file; the plan-write test's `_policy_id` and its create call.
-- AC4 → each file's `_cleanup`, called at the start of every test (and, in the plan-write test, in `finally` too).
-- AC5 → `git diff --stat a896204...a9e531e`; `poe check_all`'s five commands.
+- AC4 → each file's `_cleanup`, called at the start of every test and again from its `finally` (in the reconcile file,
+  through `_finish`); then, after a test fails on purpose, a count of the probe rows left.
+- AC5 → `git diff --stat a896204...` on the branch: the two test files, plus this story and its review;
+  `poe check_all`'s five commands.
 
 ## Checks (the implementer's, before review)
 

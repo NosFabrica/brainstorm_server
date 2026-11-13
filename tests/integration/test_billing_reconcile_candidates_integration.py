@@ -147,6 +147,22 @@ async def _cleanup(db):
     await db.commit()
 
 
+async def _finish():
+    """Remove every probe row, a failed test's included, then free the pool.
+
+    Left behind, the probe plan is an on-sale mapping onto the lowest policy,
+    and while it exists `/billing/plans` drops that policy's free row. This
+    runs in a fresh session because the test's own has closed by then. The pool
+    is freed either way: its connections belong to this test's event loop, and
+    the next test's loop would inherit them closed.
+    """
+    try:
+        async with db_session() as db:
+            await _cleanup(db)
+    finally:
+        await engine.dispose()
+
+
 def test_the_error_clock_runs_from_the_first_failure_of_its_kind():
     async def _run():
         try:
@@ -173,10 +189,8 @@ def test_the_error_clock_runs_from_the_first_failure_of_its_kind():
                 reason, restarted = await _row(db, CLOCK)
                 assert reason == "vault down"
                 assert restarted > started, "a new reason kept the old clock"
-
-                await _cleanup(db)
         finally:
-            await engine.dispose()
+            await _finish()
 
     asyncio.run(_run())
 
@@ -235,10 +249,8 @@ def test_an_abandoned_checkout_drops_out_and_everything_else_stays():
                         f"{row['pubkey'][-1]}: python says abandoned={in_python}, "
                         f"sql says {in_sql}"
                     )
-
-                await _cleanup(db)
         finally:
-            await engine.dispose()
+            await _finish()
 
     asyncio.run(_run())
 
@@ -296,11 +308,11 @@ def test_an_abandoned_checkout_leaves_the_alarming_sections_for_its_own():
                         db, limit=500, now=NOW, abandoned=ABANDONED_RULE
                     )
                 }
+                # Only the probes: real abandoned checkouts may share the database.
+                counted &= set(ALL_PROBES)
                 assert counted == {ABANDONED}, "the abandoned section disagrees with the sweep"
-
-                await _cleanup(db)
         finally:
-            await engine.dispose()
+            await _finish()
 
     asyncio.run(_run())
 
@@ -373,9 +385,7 @@ def test_a_settled_subscription_stops_being_read_and_the_unsettled_stay():
                 }
                 assert SETTLED not in stale, "settled subscription leaked into stale syncs"
                 assert PAUSED in stale, "a row we still read must stay visible"
-
-                await _cleanup(db)
         finally:
-            await engine.dispose()
+            await _finish()
 
     asyncio.run(_run())

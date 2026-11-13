@@ -63,8 +63,9 @@ def test_a_plan_write_returns_an_object_whose_timestamps_can_be_read():
                             "is_active": True,
                         },
                     )
-                    # The assertion IS the attribute access: unrefreshed, this
-                    # raises MissingGreenlet rather than returning a value.
+                    # An INSERT gets the server's defaults back with the row, so
+                    # the create can't reproduce the bug: this only checks that
+                    # it returns a plan whose timestamps read.
                     assert created.updated_at is not None
                     assert created.created_at is not None
 
@@ -75,6 +76,9 @@ def test_a_plan_write_returns_an_object_whose_timestamps_can_be_read():
                     edited = await update_billing_plan(
                         db, created.id, {"is_active": False}
                     )
+                    # The assertion IS the attribute access: unrefreshed after
+                    # the UPDATE, this raises MissingGreenlet rather than
+                    # returning a value.
                     assert edited.updated_at is not None
                     assert edited.is_active is False
                 finally:
