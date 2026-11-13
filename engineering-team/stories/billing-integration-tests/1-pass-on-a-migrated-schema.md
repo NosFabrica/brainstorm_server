@@ -1,7 +1,9 @@
 # Story 1: The five billing integration tests pass against a migrated schema
 
-**Status:** Built on [NosFabrica/brainstorm_server#142](https://github.com/NosFabrica/brainstorm_server/pull/142), at
-`a9e531e`. Gate B review pending.
+**Status:** Done. Gate B passed on 2026-11-13
+([review](../../reviews/billing-integration-tests/1-pass-on-a-migrated-schema.md)). Built on
+[NosFabrica/brainstorm_server#142](https://github.com/NosFabrica/brainstorm_server/pull/142): the fix is `a9e531e`,
+and the review's fixes are `c836b55`.
 **Created:** 2026-11-13, after the build
 **Type:** Bug. Existing behaviour is wrong: five integration tests fail whatever the setup.
 **Found by:** the Gate B re-review of [#120](https://github.com/NosFabrica/brainstorm_server/pull/120), which ran the
@@ -127,3 +129,16 @@ Run on 2026-11-12, against throwaway Postgres, Redis, Neo4j and strfry migrated 
   166 deselected and 9 warnings, as on `staging` at `a896204`.
 - AC4: not run as a check of its own. The runs above shared one database in sequence and each started clean, but no
   run came straight after a deliberate failure midway through a test.
+
+## Checks after the review (2026-11-13)
+
+Run on the fixed tests (`c836b55`), against a fresh throwaway stack migrated to head, with the same settings:
+
+- AC1: 166 passed, both before and after the checks below, on the same database. Each file alone, the pair, and the
+  pair in reverse order passed.
+- AC2: all seven edits were caught, each with the message AC2 gives, and `app/` was restored after each.
+- AC4: no probe row was left after any of those failing runs, including those that fail the last test. Nor was one
+  left after a test made to fail on a statement midway through the last test.
+- With one real abandoned checkout in the database, the reconcile file passed and left that row alone.
+- AC5: black, isort, flake8 and mypy are clean on `app/`. `pytest -m "not integration"` gave 1,792 passed,
+  166 deselected and 9 warnings.
