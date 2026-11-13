@@ -104,9 +104,10 @@ under the override it waits on none of them, Postgres included.
 This repo's own `docker-compose.yml` is not that stack: it defines only the
 server (`web`) and Postgres, and `web` depends on a `brainstorm-neo4j` service
 it doesn't define, so compose refuses it as it stands. To run the server on the
-host instead, stop the stack's `brainstorm-server` (it holds port 8000) and
-point `.env` at the stack — its Neo4j bolt is on host port 7688 (README § How
-to run the tests):
+host instead, stop the stack's `brainstorm-server` (it holds port 8000), point
+`.env` at the stack (its Neo4j bolt is on host port 7688), and leave out the
+three Flash keys, so the tests can use the same `.env` (README § How to run the
+tests):
 
 ```bash
 cp env.example .env             # then fill in DB creds, neo4j password, etc.

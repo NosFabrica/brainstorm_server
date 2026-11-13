@@ -55,11 +55,15 @@ poetry run pytest -m "not integration"
 ```
 
 > Note: `tests/conftest.py` reads `.env` itself, and a value already in `.env`
-> or the environment wins over its dummies. Two things in `env.example` matter:
+> or the environment wins over its dummies. Three things in `env.example` matter:
 >
 > - The fast suite expects `PUBLIC_BASE_URL`'s host to be `localhost`: the Open
 >   Ranking tests that sign an NWT use that audience, and any other host fails
 >   them. Keep `env.example`'s `http://localhost:8000`.
+> - Keep `env.example`'s `FRONTEND_URL`, `http://localhost:3000`, and leave
+>   `PASSKEY_ORIGINS` empty, or include that origin in it. One passkey-vault
+>   test signs in from that origin, and the vault accepts only the origins in
+>   `PASSKEY_ORIGINS`, or `FRONTEND_URL`'s when that's empty.
 > - Leave `FLASH_ENABLED`, `FLASH_API_KEY` and `FLASH_WEBHOOK_SECRET` out of
 >   `.env`. `env.example`'s values (billing off, both keys empty) fail the
 >   billing and Flash tests. Left out, the tests get conftest's dummies, and a
@@ -97,6 +101,18 @@ The three tests that need strfry are `test_relay_deletions_integration.py` and
 (`NOSTR_UPLOAD_TA_EVENTS_RELAY`, `ws://localhost:7778` in `env.example`), and
 `test_trusted_list_content_publish_integration.py`, which also looks its test
 events up on `NOSTR_TRANSFER_FROM_RELAY`. Without strfry, those three fail.
+
+Leave `TRUSTED_LIST_RELAY` unset, as `env.example` does. When it's set, the
+two trusted-list tests publish their lists there instead of to the TA relay,
+and `env.example`'s comment suggests the public nip85.* relays. The publish
+test then fails as well, since it reads its lists back from the TA relay.
+
+Five billing tests fail whatever the setup until
+[#142](https://github.com/NosFabrica/brainstorm_server/pull/142), which fixes
+them: the one in `test_billing_plan_write_integration.py` passes columns the
+billing code has dropped, and the four in
+`test_billing_reconcile_candidates_integration.py` insert a NULL
+`billing_plan_id`, which the schema forbids.
 
 The tests empty the tagging tables of the database that `DB_URL` names.
 `env.example`'s `DB_URL` names none, so that's the database named after its
