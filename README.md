@@ -107,13 +107,6 @@ two trusted-list tests publish their lists there instead of to the TA relay,
 and `env.example`'s comment suggests the public nip85.* relays. The publish
 test then fails as well, since it reads its lists back from the TA relay.
 
-Five billing tests fail whatever the setup until
-[#142](https://github.com/NosFabrica/brainstorm_server/pull/142), which fixes
-them: the one in `test_billing_plan_write_integration.py` passes columns the
-billing code has dropped, and the four in
-`test_billing_reconcile_candidates_integration.py` insert a NULL
-`billing_plan_id`, which the schema forbids.
-
 The tests empty the tagging tables of the database that `DB_URL` names.
 `env.example`'s `DB_URL` names none, so that's the database named after its
 user, `postgres`, not the stack server's `brainstorm-database`. A server run on
