@@ -16,6 +16,7 @@ from pydantic.networks import validate_email
 from app.core.config import settings
 from app.schemas.graperank_schemas import GrapeRankPresetTemplate
 from app.schemas.nostr_event import NostrEvent
+from app.services.dictionary_copy_build import parse_concept_coordinate
 from app.utils.shorturl_entities import (
     EntityKind,
     check_relay_encodable,
@@ -72,6 +73,22 @@ class PublishAssistantAgentKeysBody(BaseModel):
     previous_id: str | None = Field(
         default=None, alias="previousId", pattern=_HEX_PUBKEY
     )
+
+
+class AssistantDictionaryBody(BaseModel):
+    """The community concepts to add to, or withdraw from, the caller's
+    Assistant's Dictionary: 1 to 10 kind-39998 coordinates (ADR
+    assistant-dictionary/0001 D1). Whose Assistant comes from the session."""
+
+    concepts: list[str] = Field(min_length=1, max_length=10)
+
+    @field_validator("concepts")
+    @classmethod
+    def _concept_coordinates(cls, value: list[str]) -> list[str]:
+        for coordinate in value:
+            if parse_concept_coordinate(coordinate) is None:
+                raise ValueError(f"not a kind-39998 coordinate: {coordinate!r}")
+        return value
 
 
 class SetGrapeRankPresetBody(BaseModel):

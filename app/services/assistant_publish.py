@@ -10,6 +10,10 @@ relay. The TA relay's public URL is written at its internal URL, as scores are
 
 The UI waits 30 s for a publish. The read takes up to 6 s (`fetch_latest`'s
 5 s and a 1 s close), the connect 4 s and the send 12 s.
+
+The Assistant's Dictionary (`assistant_dictionary_service`) reads and signs its
+concept copies its own way (ADR assistant-dictionary/0001 D3, D5), and sends
+them through `connect_targets`, `send_event` and `relay_report`.
 """
 from __future__ import annotations
 
