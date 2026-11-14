@@ -17,6 +17,10 @@ import pytest
 from sqlalchemy import text
 
 from app.core.database import db_session, engine
+from app.repos.billing_plan_repo import (
+    get_billing_plan_on_db,
+    insert_billing_plan_on_db,
+)
 from app.repos.user_subscription_repo import (
     AbandonRule,
     record_sync_failure_on_db,
@@ -58,10 +62,41 @@ CANCELED = "b" * 63 + "5"
 SETTLED_PROBES = (SETTLED, SETTLED_GRANTED, SETTLED_ERRORED, PAUSED, CANCELED)
 ALL_PROBES = PROBES + SETTLED_PROBES
 
+# The plan every probe is on. `billing_plan_id` is NOT NULL because the one path
+# that writes a subscription (`_grant_and_record`) always has a plan. None of
+# the queries here reads the plan, so which one doesn't matter.
+PLAN_SERVICE_ID = "svc-reconcile-probe"
+PLAN_FLASH_ID = "plan-reconcile-probe"
+
+
+async def _probe_plan(db):
+    """The probes' plan, made on first use and mapped onto an existing policy.
+
+    That policy is also the one the probes that hold a policy hold:
+    `granted_scheduling_id` must name a real `scheduling` row, and a fresh
+    migration seeds only one.
+    """
+    plan = await get_billing_plan_on_db(
+        db, flash_service_id=PLAN_SERVICE_ID, flash_plan_id=PLAN_FLASH_ID
+    )
+    if plan is None:
+        policy = (
+            await db.execute(text("SELECT id FROM scheduling ORDER BY id LIMIT 1"))
+        ).scalar_one_or_none()
+        assert policy is not None, "no scheduling policy to map the probe plan onto"
+        plan = await insert_billing_plan_on_db(
+            db,
+            flash_service_id=PLAN_SERVICE_ID,
+            flash_plan_id=PLAN_FLASH_ID,
+            scheduling_id=policy,
+        )
+    return plan
+
 
 async def _seed(
-    db, pubkey, *, granted=None, error=None, since=None, status="pending", synced=None
+    db, pubkey, *, granted=False, error=None, since=None, status="pending", synced=None
 ):
+    plan = await _probe_plan(db)
     await db.execute(
         text(
             """
@@ -69,14 +104,15 @@ async def _seed(
               (pubkey, flash_subscription_id, billing_plan_id,
                granted_scheduling_id, flash_status, last_sync_error,
                sync_error_since, last_synced_at, created_at, updated_at)
-            VALUES (:pubkey, :sub, NULL, :granted, :status, :error,
+            VALUES (:pubkey, :sub, :plan, :granted, :status, :error,
                     :since, :synced, :long_ago, :long_ago)
             """
         ),
         {
             "pubkey": pubkey,
             "sub": f"probe-{pubkey[-1]}",
-            "granted": granted,
+            "plan": plan.id,
+            "granted": plan.scheduling_id if granted else None,
             "status": status,
             "error": error,
             "since": since,
@@ -103,7 +139,28 @@ async def _cleanup(db):
         text("DELETE FROM user_subscription WHERE pubkey = ANY(:keys)"),
         {"keys": list(ALL_PROBES)},
     )
+    # After the subscriptions, which reference it.
+    await db.execute(
+        text("DELETE FROM billing_plan WHERE flash_service_id = :s"),
+        {"s": PLAN_SERVICE_ID},
+    )
     await db.commit()
+
+
+async def _finish():
+    """Remove every probe row, a failed test's included, then free the pool.
+
+    Left behind, the probe plan is an on-sale mapping onto the lowest policy,
+    and while it exists `/billing/plans` drops that policy's free row. This
+    runs in a fresh session because the test's own has closed by then. The pool
+    is freed either way: its connections belong to this test's event loop, and
+    the next test's loop would inherit them closed.
+    """
+    try:
+        async with db_session() as db:
+            await _cleanup(db)
+    finally:
+        await engine.dispose()
 
 
 def test_the_error_clock_runs_from_the_first_failure_of_its_kind():
@@ -132,10 +189,8 @@ def test_the_error_clock_runs_from_the_first_failure_of_its_kind():
                 reason, restarted = await _row(db, CLOCK)
                 assert reason == "vault down"
                 assert restarted > started, "a new reason kept the old clock"
-
-                await _cleanup(db)
         finally:
-            await engine.dispose()
+            await _finish()
 
     asyncio.run(_run())
 
@@ -154,7 +209,7 @@ def test_an_abandoned_checkout_drops_out_and_everything_else_stays():
                 await _seed(db, STILL_YOUNG, error=UNKNOWN, since=RECENTLY)
                 # Flash forgot a subscriber who holds a policy. A real anomaly;
                 # keep asking however long it has been true.
-                await _seed(db, GRANTED, granted=4, error=UNKNOWN, since=LONG_AGO)
+                await _seed(db, GRANTED, granted=True, error=UNKNOWN, since=LONG_AGO)
                 # We could not ask, rather than asked and got nothing.
                 await _seed(db, OTHER_ERROR, error="vault down", since=LONG_AGO)
                 await db.commit()
@@ -194,10 +249,8 @@ def test_an_abandoned_checkout_drops_out_and_everything_else_stays():
                         f"{row['pubkey'][-1]}: python says abandoned={in_python}, "
                         f"sql says {in_sql}"
                     )
-
-                await _cleanup(db)
         finally:
-            await engine.dispose()
+            await _finish()
 
     asyncio.run(_run())
 
@@ -255,11 +308,11 @@ def test_an_abandoned_checkout_leaves_the_alarming_sections_for_its_own():
                         db, limit=500, now=NOW, abandoned=ABANDONED_RULE
                     )
                 }
+                # Only the probes: real abandoned checkouts may share the database.
+                counted &= set(ALL_PROBES)
                 assert counted == {ABANDONED}, "the abandoned section disagrees with the sweep"
-
-                await _cleanup(db)
         finally:
-            await engine.dispose()
+            await _finish()
 
     asyncio.run(_run())
 
@@ -284,7 +337,7 @@ def test_a_settled_subscription_stops_being_read_and_the_unsettled_stay():
                 # Expired but still holding a policy: a tier standing on a dead
                 # subscription is the anomaly the sweep exists to catch.
                 await _seed(
-                    db, SETTLED_GRANTED, status="expired", granted=4,
+                    db, SETTLED_GRANTED, status="expired", granted=True,
                     synced=READ_LAST_MONTH,
                 )
                 # Dropping this one would strand the error: a row we no longer
@@ -332,9 +385,7 @@ def test_a_settled_subscription_stops_being_read_and_the_unsettled_stay():
                 }
                 assert SETTLED not in stale, "settled subscription leaked into stale syncs"
                 assert PAUSED in stale, "a row we still read must stay visible"
-
-                await _cleanup(db)
         finally:
-            await engine.dispose()
+            await _finish()
 
     asyncio.run(_run())
