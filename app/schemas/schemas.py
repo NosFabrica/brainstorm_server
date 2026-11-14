@@ -852,6 +852,41 @@ class PublishedAssistantDutyMenu(BaseModel):
     relays: list[AssistantRelayResult]
 
 
+# Your Assistant's Dictionary (ADR assistant-dictionary/0001 D6). Brainstorm-UI's
+# `services/api/users.ts` `AssistantConceptResult` reads it.
+
+
+class AssistantConceptResult(BaseModel):
+    """What happened to one concept: added, removed, left alone, or why not."""
+
+    # The community header's coordinate, as the request named it.
+    community: str
+    # The Assistant's copy, `39998:<assistant>:<d>`; null when not found.
+    local: str | None = None
+    # The signed event, when one was published.
+    event: dict[str, Any] | None = None
+    status: Literal[
+        "published",
+        "updated",
+        "unchanged",
+        "withdrawn",
+        "conflict",
+        "not_found",
+        "failed",
+    ]
+    # A sentence, for conflict, not_found and failed.
+    error: str | None = None
+    # How each relay took this concept's event; empty when nothing was sent.
+    relays: list[AssistantRelayResult] = Field(default_factory=list)
+
+
+class AssistantDictionaryResult(BaseModel):
+    """A press on the caller's Assistant's Dictionary: one result per concept."""
+
+    assistant: str
+    concepts: list[AssistantConceptResult]
+
+
 # Your Assistant's Treasure Map. camelCase, as Brainstorm-UI's
 # `lib/assistantTreasureMap.ts` reads it.
 

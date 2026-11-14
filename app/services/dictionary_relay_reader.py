@@ -1,0 +1,124 @@
+"""Strict reads of kind-39998 headers from the dictionary relay (ADR
+assistant-dictionary/0001 D3).
+
+The Assistant must never publish over a header it couldn't see, so a relay
+that doesn't answer raises `RelayDidNotAnswer` here — a transport error, a
+socket closed before EOSE, a timeout, a `CLOSED` or a message that isn't JSON —
+and never reads as one holding nothing. Any other error is a bug, and
+propagates as itself. A plain REQ-until-EOSE over one websocket, as
+`designation_service` `fetch_latest_designation` reads kind 10040: the
+nostr_sdk `Client` returns before its socket is open, so an immediate
+`fetch_events` silently comes back empty. The read's deadline covers opening
+the socket and the answer; the close has its own bound, so an answer read in
+time is kept. Each event is checked through `verify_signed_event`, as every signed
+event from outside is: one it rejects, or that isn't shaped like an event, is
+skipped and never fails the read. A header's `d` is its first `d` tag's value
+(`d_of`), so one whose first `d` has none is at no `d` at all.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+import websockets
+from websockets.exceptions import WebSocketException
+
+from app.services.dictionary_copy_build import HEADER_KIND, d_of
+from app.utils.signed_event import SignedEventRejected, verify_signed_event
+
+# The read's bound (D3): opening the socket and the answer, not the close. Read
+# when a read starts, so a test can shrink it.
+READ_TIMEOUT_SECONDS = 5.0
+# websockets waits 10 s for the close handshake by default, and a stalled relay
+# never sends it; by then the answer is already read (as `designation_service`).
+CLOSE_TIMEOUT_SECONDS = 1.0
+
+
+class RelayDidNotAnswer(Exception):
+    """The relay didn't answer in full: it couldn't be reached, closed the socket
+    or the request (`CLOSED`) before EOSE, sent something that isn't JSON, or ran
+    past `READ_TIMEOUT_SECONDS`."""
+
+
+def _verified(event: dict[str, Any], author: str) -> bool:
+    """Is `event` a validly signed header by `author`, the one it's filed under?"""
+    try:
+        verify_signed_event(event, kind=HEADER_KIND, author=author)
+    except SignedEventRejected:
+        return False
+    return True
+
+
+def _newer(event: dict[str, Any], than: dict[str, Any] | None) -> bool:
+    """NIP-01's rule for one replaceable address: the later `created_at`, then
+    the lower id."""
+    if than is None:
+        return True
+    a, b = int(event.get("created_at") or 0), int(than.get("created_at") or 0)
+    return a > b or (a == b and str(event.get("id")) < str(than.get("id")))
+
+
+async def fetch_newest_headers(
+    relay: str, authors: list[str], ds: list[str]
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """The newest verified kind-39998 event `relay` holds for each (author, `d`)
+    among `authors` and `ds`. Raises `RelayDidNotAnswer` when the relay doesn't
+    answer in full; any other error is a bug, and propagates as itself."""
+    if not authors or not ds:
+        return {}
+    sub_id = f"dictionary-{authors[0][:8]}"
+    req = json.dumps(
+        ["REQ", sub_id, {"kinds": [HEADER_KIND], "authors": authors, "#d": ds}]
+    )
+    wanted_authors, wanted_ds = set(authors), set(ds)
+    newest: dict[tuple[str, str], dict[str, Any]] = {}
+    timeout = READ_TIMEOUT_SECONDS
+    # The deadline covers opening the socket and the answer, not the close, so an
+    # answer read in time is kept.
+    deadline = asyncio.get_running_loop().time() + timeout
+    try:
+        async with websockets.connect(
+            relay, open_timeout=timeout, close_timeout=CLOSE_TIMEOUT_SECONDS
+        ) as ws:
+            async with asyncio.timeout_at(deadline):
+                await ws.send(req)
+                while True:
+                    raw = await ws.recv()
+                    try:
+                        msg = json.loads(raw)
+                    except ValueError as e:  # not JSON, or bytes that aren't UTF-8
+                        raise RelayDidNotAnswer(
+                            "the relay sent something that isn't JSON"
+                        ) from e
+                    if not isinstance(msg, list) or len(msg) < 2 or msg[1] != sub_id:
+                        continue
+                    if msg[0] == "EVENT" and len(msg) >= 3 and isinstance(msg[2], dict):
+                        event = msg[2]
+                        d = d_of(event)
+                        key = (str(event.get("pubkey")), d or "")
+                        if (
+                            event.get("kind") == HEADER_KIND
+                            and key[0] in wanted_authors
+                            and d in wanted_ds
+                            # Verified before compared: a malformed event can't
+                            # verify, and must be skipped, not fail the read.
+                            and _verified(event, key[0])
+                            and _newer(event, newest.get(key))
+                        ):
+                            newest[key] = event
+                    elif msg[0] == "EOSE":
+                        break
+                    elif msg[0] == "CLOSED":
+                        reason = msg[2] if len(msg) > 2 else ""
+                        raise RelayDidNotAnswer(f"relay closed the request: {reason}")
+            try:
+                await ws.send(json.dumps(["CLOSE", sub_id]))
+            except Exception:
+                pass
+    except (OSError, WebSocketException) as e:
+        # Unreachable, a socket closed before EOSE, or past the deadline: the
+        # deadline's `TimeoutError` is an `OSError`.
+        raise RelayDidNotAnswer(repr(e)) from e
+    return newest

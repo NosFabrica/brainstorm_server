@@ -10,6 +10,7 @@ from app.schemas.graperank_schemas import (
 )
 from app.schemas.schemas import (
     AdminStats,
+    AssistantDictionaryResult,
     AssistantDutyMenuOffer,
     AssistantTreasureMapCheck,
     AuthSuccessfulToken,
@@ -165,6 +166,10 @@ class GetAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
 
 class PublishAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
     data: PublishedAssistantTreasureMap
+
+
+class AssistantDictionaryResponse(SuccessfulResponseDataSchema):
+    data: AssistantDictionaryResult
 
 
 class AdminStatsResponse(SuccessfulResponseDataSchema):
