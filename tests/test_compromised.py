@@ -288,12 +288,14 @@ def admin_client(client):
     yield client
 
 
-def test_put_records_the_account_and_zeroes_it_before_answering(
+def test_put_records_the_account_and_zeroes_it_after_answering(
     admin_client, caller, zeroing, monkeypatch
 ):
-    """The real route and the real zeroing (DB and relay faked): by the time PUT
-    answers, every Observer the relay says holds a TA about the account has
-    published its rank-0 replacement, and the answer carries the outcome."""
+    """The real route and the real zeroing (DB and relay faked): PUT answers at
+    once, pending, and the zeroing it started then has every Observer the relay
+    says holds a TA about the account publish its rank-0 replacement."""
+    import time
+
     a, b, c = sorted(zeroing.keys)
     zeroing.relay = {zeroing.signer[a], zeroing.signer[c]}
     rows = {}
@@ -318,7 +320,11 @@ def test_put_records_the_account_and_zeroes_it_before_answering(
 
     assert response.status_code == 200, response.text
     assert response.json()["pubkey"] == HEX
-    report = response.json()["last_zero_report"]
+
+    deadline = time.monotonic() + 5
+    while not zeroing.recorded and time.monotonic() < deadline:
+        time.sleep(0.01)
+    report = zeroing.recorded[-1]
     assert report["complete"] is True and report["acked"] == 2
     published = [json.loads(e.json) for e in zeroing.sent]
     assert sorted(e["pubkey"] for e in published) == sorted(
@@ -329,18 +335,15 @@ def test_put_records_the_account_and_zeroes_it_before_answering(
         assert (event["kind"], tags["d"], tags["rank"]) == (TA_KIND, HEX, "0")
 
 
-def test_put_does_not_wait_past_its_limit(admin_client, monkeypatch):
-    """A zeroing that outlasts the wait keeps going; PUT answers with the row
-    as it stands (the previous report) instead of hanging."""
-    import app.routers.admin.compromised.router as router_module
-
+def test_put_answers_before_a_slow_zeroing_ends(admin_client, monkeypatch):
+    """A zeroing over every Observer can outlast any HTTP timeout: PUT answers
+    with the row as it stands (pending) and the zeroing keeps going."""
     started, release = [], asyncio.Event()
 
     async def _slow(pubkey):
         started.append(pubkey)
         await release.wait()
 
-    monkeypatch.setattr(router_module, "ZERO_WAIT_SECONDS", 0.05)
     monkeypatch.setattr(svc, "zero_compromised", _slow)
     monkeypatch.setattr(f"{ROUTER}.add_compromised", AsyncMock(return_value=_row()))
     monkeypatch.setattr(f"{ROUTER}.get_compromised", AsyncMock(return_value=_row()))
@@ -495,6 +498,22 @@ def test_a_proof_is_fetched_from_the_first_relay_holding_a_valid_copy(monkeypatc
 
     assert got == event
     assert asked[0] == "wss://hint"
+
+
+def test_a_relay_that_never_answers_does_not_hold_up_the_proof(monkeypatch):
+    event = _signed(Keys.generate())
+
+    async def _fetch(relay, flt):
+        if relay == "wss://hint":
+            await asyncio.sleep(3600)  # hangs: asked alongside the others, not first
+        return event if relay == settings.nostr_transfer_to_relay else None
+
+    monkeypatch.setattr(svc, "fetch_latest", _fetch)
+
+    async def body():
+        return await asyncio.wait_for(svc.fetch_proof_event(event["id"], ["wss://hint"]), 1)
+
+    assert asyncio.run(body()) == event
 
 
 def test_a_proof_no_relay_holds_is_a_422(monkeypatch):

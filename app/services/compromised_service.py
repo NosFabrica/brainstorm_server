@@ -467,8 +467,9 @@ def verified_proof(raw: Any) -> dict:
 
 async def fetch_proof_event(event_id: str, hints: list[str]) -> dict:
     """The event with this id, from the nevent's relay hints, the relay we sync
-    from, our own, then `compromised_proof_relays`. 422 when none holds a valid
-    copy."""
+    from, our own and `compromised_proof_relays`, all asked at once: the first
+    valid copy wins, so a dead relay costs one fetch timeout, not one each. 422
+    when none holds a valid copy."""
     relays = list(
         dict.fromkeys(
             [
@@ -479,18 +480,30 @@ async def fetch_proof_event(event_id: str, hints: list[str]) -> dict:
             ]
         )
     )
-    for relay in relays:
+
+    async def _from(relay: str) -> dict | None:
         try:
             raw = await fetch_latest(relay, {"ids": [event_id], "limit": 1})
         except Exception as e:  # noqa: BLE001
             logger.warning(f"compromised: proof fetch from {relay} failed: {e!r}")
-            continue
+            return None
         if raw is None or raw.get("id") != event_id:
-            continue
+            return None
         try:
             return verified_proof(raw)
         except HTTPException:
             logger.warning(f"compromised: {relay} sent an invalid copy of {event_id}")
+            return None
+
+    tasks = [asyncio.create_task(_from(relay)) for relay in relays]
+    try:
+        for next_done in asyncio.as_completed(tasks):
+            proof = await next_done
+            if proof is not None:
+                return proof
+    finally:
+        for task in tasks:
+            task.cancel()
     raise HTTPException(
         status_code=422,
         detail=(
