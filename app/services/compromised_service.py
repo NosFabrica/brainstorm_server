@@ -14,9 +14,11 @@ about the account at rank 0, clears its stored scores in Neo4j and drops it
 from every whitelist snapshot. Adding runs it; `scripts/zero_compromised_ta.py`
 runs it from a pod with per-observer output. Idempotent.
 
-Not covered: what the account rated still counts in GrapeRank (its follows,
-mutes, reports and designations carry the influence the worker computes for
-it), until the worker learns about compromised accounts.
+What the account rated counts for nothing: every calc request carries the
+marked keys as `compromised_pubkeys` (`scheduler_lanes.enqueue_calc_request`),
+and the GrapeRank worker holds them at Influence 0 inside the sweep, a
+designation pin included, so their follows, mutes, reports and designations
+carry no weight. That applies from each Observer's next run.
 """
 
 from __future__ import annotations
