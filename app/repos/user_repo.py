@@ -1460,3 +1460,19 @@ async def clear_observer_scores(
         await result.consume()
 
     await session.execute_write(work)
+
+
+async def count_nodes_without_user_id(session) -> tuple[int, int]:
+    """(nodes that should have a `user_id` and do not, nodes that cannot have one
+    because their pubkey is not 64-char lowercase hex). Reads `user_id` on every
+    node, `pubkey` only on those without one."""
+    result = await session.run(
+        """
+        MATCH (u:NostrUser) WHERE u.user_id IS NULL
+        WITH u.pubkey IS NOT NULL AND u.pubkey =~ '[0-9a-f]{64}' AS well_formed
+        RETURN sum(CASE WHEN well_formed THEN 1 ELSE 0 END) AS missing,
+               sum(CASE WHEN well_formed THEN 0 ELSE 1 END) AS malformed
+        """
+    )
+    record = await result.single()
+    return record["missing"], record["malformed"]

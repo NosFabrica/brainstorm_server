@@ -79,3 +79,48 @@ async def pubkeys_for(user_ids: Iterable[int]) -> dict[int, str]:
     async with scorecard_session() as db:
         rows = await db.execute(_READ_BY_ID, {"ids": wanted})
         return {user_id: pubkey for user_id, pubkey in rows}
+
+
+async def count_users() -> int:
+    async with scorecard_session() as db:
+        return (await db.execute(text("SELECT count(*) FROM nostr_user"))).scalar_one()
+
+
+async def all_user_ids() -> set[int]:
+    async with scorecard_session() as db:
+        return set((await db.execute(text("SELECT id FROM nostr_user"))).scalars())
+
+
+_RESTORE = text(
+    """
+    INSERT INTO nostr_user (id, pubkey)
+    SELECT * FROM unnest(:ids, :pubkeys)
+    ON CONFLICT DO NOTHING
+    RETURNING id
+    """
+).bindparams(
+    bindparam("ids", type_=ARRAY(INTEGER)), bindparam("pubkeys", type_=ARRAY(TEXT))
+)
+
+
+async def restore_users(rows: list[tuple[int, str]], highest_id: int) -> int:
+    """Put back `(id, pubkey)` rows the graph holds and the table lost, and move
+    the sequence past `highest_id`. For use after a restore only: every other
+    writer lets the sequence choose the id. Returns the rows inserted."""
+    _validated(pubkey for _, pubkey in rows)
+    inserted = 0
+    async with scorecard_session() as db:
+        if rows:
+            result = await db.execute(
+                _RESTORE,
+                {"ids": [i for i, _ in rows], "pubkeys": [pk for _, pk in rows]},
+            )
+            inserted = len(result.all())
+        await db.execute(
+            text(
+                "SELECT setval('nostr_user_id_seq', GREATEST(:highest, "
+                "(SELECT last_value FROM nostr_user_id_seq)))"
+            ),
+            {"highest": max(highest_id, 1)},
+        )
+    return inserted

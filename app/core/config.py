@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     # Scorecards). Required once user_ids_enabled is on.
     scorecard_db_url: str = Field(default="")
     user_ids_enabled: bool = Field(default=False)
+    # How often the count of user nodes without a user_id runs (it reads every node).
+    user_id_check_interval_hours: float = Field(default=24.0, gt=0)
     # Flash payments. Off by default so self-hosted and one-click deployments —
     # which have no Flash account — never mount the surface at all. Enabling it
     # without credentials refuses to start (see flash_webhook_service).
