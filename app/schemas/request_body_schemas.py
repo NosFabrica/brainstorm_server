@@ -274,7 +274,16 @@ class CompromisedPubkeyBody(BaseModel):
     proof_event: dict[str, Any] | None = None
     proof_event_id: str | None = None
     successor_pubkey: str | None = None  # npub or hex; stored as hex
+    # The new account's post about the move: hex, note1… or nevent1…; stored as hex.
+    successor_event_id: str | None = None
     reason: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("successor_event_id")
+    @classmethod
+    def _successor_event(cls, value: str | None) -> str | None:
+        from app.services.compromised_service import parse_event_id
+
+        return None if value is None else parse_event_id(value)
 
     @field_validator("proof_event_id")
     @classmethod
@@ -308,11 +317,13 @@ class CheckCompromisedBody(BaseModel):
 
 
 class CompromisedMetadataBody(BaseModel):
-    """`PATCH /admin/compromised/{pubkey}`: the successor and/or the note of a
-    marked account, nothing else, and no zeroing. A field left out stays;
+    """`PATCH /admin/compromised/{pubkey}`: the successor, its post about the
+    move and/or the note of a marked account, nothing else, and no zeroing. A field left out stays;
     `null` clears it."""
 
     successor_pubkey: str | None = None  # npub or hex; stored as hex
+    # The new account's post about the move: hex, note1… or nevent1…; stored as hex.
+    successor_event_id: str | None = None
     reason: str | None = Field(default=None, max_length=2000)
 
     @field_validator("successor_pubkey")
@@ -321,3 +332,10 @@ class CompromisedMetadataBody(BaseModel):
         from app.services.compromised_service import parse_pubkey
 
         return None if value is None else parse_pubkey(value)
+
+    @field_validator("successor_event_id")
+    @classmethod
+    def _successor_event(cls, value: str | None) -> str | None:
+        from app.services.compromised_service import parse_event_id
+
+        return None if value is None else parse_event_id(value)

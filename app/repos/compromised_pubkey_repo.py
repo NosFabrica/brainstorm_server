@@ -50,6 +50,7 @@ async def upsert_compromised_on_db(
     successor_pubkey: str | None,
     reason: str | None,
     added_by: str | None,
+    successor_event_id: str | None = None,
 ) -> CompromisedPubkey:
     """Insert or replace every field but `created_at`."""
     stmt = insert(CompromisedPubkey).values(
@@ -57,6 +58,7 @@ async def upsert_compromised_on_db(
         proof_event=proof_event,
         proof_event_id=proof_event["id"],
         successor_pubkey=successor_pubkey,
+        successor_event_id=successor_event_id,
         reason=reason,
         added_by=added_by,
     )
@@ -66,6 +68,7 @@ async def upsert_compromised_on_db(
             "proof_event": stmt.excluded.proof_event,
             "proof_event_id": stmt.excluded.proof_event_id,
             "successor_pubkey": stmt.excluded.successor_pubkey,
+            "successor_event_id": stmt.excluded.successor_event_id,
             "reason": stmt.excluded.reason,
             "added_by": stmt.excluded.added_by,
             "updated_at": func.now(),

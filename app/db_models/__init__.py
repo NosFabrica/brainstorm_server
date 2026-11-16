@@ -471,6 +471,10 @@ class CompromisedPubkey(TimestampMixin, Base):
     proof_event_id: Mapped[str] = mapped_column(String, nullable=False)
     # The owner's new key, once known (hex).
     successor_pubkey: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The new account's own post about the move (hex id), shown with it so readers
+    # hear it from the owner. Its author can't be the compromised key, so the id
+    # is enough: nobody but the owner can delete it.
+    successor_event_id: Mapped[str | None] = mapped_column(String, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     added_by: Mapped[str | None] = mapped_column(String, nullable=True)  # admin pubkey
     # When a zeroing was last asked for (every PUT): one that hasn't reported since

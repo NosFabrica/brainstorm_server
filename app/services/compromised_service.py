@@ -104,9 +104,13 @@ def parse_pubkey(value: str) -> str:
 
 
 def parse_event_id(value: str) -> str:
-    """hex, note1… or nevent1… → hex. ValueError if none of those."""
+    """hex, note1… or nevent1… → hex. ValueError if none of those.
+    (nostr-sdk's EventId.parse takes hex and note1… but not nevent1….)"""
+    value = value.strip()
     try:
-        return EventId.parse(value.strip()).to_hex()
+        if value.startswith("nevent1"):
+            return Nip19Event.from_bech32(value).event_id().to_hex()
+        return EventId.parse(value).to_hex()
     except Exception as e:  # noqa: BLE001
         raise ValueError(f"{value!r} is not an event id") from e
 
@@ -408,6 +412,7 @@ async def check_compromised(pubkeys: list[str]) -> list[CompromisedStatus]:
                     proof_event_id=row.proof_event_id,
                     proof_event=row.proof_event,
                     successor_pubkey=row.successor_pubkey,
+                    successor_event_id=row.successor_event_id,
                 )
             )
     return out
@@ -517,6 +522,7 @@ async def add_compromised(
             keep("successor_pubkey"),
             keep("reason"),
             added_by,
+            successor_event_id=keep("successor_event_id"),
         )
         await db.commit()
         forget_compromised_authors()

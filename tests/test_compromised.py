@@ -33,9 +33,21 @@ ROUTER = "app.routers.admin.compromised.router"
 
 
 def test_pubkeys_and_event_ids_parse_to_hex():
+    from nostr_sdk import EventId, Nip19Event
+
     assert parse_pubkey(NPUB) == HEX
     assert parse_pubkey(f" {HEX} ") == HEX
     assert parse_event_id(PROOF) == PROOF
+    assert parse_event_id(EventId.parse(PROOF).to_bech32()) == PROOF  # note1…
+    # nevent1…, which nostr-sdk's EventId.parse refuses: Derek's real proof pointer.
+    real = (
+        "nevent1qgsr7acdvhf6we9fch94qwhpy0nza36e3tgrtkpku25ppuu80f69kfqqyqqqqpwtucd5"
+        "rjwqyldad25fekx5zxf67wslhzwl6qahmpnvmv6mu40hxx9"
+    )
+    assert parse_event_id(real) == (
+        "000005cbe61b41c9c027dbd6aa89cd8d41193af3a1fb89dfd03b7d866cdb35be"
+    )
+    assert parse_event_id(Nip19Event(EventId.parse(PROOF), None, None, []).to_bech32()) == PROOF
     with pytest.raises(ValueError):
         parse_pubkey("npub1nope")
     with pytest.raises(ValueError):
@@ -514,12 +526,15 @@ def stored_rows(monkeypatch):
     async def _select(db, pubkey):
         return rows.get(pubkey)
 
-    async def _upsert(db, pubkey, proof, successor, reason, added_by):
+    async def _upsert(
+        db, pubkey, proof, successor, reason, added_by, successor_event_id=None
+    ):
         rows[pubkey] = SimpleNamespace(
             pubkey=pubkey,
             proof_event=proof,
             proof_event_id=proof["id"],
             successor_pubkey=successor,
+            successor_event_id=successor_event_id,
             reason=reason,
             added_by=added_by,
         )
@@ -587,6 +602,7 @@ def marked(monkeypatch):
         proof_event_id=PROOF,
         proof_event={"id": PROOF, "content": "my key was stolen"},
         successor_pubkey="c" * 64,
+        successor_event_id=None,
     )
     from contextlib import asynccontextmanager
 
@@ -623,6 +639,7 @@ def test_an_unmarked_account_reads_false(anonymous, marked):
         "proof_event_id": None,
         "proof_event": None,
         "successor_pubkey": None,
+        "successor_event_id": None,
     }
 
 
@@ -822,3 +839,64 @@ def test_the_overview_says_whether_the_key_is_compromised(monkeypatch):
 
     assert overview(HEX).compromised is True
     assert overview("1" * 64).compromised is False
+
+
+
+def test_the_successor_post_is_kept_by_later_puts_and_read_publicly(
+    stored_rows, monkeypatch
+):
+    """The new account's post about the move: set once (as an nevent here),
+    stored as hex, kept by a PUT that leaves it out, and returned by the public
+    check, so the UI needs no list of its own."""
+    from nostr_sdk import EventId, Nip19Event
+
+    post = "5" * 64
+    nevent = Nip19Event(EventId.parse(post), None, None, []).to_bech32()
+    event = _signed(Keys.generate())
+    _add({"proof_event": event, "successor_event_id": nevent})
+    assert stored_rows[HEX].successor_event_id == post
+
+    _add({"reason": "later"})
+    assert stored_rows[HEX].successor_event_id == post
+
+    row = SimpleNamespace(
+        **vars(stored_rows[HEX]), created_at=datetime(2026, 11, 16), compromised=True
+    )
+
+    async def _select(db, pubkeys):
+        return [row]
+
+    monkeypatch.setattr(svc, "select_compromised_in_on_db", _select)
+    (status,) = asyncio.run(svc.check_compromised([HEX]))
+    assert status.successor_event_id == post
+
+
+def test_patch_sets_and_clears_the_successor_post(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    class _Db:
+        async def commit(self):
+            pass
+
+        async def refresh(self, row):
+            pass
+
+    @asynccontextmanager
+    async def _session():
+        yield _Db()
+
+    seen = []
+
+    async def _update(db, pubkey, values):
+        seen.append(values)
+        return _row()
+
+    monkeypatch.setattr(svc, "db_session", _session)
+    monkeypatch.setattr(svc, "update_compromised_metadata_on_db", _update)
+
+    asyncio.run(svc.update_compromised_metadata(HEX, _metadata({"successor_event_id": PROOF})))
+    asyncio.run(svc.update_compromised_metadata(HEX, _metadata({"successor_event_id": None})))
+    assert seen == [{"successor_event_id": PROOF}, {"successor_event_id": None}]
+
+    with pytest.raises(Exception):
+        _metadata({"successor_event_id": "not-an-id"})

@@ -959,6 +959,7 @@ class CompromisedPubkeyItem(BaseModel):
     proof_event_id: str
     proof_event: dict[str, Any]
     successor_pubkey: str | None
+    successor_event_id: str | None = None
     reason: str | None
     added_by: str | None
     created_at: datetime
@@ -983,6 +984,7 @@ class CompromisedStatus(BaseModel):
     proof_event_id: str | None = None
     proof_event: dict[str, Any] | None = None
     successor_pubkey: str | None = None
+    successor_event_id: str | None = None
 
 
 class CompromisedStatusesData(BaseModel):
