@@ -6,6 +6,7 @@ baseline, and a forced full relay run resets the every-Nth backstop.
 """
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
@@ -45,11 +46,14 @@ class _Relay:
 
     def __init__(self, fail: bool = False):
         self.sent: list = []
+        self.calls: list[list] = []
         self.fail = fail
 
     async def publish(self, url, events) -> PublishStats:
-        self.sent = [e async for e in events]
-        n = len(self.sent)
+        batch = [e async for e in events]
+        self.calls.append(batch)
+        self.sent += batch
+        n = len(batch)
         return PublishStats(n_events=n, n_acked=0 if self.fail else n)
 
 
@@ -206,26 +210,46 @@ def test_a_compromised_account_is_published_at_rank_zero(run):
     assert _persisted(run.repo) == ["hi"]
 
 
-def test_a_compromised_account_is_held_at_zero_on_a_run_that_did_not_change_it(run):
-    """A delta run republishes only changed scores; the zero is re-asserted anyway,
-    so a racing run that overwrote it is put right on the next one."""
+def test_a_compromised_account_is_not_re_signed_on_a_run_that_did_not_change_it(run):
+    """Its zero went out when it was marked (or when its score last changed); a
+    delta run that would send nothing for it sends nothing."""
     run.compromised.add("hi")
 
     run.go(changed=[])
 
-    assert _ranks(run.relay.sent) == {"hi": "0"}
+    assert _ranks(run.relay.sent) == {}
+    assert _persisted(run.repo) == ["hi"]
 
 
-def test_a_compromised_account_below_cutoff_is_zeroed_not_deleted(run):
+def test_a_compromised_account_below_cutoff_is_zeroed_once_not_deleted(run):
     """"gone" was published and is no longer scored: normally a kind-5; compromised,
-    a rank-0 TA that stays in the baseline."""
+    a rank-0 TA instead. It leaves the baseline, so the next run sends nothing."""
     run.compromised.add("gone")
 
     run.go(changed=["hi"])
 
     assert _ranks(run.relay.sent) == {"hi": "90", "gone": "0"}
     assert _deleted(run.relay.sent) == []
-    assert _persisted(run.repo) == ["gone", "hi"]
+    assert _persisted(run.repo) == ["hi"]
+
+
+def test_an_account_marked_mid_run_is_zeroed_after_the_publish(run, monkeypatch):
+    """The run read the marked set before "hi" was marked and published its 90;
+    the re-read after the publish sends rank 0, dated after that 90."""
+    monkeypatch.setattr(
+        upload,
+        "select_compromised_pubkeys_on_db",
+        AsyncMock(side_effect=[set(), {"hi"}]),
+    )
+
+    run.go(changed=["hi"])
+
+    first, late = run.relay.calls
+    assert _ranks(first) == {"hi": "90"}
+    assert _ranks(late) == {"hi": "0"}
+    created = lambda batch: max(json.loads(e.json)["created_at"] for e in batch)  # noqa: E731
+    assert created(late) > created(first)
+    assert _final_status(run.repo) == BrainstormRequestStatus.SUCCESS
 
 
 def test_a_compromised_account_the_observer_never_published_gets_nothing(run):

@@ -121,11 +121,21 @@ async def process_message(message: dict):
         request_row = await select_brainstorm_request_by_id_on_db(
             db, message["private_id"]
         )
+        # A compromised account is counted in no band and whitelisted by no one
+        # (app/services/compromised_service.py).
+        compromised = (
+            await select_compromised_pubkeys_on_db(db) if scorecards else set()
+        )
+        counted = (
+            {k: sc for k, sc in scorecards.items() if sc["observee"] not in compromised}
+            if scorecards and compromised
+            else scorecards
+        )
         (
             number_by_confidence_by_hops,
             whitelist,
         ) = bucket_scorecards_by_confidence_and_hops(
-            scorecards,
+            counted,
             verified_line_for_run(request_row),
         )
 
@@ -158,12 +168,8 @@ async def process_message(message: dict):
         # empty-scorecard run must NOT wipe a good snapshot. An all-below-cutoff
         # run legitimately writes {} (nobody trusted now).
         if status == BrainstormRequestStatus.SUCCESS and scorecards and pubkey:
-            compromised = await select_compromised_pubkeys_on_db(db)
             await upsert_observer_whitelist_on_db(
-                db,
-                pubkey,
-                {pk: v for pk, v in whitelist.items() if pk not in compromised},
-                message["private_id"],
+                db, pubkey, whitelist, message["private_id"]
             )
         if pubkey:
             await update_last_time_calculated_graperank_on_db(db, pubkey)

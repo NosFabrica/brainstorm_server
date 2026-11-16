@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,11 +47,13 @@ from app.message_queue_tasks.ta_signing import (
 from app.neo4j_db.driver import driver as neo4j_driver
 from app.repos.brainstorm_nsec import (
     select_observer_nsecs_on_db,
+    select_observer_signers_on_db,
     select_observers_publishing_on_db,
 )
 from app.repos.compromised_pubkey_repo import (
     delete_compromised_on_db,
     list_compromised_on_db,
+    record_zero_report_on_db,
     select_compromised_in_on_db,
     select_compromised_on_db,
     upsert_compromised_on_db,
@@ -65,8 +67,9 @@ from app.utils.signed_event import SignedEventRejected, verify_signed_event
 
 logger = loggr.get_logger(__name__)
 
-# Signers per relay REQ. Each signer holds at most one 30382 per `d`, so a REQ
-# returns ≤ this many events — under strfry's stock maxFilterLimit (500).
+# Signers per relay REQ. Each signer should hold one 30382 per `d`; the REQ asks
+# for twice that (under strfry's stock maxFilterLimit, 500), and an answer that
+# fills it is treated as truncated: some signer held more than one version.
 AUTHORS_PER_REQ = 200
 _RELAY_TIMEOUT_SECONDS = 60.0
 
@@ -90,46 +93,40 @@ def parse_event_id(value: str) -> str:
 @dataclass(frozen=True)
 class Observer:
     pubkey: str  # the Observer (brainstorm_nsec.pubkey)
-    signer: str  # the key its TAs are signed with
-    nsec: str = field(repr=False)  # plaintext
+    signer: str  # the key its TAs are signed with (brainstorm_nsec.assistant_pubkey)
 
 
 @dataclass
 class ZeroReport:
     pubkey: str
-    # (observer, signer, where its TA was seen: "db" | "relay" | "both")
+    # (observer, signer, where its TA was found: "relay", or "db" when the relay
+    # couldn't be read and `last_published_pubkeys` decided)
     observers: list[tuple[str, str, str]] = field(default_factory=list)
-    relay_read: bool = True  # False: the relay read failed, DB-only selection
+    relay_read: bool = True  # False: the relay read failed (or was skipped)
     published: int = 0
     acked: int = 0
     complete: bool = True  # every rank-0 TA acked (vacuously true on a dry run)
     neo4j_cleared: int = 0
     whitelists_updated: int = 0
 
-
-def select_observers(
-    observers: Iterable[Observer],
-    published_by: set[str],
-    relay_signers: set[str],
-) -> list[tuple[Observer, str]]:
-    """Observers holding a TA about the account, with where we saw it."""
-    out = []
-    for o in observers:
-        in_db = o.pubkey in published_by
-        on_relay = o.signer in relay_signers
-        if in_db or on_relay:
-            source = "both" if in_db and on_relay else "db" if in_db else "relay"
-            out.append((o, source))
-    return out
+    def summary(self) -> dict:
+        """What `last_zero_report` records: the counts, not the observer list."""
+        return {
+            "observers": len(self.observers),
+            "relay_read": self.relay_read,
+            "published": self.published,
+            "acked": self.acked,
+            "complete": self.complete,
+            "neo4j_cleared": self.neo4j_cleared,
+            "whitelists_updated": self.whitelists_updated,
+        }
 
 
 async def sign_zero_tas(
-    pubkey: str, observers: list[Observer]
+    pubkey: str, signers: list[tuple[Keys, str]]
 ) -> AsyncIterator[SignedEvent]:
-    for o in observers:
-        yield sign_ta_json(
-            zero_ta_input(pubkey), Keys.parse(secret_key=o.nsec), o.signer
-        )
+    for keys, signer in signers:
+        yield sign_ta_json(zero_ta_input(pubkey), keys, signer)
         await asyncio.sleep(0)
 
 
@@ -152,7 +149,7 @@ async def fetch_ta_signers(
                         "kinds": [TA_KIND],
                         "#d": [pubkey],
                         "authors": batch,
-                        "limit": len(batch),
+                        "limit": 2 * len(batch),
                     }
                     await ws.send(json.dumps(["REQ", sub, flt]))
                     n_events = 0
@@ -171,9 +168,10 @@ async def fetch_ta_signers(
                                 f"compromised: relay CLOSED {sub}: {msg[2:]}"
                             )
                             return None
-                    if n_events > len(batch):
+                    if n_events >= 2 * len(batch):
                         logger.warning(
-                            f"compromised: relay sent {n_events} for {len(batch)} signers"
+                            f"compromised: relay filled the limit ({n_events}) for "
+                            f"{len(batch)} signers; the answer may be truncated"
                         )
                         return None
     except Exception as e:  # noqa: BLE001
@@ -183,15 +181,43 @@ async def fetch_ta_signers(
 
 
 async def load_observers(db: AsyncDBSession, observer: str | None) -> list[Observer]:
-    """Every Observer (or one) with its signer."""
-    out = []
-    for pubkey, nsec in await select_observer_nsecs_on_db(db, observer):
+    """Every Observer (or one) with its signer, from the stored `assistant_pubkey`;
+    an nsec is decrypted only for a row the startup backfill hasn't reached."""
+    rows = await select_observer_signers_on_db(db, observer)
+    derived: dict[str, str] = {}
+    missing = [pk for pk, signer in rows if not signer]
+    for pk, nsec in await select_observer_nsecs_on_db(db, missing):
         try:
-            signer = Keys.parse(secret_key=nsec).public_key().to_hex()
+            derived[pk] = Keys.parse(secret_key=nsec).public_key().to_hex()
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"compromised: bad nsec for observer {pubkey}: {e}")
+            logger.warning(f"compromised: bad nsec for observer {pk}: {e}")
+    return [
+        Observer(pk, signer or derived[pk])
+        for pk, signer in rows
+        if signer or pk in derived
+    ]
+
+
+async def signing_keys(
+    db: AsyncDBSession, observers: list[Observer]
+) -> list[tuple[Keys, str]]:
+    """The keys to sign with, decrypted for these Observers only. Signs with the
+    nsec's own pubkey; a stored signer that disagrees is logged."""
+    expected = {o.pubkey: o.signer for o in observers}
+    out = []
+    for pk, nsec in await select_observer_nsecs_on_db(db, list(expected)):
+        try:
+            keys = Keys.parse(secret_key=nsec)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"compromised: bad nsec for observer {pk}: {e}")
             continue
-        out.append(Observer(pubkey, signer, nsec))
+        signer = keys.public_key().to_hex()
+        if signer != expected[pk]:
+            logger.warning(
+                f"compromised: observer {pk}'s stored signer {expected[pk]} is not "
+                f"its nsec's {signer}; signing with the nsec"
+            )
+        out.append((keys, signer))
     return out
 
 
@@ -211,40 +237,50 @@ async def zero_compromised(
     db_only: bool = False,
 ) -> ZeroReport:
     """Re-sign every Observer's TA about `pubkey` at rank 0, and, with `apply`,
-    clear its Neo4j scores and whitelist entries. `observer` limits it to one
-    Observer (the TA half only). A failed relay read falls back to the DB's
-    selection (`relay_read=False`): it may miss TAs the DB lost track of."""
+    clear its Neo4j scores and whitelist entries and record the outcome on its
+    row (`last_zero_report`). `observer` limits it to one Observer (the TA half
+    only, and nothing recorded).
+
+    The relay says which Observers hold a TA. Only when it can't be read (or with
+    `db_only`) does `last_published_pubkeys` decide, a scan of every Observer's
+    blob that misses TAs the DB lost track of (`relay_read=False`)."""
     relay = settings.nostr_upload_ta_events_relay
     report = ZeroReport(pubkey)
     async with db_session() as db:
         observers = await load_observers(db, observer)
-        published_by = await select_observers_publishing_on_db(db, pubkey, observer)
-    relay_signers: set[str] = set()
+    relay_signers = None
     if not db_only:
-        got = await fetch_ta_signers(
+        relay_signers = await fetch_ta_signers(
             relay, pubkey, sorted({o.signer for o in observers})
         )
-        report.relay_read = got is not None
-        relay_signers = got or set()
-    selected = select_observers(observers, published_by, relay_signers)
-    report.observers = [(o.pubkey, o.signer, src) for o, src in selected]
+    report.relay_read = relay_signers is not None
+    if relay_signers is not None:
+        selected = [o for o in observers if o.signer in relay_signers]
+        source = "relay"
+    else:
+        async with db_session() as db:
+            published_by = await select_observers_publishing_on_db(db, pubkey, observer)
+        selected = [o for o in observers if o.pubkey in published_by]
+        source = "db"
+    report.observers = [(o.pubkey, o.signer, source) for o in selected]
     logger.info(
         f"compromised {pubkey}: {len(selected)} of {len(observers)} observers hold a "
-        f"TA ({len(published_by)} by DB, {len(relay_signers)} on relay, "
-        f"relay_read={report.relay_read}) apply={apply}"
+        f"TA (by {source}) apply={apply}"
     )
     if not apply:
         return report
 
     if selected:
-        stats = await publish_events(
-            relay, sign_zero_tas(pubkey, [o for o, _ in selected])
-        )
+        async with db_session() as db:
+            keys = await signing_keys(db, selected)
+        stats = await publish_events(relay, sign_zero_tas(pubkey, keys))
         report.published, report.acked = stats.n_events, stats.n_acked
-        report.complete = not stats.aborted and stats.n_unacked == 0
+        report.complete = (
+            not stats.aborted and stats.n_unacked == 0 and len(keys) == len(selected)
+        )
         if not report.complete:
             logger.error(
-                f"compromised {pubkey}: {stats.n_acked}/{stats.n_events} rank-0 TAs "
+                f"compromised {pubkey}: {stats.n_acked}/{len(selected)} rank-0 TAs "
                 f"acked: {stats.failure_samples}"
             )
     if observer is None:
@@ -253,6 +289,7 @@ async def zero_compromised(
             report.whitelists_updated = await remove_pubkey_from_whitelists_on_db(
                 db, pubkey
             )
+            await record_zero_report_on_db(db, pubkey, report.summary())
             await db.commit()
     logger.info(
         f"compromised {pubkey}: published {report.published}, acked {report.acked}, "
@@ -263,11 +300,18 @@ async def zero_compromised(
 
 
 async def zero_compromised_in_background(pubkey: str) -> None:
-    """For the admin route: run after the response, never raise."""
+    """For the admin route: run after the response, never raise; a failure is
+    recorded on the row, where `GET /admin/compromised` shows it."""
     try:
         await zero_compromised(pubkey)
     except Exception as e:  # noqa: BLE001
         logger.error(f"compromised {pubkey}: zeroing failed: {e!r}")
+        try:
+            async with db_session() as db:
+                await record_zero_report_on_db(db, pubkey, {"error": repr(e)})
+                await db.commit()
+        except Exception as e2:  # noqa: BLE001
+            logger.error(f"compromised {pubkey}: recording the failure failed: {e2!r}")
 
 
 # --- admin ---------------------------------------------------------------------

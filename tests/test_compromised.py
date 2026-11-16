@@ -23,7 +23,6 @@ from app.services.compromised_service import (
     Observer,
     parse_event_id,
     parse_pubkey,
-    select_observers,
     sign_zero_tas,
 )
 
@@ -56,107 +55,199 @@ def test_holds_pubkey_only_at_an_entry_boundary():
     assert holds_pubkey(straddle + bytes.fromhex(HEX), HEX)
 
 
-def _observer(n: int) -> Observer:
-    keys = Keys.generate()
-    return Observer(
-        f"{n:064x}", keys.public_key().to_hex(), keys.secret_key().to_bech32()
-    )
-
-
-def test_select_unions_db_and_relay():
-    a, b, c, d = (_observer(i) for i in range(4))
-    got = select_observers(
-        [a, b, c, d],
-        published_by={a.pubkey, b.pubkey},
-        relay_signers={b.signer, c.signer},
-    )
-    assert got == [(a, "db"), (b, "both"), (c, "relay")]
+def _keys(n: int = 3) -> list[Keys]:
+    return [Keys.generate() for _ in range(n)]
 
 
 def test_zero_ta_is_signed_by_each_observer_at_rank_zero():
-    observers = [_observer(1), _observer(2)]
+    keys = _keys(2)
 
     async def collect():
-        return [e async for e in sign_zero_tas(HEX, observers)]
+        signers = [(k, k.public_key().to_hex()) for k in keys]
+        return [e async for e in sign_zero_tas(HEX, signers)]
 
     signed = asyncio.run(collect())
-    for s, o in zip(signed, observers):
-        event = Event.from_json(s.json)
+    for s_, k in zip(signed, keys):
+        event = Event.from_json(s_.json)
         assert event.verify()
-        assert event.author().to_hex() == o.signer
+        assert event.author().to_hex() == k.public_key().to_hex()
         assert event.kind().as_u16() == TA_KIND
-        tags = {t[0]: t[1] for t in json.loads(s.json)["tags"]}
+        tags = {t[0]: t[1] for t in json.loads(s_.json)["tags"]}
         assert tags["d"] == HEX
         assert tags["rank"] == "0"
         assert tags["followers"] == tags["reporters"] == tags["muters"] == "0"
         assert "hops" not in tags
 
 
-def test_a_failed_relay_read_falls_back_to_the_db_and_says_so(monkeypatch):
-    """`zero_compromised` with the relay down: the DB's selection is zeroed, and
-    the report flags the read so the script exits non-zero."""
-    a, b = _observer(1), _observer(2)
-    sent = []
+class _Db:
+    async def commit(self):
+        pass
 
-    async def _publish(url, events):
-        sent.extend([e async for e in events])
-        return SimpleNamespace(n_events=len(sent), n_acked=len(sent), aborted=False, n_unacked=0)
 
-    class _Db:
-        async def commit(self):
-            pass
-
+@pytest.fixture
+def zeroing(monkeypatch):
+    """`zero_compromised` with three Observers, the DB and relay faked; records
+    which nsecs were decrypted, whether the blob scan ran, and what was recorded."""
     from contextlib import asynccontextmanager
+
+    keys = {f"{n:064x}": k for n, k in enumerate(_keys(3))}
+    signer = {pk: k.public_key().to_hex() for pk, k in keys.items()}
+    state = SimpleNamespace(
+        keys=keys,
+        signer=signer,
+        relay=set(),  # signers the relay holds a TA from; None = relay down
+        db_published=set(),
+        decrypted=[],
+        scanned=0,
+        sent=[],
+        recorded=[],
+    )
 
     @asynccontextmanager
     async def _session():
         yield _Db()
 
+    async def _signers(db, observer=None):
+        rows = [(pk, s) for pk, s in signer.items()]
+        return [r for r in rows if observer in (None, r[0])]
+
+    async def _nsecs(db, observers):
+        state.decrypted.extend(observers)
+        return [(pk, keys[pk].secret_key().to_bech32()) for pk in observers]
+
+    async def _scan(db, pubkey, observer=None):
+        state.scanned += 1
+        return set(state.db_published)
+
+    async def _fetch(url, pubkey, signers):
+        return None if state.relay is None else set(state.relay) & set(signers)
+
+    async def _publish(url, events):
+        state.sent.extend([e async for e in events])
+        n = len(state.sent)
+        return SimpleNamespace(
+            n_events=n, n_acked=n, aborted=False, n_unacked=0, failure_samples=[]
+        )
+
+    async def _record(db, pubkey, report):
+        state.recorded.append(report)
+
     monkeypatch.setattr(svc, "db_session", _session)
-    monkeypatch.setattr(svc, "load_observers", AsyncMock(return_value=[a, b]))
-    monkeypatch.setattr(
-        svc, "select_observers_publishing_on_db", AsyncMock(return_value={a.pubkey})
-    )
-    monkeypatch.setattr(svc, "fetch_ta_signers", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "select_observer_signers_on_db", _signers)
+    monkeypatch.setattr(svc, "select_observer_nsecs_on_db", _nsecs)
+    monkeypatch.setattr(svc, "select_observers_publishing_on_db", _scan)
+    monkeypatch.setattr(svc, "fetch_ta_signers", _fetch)
     monkeypatch.setattr(svc, "publish_events", _publish)
     monkeypatch.setattr(svc, "clear_neo4j_scores", AsyncMock(return_value=3))
     monkeypatch.setattr(
         svc, "remove_pubkey_from_whitelists_on_db", AsyncMock(return_value=2)
     )
+    monkeypatch.setattr(svc, "record_zero_report_on_db", _record)
+    return state
+
+
+def test_the_relay_decides_and_only_the_holders_keys_are_decrypted(zeroing):
+    """No blob scan when the relay answers, and the signers come from the stored
+    `assistant_pubkey`: only the one Observer that holds a TA has its nsec read."""
+    a, b, c = sorted(zeroing.keys)
+    zeroing.relay = {zeroing.signer[b]}
 
     report = asyncio.run(svc.zero_compromised(HEX))
 
+    assert report.observers == [(b, zeroing.signer[b], "relay")]
+    assert zeroing.scanned == 0
+    assert zeroing.decrypted == [b]
+    assert [json.loads(e.json)["pubkey"] for e in zeroing.sent] == [zeroing.signer[b]]
+    assert zeroing.recorded == [
+        {
+            "observers": 1,
+            "relay_read": True,
+            "published": 1,
+            "acked": 1,
+            "complete": True,
+            "neo4j_cleared": 3,
+            "whitelists_updated": 2,
+        }
+    ]
+
+
+def test_a_failed_relay_read_falls_back_to_the_db_and_records_it(zeroing):
+    a, b, c = sorted(zeroing.keys)
+    zeroing.relay = None
+    zeroing.db_published = {a}
+
+    report = asyncio.run(svc.zero_compromised(HEX))
+
+    assert zeroing.scanned == 1
     assert report.relay_read is False
-    assert report.observers == [(a.pubkey, a.signer, "db")]
-    assert (report.published, report.acked, report.complete) == (1, 1, True)
-    assert (report.neo4j_cleared, report.whitelists_updated) == (3, 2)
+    assert report.observers == [(a, zeroing.signer[a], "db")]
+    assert zeroing.recorded[0]["relay_read"] is False
 
 
-def test_a_dry_run_publishes_and_clears_nothing(monkeypatch):
-    a = _observer(1)
-    publish = AsyncMock()
-    clear = AsyncMock()
-
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def _session():
-        yield AsyncMock()
-
-    monkeypatch.setattr(svc, "db_session", _session)
-    monkeypatch.setattr(svc, "load_observers", AsyncMock(return_value=[a]))
-    monkeypatch.setattr(
-        svc, "select_observers_publishing_on_db", AsyncMock(return_value={a.pubkey})
-    )
-    monkeypatch.setattr(svc, "fetch_ta_signers", AsyncMock(return_value=set()))
-    monkeypatch.setattr(svc, "publish_events", publish)
-    monkeypatch.setattr(svc, "clear_neo4j_scores", clear)
+def test_a_dry_run_publishes_clears_and_records_nothing(zeroing):
+    zeroing.relay = set(zeroing.signer.values())
 
     report = asyncio.run(svc.zero_compromised(HEX, apply=False))
 
-    assert len(report.observers) == 1
-    publish.assert_not_awaited()
-    clear.assert_not_awaited()
+    assert len(report.observers) == 3
+    assert zeroing.sent == [] and zeroing.decrypted == [] and zeroing.recorded == []
+
+
+def test_a_background_failure_is_recorded_on_the_row(zeroing, monkeypatch):
+    monkeypatch.setattr(svc, "load_observers", AsyncMock(side_effect=RuntimeError("db down")))
+
+    asyncio.run(svc.zero_compromised_in_background(HEX))
+
+    assert zeroing.recorded == [{"error": "RuntimeError('db down')"}]
+
+
+def test_a_row_without_a_stored_signer_decrypts_just_that_row(monkeypatch):
+    keys = _keys(2)
+    rows = [("a" * 64, keys[0].public_key().to_hex()), ("b" * 64, None)]
+    decrypted = []
+
+    async def _nsecs(db, observers):
+        decrypted.extend(observers)
+        return [("b" * 64, keys[1].secret_key().to_bech32())] if observers else []
+
+    monkeypatch.setattr(svc, "select_observer_signers_on_db", AsyncMock(return_value=rows))
+    monkeypatch.setattr(svc, "select_observer_nsecs_on_db", _nsecs)
+
+    observers = asyncio.run(svc.load_observers(None, None))
+
+    assert decrypted == ["b" * 64]
+    assert [o.signer for o in observers] == [k.public_key().to_hex() for k in keys]
+
+
+def _relay_answering(per_req: int):
+    """A relay that answers each REQ with `per_req` events from its authors,
+    repeating authors when asked for more than it has (stored duplicates)."""
+    import websockets
+
+    async def handler(ws):
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg[0] != "REQ":
+                continue
+            authors = msg[2]["authors"]
+            for n in range(min(per_req(authors), msg[2]["limit"])):
+                event = {"pubkey": authors[n % len(authors)]}
+                await ws.send(json.dumps(["EVENT", msg[1], event]))
+            await ws.send(json.dumps(["EOSE", msg[1]]))
+
+    return websockets.serve(handler, "127.0.0.1", 0)
+
+
+def test_a_relay_answer_that_fills_the_limit_reads_as_truncated():
+    signers = [f"{n:064x}" for n in range(3)]
+
+    async def read(per_req):
+        async with _relay_answering(per_req) as server:
+            port = server.sockets[0].getsockname()[1]
+            return await svc.fetch_ta_signers(f"ws://127.0.0.1:{port}", HEX, signers)
+
+    assert asyncio.run(read(lambda authors: len(authors))) == set(signers)
+    assert asyncio.run(read(lambda authors: 2 * len(authors))) is None
 
 
 # --- /admin/compromised ---------------------------------------------------------

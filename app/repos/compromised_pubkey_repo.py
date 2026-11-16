@@ -3,7 +3,7 @@ read once per pipeline stage per run."""
 
 from typing import cast
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -82,3 +82,13 @@ async def delete_compromised_on_db(db: AsyncDBSession, pubkey: str) -> bool:
         ),
     )
     return bool(result.rowcount)
+
+
+async def record_zero_report_on_db(
+    db: AsyncDBSession, pubkey: str, report: dict
+) -> None:
+    await db.execute(
+        update(CompromisedPubkey)
+        .where(CompromisedPubkey.pubkey == pubkey)
+        .values(last_zeroed_at=func.now(), last_zero_report=report)
+    )

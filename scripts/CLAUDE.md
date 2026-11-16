@@ -125,7 +125,8 @@ Zeroes the scores of the accounts in `compromised_pubkey` now, with no GrapeRank
 run, through `compromised_service.zero_compromised` — what `PUT
 /admin/compromised/{pubkey}` already does in the background, here with
 per-observer output and an exit code. Every Observer holding a 30382 about the
-account (per `last_published_pubkeys` or the TA relay) re-signs it at rank 0;
+account (per the TA relay, or `last_published_pubkeys` when the relay can't be read)
+re-signs it at rank 0;
 its Neo4j scores and whitelist entries are cleared. Dry-run by default;
 `--apply` publishes; `--pubkey` for one account, `--observer <hex>` for one
 Observer (TA only); `--db-only` skips the relay read. Exit 1 when a relay read

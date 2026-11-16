@@ -8,8 +8,10 @@ per-observer output: for each account, every Observer holding a kind-30382
 about it re-signs it at `rank 0` (every count 0, no `hops`), and its stored
 Neo4j scores and whitelist entries are cleared.
 
-An Observer is selected if its `last_published_pubkeys` lists the account, or
-the TA relay holds its 30382 `d=<account>` (this environment's signers only).
+An Observer is selected if the TA relay holds its 30382 `d=<account>` (this
+environment's signers only); when the relay can't be read, if its
+`last_published_pubkeys` lists the account. The outcome is recorded on the
+account's row (`last_zero_report`).
 Every later GrapeRank run keeps the account at 0 — see
 `app/services/compromised_service.py`.
 

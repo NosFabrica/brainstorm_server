@@ -134,10 +134,16 @@ async def process_neo4j_write_message(message: dict):
         cards = [c for c in cards if c["influence"] > floor]
 
     # A compromised account keeps no score (app/services/compromised_service.py):
-    # never written, and cleared every run in case anything put one back.
-    if compromised:
-        cards = [c for c in cards if c["observee"] not in compromised]
-        clear_set = list(clear_set) + sorted(compromised - set(clear_set))
+    # never written, and cleared when this run scored it. Marking it cleared every
+    # observer's score already; only a run can put one back, and only one it scored.
+    scored_compromised = (
+        compromised & {c["observee"] for c in scorecards.values()}
+        if compromised
+        else set()
+    )
+    if scored_compromised:
+        cards = [c for c in cards if c["observee"] not in scored_compromised]
+        clear_set = list(clear_set) + sorted(scored_compromised - set(clear_set))
 
     # Rows built a batch at a time, so the event loop is never held for all of them.
     await _write_batches(set_observer_scores, (row(card) for card in cards))

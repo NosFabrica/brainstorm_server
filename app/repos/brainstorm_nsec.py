@@ -239,16 +239,28 @@ async def select_observers_publishing_on_db(
     return {obs for obs, blob in rows if holds_pubkey(blob, pubkey)}
 
 
-async def select_observer_nsecs_on_db(
+async def select_observer_signers_on_db(
     db: AsyncDBSession, observer: str | None = None
-) -> list[tuple[str, str]]:
-    """`(observer, plaintext nsec)` for every Observer (or one); the multi-MB
-    blob is not read. A row whose nsec won't decrypt is logged and skipped."""
-    stmt = select(
-        BrainstormNsec.pubkey, BrainstormNsec.nsec, BrainstormNsec.encrypted_nsec
-    )
+) -> list[tuple[str, str | None]]:
+    """`(observer, assistant_pubkey)` for every Observer (or one): the key its
+    TAs are signed with, as stored — null only until the startup backfill. No
+    nsec is read."""
+    stmt = select(BrainstormNsec.pubkey, BrainstormNsec.assistant_pubkey)
     if observer:
         stmt = stmt.where(BrainstormNsec.pubkey == observer)
+    return [(pk, signer) for pk, signer in (await db.execute(stmt)).all()]
+
+
+async def select_observer_nsecs_on_db(
+    db: AsyncDBSession, observers: list[str]
+) -> list[tuple[str, str]]:
+    """`(observer, plaintext nsec)` for these Observers; the multi-MB blob is not
+    read. A row whose nsec won't decrypt is logged and skipped."""
+    if not observers:
+        return []
+    stmt = select(
+        BrainstormNsec.pubkey, BrainstormNsec.nsec, BrainstormNsec.encrypted_nsec
+    ).where(BrainstormNsec.pubkey.in_(observers))
     out = []
     for pubkey, nsec, encrypted in (await db.execute(stmt)).all():
         try:

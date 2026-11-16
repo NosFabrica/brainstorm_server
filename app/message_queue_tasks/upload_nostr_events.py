@@ -160,27 +160,59 @@ def plan_publish(
 
 
 def pin_compromised(
-    ta_inputs: list[TaInput],
-    plan: PublishPlan,
-    previously_published: list[str],
-    compromised: set[str],
+    ta_inputs: list[TaInput], plan: PublishPlan, compromised: set[str]
 ) -> tuple[list[TaInput], PublishPlan]:
-    """Hold every compromised account this Observer asserts at rank 0, whatever
-    the run computed. One it published before, or scores above cutoff now, gets
-    a rank-0 TA every run (≤ |compromised| events, so a zero that a racing run
-    overwrote is restored) and stays in the baseline; it is never deleted, so
-    the zero is what clients keep. Its computed TA is dropped. One the Observer
-    never published and doesn't reach above cutoff gets nothing."""
+    """A compromised account (app/services/compromised_service.py) is asserted at
+    rank 0 whenever this run would otherwise assert or delete it: a computed TA
+    goes out at rank 0, and so does a delete — clients keep the zero, not an
+    absence. The baseline is the plan's own, so once it drops below cutoff (the
+    worker holds it at 0) it is zeroed that one run and then left alone: no
+    re-signing every run. Marking it zeroed every Observer's existing TA, and
+    `zero_newly_compromised` covers a run that was publishing at the time."""
     if not compromised:
         return ta_inputs, plan
-    held = sorted(
-        compromised & (set(plan.currently_published) | set(previously_published))
-    )
-    inputs = [i for i in ta_inputs if i.observee not in compromised]
-    inputs += [zero_ta_input(pk) for pk in held]
-    published = [pk for pk in plan.currently_published if pk not in compromised]
+    inputs = [
+        zero_ta_input(i.observee) if i.observee in compromised else i for i in ta_inputs
+    ]
+    inputs += [zero_ta_input(pk) for pk in plan.deletes if pk in compromised]
     deletes = [pk for pk in plan.deletes if pk not in compromised]
-    return inputs, PublishPlan(published + held, deletes)
+    return inputs, PublishPlan(plan.currently_published, deletes)
+
+
+def newly_compromised_asserted(
+    ta_inputs: list[TaInput], compromised_before: set[str], compromised_now: set[str]
+) -> list[str]:
+    """Accounts marked while this run was publishing that it asserted at a real
+    rank: its TA may have landed after the marking's rank-0 one."""
+    late = compromised_now - compromised_before
+    return sorted({i.observee for i in ta_inputs if i.rank > 0 and i.observee in late})
+
+
+async def zero_newly_compromised(
+    ta_inputs: list[TaInput], compromised_before: set[str], keys: Keys
+) -> int:
+    """Re-read the marked accounts after the run's publish and re-assert any it
+    just published at a real rank at rank 0, dated a second later so it replaces
+    this run's TA. Raises if the relay doesn't take them all."""
+    async with db_session() as db:
+        compromised_now = await select_compromised_pubkeys_on_db(db)
+    late = newly_compromised_asserted(ta_inputs, compromised_before, compromised_now)
+    if not late:
+        return 0
+    pubkey_hex = keys.public_key().to_hex()
+    created_at = int(time.time()) + 1
+
+    async def events() -> AsyncIterator[SignedEvent]:
+        for pk in late:
+            yield sign_ta_json(zero_ta_input(pk), keys, pubkey_hex, created_at)
+
+    stats = await publish_events(settings.nostr_upload_ta_events_relay, events())
+    if stats.aborted or stats.n_unacked:
+        raise RuntimeError(
+            f"rank-0 TAs for {len(late)} newly compromised accounts: "
+            f"{stats.n_acked}/{stats.n_events} acked"
+        )
+    return len(late)
 
 
 def published_state_to_persist(
@@ -509,12 +541,10 @@ async def process_nostr_upload_message(message: dict):
                 cutoff=settings.cutoff_of_valid_graperank_scores,
                 sweep_below_cutoff=settings.relay_sweep_below_cutoff,
             )
-            ta_inputs, plan = pin_compromised(
-                ta_inputs, plan, previously_published_pubkeys, compromised
-            )
+            ta_inputs, plan = pin_compromised(ta_inputs, plan, compromised)
             currently_published_pubkeys = plan.currently_published
         counts["n_signed"] = len(ta_inputs)
-        counts["n_compromised_held"] = sum(
+        counts["n_compromised_zeroed"] = sum(
             1 for i in ta_inputs if i.observee in compromised
         )
         # A sweep is a backlog-draining mode, not a steady state — say so loudly
@@ -547,6 +577,11 @@ async def process_nostr_upload_message(message: dict):
                 f"relay publish incomplete: {publish_stats.n_acked}/"
                 f"{publish_stats.n_events} events acked (aborted="
                 f"{publish_stats.aborted}, samples={publish_stats.failure_samples})"
+            )
+
+        with _timed(timings, "late_compromised"):
+            counts["n_compromised_late"] = await zero_newly_compromised(
+                ta_inputs, compromised, keys
             )
 
         with _timed(timings, "final_db"):

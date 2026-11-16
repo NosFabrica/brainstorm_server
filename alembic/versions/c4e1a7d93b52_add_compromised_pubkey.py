@@ -30,6 +30,10 @@ def upgrade() -> None:
         sa.Column("successor_pubkey", sa.String(), nullable=True),
         sa.Column("reason", sa.Text(), nullable=True),
         sa.Column("added_by", sa.String(), nullable=True),
+        sa.Column("last_zeroed_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "last_zero_report", postgresql.JSONB(astext_type=sa.Text()), nullable=True
+        ),
         sa.Column(
             "created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False
         ),

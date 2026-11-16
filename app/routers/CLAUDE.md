@@ -44,7 +44,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/admin/graperank` | `admin/graperank/` | admin |
 | `/admin/nsec-encryption` | `admin/nsec_encryption/` | admin |
 | `/admin/trustedLists` | `admin/trusted_lists/` | admin |
-| `/admin/compromised` | `admin/compromised/` | admin. Compromised accounts: `GET` lists them, `PUT /{npub\|hex}` records one — the proof kept whole (`proof_event`, or `proof_event_id` for the server to fetch and check), optional `successor_pubkey` and `reason`; fields left out keep their stored values — committed before answering, and then zeroes its scores in the background, `DELETE /{pubkey}` unmarks it. See `services/compromised_service.py` |
+| `/admin/compromised` | `admin/compromised/` | admin. Compromised accounts: `GET` lists them, each with `last_zero_report` (the background zeroing's outcome), `PUT /{npub\|hex}` records one — the proof kept whole (`proof_event`, or `proof_event_id` for the server to fetch and check), optional `successor_pubkey` and `reason`; fields left out keep their stored values — committed before answering, and then zeroes its scores in the background, `DELETE /{pubkey}` unmarks it. See `services/compromised_service.py` |
 
 ## Authentication
 

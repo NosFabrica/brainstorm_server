@@ -958,6 +958,9 @@ class CompromisedPubkeyItem(BaseModel):
     added_by: str | None
     created_at: datetime
     updated_at: datetime
+    # The last zeroing's outcome: it runs after PUT answers, so check here.
+    last_zeroed_at: datetime | None = None
+    last_zero_report: dict[str, Any] | None = None
 
     model_config = {"from_attributes": True}
 

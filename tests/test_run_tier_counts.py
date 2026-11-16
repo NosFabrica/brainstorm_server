@@ -211,7 +211,7 @@ def test_process_message_buckets_against_the_runs_own_line():
     assert written["count_values"]["low"] == {"1": 1}
 
 
-def test_a_compromised_account_is_left_out_of_the_whitelist():
+def test_a_compromised_account_is_left_out_of_the_whitelist_and_the_tier_counts():
     async def _row(_db, _request_id):
         return _Row(_params(0.5))
 
@@ -227,10 +227,15 @@ def test_a_compromised_account_is_left_out_of_the_whitelist():
         },
     }
     upsert = AsyncMock()
+    written = {}
+
+    async def _capture_result(_db, *, brainstorm_request_id, status, count_values, error):
+        written["count_values"] = json.loads(count_values)
+
     with (
         patch(f"{_CONSUMER}.db_session", new=_fake_db_session),
         patch(f"{_CONSUMER}.select_brainstorm_request_by_id_on_db", new=_row),
-        patch(f"{_CONSUMER}.update_brainstorm_request_result_by_id_on_db", new=AsyncMock()),
+        patch(f"{_CONSUMER}.update_brainstorm_request_result_by_id_on_db", new=_capture_result),
         patch(f"{_CONSUMER}.upsert_observer_whitelist_on_db", new=upsert),
         patch(
             f"{_CONSUMER}.select_compromised_pubkeys_on_db",
@@ -242,3 +247,6 @@ def test_a_compromised_account_is_left_out_of_the_whitelist():
 
     whitelist = upsert.await_args.args[2]
     assert set(whitelist) == {"good"}
+    # ...and counted in no tier band: one account at 0.9, not two.
+    counted = sum(n for band in written["count_values"].values() for n in band.values())
+    assert counted == 1
