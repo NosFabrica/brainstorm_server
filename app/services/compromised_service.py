@@ -27,6 +27,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 from fastapi import HTTPException
@@ -64,6 +65,7 @@ from app.repos.compromised_pubkey_repo import (
     delete_compromised_on_db,
     list_compromised_on_db,
     record_zero_report_on_db,
+    select_compromised_due_on_db,
     select_compromised_in_on_db,
     select_compromised_on_db,
     upsert_compromised_on_db,
@@ -335,8 +337,8 @@ async def zero_compromised(
 
 
 async def zero_compromised_in_background(pubkey: str) -> None:
-    """For the admin route: run after the response, never raise; a failure is
-    recorded on the row, where `GET /admin/compromised` shows it."""
+    """Run a zeroing to the end and never raise; a failure is recorded on the
+    row, where `GET /admin/compromised` shows it (and the retry loop sees it)."""
     try:
         await zero_compromised(pubkey)
     except Exception as e:  # noqa: BLE001
@@ -347,6 +349,37 @@ async def zero_compromised_in_background(pubkey: str) -> None:
                 await db.commit()
         except Exception as e2:  # noqa: BLE001
             logger.error(f"compromised {pubkey}: recording the failure failed: {e2!r}")
+
+
+# Zeroings running in this process, by account: a second request for the same
+# account waits on the one under way instead of starting another, and the
+# reference keeps the task from being garbage-collected mid-run.
+_running: dict[str, asyncio.Task] = {}
+
+
+async def zero_now(pubkey: str, wait_seconds: float | None) -> bool:
+    """Start (or join) the account's zeroing and wait for it, at most
+    `wait_seconds` (None: to the end). A run that outlasts the wait keeps going
+    and records its outcome when it lands. True when it finished in time."""
+    task = _running.get(pubkey)
+    if task is None or task.done():
+        task = asyncio.create_task(zero_compromised_in_background(pubkey))
+        _running[pubkey] = task
+        task.add_done_callback(
+            lambda t: _running.pop(pubkey, None) if _running.get(pubkey) is t else None
+        )
+    done, _ = await asyncio.wait({task}, timeout=wait_seconds)
+    return task in done
+
+
+async def retry_due_zeroings(pending_grace: timedelta, retry_after: timedelta) -> int:
+    """Re-run the zeroings that never reported or didn't succeed; how many."""
+    async with db_session() as db:
+        due = await select_compromised_due_on_db(db, pending_grace, retry_after)
+    for pubkey in due:
+        logger.warning(f"compromised {pubkey}: zeroing due again, re-running")
+        await zero_now(pubkey, wait_seconds=None)
+    return len(due)
 
 
 # --- admin ---------------------------------------------------------------------
@@ -374,6 +407,11 @@ async def check_compromised(pubkeys: list[str]) -> list[CompromisedStatus]:
                 )
             )
     return out
+
+
+async def get_compromised(pubkey: str) -> CompromisedPubkey | None:
+    async with db_session() as db:
+        return await select_compromised_on_db(db, pubkey)
 
 
 async def list_compromised() -> list[CompromisedPubkey]:

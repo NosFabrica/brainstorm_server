@@ -2,17 +2,23 @@
 asserts them at rank 0 and no GrapeRank run brings their score back
 (`app/services/compromised_service.py`)."""
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from app.schemas.request_body_schemas import CompromisedPubkeyBody
 from app.schemas.schemas import CompromisedPubkeyItem
 from app.services.compromised_service import (
     add_compromised,
+    get_compromised,
     list_compromised,
     parse_pubkey,
     remove_compromised,
-    zero_compromised_in_background,
+    zero_now,
 )
+
+# How long PUT waits for the zeroing before answering. A run usually takes a few
+# seconds; one that outlasts this keeps going and records its outcome, which
+# GET shows. Kept under the UI's request timeout, with room for the proof fetch.
+ZERO_WAIT_SECONDS = 20.0
 
 router = APIRouter()
 
@@ -41,24 +47,26 @@ async def list_compromised_endpoint():
         "Records the account (npub or hex) with the event proving the compromise, "
         "kept whole (`proof_event`, or `proof_event_id` for the server to fetch), "
         "and optionally the owner's new key (`successor_pubkey`). Fields left out "
-        "keep their stored values. Then, after answering, re-signs every "
-        "Observer's Trusted Assertion about it at rank 0 and clears its stored "
-        "scores and whitelist entries. Every "
-        "later GrapeRank run keeps it at 0. Idempotent: calling again updates what "
-        "it sends and zeroes again (e.g. after a run that was publishing "
-        "when it was first added)."
+        "keep their stored values. Then zeroes its scores at once: every "
+        "Observer holding a Trusted Assertion about it re-signs it at rank 0, and "
+        "its stored scores, whitelist entries and own ratings are cleared. Answers "
+        "when that is done, with its outcome in `last_zero_report`; a zeroing that "
+        "takes longer than 20 s finishes after the answer (`last_zero_report` "
+        "still the previous one) and GET shows it. A zeroing that never reports or "
+        "doesn't succeed is retried by the server. Every later GrapeRank run keeps "
+        "the account at 0. Idempotent: calling again updates what it sends and "
+        "zeroes again."
     ),
 )
 async def put_compromised_endpoint(
     pubkey: str,
     body: CompromisedPubkeyBody,
     request: Request,
-    background: BackgroundTasks,
 ):
     hex_pubkey = _hex(pubkey)
     row = await add_compromised(hex_pubkey, body, request.state.jwt_data.nostr_pubkey)
-    background.add_task(zero_compromised_in_background, hex_pubkey)
-    return row
+    await zero_now(hex_pubkey, wait_seconds=ZERO_WAIT_SECONDS)
+    return await get_compromised(hex_pubkey) or row
 
 
 @router.delete(

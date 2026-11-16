@@ -1,9 +1,10 @@
 """Accounts whose key is compromised (`compromised_pubkey`). The set is tiny and
 read once per pipeline stage per run."""
 
+from datetime import timedelta
 from typing import cast
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
@@ -92,3 +93,32 @@ async def record_zero_report_on_db(
         .where(CompromisedPubkey.pubkey == pubkey)
         .values(last_zeroed_at=func.now(), last_zero_report=report)
     )
+
+
+async def select_compromised_due_on_db(
+    db: AsyncDBSession, pending_grace: timedelta, retry_after: timedelta
+) -> list[str]:
+    """Accounts whose zeroing should run again: one that never reported since its
+    last change, `pending_grace` after it (the run it started died with its pod),
+    and one whose last zeroing failed or was incomplete, `retry_after` after it.
+    Compared in the database, on its own clock, like the writes."""
+    c = CompromisedPubkey
+    now = func.now()
+    never_reported = and_(
+        or_(c.last_zeroed_at.is_(None), c.last_zeroed_at < c.updated_at),
+        c.updated_at < now - pending_grace,
+    )
+    report = c.last_zero_report
+    unsuccessful = and_(
+        c.last_zeroed_at >= c.updated_at,
+        c.last_zeroed_at < now - retry_after,
+        or_(
+            report.has_key("error"),
+            report["complete"].as_boolean().is_not(True),
+            report["relay_read"].as_boolean().is_not(True),
+        ),
+    )
+    result = await db.execute(
+        select(c.pubkey).where(or_(never_reported, unsuccessful)).order_by(c.updated_at)
+    )
+    return list(result.scalars().all())

@@ -276,13 +276,28 @@ def admin_client(client):
     yield client
 
 
-def test_put_records_the_account_and_zeroes_it_after_answering(
-    admin_client, caller, monkeypatch
+def test_put_records_the_account_and_zeroes_it_before_answering(
+    admin_client, caller, zeroing, monkeypatch
 ):
-    add = AsyncMock(return_value=_row(reason="leaked nsec", added_by=caller.pubkey))
-    zero = AsyncMock()
-    monkeypatch.setattr(f"{ROUTER}.add_compromised", add)
-    monkeypatch.setattr(f"{ROUTER}.zero_compromised_in_background", zero)
+    """The real route and the real zeroing (DB and relay faked): by the time PUT
+    answers, every Observer the relay says holds a TA about the account has
+    published its rank-0 replacement, and the answer carries the outcome."""
+    a, b, c = sorted(zeroing.keys)
+    zeroing.relay = {zeroing.signer[a], zeroing.signer[c]}
+    rows = {}
+
+    async def _add(pubkey, body, added_by):
+        rows[pubkey] = _row(reason=body.reason, added_by=added_by)
+        return rows[pubkey]
+
+    async def _get(pubkey):
+        row = rows[pubkey]
+        row.last_zero_report = zeroing.recorded[-1] if zeroing.recorded else None
+        row.last_zeroed_at = datetime(2026, 11, 16, 0, 0, 5) if zeroing.recorded else None
+        return row
+
+    monkeypatch.setattr(f"{ROUTER}.add_compromised", _add)
+    monkeypatch.setattr(f"{ROUTER}.get_compromised", _get)
 
     response = admin_client.put(
         f"/admin/compromised/{NPUB}",
@@ -291,11 +306,87 @@ def test_put_records_the_account_and_zeroes_it_after_answering(
 
     assert response.status_code == 200, response.text
     assert response.json()["pubkey"] == HEX
-    assert response.json()["proof_event"]["id"] == PROOF
-    pubkey, body, added_by = add.await_args.args
-    assert (pubkey, added_by) == (HEX, caller.pubkey)
-    assert body.model_fields_set == {"proof_event_id", "reason"}
-    zero.assert_awaited_once_with(HEX)
+    report = response.json()["last_zero_report"]
+    assert report["complete"] is True and report["acked"] == 2
+    published = [json.loads(e.json) for e in zeroing.sent]
+    assert sorted(e["pubkey"] for e in published) == sorted(
+        [zeroing.signer[a], zeroing.signer[c]]
+    )
+    for event in published:
+        tags = {t[0]: t[1] for t in event["tags"]}
+        assert (event["kind"], tags["d"], tags["rank"]) == (TA_KIND, HEX, "0")
+
+
+def test_put_does_not_wait_past_its_limit(admin_client, monkeypatch):
+    """A zeroing that outlasts the wait keeps going; PUT answers with the row
+    as it stands (the previous report) instead of hanging."""
+    import app.routers.admin.compromised.router as router_module
+
+    started, release = [], asyncio.Event()
+
+    async def _slow(pubkey):
+        started.append(pubkey)
+        await release.wait()
+
+    monkeypatch.setattr(router_module, "ZERO_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(svc, "zero_compromised", _slow)
+    monkeypatch.setattr(f"{ROUTER}.add_compromised", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(f"{ROUTER}.get_compromised", AsyncMock(return_value=_row()))
+
+    response = admin_client.put(f"/admin/compromised/{HEX}", json={"proof_event_id": PROOF})
+
+    assert response.status_code == 200
+    assert started == [HEX]
+    assert response.json()["last_zero_report"] is None
+
+
+def test_zero_now_joins_a_run_under_way_and_waits_at_most_its_limit(monkeypatch):
+    calls, release = [], None
+
+    async def _slow(pubkey):
+        calls.append(pubkey)
+        await release.wait()
+
+    monkeypatch.setattr(svc, "zero_compromised", _slow)
+
+    async def body():
+        nonlocal release
+        release = asyncio.Event()
+        assert await svc.zero_now(HEX, wait_seconds=0.01) is False
+        assert await svc.zero_now(HEX, wait_seconds=0.01) is False  # joins, no second run
+        release.set()
+        assert await svc.zero_now(HEX, wait_seconds=1) is True
+        await asyncio.sleep(0)
+        assert HEX not in svc._running
+
+    asyncio.run(body())
+    assert calls == [HEX]
+
+
+def test_the_retry_loop_reruns_what_is_due(monkeypatch):
+    from datetime import timedelta
+
+    due = AsyncMock(return_value=[HEX, "b" * 64])
+    ran = []
+
+    async def _zero_now(pubkey, wait_seconds):
+        ran.append((pubkey, wait_seconds))
+        return True
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _session():
+        yield None
+
+    monkeypatch.setattr(svc, "db_session", _session)
+    monkeypatch.setattr(svc, "select_compromised_due_on_db", due)
+    monkeypatch.setattr(svc, "zero_now", _zero_now)
+
+    n = asyncio.run(svc.retry_due_zeroings(timedelta(minutes=2), timedelta(minutes=10)))
+
+    assert n == 2
+    assert ran == [(HEX, None), ("b" * 64, None)]
 
 
 def test_put_rejects_bad_fields_with_a_422(admin_client, monkeypatch):

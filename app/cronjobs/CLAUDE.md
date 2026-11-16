@@ -92,3 +92,15 @@ Four duties per cycle, in order of how far they can be trusted:
 2. In `app/api.py` lifespan startup, add `<name>_task = asyncio.create_task(<name>_cronjob())`.
 3. In the same lifespan's `finally:`, add `<name>_task.cancel()` + `await asyncio.gather(<name>_task, return_exceptions=True)`.
 4. Add the cadence setting to `app/core/config.py` and `env.example`.
+
+### `retry_compromised_zeroing.py`
+
+Makes sure every compromised account's zeroing lands (`services/compromised_service.py`).
+`PUT /admin/compromised` runs the zeroing itself and waits for it; this re-runs one that never
+reported 2 minutes after its account changed (the pod running it died) and one whose report is
+an error, incomplete, or read no relay, 10 minutes after it ran. Every minute.
+
+- **Leader-locked** (`COMPROMISED_LOCK_KEY`): a zeroing re-signs every holder's TA, so two
+  replicas running the same one would double the relay traffic for nothing.
+- A zeroing that keeps failing is re-run every 10 minutes, with its error on the row for the admin.
+

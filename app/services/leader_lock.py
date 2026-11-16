@@ -3,7 +3,7 @@
 Single key set with SET NX PX; the holder renews it each cycle (SET XX PX). On
 crash the key expires and another instance takes over on the next cycle.
 
-Two jobs hold locks here, on separate keys. The key is required rather than
+Three jobs hold locks here, on separate keys. The key is required rather than
 defaulted: a third holder that inherited one silently would contend with an
 existing job, and one of the two would simply never run, with nothing to see.
 """
@@ -16,6 +16,7 @@ INSTANCE_ID = f"{socket.gethostname()}:{uuid4()}"
 
 SCHEDULER_LOCK_KEY = "lock:scheduler:leader"
 BILLING_LOCK_KEY = "lock:billing:leader"
+COMPROMISED_LOCK_KEY = "lock:compromised:leader"
 
 
 async def acquire_or_renew_leader(
