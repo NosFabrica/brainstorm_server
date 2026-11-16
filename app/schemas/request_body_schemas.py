@@ -261,3 +261,18 @@ class PasskeyAssertion(BaseModel):
 
 class OpenPasskeyVaultBody(BaseModel):
     assertion: PasskeyAssertion
+
+
+class CompromisedPubkeyBody(BaseModel):
+    """`PUT /admin/compromised/{pubkey}`: the event proving the compromise (hex,
+    note1… or nevent1…; stored as hex) and an optional note."""
+
+    proof_event_id: str = Field(min_length=1)
+    reason: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("proof_event_id")
+    @classmethod
+    def _event_id(cls, value: str) -> str:
+        from app.services.compromised_service import parse_event_id
+
+        return parse_event_id(value)

@@ -42,6 +42,12 @@ class TaInput(NamedTuple):
     hops: int
 
 
+def zero_ta_input(observee: str) -> TaInput:
+    """A rank-0 TA: every count 0 and no `hops` (no asserted distance). What a
+    compromised account is asserted at, and what the zero-score events carry."""
+    return TaInput(observee, 0, 0, 0, 0, UNREACHABLE_HOPS)
+
+
 def ta_tags(ta_input: TaInput) -> list[list[str]]:
     """The single source of truth for a TA's tags, shared by every signing path
     so all of them produce content-equivalent events.

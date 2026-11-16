@@ -15,7 +15,6 @@ from app.message_queue_tasks.loop_probe import LoopProbe
 from app.message_queue_tasks.relay_publisher import PublishStats, publish_events
 from app.message_queue_tasks.ta_signing import (
     DELETION_COORDS_PER_EVENT,
-    UNREACHABLE_HOPS,
     SignedEvent,
     TaInput,
     atag_deletion_tags,
@@ -23,6 +22,7 @@ from app.message_queue_tasks.ta_signing import (
     build_ta_event_builder,
     sign_deletion_json,
     sign_ta_json,
+    zero_ta_input,
 )
 from app.models.grapeRankResult import GrapeRankResult
 from app.repos.brainstorm_nsec import (
@@ -40,6 +40,7 @@ from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_publish_duration_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
 )
+from app.repos.compromised_pubkey_repo import select_compromised_pubkeys_on_db
 from app.services.assistant_profile_service import publish_assistant_kind0_for_user
 from app.services.publish_drift import resolve_full_sync
 
@@ -156,6 +157,30 @@ def plan_publish(
     return PublishPlan(
         currently_published, _delete_from_sets(fell_off, below, sweep_below_cutoff)
     )
+
+
+def pin_compromised(
+    ta_inputs: list[TaInput],
+    plan: PublishPlan,
+    previously_published: list[str],
+    compromised: set[str],
+) -> tuple[list[TaInput], PublishPlan]:
+    """Hold every compromised account this Observer asserts at rank 0, whatever
+    the run computed. One it published before, or scores above cutoff now, gets
+    a rank-0 TA every run (≤ |compromised| events, so a zero that a racing run
+    overwrote is restored) and stays in the baseline; it is never deleted, so
+    the zero is what clients keep. Its computed TA is dropped. One the Observer
+    never published and doesn't reach above cutoff gets nothing."""
+    if not compromised:
+        return ta_inputs, plan
+    held = sorted(
+        compromised & (set(plan.currently_published) | set(previously_published))
+    )
+    inputs = [i for i in ta_inputs if i.observee not in compromised]
+    inputs += [zero_ta_input(pk) for pk in held]
+    published = [pk for pk in plan.currently_published if pk not in compromised]
+    deletes = [pk for pk in plan.deletes if pk not in compromised]
+    return inputs, PublishPlan(published + held, deletes)
 
 
 def published_state_to_persist(
@@ -335,7 +360,7 @@ async def get_zero_score_events_for_pubkeys(
     # (a dropped Observee has no asserted distance).
     events: list[Event] = []
     for pk in pubkeys:
-        builder = build_ta_event_builder(TaInput(pk, 0, 0, 0, 0, UNREACHABLE_HOPS))
+        builder = build_ta_event_builder(zero_ta_input(pk))
         signed_event = await nostr_client.sign_event_builder(builder)
         events.append(signed_event)
     return events
@@ -465,7 +490,6 @@ async def process_nostr_upload_message(message: dict):
             ta_inputs = get_ta_inputs(
                 grape_rank_result, relay_full_sync=relay_full_sync
             )
-        counts["n_signed"] = len(ta_inputs)
 
         with _timed(timings, "last_published"):
             async with db_session() as db:
@@ -474,6 +498,7 @@ async def process_nostr_upload_message(message: dict):
                         db, pubkey=observer
                     )
                 )
+                compromised = await select_compromised_pubkeys_on_db(db)
 
         with _timed(timings, "compute_deletes"):
             # Fetch-free local-diff delete set; catches drops the algo never
@@ -484,7 +509,14 @@ async def process_nostr_upload_message(message: dict):
                 cutoff=settings.cutoff_of_valid_graperank_scores,
                 sweep_below_cutoff=settings.relay_sweep_below_cutoff,
             )
+            ta_inputs, plan = pin_compromised(
+                ta_inputs, plan, previously_published_pubkeys, compromised
+            )
             currently_published_pubkeys = plan.currently_published
+        counts["n_signed"] = len(ta_inputs)
+        counts["n_compromised_held"] = sum(
+            1 for i in ta_inputs if i.observee in compromised
+        )
         # A sweep is a backlog-draining mode, not a steady state — say so loudly
         # so it can't sit on unnoticed, billing no-op deletes every run.
         if settings.relay_sweep_below_cutoff:

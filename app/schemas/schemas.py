@@ -947,3 +947,14 @@ class PublishedAssistantTreasureMap(BaseModel):
     # for a repair, the newest one found. None when nothing was sent.
     event: dict[str, Any] | None
     relays: list[AssistantRelayResult]
+
+
+class CompromisedPubkeyItem(BaseModel):
+    pubkey: str
+    proof_event_id: str
+    reason: str | None
+    added_by: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

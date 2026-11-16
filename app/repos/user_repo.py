@@ -1401,6 +1401,22 @@ async def get_pubkeys_scored_by_observer(
     return [r["pubkey"] async for r in result]
 
 
+# The per-observer score properties the results writer stores (`PERSISTED_FIELDS`).
+SCORE_PROPERTY_PREFIXES = ("influence_", "hops_", "trusted_followers_")
+
+
+async def get_score_keys_on_node(session: AsyncNeoSession, pubkey: str) -> list[str]:
+    """Every observer's score property names one node holds. Read by keys, so
+    no label scan."""
+    result = await session.run(
+        "MATCH (n:NostrUser {pubkey: $pubkey}) RETURN keys(n) AS keys", pubkey=pubkey
+    )
+    record = await result.single()
+    if record is None:
+        return []
+    return [k for k in record["keys"] if k.startswith(SCORE_PROPERTY_PREFIXES)]
+
+
 async def clear_observer_scores(
     session: AsyncNeoSession, pubkeys: list[str], keys: list[str]
 ) -> None:

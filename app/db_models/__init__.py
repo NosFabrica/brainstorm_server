@@ -457,6 +457,19 @@ class ObserverWhitelist(TimestampMixin, Base):
     )
 
 
+class CompromisedPubkey(TimestampMixin, Base):
+    """An account whose key is compromised. Every Observer asserts it at rank 0
+    and no run stores or whitelists a score for it (app/services/compromised_service.py).
+    Added and removed by admins (`/admin/compromised`)."""
+
+    __tablename__ = "compromised_pubkey"
+    pubkey: Mapped[str] = mapped_column(String, primary_key=True)  # hex
+    # The event showing the compromise (hex id) — why the account is here.
+    proof_event_id: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    added_by: Mapped[str | None] = mapped_column(String, nullable=True)  # admin pubkey
+
+
 class GrapeRankPresetHistory(Base):
     __tablename__ = "graperank_preset_history"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

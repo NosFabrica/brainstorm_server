@@ -121,18 +121,16 @@ files only shrink after dump/reload. Held by
 
 ### `zero_compromised_ta.py`
 
-The compromised-account lever: re-signs every Observer's kind-30382 about each
-account in its hardcoded `COMPROMISED` map (npub → id of the event proving the
-compromise; an entry without a proof stops it) at `rank 0`, every count 0, no
-`hops`. No GrapeRank run. An Observer is chosen if its `last_published_pubkeys`
-lists the account or the TA relay holds its 30382 `d=<account>` (asked only
-about this environment's signers, 200 per REQ; a failed read aborts unless
-`--db-only`). Dry-run by default; `--apply` publishes; `--observer <hex>` for one.
-Run in each environment's brainstorm-server pod. **A stopgap**: the zero holds
-until that Observer's next full sync or a run where the score changed
-re-asserts the old one, so re-run it after those (idempotent), and after any
-run that was mid-publish when it first ran. Neo4j scores and what the account
-vouched for are untouched. Held by `tests/test_zero_compromised_ta.py`.
+Zeroes the scores of the accounts in `compromised_pubkey` now, with no GrapeRank
+run, through `compromised_service.zero_compromised` — what `PUT
+/admin/compromised/{pubkey}` already does in the background, here with
+per-observer output and an exit code. Every Observer holding a 30382 about the
+account (per `last_published_pubkeys` or the TA relay) re-signs it at rank 0;
+its Neo4j scores and whitelist entries are cleared. Dry-run by default;
+`--apply` publishes; `--pubkey` for one account, `--observer <hex>` for one
+Observer (TA only); `--db-only` skips the relay read. Exit 1 when a relay read
+or publish didn't complete. Run in each environment's brainstorm-server pod.
+Idempotent — the pipeline keeps the account at 0 on every later run anyway.
 
 ## When to add a new script
 

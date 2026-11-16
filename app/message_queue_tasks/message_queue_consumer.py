@@ -30,6 +30,7 @@ from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_result_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
 )
+from app.repos.compromised_pubkey_repo import select_compromised_pubkeys_on_db
 from app.repos.observer_whitelist_repo import upsert_observer_whitelist_on_db
 from app.schemas.error_codes import ErrorCode
 from app.schemas.graperank_schemas import GrapeRankPresetParams
@@ -157,8 +158,12 @@ async def process_message(message: dict):
         # empty-scorecard run must NOT wipe a good snapshot. An all-below-cutoff
         # run legitimately writes {} (nobody trusted now).
         if status == BrainstormRequestStatus.SUCCESS and scorecards and pubkey:
+            compromised = await select_compromised_pubkeys_on_db(db)
             await upsert_observer_whitelist_on_db(
-                db, pubkey, whitelist, message["private_id"]
+                db,
+                pubkey,
+                {pk: v for pk, v in whitelist.items() if pk not in compromised},
+                message["private_id"],
             )
         if pubkey:
             await update_last_time_calculated_graperank_on_db(db, pubkey)

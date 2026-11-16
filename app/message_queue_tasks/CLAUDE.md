@@ -53,6 +53,7 @@ The longest module here. The main entry point is `process_nostr_upload_message(m
 
 - `relay_full_sync` (default `False` = delta) or the request row's `force_full_relay`: `False` publishes only _changed_ scores (`changedScorePubkeys`), `True` re-asserts every above-cutoff scorecard. Drift is repaired by the `full_sync_every_n_runs` backstop + admin `resync`, not by leaving it `True`. **Re-assertion only — never deletes.**
 - The delete set is computed by `plan_publish` from a local diff (no relay read): `fell_off = previously_published − currently_above_cutoff`.
+- **Compromised accounts** (`compromised_pubkey`, read once per run) are held at rank 0 by `pin_compromised`, after the plan: one this Observer published before or scores above cutoff gets a rank-0 TA **every run** (so a zero a racing run overwrote is restored on the next), is never deleted, and stays in the baseline; its computed TA is dropped. One it never published and doesn't reach gets nothing. After an admin unmarks it, the zero stays until the Observer re-asserts it (a changed score or a full sync). See `services/compromised_service.py`.
 - The **sweep** (`relay_sweep_below_cutoff`, default off) adds every below-cutoff Observee to the delete set, reaping orphans the diff can't see. Backwards-compat drain: on to clear the legacy backlog, then off — it's mostly no-op deletes that each cost a tombstone. Not implied by full-sync, the backstop, or `resync`.
 
 ### Relay publishing (`relay_publisher.py`)
@@ -88,6 +89,10 @@ costs one label scan, so it runs on forced runs (`force_full_neo4j`: resync
 `neo4j_cleanup_interval_days` since `brainstorm_nsec.last_neo4j_cleanup_at`.
 By time, not run count, because cadences range from hours to months. The
 Cypher lives in `repos/user_repo.py`.
+
+Compromised accounts (`compromised_pubkey`) are never written and are added to the
+clear set every run, so no Observer stores a score for them. The results consumer
+leaves them out of the `observerwhitelist` snapshot the same way.
 
 Persist floor: the worker sends `neo4jPersistFloor` (default 0.0001, its
 `INFLUENCE_PERSIST_FLOOR`) and leaves scorecards at or below it out of

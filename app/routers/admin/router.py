@@ -4,6 +4,7 @@ from app.core.admin_whitelist import get_whitelisted_pubkeys
 from app.core.config import settings
 from app.core.loggr import loggr
 from app.routers.admin.activity.router import router as activity_router
+from app.routers.admin.compromised.router import router as compromised_router
 from app.routers.admin.graperank.router import router as graperank_router
 from app.routers.admin.nsec_encryption.router import router as nsec_encryption_router
 from app.routers.admin.scheduling.router import router as scheduling_router
@@ -102,5 +103,11 @@ router.include_router(
 router.include_router(
     router=trusted_lists_router,
     prefix="/trustedLists",
+    tags=["admin"],
+)
+
+router.include_router(
+    router=compromised_router,
+    prefix="/compromised",
     tags=["admin"],
 )

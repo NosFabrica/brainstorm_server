@@ -83,6 +83,19 @@ blob for `GET /whitelisted/{observer_pubkey}`.
 Written by the results consumer (`message_queue_tasks/message_queue_consumer.py`) in the
 same transaction as the run's status. Read by `observer_whitelist_repo.py`.
 
+### `CompromisedPubkey` — `compromised_pubkey`
+
+Accounts whose key is compromised. Every Observer asserts them at rank 0, and no
+run publishes, stores or whitelists a real score for them
+(`services/compromised_service.py`). Admin-managed (`/admin/compromised`).
+
+| Column | Type | Notes |
+|---|---|---|
+| `pubkey` | str PK | hex |
+| `proof_event_id` | str | hex id of the event proving the compromise |
+| `reason` | text, nullable | free-form note |
+| `added_by` | str, nullable | the admin pubkey that last set the row |
+
 ### `GrapeRankPreset` — `graperank_preset`
 
 11-float parameter row per builtin preset (DEFAULT / PERMISSIVE / RESTRICTIVE).
