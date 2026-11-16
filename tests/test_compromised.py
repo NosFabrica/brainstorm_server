@@ -613,8 +613,12 @@ def marked(monkeypatch):
     async def _select(db, pubkeys):
         return [row] if HEX in pubkeys else []
 
+    async def _by_successor(db, pubkeys):
+        return [row] if row.successor_pubkey in pubkeys else []
+
     monkeypatch.setattr(svc, "db_session", _session)
     monkeypatch.setattr(svc, "select_compromised_in_on_db", _select)
+    monkeypatch.setattr(svc, "select_compromised_by_successor_on_db", _by_successor)
     return row
 
 
@@ -629,6 +633,17 @@ def test_the_ui_can_check_one_account_without_logging_in(anonymous, marked):
     assert "reason" not in data and "added_by" not in data
 
 
+def test_a_successor_reads_the_account_it_replaces(anonymous, marked):
+    data = anonymous.post("/compromised", json={"pubkeys": ["c" * 64, HEX]}).json()["data"]
+    successor, old = data["results"]
+
+    assert successor["compromised"] is False
+    assert successor["replaces"]["pubkey"] == HEX
+    assert successor["replaces"]["compromised"] is True
+    assert successor["replaces"]["proof_event"]["content"] == "my key was stolen"
+    assert old["replaces"] is None
+
+
 def test_an_unmarked_account_reads_false(anonymous, marked):
     data = anonymous.get(f"/compromised/{'1' * 64}").json()["data"]
 
@@ -640,6 +655,7 @@ def test_an_unmarked_account_reads_false(anonymous, marked):
         "proof_event": None,
         "successor_pubkey": None,
         "successor_event_id": None,
+        "replaces": None,
     }
 
 
@@ -866,7 +882,11 @@ def test_the_successor_post_is_kept_by_later_puts_and_read_publicly(
     async def _select(db, pubkeys):
         return [row]
 
+    async def _none(db, pubkeys):
+        return []
+
     monkeypatch.setattr(svc, "select_compromised_in_on_db", _select)
+    monkeypatch.setattr(svc, "select_compromised_by_successor_on_db", _none)
     (status,) = asyncio.run(svc.check_compromised([HEX]))
     assert status.successor_event_id == post
 

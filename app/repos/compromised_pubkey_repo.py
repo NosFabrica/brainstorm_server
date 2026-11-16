@@ -27,6 +27,16 @@ async def select_compromised_in_on_db(
     return list(result.scalars().all())
 
 
+async def select_compromised_by_successor_on_db(
+    db: AsyncDBSession, pubkeys: list[str]
+) -> list[CompromisedPubkey]:
+    """The marked rows whose `successor_pubkey` is among `pubkeys`."""
+    result = await db.execute(
+        select(CompromisedPubkey).where(CompromisedPubkey.successor_pubkey.in_(pubkeys))
+    )
+    return list(result.scalars().all())
+
+
 async def list_compromised_on_db(db: AsyncDBSession) -> list[CompromisedPubkey]:
     result = await db.execute(
         select(CompromisedPubkey).order_by(CompromisedPubkey.created_at.desc())

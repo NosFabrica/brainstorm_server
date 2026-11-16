@@ -65,6 +65,7 @@ from app.repos.compromised_pubkey_repo import (
     delete_compromised_on_db,
     list_compromised_on_db,
     record_zero_report_on_db,
+    select_compromised_by_successor_on_db,
     select_compromised_due_on_db,
     select_compromised_in_on_db,
     select_compromised_on_db,
@@ -393,28 +394,40 @@ async def retry_due_zeroings(pending_grace: timedelta, retry_after: timedelta) -
 # --- admin ---------------------------------------------------------------------
 
 
+def _status(row: CompromisedPubkey) -> CompromisedStatus:
+    return CompromisedStatus(
+        pubkey=row.pubkey,
+        compromised=True,
+        since=row.created_at,
+        proof_event_id=row.proof_event_id,
+        proof_event=row.proof_event,
+        successor_pubkey=row.successor_pubkey,
+        successor_event_id=row.successor_event_id,
+    )
+
+
 async def check_compromised(pubkeys: list[str]) -> list[CompromisedStatus]:
     """One status per pubkey (hex), in the order asked: the public read the UI
-    uses to flag a compromised account."""
+    uses to flag a compromised account. A key that is a compromised account's
+    successor carries that account's record as `replaces`."""
     async with db_session() as db:
         marked = {r.pubkey: r for r in await select_compromised_in_on_db(db, pubkeys)}
+        replaced = {
+            r.successor_pubkey: r
+            for r in await select_compromised_by_successor_on_db(db, pubkeys)
+        }
     out = []
     for pk in pubkeys:
         row = marked.get(pk)
-        if row is None:
-            out.append(CompromisedStatus(pubkey=pk, compromised=False))
-        else:
-            out.append(
-                CompromisedStatus(
-                    pubkey=pk,
-                    compromised=True,
-                    since=row.created_at,
-                    proof_event_id=row.proof_event_id,
-                    proof_event=row.proof_event,
-                    successor_pubkey=row.successor_pubkey,
-                    successor_event_id=row.successor_event_id,
-                )
-            )
+        status = (
+            _status(row)
+            if row is not None
+            else CompromisedStatus(pubkey=pk, compromised=False)
+        )
+        old = replaced.get(pk)
+        if old is not None:
+            status.replaces = _status(old)
+        out.append(status)
     return out
 
 

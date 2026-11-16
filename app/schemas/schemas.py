@@ -985,6 +985,10 @@ class CompromisedStatus(BaseModel):
     proof_event: dict[str, Any] | None = None
     successor_pubkey: str | None = None
     successor_event_id: str | None = None
+    # When this key is a compromised account's successor (its owner's new key):
+    # that account's record, so a reader of the new key learns which one it
+    # replaces without asking by the old key.
+    replaces: "CompromisedStatus | None" = None
 
 
 class CompromisedStatusesData(BaseModel):
