@@ -10,6 +10,10 @@ class TrustedListTagResult(BaseModel):
     taggings_considered: int
     member_count: int
     error: str | None = None
+    # 30392 (people), 30393 (events by id) or 30394 (by coordinate).
+    kind: int = 30392
+    # A content list's tagging target: an event kind, or a DList's header.
+    tagging_target: str | None = None
 
 
 class TrustedListRunData(BaseModel):
@@ -31,3 +35,10 @@ class TrustedListRunData(BaseModel):
     retracted: int
     empty_reason: str | None = None
     tags: list[TrustedListTagResult]
+    # Content lists (ADR trusted-lists/0002 D8): event taggings held, targets
+    # no lookup found this run, tagged kinds with no name (so no list), and why
+    # no content list was published or retracted, when none was.
+    event_taggings_in_store: int = 0
+    unresolved_targets: int = 0
+    unnamed_kinds: list[int] = []
+    content_skipped_reason: str | None = None

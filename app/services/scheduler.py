@@ -16,11 +16,13 @@ class SchedulerCandidate:
     interval_seconds: int
     last_published: datetime | None
     last_failed_at: datetime | None = None
+    consecutive_failures: int = 0
     enabled: bool = True
 
 
-# Hardcoded: a user whose last run failed is skipped for this long before retry.
+# Retry delay after a failed run doubles per consecutive failure, up to the cap.
 RETRY_BACKOFF_SECONDS = 3600  # 1 hour
+MAX_RETRY_BACKOFF_SECONDS = 7 * 86400
 
 
 _NON_TERMINAL_STATUSES = ("waiting", "ongoing")
@@ -74,11 +76,21 @@ def _overdue_seconds(candidate: SchedulerCandidate, now: datetime) -> float:
     return (now - candidate.last_published).total_seconds()
 
 
+def retry_backoff(
+    consecutive_failures: int,
+    base: int = RETRY_BACKOFF_SECONDS,
+    cap: int = MAX_RETRY_BACKOFF_SECONDS,
+) -> int:
+    exponent = min(max(consecutive_failures, 1) - 1, 32)
+    return min(base * 2**exponent, cap)
+
+
 def _in_retry_backoff(
-    candidate: SchedulerCandidate, now: datetime, backoff: int
+    candidate: SchedulerCandidate, now: datetime, base: int, cap: int
 ) -> bool:
     if candidate.last_failed_at is None:
         return False
+    backoff = retry_backoff(candidate.consecutive_failures, base, cap)
     return (now - candidate.last_failed_at).total_seconds() < backoff
 
 
@@ -86,15 +98,18 @@ def rank_overdue_candidates(
     candidates: list[SchedulerCandidate],
     now: datetime,
     retry_backoff_seconds: int = RETRY_BACKOFF_SECONDS,
+    max_retry_backoff_seconds: int = MAX_RETRY_BACKOFF_SECONDS,
 ) -> list[SchedulerCandidate]:
     """Overdue candidates, highest priority first, most-overdue first within a tier.
-    Users whose last run failed within the retry backoff are skipped."""
+    Users whose last run failed within the (exponential) retry backoff are skipped."""
     eligible = [
         c
         for c in candidates
         if c.enabled
         and is_overdue(c, now)
-        and not _in_retry_backoff(c, now, retry_backoff_seconds)
+        and not _in_retry_backoff(
+            c, now, retry_backoff_seconds, max_retry_backoff_seconds
+        )
     ]
     return sorted(
         eligible, key=lambda c: (c.priority, _overdue_seconds(c, now)), reverse=True

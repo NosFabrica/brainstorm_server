@@ -165,18 +165,18 @@ def test_score_rounds_half_up_like_javascript():
 # the dispute side, which the six headline vectors barely touch.
 #
 # G and N are the important ones: BOTH have a passing score (44 and 39) and
-# BOTH must still be excluded, because the predicate's middle clause
-# (`applications > disputes`) runs before the score filter. A two-clause
-# implementation publishes them. That is the only cheap way to catch a
-# regression from three clauses back to two, so do not "simplify" this test
-# by dropping the membership assertion and keeping the score one.
+# BOTH are members, because there is no count rule (`applications >
+# disputes`; dropped 2026-11-04, ADR 0002 D7). Tapestry excludes both; that is
+# the deliberate difference. They are the cheap guard against the count rule
+# coming back, so do not "simplify" this test by dropping the membership
+# assertion and keeping the score one.
 
 
 @pytest.mark.parametrize(
     "name,rank_votes,expected_score,expected_member",
     [
-        ("G: one heavy apply vs one light dispute", [(90, 1), (3, -1)], 44, False),
-        ("N: two applies vs two disputes", [(40, 1), (40, 1), (3, -1), (3, -1)], 39, False),
+        ("G: one heavy apply vs one light dispute", [(90, 1), (3, -1)], 44, True),
+        ("N: two applies vs two disputes", [(40, 1), (40, 1), (3, -1), (3, -1)], 39, True),
         ("H: high-trust dispute buries five light applies",
          [(10, 1)] * 5 + [(90, -1)], 0, False),
         ("I: low-trust dispute barely dents two heavy applies",
@@ -201,6 +201,27 @@ def test_dispute_stress_vectors(name, rank_votes, expected_score, expected_membe
     assert bool(members) is expected_member, name
     if expected_member:
         assert members[0].score == expected_score, name
+
+
+# --- no count rule: trust outweighs numbers (ADR 0002 D7) -----------------
+
+
+@pytest.mark.parametrize(
+    "name,rank_votes,expected_score",
+    [
+        ("a trusted apply outweighs three light disputes", [(90, 1), (5, -1), (5, -1), (5, -1)], 37),
+        ("a trusted apply outweighs two mid disputes", [(90, 1), (30, -1), (30, -1)], 13),
+        ("an equal dispute cancels it", [(90, 1), (90, -1)], None),
+        ("a trusted dispute buries three light applies", [(5, 1), (5, 1), (5, 1), (90, -1)], None),
+    ],
+)
+def test_the_weighted_balance_decides_not_the_count(name, rank_votes, expected_score):
+    taggings = [(P1, float(polarity), rank / 100) for rank, polarity in rank_votes]
+    members = compute_members(taggings, cutoff=1)
+    if expected_score is None:
+        assert members == [], name
+    else:
+        assert [m.score for m in members] == [expected_score], name
 
 
 # --- rigor is the Observer's, not a constant ------------------------------

@@ -15,11 +15,14 @@ router = APIRouter()
     path="/{observer_pubkey}",
     summary="Admin: generate and publish Trusted Lists for one Observer",
     description=(
-        "Computes the Observer's dictionary of pubkey Tags — those used by "
-        "asserters whose Rank in that Observer's web of trust clears the "
-        "threshold — and publishes one kind-30392 Trusted List per entry, "
-        "signed by the Observer's assistant key. The Observer is the customer "
-        "the lists are computed FOR; the caller is the admin triggering it."
+        "Computes the Observer's dictionary — the Tags used by asserters whose "
+        "Rank in that Observer's web of trust clears the threshold — and "
+        "publishes one Trusted List per entry, signed by the Observer's "
+        "assistant key: kind 30392 for the people tagged with a Tag, and one "
+        "kind 30393 (events by id) or 30394 (by coordinate) per Tag and "
+        "tagging target (an event kind, or a DList) for tagged content. The "
+        "Observer is the customer the lists are computed FOR; the caller is "
+        "the admin triggering it."
     ),
 )
 async def generate_trusted_lists_endpoint(
@@ -39,6 +42,10 @@ async def generate_trusted_lists_endpoint(
             failed=run.failed,
             retracted=run.retracted,
             empty_reason=run.empty_reason,
+            event_taggings_in_store=run.event_taggings_in_store,
+            unresolved_targets=run.unresolved_targets,
+            unnamed_kinds=run.unnamed_kinds,
+            content_skipped_reason=run.content_skipped_reason,
             tags=[
                 TrustedListTagResult(
                     slug=t.slug,
@@ -48,6 +55,8 @@ async def generate_trusted_lists_endpoint(
                     taggings_considered=t.taggings_considered,
                     member_count=t.member_count,
                     error=t.error,
+                    kind=t.kind,
+                    tagging_target=t.tagging_target,
                 )
                 for t in run.tags
             ],

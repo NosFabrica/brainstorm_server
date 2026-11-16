@@ -11,15 +11,16 @@ Ported from Tapestry's `src/lib/self-map/index.js` (ADRs assistant-self-map/
 0001–0003), with two changes for Brainstorm:
 
 - **The offer is per key.** `duty_menu_build.offer_rows` offers `30382:rank` …
-  `30382:hops`, `30392`, `39998` and `39999`, so it is read by Duty Menus § 6.2's
+  `30382:hops`, `30392`, `30393`, `30394`, `39998` and `39999`, so it is read by Duty Menus § 6.2's
   covering: a probe's relay is its most specific matching row's, and a key's is
   the most specific row covering it. Tapestry reads bare-kind rows only, which
   would leave Scores not offered here. A key no row covers, such as a bare
   `30382`, is narrowed to the rows within it.
 - **Liveness is Brainstorm's own record** (`ScoresUpkeep`, which
   `self_map_service` gathers). Trusted Lists are never live, since only
-  `POST /admin/trustedLists` publishes them, and the Assistant publishes no
-  Concepts yet.
+  `POST /admin/trustedLists` publishes them, and neither are Concepts: the
+  Assistant signs a concept copy only when the customer asks
+  (`assistant_dictionary_service`), and nothing keeps it up to date.
 
 The engine reasons over a finite set of *probe* insights, each standing for one
 region of insights that every key either matches whole or not at all (ADR 0001

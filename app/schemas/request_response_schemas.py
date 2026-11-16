@@ -10,12 +10,15 @@ from app.schemas.graperank_schemas import (
 )
 from app.schemas.schemas import (
     AdminStats,
+    AssistantDictionaryResult,
     AssistantDutyMenuOffer,
     AssistantTreasureMapCheck,
     AuthSuccessfulToken,
     BillingPlansData,
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
+    CompromisedStatus,
+    CompromisedStatusesData,
     CreatedShortUrl,
     FollowListIngestResult,
     OwnUserData,
@@ -165,6 +168,10 @@ class GetAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
 
 class PublishAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
     data: PublishedAssistantTreasureMap
+
+
+class AssistantDictionaryResponse(SuccessfulResponseDataSchema):
+    data: AssistantDictionaryResult
 
 
 class AdminStatsResponse(SuccessfulResponseDataSchema):
@@ -359,3 +366,11 @@ class PasskeyVaultBlobResponse(SuccessfulResponseDataSchema):
 
 class PasskeyVaultDeletedResponse(SuccessfulResponseDataSchema):
     data: None = None
+
+
+class GetCompromisedStatusResponse(SuccessfulResponseDataSchema):
+    data: CompromisedStatus
+
+
+class GetCompromisedStatusesResponse(SuccessfulResponseDataSchema):
+    data: CompromisedStatusesData

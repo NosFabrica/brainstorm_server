@@ -1,13 +1,13 @@
 import asyncio
-import json
 
 from fastapi import HTTPException, status
 from neo4j.exceptions import TransientError
-from nostr_sdk import Event
 
 from app.core.loggr import loggr
 from app.message_queue_tasks.process_strfry_event import process_event_kind_3
 from app.neo4j_db.driver import driver as neo4j_driver
+from app.utils.nostr import event_tags
+from app.utils.signed_event import Rejection, SignedEventRejected, verify_signed_event
 
 logger = loggr.get_logger(__name__)
 
@@ -21,6 +21,23 @@ _MAX_WRITE_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 0.05
 
 
+_REJECTIONS = {
+    Rejection.MALFORMED: (status.HTTP_400_BAD_REQUEST, "Malformed Nostr event"),
+    Rejection.WRONG_KIND: (
+        status.HTTP_400_BAD_REQUEST,
+        "Event must be a kind-3 follow list",
+    ),
+    Rejection.BAD_SIGNATURE: (
+        status.HTTP_401_UNAUTHORIZED,
+        "Invalid event signature",
+    ),
+    Rejection.WRONG_AUTHOR: (
+        status.HTTP_403_FORBIDDEN,
+        "Event author does not match the authenticated user",
+    ),
+}
+
+
 async def ingest_follow_list(caller_pubkey: str, signed_event: dict) -> int:
     """Validate and write an onboarding follow list into Neo4j synchronously.
 
@@ -28,35 +45,14 @@ async def ingest_follow_list(caller_pubkey: str, signed_event: dict) -> int:
     ``followed_by:`` Redis reverse-sets land before the request returns.
     """
     try:
-        event = Event.from_json(json.dumps(signed_event))
-    except Exception as exc:
-        # The body already passed NostrEvent schema validation, so this is a
-        # residual nostr_sdk gripe (e.g. canonical-serialization quirk). Surface
-        # it as a clean 400 rather than letting it become an unhandled 500.
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Malformed Nostr event",
-        ) from exc
+        event = verify_signed_event(
+            signed_event, kind=KIND_FOLLOW_LIST, author=caller_pubkey
+        )
+    except SignedEventRejected as exc:
+        status_code, detail = _REJECTIONS[exc.reason]
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
-    if event.kind().as_u16() != KIND_FOLLOW_LIST:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Event must be a kind-3 follow list",
-        )
-    if not event.verify():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid event signature",
-        )
-    if event.author().to_hex() != caller_pubkey:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Event author does not match the authenticated user",
-        )
-
-    follow_count = sum(
-        1 for tag in signed_event.get("tags", []) if tag and tag[0] == "p"
-    )
+    follow_count = sum(1 for tag in event_tags(event) if tag and tag[0] == "p")
     # Onboarding is additive-only: this endpoint seeds follows ahead of relay
     # sync. The reused kind-3 handler treats an empty list as "delete all
     # follows" (replaceable-event semantics) — never the intent here, and a

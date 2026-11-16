@@ -12,6 +12,7 @@ from app.routers.admin.billing.router import verify_billing_access
 from app.routers.admin.router import router as admin_router
 from app.routers.auth_challenge.router import router as auth_challenge_router
 from app.routers.billing.router import router as billing_public_router
+from app.routers.compromised.router import router as compromised_router
 from app.routers.graperank.router import router as graperank_router
 from app.routers.graph.router import router as graph_router
 from app.routers.network_alerts.router import router as network_alerts_router
@@ -111,6 +112,13 @@ router.include_router(
 router.include_router(
     router=network_alerts_router,
     tags=["network-alerts"],
+)
+
+# Public: whether an account's key is marked compromised, for the UI to flag it.
+router.include_router(
+    router=compromised_router,
+    prefix="/compromised",
+    tags=["compromised"],
 )
 
 ADMIN_ROUTER_PREFIX = "/admin"

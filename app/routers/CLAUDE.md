@@ -16,7 +16,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/whitelisted/{observer_pubkey}` | `router.py:75-94` | Trusted-pubkey list for an observer; `threshold` query param (default 0.02) |
 | `/shortestPath` | `graph/router.py` | Path network: every shortest directed FOLLOWS path between two pubkeys; `only=hops` for Hops alone (ADR 0004) |
 | `/networkAlerts` | `network_alerts/router.py` | Pubkeys carrying more verified reports than their reach justifies, split into direct-follows / extended-network |
-| `/.well-known/nostr.json` | `nip05/well_known.py` | NIP-05 verification for Assistant pubkeys; resolution in `services/nip05_service.py` |
+| `/.well-known/nostr.json` | `nip05/well_known.py` | NIP-05 verification for Assistant pubkeys; resolution in `services/nip05_service.py`; per-IP `NIP05_RATE_LIMIT_PER_MINUTE` (600) |
 
 ## Subdirs (by URL prefix)
 
@@ -29,6 +29,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/billing` | `billing/` | none — public plans list. **Always mounted**: an empty `plans` array is the "no billing here" signal the UI hides on. A mapping naming a service Flash does not hold drops that service's plans and logs an error, so one mistyped id degrades the page rather than refusing it |
 | `/admin/billing/dev` | `admin/billing/dev.py` | billing access; mounted only when `flash_enabled` AND `deploy_environment == LOCAL` — mock Flash state (subscriptions AND plans, so the pricing page the paid rehearsal starts on has something to render) + signed synthetic webhook emitter |
 | `/shorturl` | `shorturl/` | none — POST is rate-limited 1 req/s/IP |
+| `/compromised` | `compromised/` | none — whether an account's key is marked compromised, for the UI to flag it: `GET /{npub\|hex}` one, `POST` `{pubkeys}` up to 500 (413 past it), one result per pubkey in the order sent. A marked one carries `since`, the proof event whole and `successor_pubkey`; the admin's note and identity stay out. Marking is `/admin/compromised` |
 | `/passkeyVault` | `passkey_vault/` | **split**: `POST /challenge` and `POST /{hash}/open` are public (rate-limited per IP; the passkey assertion is the credential); `GET`, `PUT /{hash}`, `DELETE /{hash}` are `verify_token`. See [`passkey_vault/CLAUDE.md`](passkey_vault/CLAUDE.md) |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
@@ -43,6 +44,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/admin/graperank` | `admin/graperank/` | admin |
 | `/admin/nsec-encryption` | `admin/nsec_encryption/` | admin |
 | `/admin/trustedLists` | `admin/trusted_lists/` | admin |
+| `/admin/compromised` | `admin/compromised/` | admin. Compromised accounts: `GET` lists them, each with `last_zero_report` (the last zeroing's outcome), `PUT /{npub\|hex}` records one — the proof kept whole (`proof_event`, or `proof_event_id` for the server to fetch and check), optional `successor_pubkey` and `reason`; fields left out keep their stored values — committed, then zeroes its scores and answers with the outcome (it waits up to 20 s; a longer zeroing finishes after the answer, and the server retries one that never reports or fails), `PATCH /{pubkey}` changes only `successor_pubkey` / `reason` (no zeroing; 404 when not marked), `DELETE /{pubkey}` unmarks it. See `services/compromised_service.py` |
 
 ## Authentication
 
@@ -97,7 +99,7 @@ nothing to report; the client only needs success, so there is no body to wrap.
 
 ### `setup/router.py` — Nostr pubkey setup
 
-- **GET** `/{nostr_pubkey}` → kind-10040 designation rows (`list[list[str]]`): the five `30382:<tag>` rows, `30392`, then `39998` and `39999` at `settings.dictionary_relay` when it is set. Built by `services/duty_menu_build.designation_rows`, which the Duty Menu's offer also reads.
+- **GET** `/{nostr_pubkey}` → kind-10040 designation rows (`list[list[str]]`): the five `30382:<tag>` rows, `30392`, `30393` and `30394` (one Trusted List row per kind: the search relay's signer gate is per kind), then `39998` and `39999` at `settings.dictionary_relay` when it is set. Built by `services/duty_menu_build.designation_rows`, which the Duty Menu's offer also reads.
 
 ### `shorturl/router.py` — URL shortener
 
@@ -130,6 +132,8 @@ the `/{pubkey}` catch-all.
 | POST | `/assistantDutyMenu` | `PublishAssistantDutyMenuResponse` | No body. Reads the earlier versions strictly (502 when no relay answers), signs the kind-39999 menu (`d`, Nous' `z`, `p` = the assistant, one `duty` per GET row, `client`) dated `max(now, newest found + 1)`, checks it against § 6.1, and publishes to each row's relay (the internal TA relay for its public URL), the outbox (`assistant_relay_list()`), every relay an earlier version's rows named, and `wss://dcosl.brainstorm.world`. Answers `{event, relays: [{url, ok, message}]}` within the UI's 30 s; 502 when no relay took it |
 | GET | `/assistantTreasureMap` | `GetAssistantTreasureMapResponse` | `{assistant, on, duties, shouldSay, relays, writerRelays}`, camelCase as Brainstorm-UI reads it: what the assistant's Treasure Map (its own kind 10040, a self-Map) should list now, and why. `duties` is one line per part of each of the caller's kind-10040 entries naming the assistant (`live`, `offered` with a `reason`, `not-offered`, `elsewhere`); `shouldSay` the `[key, relay]` self-entries, computed whether `on` or not; `relays` the outbox, the relays `shouldSay` names and the caller's hints for the assistant, for readers; `writerRelays` the relays read by the press that keeps the current choice (while on, Update now's: the outbox and the relays `shouldSay` names; while off, Turn off's: the outbox alone; at public URLs, never the hints), so the UI can ask each whether it holds the newest version. 502 when the caller's Map can't be read, or, when the Map asks the assistant for Scores and the scheduler would otherwise run the caller, the follow count (read alongside it, within 5 s); 422 when the Map names more than 64 keys. **Must stay on this router**, as `/assistantDutyMenu` |
 | POST | `/assistantTreasureMap` | `PublishAssistantTreasureMapResponse` | Body `{on: bool}` (strict; anything else 422). Turn on and Update now read the newest version strictly at the outbox and the relays `shouldSay` names, Turn off at the outbox alone, never at the caller's hints (502 when no relay answers), and publish the self-entries alone (`shouldSay` when on, none when off), dated `max(now, newest found + 1)`, to the relays read plus every relay an earlier version's self-entries named. When nothing would change it publishes nothing (`published: false`), unless a relay that answered the read lacks the newest version: that version then goes there unchanged (`published: true`). Saves the choice (`brainstorm_nsec.treasure_map_on`) only on success, committed before the answer. Answers `{on, published, event, relays: [{url, ok, message}]}` within the UI's 30 s; 502 when no relay took a new version (a repair answers `published: true` whether or not its relays take it: the version is already on the relay it was read from, and the report shows each failed line) or, turning on, the caller's Map, or the follow count when it counts, can't be read, 409 while another press for the same assistant is under way, 422 when, turning on, the Map names more than 64 keys. Turning off reads neither the caller's Map nor the follow count |
+| POST | `/assistantDictionary` | `AssistantDictionaryResponse` | Body `{concepts: [<39998 coordinate>, …]}`, 1–10 (the schema answers 422 otherwise). The caller's Assistant copies each community concept, verbatim with a `pointer` `b`: `{assistant, concepts: [{community, local, event, status, error, relays}]}`, `status` one of `published`/`updated`/`unchanged`/`conflict`/`not_found`/`failed`. 502 when the dictionary relay can't be read, or when nothing that needed sending reached a relay (`services/assistant_dictionary_service.py`). **Must stay on this router**: on `public_router`, `/{pubkey}` would answer it with a 405, which Brainstorm-UI reads as "not on this server yet" |
+| POST | `/assistantDictionary/withdraw` | `AssistantDictionaryResponse` | The same body and answer: the Assistant republishes its copy of each concept as withdrawn (`["b", "b-tag-deferred"]`); `status` `withdrawn`, `unchanged`, `conflict` or `failed` (not sent: out of time, or no relay took it). Reads only the Assistant's own headers. 502 when the dictionary relay can't be read, or when nothing that needed sending reached a relay. Same router rule |
 
 **Public (`public_router`)** — optional auth. Observer perspective = caller's
 pubkey when authenticated, else `app.utils.observer.default_observer_pubkey()`
@@ -139,7 +143,7 @@ token still 401s:
 | Method | Path | Response | Notes |
 |---|---|---|---|
 | POST | `/trustSignals` | `GetTrustSignalsResponse` | Body `{pubkeys}` (≤500, 413 before per-item 422). Per pubkey: `/overview`'s `influence` + `flagged`, and `verified` on the same line. One UNWIND — for list surfaces that would otherwise call `/overview` per author |
-| GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence. The subject's own `verified` / `tier` and `flagged_by_observer` / `flagged_count` sit on the saved preset's verified line |
+| GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence. The subject's own `verified` / `tier` and `flagged_by_observer` / `flagged_count` sit on the saved preset's verified line. `compromised` says the key is marked compromised (`/compromised/{pubkey}` has the proof), from `services/compromised_authors.py`'s 30 s cache, so it costs no query |
 | GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Per-section total + verified + tier breakdown. No query params — the tier bands are fixed constants |
 | GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor`. `verified_only=true` filters on the section's own preset cutoff; `tier` uses the same fallthrough as `/stats`; each row carries the preset's `verified` verdict + `tier` |
 | GET | `/{pubkey}` | `GetUserDataResponse` | Full 6-relationship graph. Rows' `trusted_reporters` count above the preset reporter cutoff |

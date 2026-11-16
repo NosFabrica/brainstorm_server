@@ -47,6 +47,8 @@ EXPECTED_KEYS = [
     "30382:muters",
     "30382:hops",
     "30392",
+    "30393",
+    "30394",
     "39998",
     "39999",
 ]
@@ -280,7 +282,7 @@ def test_the_published_rows_are_the_offer(menu_client, relays):
     event = _publish(menu_client)["event"]
     duty = [[t[1], t[2]] for t in event["tags"] if t[0] == "duty"]
     assert duty == offer["rows"]
-    assert len(duty) == 8
+    assert len(duty) == len(EXPECTED_KEYS)
 
 
 def test_no_menu_semantics_beyond_rows(menu_client, relays):

@@ -28,6 +28,12 @@ from app.message_queue_tasks.ta_signing import TA_METRIC_TAGS
 # cover 30392 designation at all as of 2026-09-01.
 TRUSTED_LIST_KIND_ROW = "30392"
 
+# The Trusted Lists of tagged content (ADR trusted-lists/0002 D9): kind 30393
+# (events by id) and 30394 (by coordinate). Bare, for the same reason. The
+# search relay's signer gate is per kind, so a 10040 naming the Assistant only
+# on 30392 would unpack people lists and never these.
+CONTENT_LIST_KIND_ROWS = ["30393", "30394"]
+
 # The customer's Dictionary, which the Assistant is to manage: its DList headers
 # and items. Bare kinds, as the Trusted List row is.
 DICTIONARY_KIND_ROWS = ["39998", "39999"]
@@ -64,6 +70,9 @@ def designation_rows(assistant_pubkey: str) -> list[list[str]]:
     # Same assistant key as the 30382 rows: one identity signs both this
     # Observer's Trusted Assertions and their Trusted Lists.
     rows.append([TRUSTED_LIST_KIND_ROW, assistant_pubkey, trusted_list_relay])
+    rows.extend(
+        [kind, assistant_pubkey, trusted_list_relay] for kind in CONTENT_LIST_KIND_ROWS
+    )
     # No Dictionary relay, no Dictionary rows: a row without a relay names
     # nowhere to find what it designates.
     if settings.dictionary_relay:

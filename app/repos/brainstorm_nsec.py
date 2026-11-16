@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import cast
 
 from nostr_sdk import Keys  # type: ignore
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from sqlalchemy.orm import defer
@@ -11,6 +11,7 @@ from app.core.database import execute_db_statement, handle_no_data
 from app.core.loggr import loggr
 from app.db_models import BrainstormNsec, Scheduling, SchedulingSource
 from app.repos.scheduling_repo import get_default_scheduling_on_db, get_scheduling_on_db
+from app.utils.assistant_nip05 import compute_assistant_nip05_local_part
 from app.utils.datetimes import as_naive_utc, utc_now
 from app.utils.encryption import decrypt_nsec, encrypt_nsec
 from app.utils.nostr import generate_random_nsec
@@ -60,10 +61,13 @@ async def get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(
 
     # Create new one - dual-write: plaintext in nsec, encrypted in encrypted_nsec
     nsec = generate_random_nsec()
+    assistant_pubkey = _assistant_pubkey(nsec, None)
     instance = BrainstormNsec(
         pubkey=pubkey,
         nsec=nsec,
         encrypted_nsec=encrypt_nsec(nsec),
+        assistant_pubkey=assistant_pubkey,
+        nip05_local_part=compute_assistant_nip05_local_part(assistant_pubkey),
     )
 
     db.add(instance)
@@ -203,6 +207,67 @@ def _unpack_pubkeys(blob: bytes | None) -> list[str]:
     return [
         blob[i : i + _PUBKEY_BYTES].hex() for i in range(0, len(blob), _PUBKEY_BYTES)
     ]
+
+
+def holds_pubkey(blob: bytes | None, pubkey: str) -> bool:
+    """Whether a packed `last_published_pubkeys` blob lists `pubkey` — at a
+    32-byte boundary, so a match straddling two entries doesn't count."""
+    if not blob:
+        return False
+    needle = bytes.fromhex(pubkey)
+    i = blob.find(needle)
+    while i != -1:
+        if i % _PUBKEY_BYTES == 0:
+            return True
+        i = blob.find(needle, i + 1)
+    return False
+
+
+async def select_observers_publishing_on_db(
+    db: AsyncDBSession, pubkey: str, observer: str | None = None
+) -> set[str]:
+    """Observers whose `last_published_pubkeys` lists `pubkey`. Postgres finds
+    the candidate rows; only those blobs are read, to check the boundary."""
+    stmt = select(BrainstormNsec.pubkey, BrainstormNsec.last_published_pubkeys).where(
+        text("position(:needle IN last_published_pubkeys) > 0").bindparams(
+            needle=bytes.fromhex(pubkey)
+        )
+    )
+    if observer:
+        stmt = stmt.where(BrainstormNsec.pubkey == observer)
+    rows = (await db.execute(stmt)).all()
+    return {obs for obs, blob in rows if holds_pubkey(blob, pubkey)}
+
+
+async def select_observer_signers_on_db(
+    db: AsyncDBSession, observer: str | None = None
+) -> list[tuple[str, str | None]]:
+    """`(observer, assistant_pubkey)` for every Observer (or one): the key its
+    TAs are signed with, as stored — null only until the startup backfill. No
+    nsec is read."""
+    stmt = select(BrainstormNsec.pubkey, BrainstormNsec.assistant_pubkey)
+    if observer:
+        stmt = stmt.where(BrainstormNsec.pubkey == observer)
+    return [(pk, signer) for pk, signer in (await db.execute(stmt)).all()]
+
+
+async def select_observer_nsecs_on_db(
+    db: AsyncDBSession, observers: list[str]
+) -> list[tuple[str, str]]:
+    """`(observer, plaintext nsec)` for these Observers; the multi-MB blob is not
+    read. A row whose nsec won't decrypt is logged and skipped."""
+    if not observers:
+        return []
+    stmt = select(
+        BrainstormNsec.pubkey, BrainstormNsec.nsec, BrainstormNsec.encrypted_nsec
+    ).where(BrainstormNsec.pubkey.in_(observers))
+    out = []
+    for pubkey, nsec, encrypted in (await db.execute(stmt)).all():
+        try:
+            out.append((pubkey, _plaintext_nsec(nsec, encrypted)))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"nsec for observer {pubkey} won't decrypt: {e}")
+    return out
 
 
 async def get_last_published_pubkeys_by_pubkey_on_db(
@@ -402,24 +467,49 @@ async def get_pov_availability_fields_on_db(
     return True, row[0] is not None
 
 
-async def select_all_assistant_pubkeys_on_db(db: AsyncDBSession) -> list[str]:
-    """Every Assistant pubkey. Drives the NIP-05 /.well-known/nostr.json lookup.
+async def select_assistant_pubkey_by_nip05_local_part_on_db(
+    db: AsyncDBSession, local_part: str
+) -> str | None:
+    """The Assistant pubkey whose NIP-05 local-part is ``local_part``, if any."""
+    statement = (
+        select(BrainstormNsec.assistant_pubkey)
+        .where(BrainstormNsec.nip05_local_part == local_part)
+        .limit(1)
+    )
+    result = await execute_db_statement(db, statement, __name__)
+    return result.scalar_one_or_none()
 
-    The Assistant pubkey is not a column: `BrainstormNsec.pubkey` is the *owner*
-    (the row's PK), and the Assistant is the public half of the row's nsec. So it
-    is derived here, keeping nsecs inside the repo layer. A row whose nsec won't
-    decrypt or parse is skipped rather than failing every lookup.
+
+async def backfill_assistant_identities_on_db(db: AsyncDBSession) -> int:
+    """Fill ``assistant_pubkey`` / ``nip05_local_part`` on rows that predate them.
+
+    Idempotent; a row whose nsec won't decrypt or parse is logged and left null.
+    Returns how many rows were filled.
     """
-    statement = select(BrainstormNsec.nsec, BrainstormNsec.encrypted_nsec)
+    statement = select(
+        BrainstormNsec.pubkey, BrainstormNsec.nsec, BrainstormNsec.encrypted_nsec
+    ).where(BrainstormNsec.assistant_pubkey.is_(None))
     result = await execute_db_statement(db, statement, __name__)
 
-    pubkeys: list[str] = []
-    for nsec, encrypted_nsec in result.all():
+    filled = 0
+    for owner, nsec, encrypted_nsec in result.all():
         try:
-            pubkeys.append(_assistant_pubkey(nsec, encrypted_nsec))
+            assistant_pubkey = _assistant_pubkey(nsec, encrypted_nsec)
         except Exception as e:
-            logger.error(f"Skipping a brainstorm_nsec row with an unusable nsec: {e}")
-    return pubkeys
+            logger.error(f"Skipping brainstorm_nsec row {owner}: unusable nsec: {e}")
+            continue
+        await execute_db_statement(
+            db,
+            update(BrainstormNsec)
+            .where(BrainstormNsec.pubkey == owner)
+            .values(
+                assistant_pubkey=assistant_pubkey,
+                nip05_local_part=compute_assistant_nip05_local_part(assistant_pubkey),
+            ),
+            __name__,
+        )
+        filled += 1
+    return filled
 
 
 async def select_brainstorm_nsec_by_pubkey_on_db(

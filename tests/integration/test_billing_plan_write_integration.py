@@ -23,7 +23,7 @@ import asyncio
 import pytest
 from sqlalchemy import text
 
-from app.core.database import db_session
+from app.core.database import db_session, engine
 from app.services.billing_service import create_billing_plan, update_billing_plan
 
 pytestmark = pytest.mark.integration
@@ -48,35 +48,44 @@ async def _cleanup(db) -> None:
 
 def test_a_plan_write_returns_an_object_whose_timestamps_can_be_read():
     async def _run():
-        async with db_session() as db:
-            await _cleanup(db)
-            try:
-                scheduling_id = await _policy_id(db)
-
-                created = await create_billing_plan(
-                    db,
-                    {
-                        "flash_service_id": SERVICE_ID,
-                        "flash_plan_id": "plan-write-probe",
-                        "scheduling_id": scheduling_id,
-                        "amount_minor": 200,
-                        "currency": "USD",
-                        "is_active": True,
-                    },
-                )
-                # The assertion IS the attribute access: unrefreshed, this
-                # raises MissingGreenlet rather than returning a value.
-                assert created.updated_at is not None
-                assert created.created_at is not None
-
-                # An edit that genuinely changes something — the no-op case
-                # never reproduced the bug, which is why it looked flaky.
-                edited = await update_billing_plan(
-                    db, created.id, {"includes": ["one", "two"]}
-                )
-                assert edited.updated_at is not None
-                assert edited.includes == ["one", "two"]
-            finally:
+        try:
+            async with db_session() as db:
                 await _cleanup(db)
+                try:
+                    scheduling_id = await _policy_id(db)
+
+                    created = await create_billing_plan(
+                        db,
+                        {
+                            "flash_service_id": SERVICE_ID,
+                            "flash_plan_id": "plan-write-probe",
+                            "scheduling_id": scheduling_id,
+                            "is_active": True,
+                        },
+                    )
+                    # An INSERT gets the server's defaults back with the row, so
+                    # the create can't reproduce the bug: this only checks that
+                    # it returns a plan whose timestamps read.
+                    assert created.updated_at is not None
+                    assert created.created_at is not None
+
+                    # An edit that genuinely changes something — the no-op case
+                    # never reproduced the bug, which is why it looked flaky. A
+                    # mapping is only its policy and whether we sell it, so the
+                    # edit withdraws it from sale.
+                    edited = await update_billing_plan(
+                        db, created.id, {"is_active": False}
+                    )
+                    # The assertion IS the attribute access: unrefreshed after
+                    # the UPDATE, this raises MissingGreenlet rather than
+                    # returning a value.
+                    assert edited.updated_at is not None
+                    assert edited.is_active is False
+                finally:
+                    await _cleanup(db)
+        finally:
+            # The engine is shared and its pooled connections belong to this
+            # event loop: left open, the next test's loop inherits them closed.
+            await engine.dispose()
 
     asyncio.run(_run())

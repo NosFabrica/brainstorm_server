@@ -49,8 +49,12 @@ def test_normalises_uppercase_hex():
     ]
 
 
-def _enqueue(monkeypatch, designated):
+def _enqueue(monkeypatch, designated, compromised=frozenset()):
     monkeypatch.setattr(settings, "scheduler_enabled", False)
+    monkeypatch.setattr(
+        "app.services.scheduler_lanes.select_compromised_pubkeys_on_db",
+        AsyncMock(return_value=set(compromised)),
+    )
     redis = SimpleNamespace(rpush=AsyncMock())
     monkeypatch.setattr("app.services.scheduler_lanes.redis_client", redis)
     instance = SimpleNamespace(
@@ -70,7 +74,22 @@ def test_enqueue_carries_the_designated_pubkeys(monkeypatch):
 
 
 def test_enqueue_without_designation_is_unchanged(monkeypatch):
-    assert "designated_pubkeys" not in _enqueue(monkeypatch, [])
+    message = _enqueue(monkeypatch, [])
+    assert "designated_pubkeys" not in message
+    assert "compromised_pubkeys" not in message
+
+
+def test_enqueue_carries_the_compromised_pubkeys(monkeypatch):
+    """The worker holds them at Influence 0, so what they rate counts for nothing."""
+    stolen, other = "3f" * 32, "1a" * 32
+    message = _enqueue(monkeypatch, [], compromised={stolen, other})
+    assert message["compromised_pubkeys"] == [other, stolen]
+    assert "designated_pubkeys" not in message
+    assert message["parameters"] == OBSERVER
+
+    both = _enqueue(monkeypatch, [PROVIDER], compromised={stolen})
+    assert both["designated_pubkeys"] == [PROVIDER]
+    assert both["compromised_pubkeys"] == [stolen]
 
 
 def test_reads_only_our_relay(monkeypatch):

@@ -123,8 +123,9 @@ def test_trusted_list_row_falls_back_to_the_ta_relay(setup_client, monkeypatch):
 
 
 def test_dictionary_rows_follow_the_trusted_list_row(setup_client, monkeypatch):
-    """The Assistant manages the Dictionary: its kinds come right after 30392,
-    as bare kinds, signed by the same Assistant."""
+    """The Assistant manages the Dictionary: its kinds come right after the
+    Trusted List rows (30392, then 30393 and 30394), as bare kinds, signed by
+    the same Assistant."""
     from app.core.config import settings
 
     client, assistant_pubkey = setup_client
@@ -132,7 +133,7 @@ def test_dictionary_rows_follow_the_trusted_list_row(setup_client, monkeypatch):
     monkeypatch.setattr(settings, "dictionary_relay", "wss://dictionary.example")
     rows = _rows(client)
     keys = [r[0] for r in rows]
-    assert keys[keys.index("30392") + 1 :] == ["39998", "39999"]
+    assert keys[keys.index("30394") + 1 :] == ["39998", "39999"]
     for row in rows[-2:]:
         assert row[1] == assistant_pubkey
 
@@ -142,7 +143,7 @@ def test_no_dictionary_rows_without_a_dictionary_relay(setup_client, monkeypatch
 
     client, _ = setup_client
     monkeypatch.setattr(settings, "dictionary_relay", "")
-    assert [r[0] for r in _rows(client)][-1] == "30392"
+    assert [r[0] for r in _rows(client)][-1] == "30394"
 
 
 def test_dictionary_rows_name_the_dictionary_relay(setup_client, monkeypatch):
@@ -159,3 +160,16 @@ def test_dictionary_rows_name_the_dictionary_relay(setup_client, monkeypatch):
     assert {r[2] for r in _rows(client) if r[0] in ("39998", "39999")} == {
         "wss://dictionary.example"
     }
+
+
+def test_content_list_rows_follow_30392_with_its_key_and_relay(setup_client):
+    """ADR trusted-lists/0002 D9: bare 30393 and 30394 rows, straight after
+    30392, with the same Assistant and relay. The search relay's signer gate is
+    per kind, so without them content lists would never unpack."""
+    rows = _rows(setup_client[0])
+    keys = [r[0] for r in rows]
+    at = keys.index("30392")
+    assert keys[at : at + 3] == ["30392", "30393", "30394"]
+    trusted_list_row = rows[at]
+    for row in rows[at + 1 : at + 3]:
+        assert row[1:] == trusted_list_row[1:]

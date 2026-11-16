@@ -32,8 +32,9 @@ Dispatches incoming Nostr events by kind:
 - **Kind 10000** (mute list) → same shape as kind 3 but with `MUTES` relationships and `muted_by:` sets.
 - **Kind 1984** (reports) → `REPORTS` relationships + `reported_by:` sets. **Only user-level reports count**: per NIP-56 a note/media report carries an `e` tag, a user report is `p`-only.
 - **Kind 10040** (designations) → `process_event_kind_10040`. Replaces the author's `DESIGNATES` edges (one write: drop the ones no longer listed, merge the rest) and their **forward** set `designates:<author>` (DEL + SADD in one MULTI). Forward, unlike the three above: a provider key is designated by many and designates nobody, so a reverse set would be a hub GrapeRank reads whole every run; the worker reads `designates:` for each user it reaches instead. Only public rows (`parse_designated_pubkeys`). Backfill: `scripts/backfill_designations.py`. See [ADR 0007](../../docs/adr/0007-designations-are-graph-edges.md).
+- **A compromised key's** kind 3/10000/1984/5/10040 are ignored before dispatch (`services/compromised_authors.py`, cached 30 s): what it publishes about others isn't recorded.
 - **Kind 5** (NIP-09 deletion) → `process_event_kind_5`. Reconciles the deleting author's `REPORTS` edges + `reported_by:` membership.
-- **Kind 39999** (Decentralized-Lists item) → `process_event_kind_39999`. Tag elements and taggings share this kind and are told apart by their `z` tag (`app/services/tagging_parse.py`); anything matching neither concept is foreign traffic and is dropped. Persists to `nostr_tag_element` / `nostr_user_tagging` — the input set for Trusted Lists.
+- **Kind 39999** (Decentralized-Lists item) → `process_event_kind_39999`. Tag elements, pubkey taggings, tagging headers and event taggings share this kind and are told apart by their `z` tags (`app/services/tagging_parse.py`); anything matching none is foreign traffic and is dropped. Persists to `nostr_tag_element` / `nostr_user_tagging` / `nostr_tagging_header` / `nostr_event_tagging` — the input set for Trusted Lists. Events held before a shape's parser shipped are replayed by `scripts/backfill_event_taggings.py`.
 
 The reverse-set helper is `_update_reverse_sets`. Use it for any new "X → relationships → reverse-cache" pattern.
 
@@ -53,6 +54,7 @@ The longest module here. The main entry point is `process_nostr_upload_message(m
 
 - `relay_full_sync` (default `False` = delta) or the request row's `force_full_relay`: `False` publishes only _changed_ scores (`changedScorePubkeys`), `True` re-asserts every above-cutoff scorecard. Drift is repaired by the `full_sync_every_n_runs` backstop + admin `resync`, not by leaving it `True`. **Re-assertion only — never deletes.**
 - The delete set is computed by `plan_publish` from a local diff (no relay read): `fell_off = previously_published − currently_above_cutoff`.
+- **Compromised accounts** (`compromised_pubkey`, read once per run) are asserted at rank 0 by `pin_compromised`, after the plan, whenever the run would otherwise assert or delete them: a computed TA goes out at rank 0, and so does a delete (clients keep the zero, not an absence). The baseline is the plan's own, so an account the worker holds at 0 is zeroed the run it falls below cutoff and then left alone; nothing is re-signed every run. Marking it zeroed every Observer's existing TA. A run that was publishing when an account was marked re-reads the set once its publish is acked (`zero_newly_compromised`) and sends rank 0 for any account it just asserted at a real rank, dated a second later; the run fails if the relay doesn't take them. After an admin unmarks one, the zero stays until the Observer re-asserts it (a changed score or a full sync). See `services/compromised_service.py`.
 - The **sweep** (`relay_sweep_below_cutoff`, default off) adds every below-cutoff Observee to the delete set, reaping orphans the diff can't see. Backwards-compat drain: on to clear the legacy backlog, then off — it's mostly no-op deletes that each cost a tombstone. Not implied by full-sync, the backstop, or `resync`.
 
 ### Relay publishing (`relay_publisher.py`)
@@ -88,6 +90,11 @@ costs one label scan, so it runs on forced runs (`force_full_neo4j`: resync
 `neo4j_cleanup_interval_days` since `brainstorm_nsec.last_neo4j_cleanup_at`.
 By time, not run count, because cadences range from hours to months. The
 Cypher lives in `repos/user_repo.py`.
+
+Compromised accounts (`compromised_pubkey`) are never written, and one the run scored
+is added to its clear set (marking one already cleared every observer's score). The
+results consumer leaves them out of the `observerwhitelist` snapshot and the run's
+tier counts the same way.
 
 Persist floor: the worker sends `neo4jPersistFloor` (default 0.0001, its
 `INFLUENCE_PERSIST_FLOOR`) and leaves scorecards at or below it out of

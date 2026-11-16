@@ -2,7 +2,14 @@ from datetime import datetime
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from fastapi_pagination import Page
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    computed_field,
+    model_validator,
+)
 
 from app.core.flash import SettableStatus, is_whole_day_boundary
 from app.schemas.error_codes import ErrorCode
@@ -68,9 +75,20 @@ class CreatedAndUpdatedAtModel(BaseModel):
     updated_at: datetime
 
 
+# Outcomes caused by the user's own graph, not a fault on our side.
+WARNING_ERROR_CODES = frozenset(
+    {ErrorCode.NO_ELIGIBLE_USERS, ErrorCode.COMPROMISED_OBSERVER}
+)
+
+
 class GrapeRankError(BaseModel):
     code: ErrorCode
     message: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def severity(self) -> Literal["warning", "error"]:
+        return "warning" if self.code in WARNING_ERROR_CODES else "error"
 
     @model_validator(mode="before")
     @classmethod
@@ -228,6 +246,9 @@ class UserOverviewData(BaseModel):
     flagged_by_observer: bool
     flagged_count: int
     counts: UserConnectionCounts
+    # The subject's key is marked compromised (`/compromised/{pubkey}` has the
+    # proof and successor). From an in-process cache, at most 30 s behind.
+    compromised: bool = False
 
 
 class TrustSignal(BaseModel):
@@ -836,6 +857,41 @@ class PublishedAssistantDutyMenu(BaseModel):
     relays: list[AssistantRelayResult]
 
 
+# Your Assistant's Dictionary (ADR assistant-dictionary/0001 D6). Brainstorm-UI's
+# `services/api/users.ts` `AssistantConceptResult` reads it.
+
+
+class AssistantConceptResult(BaseModel):
+    """What happened to one concept: added, removed, left alone, or why not."""
+
+    # The community header's coordinate, as the request named it.
+    community: str
+    # The Assistant's copy, `39998:<assistant>:<d>`; null when not found.
+    local: str | None = None
+    # The signed event, when one was published.
+    event: dict[str, Any] | None = None
+    status: Literal[
+        "published",
+        "updated",
+        "unchanged",
+        "withdrawn",
+        "conflict",
+        "not_found",
+        "failed",
+    ]
+    # A sentence, for conflict, not_found and failed.
+    error: str | None = None
+    # How each relay took this concept's event; empty when nothing was sent.
+    relays: list[AssistantRelayResult] = Field(default_factory=list)
+
+
+class AssistantDictionaryResult(BaseModel):
+    """A press on the caller's Assistant's Dictionary: one result per concept."""
+
+    assistant: str
+    concepts: list[AssistantConceptResult]
+
+
 # Your Assistant's Treasure Map. camelCase, as Brainstorm-UI's
 # `lib/assistantTreasureMap.ts` reads it.
 
@@ -896,3 +952,38 @@ class PublishedAssistantTreasureMap(BaseModel):
     # for a repair, the newest one found. None when nothing was sent.
     event: dict[str, Any] | None
     relays: list[AssistantRelayResult]
+
+
+class CompromisedPubkeyItem(BaseModel):
+    pubkey: str
+    proof_event_id: str
+    proof_event: dict[str, Any]
+    successor_pubkey: str | None
+    reason: str | None
+    added_by: str | None
+    created_at: datetime
+    updated_at: datetime
+    # When a zeroing was last asked for (PUT); pending until `last_zeroed_at` passes it.
+    zero_requested_at: datetime | None = None
+    # The last zeroing's outcome.
+    last_zeroed_at: datetime | None = None
+    last_zero_report: dict[str, Any] | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class CompromisedStatus(BaseModel):
+    """`/compromised`: whether an account is marked compromised, and if so the
+    event proving it (whole), the owner's new key once known, and when it was
+    marked. The admin's note and identity are not public."""
+
+    pubkey: str
+    compromised: bool
+    since: datetime | None = None
+    proof_event_id: str | None = None
+    proof_event: dict[str, Any] | None = None
+    successor_pubkey: str | None = None
+
+
+class CompromisedStatusesData(BaseModel):
+    results: list[CompromisedStatus]

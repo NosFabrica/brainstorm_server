@@ -7,6 +7,7 @@ recorded in ADR `trusted-lists/0001` D5.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -121,14 +122,12 @@ def compute_members(
         certainty = 1 - rigor ** input
         score     = round(max(average * certainty, 0) * 100)   -> 0..100
 
-    Membership is three clauses, not two: `applications >= cutoff` AND
-    `applications > disputes` AND `score >= 1`. The middle clause is inherited
-    — tapestry's `certainty` method chains off `applyDisputesFunction`
-    (refreshPinnedTags.js:112), so the v1 count predicate still gates before
-    the score does. ADR D12 as drafted states only the outer two; the shipped
-    tapestry code has all three, and matching the code is what keeps the two
-    implementations agreeing on a target with more disputes than applications
-    but a high-weight applier.
+    Membership is two clauses: `applications >= cutoff` AND `score >= 1`, as
+    ADR 0001 D12 was drafted. There is no count rule (`applications >
+    disputes`): a heavily trusted applier outweighs a crowd of lightly trusted
+    disputers (Vinney, 2026-11-04; ADR 0002 D7). Tapestry's `certainty` method
+    keeps that rule (it chains off `applyDisputesFunction`), so its lists and
+    ours differ on exactly such targets, deliberately.
 
     Neutral-polarity assertions (the reserved open interval) count as neither
     and contribute no weight. Order is score desc, then pubkey asc — stable
@@ -148,13 +147,13 @@ def compute_members(
 
     members = []
     for pubkey, t in tally.items():
-        if not (t.applications >= cutoff and t.applications > t.disputes):
+        if t.applications < cutoff:
             continue
         score = compute_score(t.weighted_sum, t.weighted_input, rigor)
         if score < 1:
             # Net-negative, zero-mass and exact-split pairs all round to 0 and
-            # drop off the list entirely — the weighted successor of v1's
-            # `applications > disputes`.
+            # drop off the list entirely: the weighted balance, not the count
+            # of disputes, decides.
             continue
         members.append(
             Member(
@@ -223,6 +222,206 @@ def build_trusted_list_content(members: list[Member]) -> str:
             "members": [
                 {
                     "pubkey": m.pubkey,
+                    "endorsements": m.applications,
+                    "disputes": m.disputes,
+                    "score": m.score,
+                }
+                for m in members
+            ]
+        }
+    )
+
+
+# --------------------------------------------------------------------------
+# Trusted Lists of tagged content: kinds 30393 and 30394 (ADR
+# `trusted-lists/0002` D3-D5, D7).
+# --------------------------------------------------------------------------
+EVENT_LIST_KIND = 30393  # members `["e", <id>, "", "<score>"]`
+ADDRESS_LIST_KIND = 30394  # members `["a", <coordinate>, "", "<score>"]`
+CONTENT_LIST_KINDS = (EVENT_LIST_KIND, ADDRESS_LIST_KIND)
+
+_D_KIND_WORD = {EVENT_LIST_KIND: "notes", ADDRESS_LIST_KIND: "items"}
+_MEMBER_TAG = {EVENT_LIST_KIND: "e", ADDRESS_LIST_KIND: "a"}
+_MEMBER_FIELD = {EVENT_LIST_KIND: "id", ADDRESS_LIST_KIND: "address"}
+
+# The names of event kinds in titles (D4). This server's own table: it names
+# what each kind *is*, by its NIP, in the words people search with. A title is
+# published data, so it is never taken from a client's display labels. A kind
+# missing here gets no list and is reported, never guessed.
+KIND_NAMES: dict[int, str] = {
+    1: "Notes",
+    20: "Pictures",
+    30023: "Articles",
+    30402: "Listings",
+    39998: "Lists",
+    39999: "List items",
+    9999: "List items",
+}
+
+
+def content_d_kind_prefix(list_kind: int) -> str:
+    """`tl-tag-notes-` or `tl-tag-items-`."""
+    return f"{D_TAG_PREFIX}-{_D_KIND_WORD[list_kind]}-"
+
+
+def hash8(value: str) -> str:
+    """First 8 lowercase hex characters of the SHA-256 of `value`'s UTF-8
+    bytes: the house `hash8` (Tapestry `src/lib/dtag.js`)."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+
+
+def _js_slice(value: str, units: int) -> str:
+    """`value.slice(0, units)` as JavaScript counts it, in UTF-16 code units.
+
+    A cut through a surrogate pair would leave a lone surrogate, which no
+    event can carry as UTF-8, so the dangling half is dropped (ADR 0002 D5).
+    """
+    cut = value.encode("utf-16-le", "surrogatepass")[: units * 2]
+    return cut.decode("utf-16-le", "ignore")
+
+
+def dlist_target8(ref: str) -> str:
+    """The DList's segment of a list `d`, by the event-taggings rule
+    (Tapestry `protocols/drafts/event-taggings.md`, "The assertion d-tag").
+
+    A header named by coordinate gives `<author8>-<d16>-<hash8>`: `hash8` of the
+    full coordinate exactly as carried is the only part that keeps it unique;
+    `author8` and `d16` (the first 16 UTF-16 units of the header's `d`) are
+    readable decoration. A kind-9998 header, named by event id, gives `<id8>`.
+    """
+    parts = ref.split(":", 2)
+    if len(parts) < 3:
+        return ref[:8]
+    return f"{parts[1][:8]}-{_js_slice(parts[2], 16)}-{hash8(ref)}"
+
+
+def compute_content_d_tag(
+    list_kind: int,
+    observer: str,
+    tag_author_pubkey: str,
+    slug: str,
+    *,
+    kind: int | None = None,
+    dlist: str | None = None,
+) -> str:
+    """`tl-tag-notes|items-<observer8>-<tagAuthor8>-<slug>-<target>` (D5).
+
+    `<target>` is `k<kind>` for an event kind, or `dl<dlist_target8>` for a
+    DList, where `dlist` is the header's coordinate or, for a kind-9998
+    header, its event id.
+    """
+    if kind is not None:
+        target = f"k{kind}"
+    else:
+        target = f"dl{dlist_target8(dlist or '')}"
+    return (
+        f"{content_d_kind_prefix(list_kind)}{observer[:8]}-"
+        f"{tag_author_pubkey[:8]}-{slug}-{target}"
+    )
+
+
+def tag_coordinate(tag_author_pubkey: str, slug: str) -> str:
+    return f"39999:{tag_author_pubkey}:{slug}"
+
+
+@dataclass(frozen=True)
+class ContentStance:
+    """One asserter's live stance on one member under one Tag: the newest of
+    their taggings of it, however they named it (D7)."""
+
+    asserter: str
+    member: str
+    polarity: float
+    created_at_unix: int
+
+
+def one_stance_per_asserter(stances: list[ContentStance]) -> list[ContentStance]:
+    """Keep each asserter's newest stance per member. An asserter who tagged an
+    addressable event once by id and once by coordinate counts once; a tie on
+    `created_at` keeps the dispute, the cautious reading."""
+    newest: dict[tuple[str, str], ContentStance] = {}
+    for stance in stances:
+        key = (stance.asserter, stance.member)
+        held = newest.get(key)
+        if (
+            held is None
+            or held.created_at_unix < stance.created_at_unix
+            or (
+                held.created_at_unix == stance.created_at_unix
+                and stance.polarity < held.polarity
+            )
+        ):
+            newest[key] = stance
+    return sorted(newest.values(), key=lambda s: (s.member, s.asserter))
+
+
+def count_uses(stances: list[ContentStance]) -> int:
+    """Distinct asserters with a non-neutral stance: a pair's uses (D7, as
+    0001's dictionary rule counts a Tag's)."""
+    return len(
+        {
+            s.asserter
+            for s in stances
+            if is_applied(s.polarity) or is_disputed(s.polarity)
+        }
+    )
+
+
+def build_content_list_tags(
+    *,
+    list_kind: int,
+    d_tag: str,
+    observer: str,
+    title: str,
+    description: str,
+    tag_author_pubkey: str,
+    slug: str,
+    tagging_target: str,
+    members: list[Member],
+    cutoff: int,
+    min_rank: int,
+    rigor: float = DEFAULT_RIGOR,
+    retracted: bool = False,
+) -> list[list[str]]:
+    """The kind-30393 / 30394 tag list, per ADR 0002 D5.
+
+    No `a` or `p` back-references: on a 30394 an `a` *is* a member, and the two
+    kinds keep one shape. `source-tag` and `tagging-target` carry the identity
+    instead. `Member.pubkey` holds the member key here, an id or a coordinate.
+    """
+    tags: list[list[str]] = [
+        ["d", d_tag],
+        ["title", title],
+        ["description", description],
+        ["metric", TRUSTED_LIST_METRIC],
+        ["observer", observer],
+        [
+            "source-tag",
+            tag_coordinate(tag_author_pubkey, slug),
+            tag_author_pubkey,
+            slug,
+        ],
+        ["tagging-target", tagging_target],
+        ["cutoff", str(cutoff)],
+        ["min-rank", str(min_rank)],
+    ]
+    if retracted:
+        tags.append(list(RETRACTED_MARKER))
+        return tags
+    tags.append(["rigor", _format_rigor(rigor)])
+    member_tag = _MEMBER_TAG[list_kind]
+    tags.extend([[member_tag, m.pubkey, "", str(m.score)] for m in members])
+    return tags
+
+
+def build_content_list_content(list_kind: int, members: list[Member]) -> str:
+    """`{"members":[{"id"|"address", "endorsements", "disputes", "score"}]}`."""
+    member_field = _MEMBER_FIELD[list_kind]
+    return json.dumps(
+        {
+            "members": [
+                {
+                    member_field: m.pubkey,
                     "endorsements": m.applications,
                     "disputes": m.disputes,
                     "score": m.score,

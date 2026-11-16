@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.database import get_db
 from app.services.nip05_service import build_nip05_document
+from app.utils.rate_limiting.rate_limiting import rate_limit_nip05
 
 router = APIRouter()
 
@@ -13,6 +14,7 @@ router = APIRouter()
 @router.get(
     "/.well-known/nostr.json",
     summary="NIP-05 verification for Brainstorm Assistants",
+    dependencies=[Depends(rate_limit_nip05)],
 )
 async def nip05_well_known(
     name: str | None = Query(default=None),

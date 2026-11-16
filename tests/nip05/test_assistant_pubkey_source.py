@@ -1,38 +1,53 @@
-"""Where the Assistant pubkey the well-known route matches against comes from.
+"""Where the stored Assistant pubkey the well-known route matches against comes from.
 
 `BrainstormNsec.pubkey` is the *owner* (the row's PK); the Assistant is the
-public half of the row's nsec. Returning the column would make every published
+public half of the row's nsec. Storing the owner would make every published
 `nip05` unresolvable, so that distinction is pinned here.
 """
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from nostr_sdk import Keys
 
-from app.repos.brainstorm_nsec import select_all_assistant_pubkeys_on_db
+from app.repos.brainstorm_nsec import (
+    backfill_assistant_identities_on_db,
+    get_or_create_brainstorm_observer_nsec_by_pubkey_on_db,
+)
+from app.utils.assistant_nip05 import compute_assistant_nip05_local_part
 
 
-def _pubkeys_for(monkeypatch, rows: list[tuple[str, str | None]]) -> list[str]:
-    monkeypatch.setattr(
-        "app.repos.brainstorm_nsec.execute_db_statement",
-        AsyncMock(return_value=SimpleNamespace(all=lambda: rows)),
-    )
-    return asyncio.run(select_all_assistant_pubkeys_on_db(AsyncMock()))
+def _backfill(monkeypatch, rows: list[tuple[str, str, str | None]]) -> list[dict]:
+    """Runs the backfill over ``rows``; returns the values each UPDATE wrote."""
+    written: list[dict] = []
+
+    async def _execute(_db, statement, _name):
+        if statement.is_select:
+            return SimpleNamespace(all=lambda: rows)
+        written.append({c.key: v.value for c, v in statement._values.items()})
+
+    monkeypatch.setattr("app.repos.brainstorm_nsec.execute_db_statement", _execute)
+    asyncio.run(backfill_assistant_identities_on_db(AsyncMock()))
+    return written
 
 
-def test_returns_the_assistant_pubkey_not_the_owner(monkeypatch):
+def test_backfill_stores_the_assistant_pubkey_not_the_owner(monkeypatch):
     keys = Keys.generate()
-    owner_pubkey = Keys.generate().public_key().to_hex()
+    owner = Keys.generate().public_key().to_hex()
+    assistant = keys.public_key().to_hex()
 
-    result = _pubkeys_for(monkeypatch, [(keys.secret_key().to_bech32(), None)])
+    written = _backfill(monkeypatch, [(owner, keys.secret_key().to_bech32(), None)])
 
-    assert result == [keys.public_key().to_hex()]
-    assert owner_pubkey not in result
+    assert written == [
+        {
+            "assistant_pubkey": assistant,
+            "nip05_local_part": compute_assistant_nip05_local_part(assistant),
+        }
+    ]
 
 
-def test_prefers_the_encrypted_nsec_over_the_plaintext_column(monkeypatch):
+def test_backfill_prefers_the_encrypted_nsec_over_the_plaintext_column(monkeypatch):
     encrypted_keys = Keys.generate()
     stale_plaintext = Keys.generate().secret_key().to_bech32()
     monkeypatch.setattr(
@@ -40,16 +55,34 @@ def test_prefers_the_encrypted_nsec_over_the_plaintext_column(monkeypatch):
         lambda _token: encrypted_keys.secret_key().to_bech32(),
     )
 
-    result = _pubkeys_for(monkeypatch, [(stale_plaintext, "a-fernet-token")])
+    written = _backfill(monkeypatch, [("owner", stale_plaintext, "a-fernet-token")])
 
-    assert result == [encrypted_keys.public_key().to_hex()]
+    assert written[0]["assistant_pubkey"] == encrypted_keys.public_key().to_hex()
 
 
-def test_one_unusable_row_does_not_sink_the_whole_lookup(monkeypatch):
+def test_one_unusable_row_does_not_sink_the_backfill(monkeypatch):
     good = Keys.generate()
 
-    result = _pubkeys_for(
-        monkeypatch, [("not-an-nsec", None), (good.secret_key().to_bech32(), None)]
+    written = _backfill(
+        monkeypatch,
+        [("a", "not-an-nsec", None), ("b", good.secret_key().to_bech32(), None)],
     )
 
-    assert result == [good.public_key().to_hex()]
+    assert [w["assistant_pubkey"] for w in written] == [good.public_key().to_hex()]
+
+
+def test_a_new_row_is_born_with_its_assistant_identity(monkeypatch):
+    monkeypatch.setattr(
+        "app.repos.brainstorm_nsec.execute_db_statement",
+        AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: None)),
+    )
+    db = MagicMock(flush=AsyncMock(), refresh=AsyncMock())
+
+    row, created = asyncio.run(
+        get_or_create_brainstorm_observer_nsec_by_pubkey_on_db(db, "owner")
+    )
+
+    assistant = Keys.parse(secret_key=row.nsec).public_key().to_hex()
+    assert created
+    assert row.assistant_pubkey == assistant
+    assert row.nip05_local_part == compute_assistant_nip05_local_part(assistant)

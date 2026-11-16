@@ -92,6 +92,12 @@ def graph(monkeypatch):
         "select_brainstorm_request_by_id_on_db",
         AsyncMock(return_value=request_row),
     )
+    compromised: set[str] = set()
+    monkeypatch.setattr(
+        writer_module,
+        "select_compromised_pubkeys_on_db",
+        AsyncMock(side_effect=lambda db: compromised),
+    )
     monkeypatch.setattr(writer_module.settings, "neo4j_full_write", False)
     # Cleaned recently by default, so only tests that move the clock see a time-based clear.
     cleanup = {"last": writer_module.utc_now(), "marked": 0}
@@ -131,6 +137,7 @@ def graph(monkeypatch):
             "observer": observer,
             "request_row": request_row,
             "cleanup": cleanup,
+            "compromised": compromised,
             **pks,
         }
     finally:
@@ -438,3 +445,16 @@ def test_a_full_write_from_an_older_worker_stores_every_scorecard(graph, monkeyp
     _write(_message(observer, {tail: _scorecard(observer, tail, 0, influence=0.00005)}))
 
     assert asyncio.run(_props(tail, observer))["influence"] == 0.00005
+
+
+def test_a_compromised_account_keeps_no_score(graph):
+    """Never written, and a score already stored is cleared, delta run or full."""
+    observer, a, b = graph["observer"], graph["many_followers"], graph["no_followers"]
+    _write(_message(observer, {a: _scorecard(observer, a, 1), b: _scorecard(observer, b, 1)}))
+    graph["compromised"].add(a)
+
+    _write(_message(observer, {a: _scorecard(observer, a, 5), b: _scorecard(observer, b, 5)}, write_set=[a, b]))
+
+    assert asyncio.run(_props(a, observer))["influence"] is None
+    assert asyncio.run(_props(a, observer))["trusted_followers"] is None
+    assert asyncio.run(_props(b, observer))["trusted_followers"] == 5

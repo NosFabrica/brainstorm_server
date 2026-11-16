@@ -1,5 +1,5 @@
 import json
-from typing import ClassVar
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -15,6 +15,7 @@ from pydantic.networks import validate_email
 from app.core.config import settings
 from app.schemas.graperank_schemas import GrapeRankPresetTemplate
 from app.schemas.nostr_event import NostrEvent
+from app.services.dictionary_copy_build import parse_concept_coordinate
 from app.utils.shorturl_entities import (
     EntityKind,
     check_relay_encodable,
@@ -46,6 +47,22 @@ class SetAssistantTreasureMapBody(BaseModel):
     comes from the session, never from the request."""
 
     on: StrictBool
+
+
+class AssistantDictionaryBody(BaseModel):
+    """The community concepts to add to, or withdraw from, the caller's
+    Assistant's Dictionary: 1 to 10 kind-39998 coordinates (ADR
+    assistant-dictionary/0001 D1). Whose Assistant comes from the session."""
+
+    concepts: list[str] = Field(min_length=1, max_length=10)
+
+    @field_validator("concepts")
+    @classmethod
+    def _concept_coordinates(cls, value: list[str]) -> list[str]:
+        for coordinate in value:
+            if parse_concept_coordinate(coordinate) is None:
+                raise ValueError(f"not a kind-39998 coordinate: {coordinate!r}")
+        return value
 
 
 class SetGrapeRankPresetBody(BaseModel):
@@ -244,3 +261,63 @@ class PasskeyAssertion(BaseModel):
 
 class OpenPasskeyVaultBody(BaseModel):
     assertion: PasskeyAssertion
+
+
+class CompromisedPubkeyBody(BaseModel):
+    """`PUT /admin/compromised/{pubkey}`. The proof is `proof_event`, the whole
+    signed event, or `proof_event_id` (hex, note1… or nevent1…), which the server
+    fetches from the nevent's relay hints and its own relays; either way it is
+    signature-checked and stored whole. A field left out keeps its stored value,
+    so a new account needs a proof and a later call may send only what changes
+    (`successor_pubkey: null` clears it)."""
+
+    proof_event: dict[str, Any] | None = None
+    proof_event_id: str | None = None
+    successor_pubkey: str | None = None  # npub or hex; stored as hex
+    reason: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("proof_event_id")
+    @classmethod
+    def _event_id(cls, value: str | None) -> str | None:
+        from app.services.compromised_service import parse_event_id
+
+        if value is not None:
+            parse_event_id(
+                value
+            )  # kept as sent: an nevent's relay hints are read later
+        return value
+
+    @field_validator("successor_pubkey")
+    @classmethod
+    def _successor(cls, value: str | None) -> str | None:
+        from app.services.compromised_service import parse_pubkey
+
+        return None if value is None else parse_pubkey(value)
+
+    @model_validator(mode="after")
+    def _one_proof(self) -> "CompromisedPubkeyBody":
+        if self.proof_event is not None and self.proof_event_id is not None:
+            raise ValueError("Send proof_event or proof_event_id, not both.")
+        return self
+
+
+class CheckCompromisedBody(BaseModel):
+    """`POST /compromised`: up to 500 pubkeys (npub or hex)."""
+
+    pubkeys: list[str] = Field(min_length=1)
+
+
+class CompromisedMetadataBody(BaseModel):
+    """`PATCH /admin/compromised/{pubkey}`: the successor and/or the note of a
+    marked account, nothing else, and no zeroing. A field left out stays;
+    `null` clears it."""
+
+    successor_pubkey: str | None = None  # npub or hex; stored as hex
+    reason: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("successor_pubkey")
+    @classmethod
+    def _successor(cls, value: str | None) -> str | None:
+        from app.services.compromised_service import parse_pubkey
+
+        return None if value is None else parse_pubkey(value)
