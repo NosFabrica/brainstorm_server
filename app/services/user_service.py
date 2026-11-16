@@ -59,6 +59,7 @@ from app.schemas.schemas import (
 from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
 )
+from app.services.compromised_authors import compromised_authors
 from app.services.verified_cutoffs import VerifiedCutoffs
 from app.utils.neo4j_values import safe_float
 
@@ -201,7 +202,7 @@ async def get_user_overview(
 
     # Redis SCARD for inbound + one Neo4j query for outbound counts + influence +
     # flagged_by_observer, all in parallel.
-    followed_by, muted_by, reported_by, neo = await asyncio.gather(
+    followed_by, muted_by, reported_by, neo, compromised = await asyncio.gather(
         _redis_inbound_count(FOLLOWED_BY_KEY_PREFIX, pubkey),
         _redis_inbound_count(MUTED_BY_KEY_PREFIX, pubkey),
         _redis_inbound_count(REPORTED_BY_KEY_PREFIX, pubkey),
@@ -211,9 +212,11 @@ async def get_user_overview(
             verified_line=verified_line,
             reporter_cutoff=reporter_cutoff,
         ),
+        compromised_authors(),
     )
     return UserOverviewData(
         pubkey=pubkey,
+        compromised=pubkey in compromised,
         influence=neo.influence,
         tier=neo.tier,
         flagged_by_observer=neo.flagged_by_observer,

@@ -10,11 +10,21 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.core.config import settings
 from app.repos.brainstorm_request_repo import create_brainstorm_request_on_db
 from app.services.scheduler_lanes import enqueue_calc_request, resolve_scheduler_lane
 
 PK = "a" * 64
+
+
+@pytest.fixture(autouse=True)
+def _no_compromised(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.scheduler_lanes.select_compromised_pubkeys_on_db",
+        AsyncMock(return_value=set()),
+    )
 
 
 def _fake_redis(monkeypatch):

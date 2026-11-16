@@ -11,7 +11,7 @@ from app.db_models import BrainstormRequestStatus
 from app.services import brainstorm_request_service as service
 
 
-def _create(monkeypatch, enqueue) -> tuple[list, MagicMock]:
+def _create(monkeypatch, enqueue, compromised=None) -> tuple[list, MagicMock]:
     events: list = []
     db = MagicMock()
     db.commit = AsyncMock(side_effect=lambda: events.append("commit"))
@@ -24,6 +24,7 @@ def _create(monkeypatch, enqueue) -> tuple[list, MagicMock]:
         events.append((request_id, status))
 
     for name, value in {
+        "select_compromised_on_db": AsyncMock(return_value=compromised),
         "fetch_designated_pubkeys": AsyncMock(return_value=[]),
         "get_graperank_preset_by_pubkey_on_db": AsyncMock(return_value=None),
         "resolve_preset_params": AsyncMock(
@@ -74,3 +75,16 @@ def test_a_failed_enqueue_fails_the_committed_request(monkeypatch):
         (1, BrainstormRequestStatus.FAILURE),
         "commit",
     ]
+
+
+def test_a_compromised_observer_gets_no_run(monkeypatch):
+    """Its own perspective is whoever holds the key now: 409, nothing created or
+    queued, from any trigger."""
+    from fastapi import HTTPException
+
+    events, db = _create(monkeypatch, lambda: None, compromised=SimpleNamespace())
+    with pytest.raises(HTTPException) as e:
+        _run(db)
+    assert e.value.status_code == 409
+    assert events == []
+    service.create_brainstorm_request_on_db.assert_not_awaited()

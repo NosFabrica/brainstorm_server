@@ -30,6 +30,7 @@ from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_result_by_id_on_db,
     update_brainstorm_request_ta_status_by_id_on_db,
 )
+from app.repos.compromised_pubkey_repo import select_compromised_pubkeys_on_db
 from app.repos.observer_whitelist_repo import upsert_observer_whitelist_on_db
 from app.schemas.error_codes import ErrorCode
 from app.schemas.graperank_schemas import GrapeRankPresetParams
@@ -120,11 +121,21 @@ async def process_message(message: dict):
         request_row = await select_brainstorm_request_by_id_on_db(
             db, message["private_id"]
         )
+        # A compromised account is counted in no band and whitelisted by no one
+        # (app/services/compromised_service.py).
+        compromised = (
+            await select_compromised_pubkeys_on_db(db) if scorecards else set()
+        )
+        counted = (
+            {k: sc for k, sc in scorecards.items() if sc["observee"] not in compromised}
+            if scorecards and compromised
+            else scorecards
+        )
         (
             number_by_confidence_by_hops,
             whitelist,
         ) = bucket_scorecards_by_confidence_and_hops(
-            scorecards,
+            counted,
             verified_line_for_run(request_row),
         )
 

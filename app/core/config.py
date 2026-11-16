@@ -171,6 +171,12 @@ class Settings(BaseSettings):
     # Where the Assistant keeps the customer's Dictionary (kind 39998/39999):
     # the relay `/setup` designates for those kinds and the Duty Menu offers.
     dictionary_relay: str = Field(default="wss://dcosl.brainstorm.world")
+    # Last places `PUT /admin/compromised` looks for a proof event given by id,
+    # after the nevent's hints and our own relays: a proof is usually a public
+    # note, which neither of ours keeps.
+    compromised_proof_relays: list[str] = Field(
+        default=["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net"]
+    )
     # Published-state-drift backstop: every Nth *scheduled* run for an observer
     # forces a full re-assert on the relay.
     # <= 0 disables the backstop.

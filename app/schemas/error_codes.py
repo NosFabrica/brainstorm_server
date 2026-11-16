@@ -24,6 +24,11 @@ class ErrorCode(str, Enum):
     # the worker's job lease stopped re-queuing it.
     WORKER_LOST = "WORKER_LOST"
 
+    # The Observer's own key is marked compromised (compromised_pubkey): the worker
+    # refuses its run. The server doesn't queue one; this catches a run queued
+    # before the marking.
+    COMPROMISED_OBSERVER = "COMPROMISED_OBSERVER"
+
     # Python-only: the run's stored result payload was gone (evicted/expired) or
     # its consumer kept dying, so this stage never processed it.
     RESULT_PAYLOAD_LOST = "RESULT_PAYLOAD_LOST"

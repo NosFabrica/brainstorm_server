@@ -17,6 +17,8 @@ from app.schemas.schemas import (
     BillingPlansData,
     BrainstormPubkeyInstance,
     BrainstormRequestInstance,
+    CompromisedStatus,
+    CompromisedStatusesData,
     CreatedShortUrl,
     FollowListIngestResult,
     OwnUserData,
@@ -364,3 +366,11 @@ class PasskeyVaultBlobResponse(SuccessfulResponseDataSchema):
 
 class PasskeyVaultDeletedResponse(SuccessfulResponseDataSchema):
     data: None = None
+
+
+class GetCompromisedStatusResponse(SuccessfulResponseDataSchema):
+    data: CompromisedStatus
+
+
+class GetCompromisedStatusesResponse(SuccessfulResponseDataSchema):
+    data: CompromisedStatusesData

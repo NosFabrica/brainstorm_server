@@ -42,6 +42,12 @@ class TaInput(NamedTuple):
     hops: int
 
 
+def zero_ta_input(observee: str) -> TaInput:
+    """A rank-0 TA: every count 0 and no `hops` (no asserted distance). What a
+    compromised account is asserted at, and what the zero-score events carry."""
+    return TaInput(observee, 0, 0, 0, 0, UNREACHABLE_HOPS)
+
+
 def ta_tags(ta_input: TaInput) -> list[list[str]]:
     """The single source of truth for a TA's tags, shared by every signing path
     so all of them produce content-equivalent events.
@@ -81,11 +87,18 @@ class SignedEvent(NamedTuple):
 
 
 def sign_event_json(
-    kind: int, tags: list[list[str]], content: str, keys: Keys, pubkey_hex: str
+    kind: int,
+    tags: list[list[str]],
+    content: str,
+    keys: Keys,
+    pubkey_hex: str,
+    created_at: int | None = None,
 ) -> SignedEvent:
     """Hash and serialize in Python, calling nostr-sdk once for the Schnorr
-    signature: an `EventBuilder` costs a Python→Rust crossing per tag."""
-    created_at = int(time.time())
+    signature: an `EventBuilder` costs a Python→Rust crossing per tag.
+    `created_at` defaults to now."""
+    if created_at is None:
+        created_at = int(time.time())
     event_id = hashlib.sha256(
         _compact_json([0, pubkey_hex, created_at, kind, tags, content]).encode()
     ).hexdigest()
@@ -103,8 +116,10 @@ def sign_event_json(
     return SignedEvent(event_id, signed)
 
 
-def sign_ta_json(ta_input: TaInput, keys: Keys, pubkey_hex: str) -> SignedEvent:
-    return sign_event_json(TA_KIND, ta_tags(ta_input), "", keys, pubkey_hex)
+def sign_ta_json(
+    ta_input: TaInput, keys: Keys, pubkey_hex: str, created_at: int | None = None
+) -> SignedEvent:
+    return sign_event_json(TA_KIND, ta_tags(ta_input), "", keys, pubkey_hex, created_at)
 
 
 def atag_deletion_tags(
