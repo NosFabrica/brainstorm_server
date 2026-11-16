@@ -25,8 +25,10 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
-from nostr_sdk import EventId, Keys, PublicKey  # type: ignore
+from fastapi import HTTPException
+from nostr_sdk import EventId, Keys, Nip19Event, PublicKey  # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
@@ -48,10 +50,16 @@ from app.repos.brainstorm_nsec import (
 from app.repos.compromised_pubkey_repo import (
     delete_compromised_on_db,
     list_compromised_on_db,
+    select_compromised_in_on_db,
+    select_compromised_on_db,
     upsert_compromised_on_db,
 )
 from app.repos.observer_whitelist_repo import remove_pubkey_from_whitelists_on_db
 from app.repos.user_repo import clear_observer_scores, get_score_keys_on_node
+from app.schemas.request_body_schemas import CompromisedPubkeyBody
+from app.schemas.schemas import CompromisedStatus
+from app.services.designation_service import fetch_latest
+from app.utils.signed_event import SignedEventRejected, verify_signed_event
 
 logger = loggr.get_logger(__name__)
 
@@ -263,19 +271,129 @@ async def zero_compromised_in_background(pubkey: str) -> None:
 # --- admin ---------------------------------------------------------------------
 
 
+async def check_compromised(pubkeys: list[str]) -> list[CompromisedStatus]:
+    """One status per pubkey (hex), in the order asked: the public read the UI
+    uses to flag a compromised account."""
+    async with db_session() as db:
+        marked = {r.pubkey: r for r in await select_compromised_in_on_db(db, pubkeys)}
+    out = []
+    for pk in pubkeys:
+        row = marked.get(pk)
+        if row is None:
+            out.append(CompromisedStatus(pubkey=pk, compromised=False))
+        else:
+            out.append(
+                CompromisedStatus(
+                    pubkey=pk,
+                    compromised=True,
+                    since=row.created_at,
+                    proof_event_id=row.proof_event_id,
+                    proof_event=row.proof_event,
+                    successor_pubkey=row.successor_pubkey,
+                )
+            )
+    return out
+
+
 async def list_compromised() -> list[CompromisedPubkey]:
     async with db_session() as db:
         return await list_compromised_on_db(db)
 
 
+def proof_pointer(value: str) -> tuple[str, list[str]]:
+    """An event id (hex, note1… or nevent1…) → (hex id, the nevent's relay hints)."""
+    value = value.strip()
+    if value.startswith("nevent1"):
+        try:
+            pointer = Nip19Event.from_bech32(value)
+            return pointer.event_id().to_hex(), [str(r) for r in pointer.relays()]
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"{value!r} is not an event id") from e
+    return parse_event_id(value), []
+
+
+def verified_proof(raw: Any) -> dict:
+    """The event as stored: id and signature checked, any kind. 422 otherwise."""
+    kind = raw.get("kind") if isinstance(raw, dict) else None
+    try:
+        event = verify_signed_event(raw, kind=kind if isinstance(kind, int) else -1)
+    except SignedEventRejected as e:
+        raise HTTPException(
+            status_code=422, detail=f"The proof event was rejected: {e.reason.value}."
+        )
+    return json.loads(event.as_json())
+
+
+async def fetch_proof_event(event_id: str, hints: list[str]) -> dict:
+    """The event with this id, from the nevent's relay hints, the relay we sync
+    from, our own, then `compromised_proof_relays`. 422 when none holds a valid
+    copy."""
+    relays = list(
+        dict.fromkeys(
+            [
+                *hints,
+                settings.nostr_transfer_from_relay,
+                settings.nostr_transfer_to_relay,
+                *settings.compromised_proof_relays,
+            ]
+        )
+    )
+    for relay in relays:
+        try:
+            raw = await fetch_latest(relay, {"ids": [event_id], "limit": 1})
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"compromised: proof fetch from {relay} failed: {e!r}")
+            continue
+        if raw is None or raw.get("id") != event_id:
+            continue
+        try:
+            return verified_proof(raw)
+        except HTTPException:
+            logger.warning(f"compromised: {relay} sent an invalid copy of {event_id}")
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            f"No relay we asked holds event {event_id}; send the whole signed "
+            "event as proof_event."
+        ),
+    )
+
+
 async def add_compromised(
-    pubkey: str, proof_event_id: str, reason: str | None, added_by: str | None
+    pubkey: str, body: CompromisedPubkeyBody, added_by: str | None
 ) -> CompromisedPubkey:
     """Record the account, committed before returning: every later run holds it
-    at 0 from then on. Adding it again updates the proof and reason."""
+    at 0 from then on. Fields the body leaves out keep their stored values; a
+    new account needs a proof."""
+    sent = body.model_fields_set
+    proof: dict | None = None
+    if body.proof_event is not None:
+        proof = verified_proof(body.proof_event)
+    elif body.proof_event_id is not None:
+        proof = await fetch_proof_event(*proof_pointer(body.proof_event_id))
+
     async with db_session() as db:
+        stored = await select_compromised_on_db(db, pubkey)
+        if proof is None:
+            if stored is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A new account needs proof_event or proof_event_id.",
+                )
+            proof = stored.proof_event
+
+        def keep(name: str):
+            if name in sent:
+                return getattr(body, name)
+            return getattr(stored, name) if stored is not None else None
+
         row = await upsert_compromised_on_db(
-            db, pubkey, proof_event_id, reason, added_by
+            db,
+            pubkey,
+            proof,
+            keep("successor_pubkey"),
+            keep("reason"),
+            added_by,
         )
         await db.commit()
         await db.refresh(row)

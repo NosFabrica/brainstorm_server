@@ -92,7 +92,9 @@ run publishes, stores or whitelists a real score for them
 | Column | Type | Notes |
 |---|---|---|
 | `pubkey` | str PK | hex |
-| `proof_event_id` | str | hex id of the event proving the compromise |
+| `proof_event` | JSONB | the event proving the compromise, **whole**, id and signature checked: whoever holds the key now can delete it from the relays |
+| `proof_event_id` | str | its id (hex), for listing |
+| `successor_pubkey` | str, nullable | the owner's new key (hex), once known |
 | `reason` | text, nullable | free-form note |
 | `added_by` | str, nullable | the admin pubkey that last set the row |
 

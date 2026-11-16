@@ -39,10 +39,13 @@ async def list_compromised_endpoint():
     summary="Admin: mark an account compromised and zero its scores",
     description=(
         "Records the account (npub or hex) with the event proving the compromise, "
-        "then, after answering, re-signs every Observer's Trusted Assertion about "
-        "it at rank 0 and clears its stored scores and whitelist entries. Every "
-        "later GrapeRank run keeps it at 0. Idempotent: calling again updates the "
-        "proof and reason and zeroes again (e.g. after a run that was publishing "
+        "kept whole (`proof_event`, or `proof_event_id` for the server to fetch), "
+        "and optionally the owner's new key (`successor_pubkey`). Fields left out "
+        "keep their stored values. Then, after answering, re-signs every "
+        "Observer's Trusted Assertion about it at rank 0 and clears its stored "
+        "scores and whitelist entries. Every "
+        "later GrapeRank run keeps it at 0. Idempotent: calling again updates what "
+        "it sends and zeroes again (e.g. after a run that was publishing "
         "when it was first added)."
     ),
 )
@@ -53,12 +56,7 @@ async def put_compromised_endpoint(
     background: BackgroundTasks,
 ):
     hex_pubkey = _hex(pubkey)
-    row = await add_compromised(
-        hex_pubkey,
-        body.proof_event_id,
-        body.reason,
-        request.state.jwt_data.nostr_pubkey,
-    )
+    row = await add_compromised(hex_pubkey, body, request.state.jwt_data.nostr_pubkey)
     background.add_task(zero_compromised_in_background, hex_pubkey)
     return row
 

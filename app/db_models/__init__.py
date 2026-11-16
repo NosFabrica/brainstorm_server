@@ -464,8 +464,13 @@ class CompromisedPubkey(TimestampMixin, Base):
 
     __tablename__ = "compromised_pubkey"
     pubkey: Mapped[str] = mapped_column(String, primary_key=True)  # hex
-    # The event showing the compromise (hex id) — why the account is here.
+    # The event showing the compromise, whole and signature-checked: whoever holds
+    # the key now can delete it from the relays, so its id alone would point at
+    # nothing. `proof_event_id` is its id, for listing.
+    proof_event: Mapped[dict] = mapped_column(JSONB, nullable=False)
     proof_event_id: Mapped[str] = mapped_column(String, nullable=False)
+    # The owner's new key, once known (hex).
+    successor_pubkey: Mapped[str | None] = mapped_column(String, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     added_by: Mapped[str | None] = mapped_column(String, nullable=True)  # admin pubkey
 

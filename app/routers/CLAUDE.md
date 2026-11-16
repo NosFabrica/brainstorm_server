@@ -29,6 +29,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/billing` | `billing/` | none — public plans list. **Always mounted**: an empty `plans` array is the "no billing here" signal the UI hides on. A mapping naming a service Flash does not hold drops that service's plans and logs an error, so one mistyped id degrades the page rather than refusing it |
 | `/admin/billing/dev` | `admin/billing/dev.py` | billing access; mounted only when `flash_enabled` AND `deploy_environment == LOCAL` — mock Flash state (subscriptions AND plans, so the pricing page the paid rehearsal starts on has something to render) + signed synthetic webhook emitter |
 | `/shorturl` | `shorturl/` | none — POST is rate-limited 1 req/s/IP |
+| `/compromised` | `compromised/` | none — whether an account's key is marked compromised, for the UI to flag it: `GET /{npub\|hex}` one, `POST` `{pubkeys}` up to 500 (413 past it), one result per pubkey in the order sent. A marked one carries `since`, the proof event whole and `successor_pubkey`; the admin's note and identity stay out. Marking is `/admin/compromised` |
 | `/passkeyVault` | `passkey_vault/` | **split**: `POST /challenge` and `POST /{hash}/open` are public (rate-limited per IP; the passkey assertion is the credential); `GET`, `PUT /{hash}`, `DELETE /{hash}` are `verify_token`. See [`passkey_vault/CLAUDE.md`](passkey_vault/CLAUDE.md) |
 | `/user` | `user/` | `verify_token` — **except** the `/user/{pubkey}*` lookups (see below) which are public, optional-auth |
 | `/user/graperank` | `graperank/` | `verify_token` |
@@ -43,7 +44,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/admin/graperank` | `admin/graperank/` | admin |
 | `/admin/nsec-encryption` | `admin/nsec_encryption/` | admin |
 | `/admin/trustedLists` | `admin/trusted_lists/` | admin |
-| `/admin/compromised` | `admin/compromised/` | admin. Compromised accounts: `GET` lists them, `PUT /{npub\|hex}` (body `proof_event_id` + optional `reason`) records one — committed before answering — and then zeroes its scores in the background, `DELETE /{pubkey}` unmarks it. See `services/compromised_service.py` |
+| `/admin/compromised` | `admin/compromised/` | admin. Compromised accounts: `GET` lists them, `PUT /{npub\|hex}` records one — the proof kept whole (`proof_event`, or `proof_event_id` for the server to fetch and check), optional `successor_pubkey` and `reason`; fields left out keep their stored values — committed before answering, and then zeroes its scores in the background, `DELETE /{pubkey}` unmarks it. See `services/compromised_service.py` |
 
 ## Authentication
 

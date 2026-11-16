@@ -10,7 +10,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from nostr_sdk import Event, Keys
+
+from app.core.config import settings
 
 from app.message_queue_tasks.ta_signing import TA_KIND
 from app.repos.brainstorm_nsec import _pack_pubkeys, holds_pubkey
@@ -163,6 +166,8 @@ def _row(**kw):
     return SimpleNamespace(
         pubkey=HEX,
         proof_event_id=PROOF,
+        proof_event={"id": PROOF},
+        successor_pubkey=kw.get("successor_pubkey"),
         reason=kw.get("reason"),
         added_by=kw.get("added_by"),
         created_at=datetime(2026, 11, 16),
@@ -193,15 +198,22 @@ def test_put_records_the_account_and_zeroes_it_after_answering(
 
     assert response.status_code == 200, response.text
     assert response.json()["pubkey"] == HEX
-    add.assert_awaited_once_with(HEX, PROOF, "leaked nsec", caller.pubkey)
+    assert response.json()["proof_event"]["id"] == PROOF
+    pubkey, body, added_by = add.await_args.args
+    assert (pubkey, added_by) == (HEX, caller.pubkey)
+    assert body.model_fields_set == {"proof_event_id", "reason"}
     zero.assert_awaited_once_with(HEX)
 
 
-def test_put_without_a_valid_proof_is_a_422(admin_client, monkeypatch):
+def test_put_rejects_bad_fields_with_a_422(admin_client, monkeypatch):
     add = AsyncMock()
     monkeypatch.setattr(f"{ROUTER}.add_compromised", add)
 
-    for body in ({}, {"proof_event_id": ""}, {"proof_event_id": "nope"}):
+    for body in (
+        {"proof_event_id": "nope"},
+        {"successor_pubkey": "npub1nope"},
+        {"proof_event_id": PROOF, "proof_event": {"id": PROOF}},
+    ):
         assert admin_client.put(f"/admin/compromised/{HEX}", json=body).status_code == 422
     assert admin_client.put(
         "/admin/compromised/npub1nope", json={"proof_event_id": PROOF}
@@ -235,3 +247,219 @@ def test_non_admin_cannot_mark_an_account_403(client, monkeypatch):
 
     assert response.status_code == 403
     add.assert_not_awaited()
+
+
+# --- the proof and the merge -------------------------------------------------
+
+
+def _signed(keys: Keys, content: str = "my key was stolen") -> dict:
+    from nostr_sdk import EventBuilder
+
+    return json.loads(EventBuilder.text_note(content).sign_with_keys(keys).as_json())
+
+
+def test_a_proof_event_is_kept_whole_after_its_signature_is_checked():
+    event = _signed(Keys.generate())
+    assert svc.verified_proof(event) == event
+
+    forged = {**event, "content": "something else"}
+    with pytest.raises(HTTPException) as e:
+        svc.verified_proof(forged)
+    assert e.value.status_code == 422
+
+
+def test_an_nevent_pointer_keeps_its_relay_hints():
+    from nostr_sdk import EventId, Nip19Event
+
+    nevent = Nip19Event(EventId.parse(PROOF), None, None, ["wss://relay.example"]).to_bech32()
+    assert svc.proof_pointer(nevent) == (PROOF, ["wss://relay.example"])
+    assert svc.proof_pointer(PROOF) == (PROOF, [])
+
+
+def test_a_proof_is_fetched_from_the_first_relay_holding_a_valid_copy(monkeypatch):
+    event = _signed(Keys.generate())
+    answers = {
+        "wss://hint": RuntimeError("down"),
+        settings.nostr_transfer_from_relay: {**event, "sig": "00" * 64},  # forged
+        settings.nostr_transfer_to_relay: event,
+    }
+    asked = []
+
+    async def _fetch(relay, flt):
+        asked.append(relay)
+        assert flt["ids"] == [event["id"]]
+        answer = answers.get(relay)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(svc, "fetch_latest", _fetch)
+
+    got = asyncio.run(svc.fetch_proof_event(event["id"], ["wss://hint"]))
+
+    assert got == event
+    assert asked[0] == "wss://hint"
+
+
+def test_a_proof_no_relay_holds_is_a_422(monkeypatch):
+    monkeypatch.setattr(svc, "fetch_latest", AsyncMock(return_value=None))
+
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(svc.fetch_proof_event(PROOF, []))
+    assert e.value.status_code == 422
+
+
+@pytest.fixture
+def stored_rows(monkeypatch):
+    """`add_compromised` against an in-memory table."""
+    from contextlib import asynccontextmanager
+
+    rows: dict[str, SimpleNamespace] = {}
+
+    class _Db:
+        async def commit(self):
+            pass
+
+        async def refresh(self, row):
+            pass
+
+    @asynccontextmanager
+    async def _session():
+        yield _Db()
+
+    async def _select(db, pubkey):
+        return rows.get(pubkey)
+
+    async def _upsert(db, pubkey, proof, successor, reason, added_by):
+        rows[pubkey] = SimpleNamespace(
+            pubkey=pubkey,
+            proof_event=proof,
+            proof_event_id=proof["id"],
+            successor_pubkey=successor,
+            reason=reason,
+            added_by=added_by,
+        )
+        return rows[pubkey]
+
+    monkeypatch.setattr(svc, "db_session", _session)
+    monkeypatch.setattr(svc, "select_compromised_on_db", _select)
+    monkeypatch.setattr(svc, "upsert_compromised_on_db", _upsert)
+    return rows
+
+
+def _add(body: dict, admin: str = "f" * 64):
+    from app.schemas.request_body_schemas import CompromisedPubkeyBody
+
+    return asyncio.run(
+        svc.add_compromised(HEX, CompromisedPubkeyBody.model_validate(body), admin)
+    )
+
+
+def test_a_new_account_needs_a_proof(stored_rows):
+    with pytest.raises(HTTPException) as e:
+        _add({"reason": "stolen"})
+    assert e.value.status_code == 422
+    assert stored_rows == {}
+
+
+def test_a_later_put_keeps_what_it_leaves_out(stored_rows):
+    """The successor arrives later, without resending a proof that may be deleted
+    by then; a null clears it."""
+    event = _signed(Keys.generate())
+    _add({"proof_event": event, "reason": "stolen"})
+    successor = Keys.generate().public_key()
+
+    row = _add({"successor_pubkey": successor.to_bech32()})
+    assert row.proof_event == event
+    assert row.reason == "stolen"
+    assert row.successor_pubkey == successor.to_hex()
+
+    row = _add({"successor_pubkey": None})
+    assert row.successor_pubkey is None
+    assert row.proof_event == event
+
+
+# --- the public check -------------------------------------------------------------
+
+PUBLIC = "app.routers.compromised.router"
+
+
+@pytest.fixture
+def anonymous():
+    """No token at all: the check is public."""
+    from fastapi.testclient import TestClient
+
+    from app.api import app
+
+    return TestClient(app)
+
+
+@pytest.fixture
+def marked(monkeypatch):
+    """`check_compromised` over one marked account, the DB read faked."""
+    row = SimpleNamespace(
+        pubkey=HEX,
+        created_at=datetime(2026, 11, 16),
+        proof_event_id=PROOF,
+        proof_event={"id": PROOF, "content": "my key was stolen"},
+        successor_pubkey="c" * 64,
+    )
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _session():
+        yield AsyncMock()
+
+    async def _select(db, pubkeys):
+        return [row] if HEX in pubkeys else []
+
+    monkeypatch.setattr(svc, "db_session", _session)
+    monkeypatch.setattr(svc, "select_compromised_in_on_db", _select)
+    return row
+
+
+def test_the_ui_can_check_one_account_without_logging_in(anonymous, marked):
+    data = anonymous.get(f"/compromised/{NPUB}").json()["data"]
+
+    assert data["pubkey"] == HEX
+    assert data["compromised"] is True
+    assert data["proof_event"]["content"] == "my key was stolen"
+    assert data["successor_pubkey"] == "c" * 64
+    assert data["since"].startswith("2026-11-16")
+    assert "reason" not in data and "added_by" not in data
+
+
+def test_an_unmarked_account_reads_false(anonymous, marked):
+    data = anonymous.get(f"/compromised/{'1' * 64}").json()["data"]
+
+    assert data == {
+        "pubkey": "1" * 64,
+        "compromised": False,
+        "since": None,
+        "proof_event_id": None,
+        "proof_event": None,
+        "successor_pubkey": None,
+    }
+
+
+def test_a_batch_answers_in_the_order_sent(anonymous, marked):
+    response = anonymous.post("/compromised", json={"pubkeys": ["1" * 64, NPUB]})
+
+    results = response.json()["data"]["results"]
+    assert [(r["pubkey"], r["compromised"]) for r in results] == [
+        ("1" * 64, False),
+        (HEX, True),
+    ]
+
+
+def test_bad_pubkeys_and_oversized_batches_are_refused(anonymous, marked):
+    assert anonymous.get("/compromised/npub1nope").status_code == 422
+    assert anonymous.post("/compromised", json={"pubkeys": []}).status_code == 422
+    assert (
+        anonymous.post("/compromised", json={"pubkeys": [HEX, "nope"]}).status_code
+        == 422
+    )
+    assert (
+        anonymous.post("/compromised", json={"pubkeys": [HEX] * 501}).status_code
+        == 413
+    )

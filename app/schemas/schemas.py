@@ -952,9 +952,28 @@ class PublishedAssistantTreasureMap(BaseModel):
 class CompromisedPubkeyItem(BaseModel):
     pubkey: str
     proof_event_id: str
+    proof_event: dict[str, Any]
+    successor_pubkey: str | None
     reason: str | None
     added_by: str | None
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class CompromisedStatus(BaseModel):
+    """`/compromised`: whether an account is marked compromised, and if so the
+    event proving it (whole), the owner's new key once known, and when it was
+    marked. The admin's note and identity are not public."""
+
+    pubkey: str
+    compromised: bool
+    since: datetime | None = None
+    proof_event_id: str | None = None
+    proof_event: dict[str, Any] | None = None
+    successor_pubkey: str | None = None
+
+
+class CompromisedStatusesData(BaseModel):
+    results: list[CompromisedStatus]
