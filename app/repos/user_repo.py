@@ -1417,6 +1417,31 @@ async def get_score_keys_on_node(session: AsyncNeoSession, pubkey: str) -> list[
     return [k for k in record["keys"] if k.startswith(SCORE_PROPERTY_PREFIXES)]
 
 
+# The edges a user's own events write: kind 3, 10000, 1984 and 10040.
+OUTGOING_RATING_RELATIONSHIPS = ("FOLLOWS", "MUTES", "REPORTS", "DESIGNATES")
+
+
+async def delete_outgoing_ratings(
+    session: AsyncNeoSession, pubkey: str
+) -> dict[str, list[str]]:
+    """Delete the user's outgoing FOLLOWS / MUTES / REPORTS / DESIGNATES edges;
+    the targets, by relationship type, so the Redis copies can follow."""
+
+    async def work(tx: AsyncManagedTransaction) -> dict[str, list[str]]:
+        result = await tx.run(
+            """
+            MATCH (:NostrUser {pubkey: $pubkey})-[r:FOLLOWS|MUTES|REPORTS|DESIGNATES]->(t:NostrUser)
+            WITH r, type(r) AS kind, t.pubkey AS target
+            DELETE r
+            RETURN kind, collect(target) AS targets
+            """,
+            pubkey=pubkey,
+        )
+        return {record["kind"]: list(record["targets"]) async for record in result}
+
+    return await session.execute_write(work)
+
+
 async def clear_observer_scores(
     session: AsyncNeoSession, pubkeys: list[str], keys: list[str]
 ) -> None:

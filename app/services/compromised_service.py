@@ -36,7 +36,17 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
+from app.core.redis_db import redis_client
 from app.db_models import CompromisedPubkey
+from app.message_queue_tasks.process_strfry_event import (
+    DESIGNATES_KEY_PREFIX,
+    FOLLOWED_BY_KEY_PREFIX,
+    MUTED_BY_KEY_PREFIX,
+    REPORTED_BY_KEY_PREFIX,
+)
+from app.message_queue_tasks.process_strfry_event import (
+    _update_reverse_sets as update_reverse_sets,
+)
 from app.message_queue_tasks.relay_publisher import publish_events
 from app.message_queue_tasks.ta_signing import (
     TA_KIND,
@@ -59,9 +69,14 @@ from app.repos.compromised_pubkey_repo import (
     upsert_compromised_on_db,
 )
 from app.repos.observer_whitelist_repo import remove_pubkey_from_whitelists_on_db
-from app.repos.user_repo import clear_observer_scores, get_score_keys_on_node
+from app.repos.user_repo import (
+    clear_observer_scores,
+    delete_outgoing_ratings,
+    get_score_keys_on_node,
+)
 from app.schemas.request_body_schemas import CompromisedPubkeyBody
 from app.schemas.schemas import CompromisedStatus
+from app.services.compromised_authors import forget_compromised_authors
 from app.services.designation_service import fetch_latest
 from app.utils.signed_event import SignedEventRejected, verify_signed_event
 
@@ -108,6 +123,7 @@ class ZeroReport:
     complete: bool = True  # every rank-0 TA acked (vacuously true on a dry run)
     neo4j_cleared: int = 0
     whitelists_updated: int = 0
+    edges_cut: int = 0
 
     def summary(self) -> dict:
         """What `last_zero_report` records: the counts, not the observer list."""
@@ -119,6 +135,7 @@ class ZeroReport:
             "complete": self.complete,
             "neo4j_cleared": self.neo4j_cleared,
             "whitelists_updated": self.whitelists_updated,
+            "edges_cut": self.edges_cut,
         }
 
 
@@ -221,6 +238,23 @@ async def signing_keys(
     return out
 
 
+async def cut_outgoing_ratings(pubkey: str) -> int:
+    """Delete the key's own follows, mutes, reports and designations, in Neo4j and
+    in the Redis copies the worker reads, so GrapeRank neither walks through it
+    nor reads what it rated; the ingest records none from it from now on
+    (`process_strfry_event`). How many edges went."""
+    async with neo4j_driver.session() as session:
+        cut = await delete_outgoing_ratings(session, pubkey)
+    for kind, prefix in (
+        ("FOLLOWS", FOLLOWED_BY_KEY_PREFIX),
+        ("MUTES", MUTED_BY_KEY_PREFIX),
+        ("REPORTS", REPORTED_BY_KEY_PREFIX),
+    ):
+        await update_reverse_sets(prefix, pubkey, removed_pubkeys=cut.get(kind))
+    await redis_client.delete(f"{DESIGNATES_KEY_PREFIX}{pubkey}")
+    return sum(len(targets) for targets in cut.values())
+
+
 async def clear_neo4j_scores(pubkey: str) -> int:
     """Remove every observer's stored score for `pubkey`; how many properties."""
     async with neo4j_driver.session() as session:
@@ -284,6 +318,7 @@ async def zero_compromised(
                 f"acked: {stats.failure_samples}"
             )
     if observer is None:
+        report.edges_cut = await cut_outgoing_ratings(pubkey)
         report.neo4j_cleared = await clear_neo4j_scores(pubkey)
         async with db_session() as db:
             report.whitelists_updated = await remove_pubkey_from_whitelists_on_db(
@@ -442,6 +477,7 @@ async def add_compromised(
             added_by,
         )
         await db.commit()
+        forget_compromised_authors()
         await db.refresh(row)
         return row
 
@@ -450,8 +486,11 @@ async def remove_compromised(pubkey: str) -> bool:
     """Stop holding the account at 0. Each Observer's rank-0 TA stays until that
     Observer re-asserts the account: its next run where the score changed, or
     its next full sync (admin `resync` to hurry one). Neo4j and the whitelist
-    get the score back on the Observer's next run that writes it."""
+    get the score back on the Observer's next run that writes it. The key's own
+    follows, mutes, reports and designations, cut when it was marked, come back
+    only as it publishes them again."""
     async with db_session() as db:
         removed = await delete_compromised_on_db(db, pubkey)
         await db.commit()
+        forget_compromised_authors()
         return removed

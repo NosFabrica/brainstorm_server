@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.db_models import BrainstormRequest, BrainstormRequestStatus, TriggerSource
@@ -13,6 +14,7 @@ from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
     update_brainstorm_request_status_by_id_on_db,
 )
+from app.repos.compromised_pubkey_repo import select_compromised_on_db
 from app.schemas.schemas import BrainstormRequestInstance, GrapeRankError
 from app.services.designation_service import fetch_designated_pubkeys
 from app.services.graperank_preset_service import (
@@ -118,6 +120,14 @@ async def create_brainstorm_request(
     force_full_neo4j: bool = False,
     trigger_source: str = TriggerSource.MANUAL.value,
 ) -> BrainstormRequestInstance:
+    # A compromised key's own perspective is whoever holds it now: no run, from
+    # any trigger (the scheduler doesn't pick it either).
+    if await select_compromised_on_db(db, parameters) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This account's key is marked compromised; its GrapeRank runs are stopped.",
+        )
+
     # Before any DB work, so a slow relay never holds a transaction open.
     designated_pubkeys = await fetch_designated_pubkeys(parameters)
 

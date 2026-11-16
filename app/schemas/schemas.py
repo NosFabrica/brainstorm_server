@@ -76,7 +76,9 @@ class CreatedAndUpdatedAtModel(BaseModel):
 
 
 # Outcomes caused by the user's own graph, not a fault on our side.
-WARNING_ERROR_CODES = frozenset({ErrorCode.NO_ELIGIBLE_USERS})
+WARNING_ERROR_CODES = frozenset(
+    {ErrorCode.NO_ELIGIBLE_USERS, ErrorCode.COMPROMISED_OBSERVER}
+)
 
 
 class GrapeRankError(BaseModel):

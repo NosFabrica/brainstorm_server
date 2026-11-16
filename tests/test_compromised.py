@@ -139,6 +139,7 @@ def zeroing(monkeypatch):
     monkeypatch.setattr(svc, "fetch_ta_signers", _fetch)
     monkeypatch.setattr(svc, "publish_events", _publish)
     monkeypatch.setattr(svc, "clear_neo4j_scores", AsyncMock(return_value=3))
+    monkeypatch.setattr(svc, "cut_outgoing_ratings", AsyncMock(return_value=4))
     monkeypatch.setattr(
         svc, "remove_pubkey_from_whitelists_on_db", AsyncMock(return_value=2)
     )
@@ -167,6 +168,7 @@ def test_the_relay_decides_and_only_the_holders_keys_are_decrypted(zeroing):
             "complete": True,
             "neo4j_cleared": 3,
             "whitelists_updated": 2,
+            "edges_cut": 4,
         }
     ]
 
@@ -554,3 +556,88 @@ def test_bad_pubkeys_and_oversized_batches_are_refused(anonymous, marked):
         anonymous.post("/compromised", json={"pubkeys": [HEX] * 501}).status_code
         == 413
     )
+
+
+
+# --- what a compromised key rates stops existing ----------------------------------
+
+
+def test_marking_cuts_the_keys_own_ratings_everywhere_the_worker_reads(monkeypatch):
+    """Neo4j edges, the reverse sets per target and its forward `designates:` set."""
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    cut = {"FOLLOWS": ["s1", "s2"], "MUTES": ["m1"], "REPORTS": ["r1"], "DESIGNATES": ["p1"]}
+    calls = []
+
+    async def _reverse(prefix, publisher, added_pubkeys=None, removed_pubkeys=None):
+        calls.append((prefix, publisher, removed_pubkeys))
+
+    redis = SimpleNamespace(delete=AsyncMock())
+    monkeypatch.setattr(svc, "neo4j_driver", SimpleNamespace(session=lambda: _Session()))
+    monkeypatch.setattr(svc, "delete_outgoing_ratings", AsyncMock(return_value=cut))
+    monkeypatch.setattr(svc, "update_reverse_sets", _reverse)
+    monkeypatch.setattr(svc, "redis_client", redis)
+
+    assert asyncio.run(svc.cut_outgoing_ratings(HEX)) == 5
+    assert calls == [
+        ("followed_by:", HEX, ["s1", "s2"]),
+        ("muted_by:", HEX, ["m1"]),
+        ("reported_by:", HEX, ["r1"]),
+    ]
+    redis.delete.assert_awaited_once_with(f"designates:{HEX}")
+
+
+def test_ingest_ignores_what_a_compromised_key_publishes_about_others(monkeypatch):
+    from app.message_queue_tasks import process_strfry_event as ingest
+
+    handled = []
+    for name in (
+        "process_event_kind_3",
+        "process_event_kind_10000",
+        "process_event_kind_1984",
+        "process_event_kind_5",
+        "process_event_kind_10040",
+    ):
+        monkeypatch.setattr(
+            ingest, name, AsyncMock(side_effect=lambda s, e: handled.append(e["kind"]))
+        )
+    monkeypatch.setattr(ingest, "compromised_authors", AsyncMock(return_value=frozenset({HEX})))
+
+    for kind in (3, 10000, 1984, 5, 10040):
+        asyncio.run(ingest.process_strfry_event(None, {"kind": kind, "pubkey": HEX}))
+        asyncio.run(ingest.process_strfry_event(None, {"kind": kind, "pubkey": "1" * 64}))
+
+    assert handled == [3, 10000, 1984, 5, 10040]  # only the live author's
+
+
+def test_the_author_cache_keeps_the_last_set_when_postgres_fails(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from app.services import compromised_authors as cache
+
+    reads = [frozenset({HEX}), RuntimeError("pg down")]
+
+    @asynccontextmanager
+    async def _session():
+        yield None
+
+    async def _select(db):
+        answer = reads.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return set(answer)
+
+    monkeypatch.setattr(cache, "db_session", _session)
+    monkeypatch.setattr(cache, "select_compromised_pubkeys_on_db", _select)
+    monkeypatch.setattr(cache, "_cache", (0.0, frozenset()))
+
+    assert asyncio.run(cache.compromised_authors()) == {HEX}
+    assert asyncio.run(cache.compromised_authors()) == {HEX}  # cached: no read
+    cache.forget_compromised_authors()
+    assert asyncio.run(cache.compromised_authors()) == {HEX}  # read failed: kept
