@@ -398,7 +398,7 @@ def _status(row: CompromisedPubkey) -> CompromisedStatus:
     return CompromisedStatus(
         pubkey=row.pubkey,
         compromised=True,
-        since=row.created_at,
+        since=row.compromised_since or row.created_at,
         proof_event_id=row.proof_event_id,
         proof_event=row.proof_event,
         successor_pubkey=row.successor_pubkey,
@@ -536,6 +536,7 @@ async def add_compromised(
             keep("reason"),
             added_by,
             successor_event_id=keep("successor_event_id"),
+            compromised_since=keep("compromised_since"),
         )
         await db.commit()
         forget_compromised_authors()

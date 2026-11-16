@@ -475,6 +475,10 @@ class CompromisedPubkey(TimestampMixin, Base):
     # hear it from the owner. Its author can't be the compromised key, so the id
     # is enough: nobody but the owner can delete it.
     successor_event_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # From when the key may have been in someone else's hands (naive UTC), when
+    # the admin knows it: the owner's account of it, earlier than marking. Unset,
+    # the public `since` is `created_at`.
+    compromised_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     added_by: Mapped[str | None] = mapped_column(String, nullable=True)  # admin pubkey
     # When a zeroing was last asked for (every PUT): one that hasn't reported since

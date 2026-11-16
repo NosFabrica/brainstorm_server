@@ -1,7 +1,7 @@
 """Accounts whose key is compromised (`compromised_pubkey`). The set is tiny and
 read once per pipeline stage per run."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import cast
 
 from sqlalchemy import and_, delete, func, or_, select, update
@@ -61,6 +61,7 @@ async def upsert_compromised_on_db(
     reason: str | None,
     added_by: str | None,
     successor_event_id: str | None = None,
+    compromised_since: datetime | None = None,
 ) -> CompromisedPubkey:
     """Insert or replace every field but `created_at`."""
     stmt = insert(CompromisedPubkey).values(
@@ -69,6 +70,7 @@ async def upsert_compromised_on_db(
         proof_event_id=proof_event["id"],
         successor_pubkey=successor_pubkey,
         successor_event_id=successor_event_id,
+        compromised_since=compromised_since,
         reason=reason,
         added_by=added_by,
     )
@@ -79,6 +81,7 @@ async def upsert_compromised_on_db(
             "proof_event_id": stmt.excluded.proof_event_id,
             "successor_pubkey": stmt.excluded.successor_pubkey,
             "successor_event_id": stmt.excluded.successor_event_id,
+            "compromised_since": stmt.excluded.compromised_since,
             "reason": stmt.excluded.reason,
             "added_by": stmt.excluded.added_by,
             "updated_at": func.now(),

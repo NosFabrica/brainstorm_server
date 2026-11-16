@@ -527,7 +527,14 @@ def stored_rows(monkeypatch):
         return rows.get(pubkey)
 
     async def _upsert(
-        db, pubkey, proof, successor, reason, added_by, successor_event_id=None
+        db,
+        pubkey,
+        proof,
+        successor,
+        reason,
+        added_by,
+        successor_event_id=None,
+        compromised_since=None,
     ):
         rows[pubkey] = SimpleNamespace(
             pubkey=pubkey,
@@ -535,6 +542,7 @@ def stored_rows(monkeypatch):
             proof_event_id=proof["id"],
             successor_pubkey=successor,
             successor_event_id=successor_event_id,
+            compromised_since=compromised_since,
             reason=reason,
             added_by=added_by,
         )
@@ -603,6 +611,7 @@ def marked(monkeypatch):
         proof_event={"id": PROOF, "content": "my key was stolen"},
         successor_pubkey="c" * 64,
         successor_event_id=None,
+        compromised_since=None,
     )
     from contextlib import asynccontextmanager
 
@@ -889,6 +898,36 @@ def test_the_successor_post_is_kept_by_later_puts_and_read_publicly(
     monkeypatch.setattr(svc, "select_compromised_by_successor_on_db", _none)
     (status,) = asyncio.run(svc.check_compromised([HEX]))
     assert status.successor_event_id == post
+
+
+def test_the_compromise_can_start_before_the_marking(stored_rows, monkeypatch):
+    """`compromised_since` (the owner's account of when the key was taken) is
+    stored as naive UTC, kept by a PUT that leaves it out, and is the public
+    `since`; unset, `since` is when the account was marked."""
+    since = "2026-11-15T21:00:00-03:00"
+    _add({"proof_event": _signed(Keys.generate()), "compromised_since": since})
+    assert stored_rows[HEX].compromised_since == datetime(2026, 11, 16)
+
+    _add({"reason": "later"})
+    assert stored_rows[HEX].compromised_since == datetime(2026, 11, 16)
+
+    row = SimpleNamespace(**vars(stored_rows[HEX]), created_at=datetime(2026, 11, 17))
+
+    async def _select(db, pubkeys):
+        return [row]
+
+    async def _none(db, pubkeys):
+        return []
+
+    monkeypatch.setattr(svc, "select_compromised_in_on_db", _select)
+    monkeypatch.setattr(svc, "select_compromised_by_successor_on_db", _none)
+    (status,) = asyncio.run(svc.check_compromised([HEX]))
+    assert status.since == datetime(2026, 11, 16)
+
+    _add({"compromised_since": None})
+    row.compromised_since = stored_rows[HEX].compromised_since
+    (status,) = asyncio.run(svc.check_compromised([HEX]))
+    assert status.since == datetime(2026, 11, 17)
 
 
 def test_patch_sets_and_clears_the_successor_post(monkeypatch):

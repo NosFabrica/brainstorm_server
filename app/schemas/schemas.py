@@ -960,6 +960,7 @@ class CompromisedPubkeyItem(BaseModel):
     proof_event: dict[str, Any]
     successor_pubkey: str | None
     successor_event_id: str | None = None
+    compromised_since: datetime | None = None
     reason: str | None
     added_by: str | None
     created_at: datetime
@@ -975,8 +976,9 @@ class CompromisedPubkeyItem(BaseModel):
 
 class CompromisedStatus(BaseModel):
     """`/compromised`: whether an account is marked compromised, and if so the
-    event proving it (whole), the owner's new key once known, and when it was
-    marked. The admin's note and identity are not public."""
+    event proving it (whole), the owner's new key once known, and `since`: from
+    when the key may have been in someone else's hands, as the admin recorded
+    it, or else when it was marked. The admin's note and identity are not public."""
 
     pubkey: str
     compromised: bool

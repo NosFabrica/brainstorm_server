@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
@@ -263,6 +264,13 @@ class OpenPasskeyVaultBody(BaseModel):
     assertion: PasskeyAssertion
 
 
+def _naive_utc(cls, value: datetime | None) -> datetime | None:
+    """An aware time → naive UTC, as the DB stores it; a naive one is read as UTC."""
+    if value is not None and value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
 class CompromisedPubkeyBody(BaseModel):
     """`PUT /admin/compromised/{pubkey}`. The proof is `proof_event`, the whole
     signed event, or `proof_event_id` (hex, note1… or nevent1…), which the server
@@ -276,7 +284,11 @@ class CompromisedPubkeyBody(BaseModel):
     successor_pubkey: str | None = None  # npub or hex; stored as hex
     # The new account's post about the move: hex, note1… or nevent1…; stored as hex.
     successor_event_id: str | None = None
+    # From when the key may have been in someone else's hands; stored as naive UTC.
+    compromised_since: datetime | None = None
     reason: str | None = Field(default=None, max_length=2000)
+
+    _since = field_validator("compromised_since")(_naive_utc)
 
     @field_validator("successor_event_id")
     @classmethod
@@ -324,7 +336,11 @@ class CompromisedMetadataBody(BaseModel):
     successor_pubkey: str | None = None  # npub or hex; stored as hex
     # The new account's post about the move: hex, note1… or nevent1…; stored as hex.
     successor_event_id: str | None = None
+    # From when the key may have been in someone else's hands; stored as naive UTC.
+    compromised_since: datetime | None = None
     reason: str | None = Field(default=None, max_length=2000)
+
+    _since = field_validator("compromised_since")(_naive_utc)
 
     @field_validator("successor_pubkey")
     @classmethod

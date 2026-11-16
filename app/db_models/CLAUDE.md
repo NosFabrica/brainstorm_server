@@ -96,6 +96,7 @@ run publishes, stores or whitelists a real score for them
 | `proof_event_id` | str | its id (hex), for listing |
 | `successor_pubkey` | str, nullable | the owner's new key (hex), once known |
 | `successor_event_id` | str, nullable | the new account's post about the move (hex id); only an id, since the compromised key can't delete it |
+| `compromised_since` | timestamp, nullable | from when the key may have been in someone else's hands (naive UTC), when the admin knows it; the public `since` falls back to `created_at` |
 | `zero_requested_at` | DateTime | when a zeroing was last asked for (every `PUT`; a `PATCH` of successor/note doesn't move it). Pending while `last_zeroed_at` is older |
 | `last_zeroed_at` / `last_zero_report` (incl. `edges_cut`) | DateTime / JSONB, nullable | the last zeroing's outcome (counts and `complete`, or `error`): it runs after the admin route answers, so this is where it shows |
 | `reason` | text, nullable | free-form note |
