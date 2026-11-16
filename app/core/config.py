@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # Priority-weighted admission (w=priority+1). Off = strict highest-first.
     scheduler_fairness_enabled: bool = Field(default=False)
     periodic_graperank_pubkey: str = Field(default="")
+    # Scorecard database: a second Postgres holding User ids (and, later,
+    # Scorecards). Required once user_ids_enabled is on.
+    scorecard_db_url: str = Field(default="")
+    user_ids_enabled: bool = Field(default=False)
     # Flash payments. Off by default so self-hosted and one-click deployments —
     # which have no Flash account — never mount the surface at all. Enabling it
     # without credentials refuses to start (see flash_webhook_service).
@@ -196,6 +200,12 @@ class Settings(BaseSettings):
     open_ranking_require_auth: bool = Field(default=False)
     # Longest NWT lifetime (exp minus iat/created_at) accepted, in seconds.
     open_ranking_nwt_max_lifetime_seconds: int = Field(default=3600)
+
+    @model_validator(mode="after")
+    def _user_ids_need_a_scorecard_database(self) -> "Settings":
+        if self.user_ids_enabled and not self.scorecard_db_url:
+            raise ValueError("USER_IDS_ENABLED needs SCORECARD_DB_URL")
+        return self
 
     @property
     def billing_sync_active(self) -> bool:
