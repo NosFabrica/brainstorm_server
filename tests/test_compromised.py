@@ -732,3 +732,93 @@ def test_the_author_cache_keeps_the_last_set_when_postgres_fails(monkeypatch):
     assert asyncio.run(cache.compromised_authors()) == {HEX}  # cached: no read
     cache.forget_compromised_authors()
     assert asyncio.run(cache.compromised_authors()) == {HEX}  # read failed: kept
+
+
+# --- metadata edits and the overview flag -------------------------------------------
+
+
+def test_patch_changes_metadata_without_zeroing(admin_client, monkeypatch):
+    update = AsyncMock(return_value=_row(reason="note", successor_pubkey="c" * 64))
+    zero = AsyncMock()
+    monkeypatch.setattr(f"{ROUTER}.update_compromised_metadata", update)
+    monkeypatch.setattr(f"{ROUTER}.zero_now", zero)
+
+    successor = Keys.generate().public_key()
+    response = admin_client.patch(
+        f"/admin/compromised/{NPUB}", json={"successor_pubkey": successor.to_bech32()}
+    )
+
+    assert response.status_code == 200, response.text
+    pubkey, body = update.await_args.args
+    assert pubkey == HEX
+    assert body.model_fields_set == {"successor_pubkey"}
+    assert body.successor_pubkey == successor.to_hex()
+    zero.assert_not_awaited()
+
+
+def _metadata(body: dict):
+    from app.schemas.request_body_schemas import CompromisedMetadataBody
+
+    return CompromisedMetadataBody.model_validate(body)
+
+
+def test_metadata_update_keeps_what_it_leaves_out_and_404s_unmarked(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    class _Db:
+        async def commit(self):
+            pass
+
+        async def refresh(self, row):
+            pass
+
+    @asynccontextmanager
+    async def _session():
+        yield _Db()
+
+    updated = []
+
+    async def _update(db, pubkey, values):
+        updated.append(values)
+        return _row(**values) if pubkey == HEX else None
+
+    monkeypatch.setattr(svc, "db_session", _session)
+    monkeypatch.setattr(svc, "update_compromised_metadata_on_db", _update)
+
+    asyncio.run(svc.update_compromised_metadata(HEX, _metadata({"reason": None})))
+    assert updated == [{"reason": None}]  # null clears; the successor isn't touched
+
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(svc.update_compromised_metadata("1" * 64, _metadata({"reason": "x"})))
+    assert e.value.status_code == 404
+
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(svc.update_compromised_metadata(HEX, _metadata({"successor_pubkey": HEX})))
+    assert e.value.status_code == 422
+
+
+def test_the_overview_says_whether_the_key_is_compromised(monkeypatch):
+    from app.services import user_service
+
+    async def _count(prefix, pubkey):
+        return 0
+
+    async def _neo(*a, **kw):
+        return SimpleNamespace(
+            influence=0.5, tier=None, flagged_by_observer=False, flagged_count=0,
+            following=0, muting=0, reporting=0,
+        )
+
+    monkeypatch.setattr(user_service, "_redis_inbound_count", _count)
+    monkeypatch.setattr(user_service, "_neo4j_outbound_counts_and_influence", _neo)
+    monkeypatch.setattr(
+        user_service, "compromised_authors", AsyncMock(return_value=frozenset({HEX}))
+    )
+
+    def overview(pk):
+        return asyncio.run(
+            user_service.get_user_overview(pk, verified_line=0.1, reporter_cutoff=0.1)
+        )
+
+    assert overview(HEX).compromised is True
+    assert overview("1" * 64).compromised is False

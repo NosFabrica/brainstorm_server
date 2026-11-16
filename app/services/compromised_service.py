@@ -68,6 +68,7 @@ from app.repos.compromised_pubkey_repo import (
     select_compromised_due_on_db,
     select_compromised_in_on_db,
     select_compromised_on_db,
+    update_compromised_metadata_on_db,
     upsert_compromised_on_db,
 )
 from app.repos.observer_whitelist_repo import remove_pubkey_from_whitelists_on_db
@@ -76,7 +77,10 @@ from app.repos.user_repo import (
     delete_outgoing_ratings,
     get_score_keys_on_node,
 )
-from app.schemas.request_body_schemas import CompromisedPubkeyBody
+from app.schemas.request_body_schemas import (
+    CompromisedMetadataBody,
+    CompromisedPubkeyBody,
+)
 from app.schemas.schemas import CompromisedStatus
 from app.services.compromised_authors import forget_compromised_authors
 from app.services.designation_service import fetch_latest
@@ -516,6 +520,31 @@ async def add_compromised(
         )
         await db.commit()
         forget_compromised_authors()
+        await db.refresh(row)
+        return row
+
+
+async def update_compromised_metadata(
+    pubkey: str, body: CompromisedMetadataBody
+) -> CompromisedPubkey:
+    """Change the successor and/or note of a marked account; its proof stays and
+    nothing is zeroed. 404 when it isn't marked, 422 for a successor that is the
+    account itself."""
+    values = {name: getattr(body, name) for name in body.model_fields_set}
+    if values.get("successor_pubkey") == pubkey:
+        raise HTTPException(
+            status_code=422, detail="The new account can't be the compromised one."
+        )
+    async with db_session() as db:
+        if not values:
+            row = await select_compromised_on_db(db, pubkey)
+        else:
+            row = await update_compromised_metadata_on_db(db, pubkey, values)
+            await db.commit()
+        if row is None:
+            raise HTTPException(
+                status_code=404, detail="That account is not marked compromised."
+            )
         await db.refresh(row)
         return row
 

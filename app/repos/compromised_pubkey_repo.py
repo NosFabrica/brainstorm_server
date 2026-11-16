@@ -69,10 +69,25 @@ async def upsert_compromised_on_db(
             "reason": stmt.excluded.reason,
             "added_by": stmt.excluded.added_by,
             "updated_at": func.now(),
+            "zero_requested_at": func.now(),
         },
     ).returning(CompromisedPubkey)
     result = await db.execute(upsert)
     return result.scalar_one()
+
+
+async def update_compromised_metadata_on_db(
+    db: AsyncDBSession, pubkey: str, values: dict
+) -> CompromisedPubkey | None:
+    """Set the successor and/or note; `zero_requested_at` stays, so nothing is
+    zeroed again. None when the account isn't marked."""
+    result = await db.execute(
+        update(CompromisedPubkey)
+        .where(CompromisedPubkey.pubkey == pubkey)
+        .values(**values)
+        .returning(CompromisedPubkey)
+    )
+    return result.scalar_one_or_none()
 
 
 async def delete_compromised_on_db(db: AsyncDBSession, pubkey: str) -> bool:
@@ -98,19 +113,19 @@ async def record_zero_report_on_db(
 async def select_compromised_due_on_db(
     db: AsyncDBSession, pending_grace: timedelta, retry_after: timedelta
 ) -> list[str]:
-    """Accounts whose zeroing should run again: one that never reported since its
-    last change, `pending_grace` after it (the run it started died with its pod),
+    """Accounts whose zeroing should run again: one that never reported since it
+    was last asked for, `pending_grace` after that (the run died with its pod),
     and one whose last zeroing failed or was incomplete, `retry_after` after it.
     Compared in the database, on its own clock, like the writes."""
     c = CompromisedPubkey
     now = func.now()
     never_reported = and_(
-        or_(c.last_zeroed_at.is_(None), c.last_zeroed_at < c.updated_at),
-        c.updated_at < now - pending_grace,
+        or_(c.last_zeroed_at.is_(None), c.last_zeroed_at < c.zero_requested_at),
+        c.zero_requested_at < now - pending_grace,
     )
     report = c.last_zero_report
     unsuccessful = and_(
-        c.last_zeroed_at >= c.updated_at,
+        c.last_zeroed_at >= c.zero_requested_at,
         c.last_zeroed_at < now - retry_after,
         or_(
             report.has_key("error"),
@@ -119,6 +134,8 @@ async def select_compromised_due_on_db(
         ),
     )
     result = await db.execute(
-        select(c.pubkey).where(or_(never_reported, unsuccessful)).order_by(c.updated_at)
+        select(c.pubkey)
+        .where(or_(never_reported, unsuccessful))
+        .order_by(c.zero_requested_at)
     )
     return list(result.scalars().all())

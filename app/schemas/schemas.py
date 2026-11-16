@@ -246,6 +246,9 @@ class UserOverviewData(BaseModel):
     flagged_by_observer: bool
     flagged_count: int
     counts: UserConnectionCounts
+    # The subject's key is marked compromised (`/compromised/{pubkey}` has the
+    # proof and successor). From an in-process cache, at most 30 s behind.
+    compromised: bool = False
 
 
 class TrustSignal(BaseModel):
@@ -960,7 +963,9 @@ class CompromisedPubkeyItem(BaseModel):
     added_by: str | None
     created_at: datetime
     updated_at: datetime
-    # The last zeroing's outcome: it runs after PUT answers, so check here.
+    # When a zeroing was last asked for (PUT); pending until `last_zeroed_at` passes it.
+    zero_requested_at: datetime | None = None
+    # The last zeroing's outcome.
     last_zeroed_at: datetime | None = None
     last_zero_report: dict[str, Any] | None = None
 

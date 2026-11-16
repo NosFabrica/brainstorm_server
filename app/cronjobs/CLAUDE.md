@@ -97,7 +97,7 @@ Four duties per cycle, in order of how far they can be trusted:
 
 Makes sure every compromised account's zeroing lands (`services/compromised_service.py`).
 `PUT /admin/compromised` runs the zeroing itself and waits for it; this re-runs one that never
-reported 2 minutes after its account changed (the pod running it died) and one whose report is
+reported 2 minutes after it was asked for (`zero_requested_at`; the pod running it died) and one whose report is
 an error, incomplete, or read no relay, 10 minutes after it ran. Every minute.
 
 - **Leader-locked** (`COMPROMISED_LOCK_KEY`): a zeroing re-signs every holder's TA, so two

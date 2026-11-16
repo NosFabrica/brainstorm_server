@@ -473,8 +473,12 @@ class CompromisedPubkey(TimestampMixin, Base):
     successor_pubkey: Mapped[str | None] = mapped_column(String, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     added_by: Mapped[str | None] = mapped_column(String, nullable=True)  # admin pubkey
-    # The last zeroing's outcome (`compromised_service.ZeroReport`, or its error):
-    # it runs after the admin route answers, so this is where it shows.
+    # When a zeroing was last asked for (every PUT): one that hasn't reported since
+    # is pending. A metadata edit (PATCH) doesn't move it, so it zeroes nothing.
+    zero_requested_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    # The last zeroing's outcome (`compromised_service.ZeroReport`, or its error).
     last_zeroed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_zero_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 

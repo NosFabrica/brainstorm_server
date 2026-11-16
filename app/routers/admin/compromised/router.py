@@ -4,7 +4,10 @@ asserts them at rank 0 and no GrapeRank run brings their score back
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from app.schemas.request_body_schemas import CompromisedPubkeyBody
+from app.schemas.request_body_schemas import (
+    CompromisedMetadataBody,
+    CompromisedPubkeyBody,
+)
 from app.schemas.schemas import CompromisedPubkeyItem
 from app.services.compromised_service import (
     add_compromised,
@@ -12,6 +15,7 @@ from app.services.compromised_service import (
     list_compromised,
     parse_pubkey,
     remove_compromised,
+    update_compromised_metadata,
     zero_now,
 )
 
@@ -67,6 +71,20 @@ async def put_compromised_endpoint(
     row = await add_compromised(hex_pubkey, body, request.state.jwt_data.nostr_pubkey)
     await zero_now(hex_pubkey, wait_seconds=ZERO_WAIT_SECONDS)
     return await get_compromised(hex_pubkey) or row
+
+
+@router.patch(
+    path="/{pubkey}",
+    response_model=CompromisedPubkeyItem,
+    summary="Admin: change a compromised account's successor or note",
+    description=(
+        "Sets `successor_pubkey` (npub or hex) and/or `reason`; a field left out "
+        "stays, `null` clears it. The proof stays as stored and nothing is zeroed "
+        "again. 404 when the account isn't marked."
+    ),
+)
+async def patch_compromised_endpoint(pubkey: str, body: CompromisedMetadataBody):
+    return await update_compromised_metadata(_hex(pubkey), body)
 
 
 @router.delete(

@@ -95,6 +95,7 @@ run publishes, stores or whitelists a real score for them
 | `proof_event` | JSONB | the event proving the compromise, **whole**, id and signature checked: whoever holds the key now can delete it from the relays |
 | `proof_event_id` | str | its id (hex), for listing |
 | `successor_pubkey` | str, nullable | the owner's new key (hex), once known |
+| `zero_requested_at` | DateTime | when a zeroing was last asked for (every `PUT`; a `PATCH` of successor/note doesn't move it). Pending while `last_zeroed_at` is older |
 | `last_zeroed_at` / `last_zero_report` (incl. `edges_cut`) | DateTime / JSONB, nullable | the last zeroing's outcome (counts and `complete`, or `error`): it runs after the admin route answers, so this is where it shows |
 | `reason` | text, nullable | free-form note |
 | `added_by` | str, nullable | the admin pubkey that last set the row |

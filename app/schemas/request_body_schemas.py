@@ -305,3 +305,19 @@ class CheckCompromisedBody(BaseModel):
     """`POST /compromised`: up to 500 pubkeys (npub or hex)."""
 
     pubkeys: list[str] = Field(min_length=1)
+
+
+class CompromisedMetadataBody(BaseModel):
+    """`PATCH /admin/compromised/{pubkey}`: the successor and/or the note of a
+    marked account, nothing else, and no zeroing. A field left out stays;
+    `null` clears it."""
+
+    successor_pubkey: str | None = None  # npub or hex; stored as hex
+    reason: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("successor_pubkey")
+    @classmethod
+    def _successor(cls, value: str | None) -> str | None:
+        from app.services.compromised_service import parse_pubkey
+
+        return None if value is None else parse_pubkey(value)

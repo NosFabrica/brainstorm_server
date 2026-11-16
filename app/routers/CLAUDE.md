@@ -44,7 +44,7 @@ here. To wire a brand-new endpoint, add the subdir + register it in this file.
 | `/admin/graperank` | `admin/graperank/` | admin |
 | `/admin/nsec-encryption` | `admin/nsec_encryption/` | admin |
 | `/admin/trustedLists` | `admin/trusted_lists/` | admin |
-| `/admin/compromised` | `admin/compromised/` | admin. Compromised accounts: `GET` lists them, each with `last_zero_report` (the last zeroing's outcome), `PUT /{npub\|hex}` records one — the proof kept whole (`proof_event`, or `proof_event_id` for the server to fetch and check), optional `successor_pubkey` and `reason`; fields left out keep their stored values — committed, then zeroes its scores and answers with the outcome (it waits up to 20 s; a longer zeroing finishes after the answer, and the server retries one that never reports or fails), `DELETE /{pubkey}` unmarks it. See `services/compromised_service.py` |
+| `/admin/compromised` | `admin/compromised/` | admin. Compromised accounts: `GET` lists them, each with `last_zero_report` (the last zeroing's outcome), `PUT /{npub\|hex}` records one — the proof kept whole (`proof_event`, or `proof_event_id` for the server to fetch and check), optional `successor_pubkey` and `reason`; fields left out keep their stored values — committed, then zeroes its scores and answers with the outcome (it waits up to 20 s; a longer zeroing finishes after the answer, and the server retries one that never reports or fails), `PATCH /{pubkey}` changes only `successor_pubkey` / `reason` (no zeroing; 404 when not marked), `DELETE /{pubkey}` unmarks it. See `services/compromised_service.py` |
 
 ## Authentication
 
@@ -143,7 +143,7 @@ token still 401s:
 | Method | Path | Response | Notes |
 |---|---|---|---|
 | POST | `/trustSignals` | `GetTrustSignalsResponse` | Body `{pubkeys}` (≤500, 413 before per-item 422). Per pubkey: `/overview`'s `influence` + `flagged`, and `verified` on the same line. One UNWIND — for list surfaces that would otherwise call `/overview` per author |
-| GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence. The subject's own `verified` / `tier` and `flagged_by_observer` / `flagged_count` sit on the saved preset's verified line |
+| GET | `/{pubkey}/overview` | `GetUserOverviewResponse` | Lightweight counts + influence. The subject's own `verified` / `tier` and `flagged_by_observer` / `flagged_count` sit on the saved preset's verified line. `compromised` says the key is marked compromised (`/compromised/{pubkey}` has the proof), from `services/compromised_authors.py`'s 30 s cache, so it costs no query |
 | GET | `/{pubkey}/stats` | `GetUserStatsResponse` | Per-section total + verified + tier breakdown. No query params — the tier bands are fixed constants |
 | GET | `/{pubkey}/connections` | `GetUserConnectionsResponse` | Cursor-paginated; required `kind`, `limit`, `cursor`. `verified_only=true` filters on the section's own preset cutoff; `tier` uses the same fallthrough as `/stats`; each row carries the preset's `verified` verdict + `tier` |
 | GET | `/{pubkey}` | `GetUserDataResponse` | Full 6-relationship graph. Rows' `trusted_reporters` count above the preset reporter cutoff |
