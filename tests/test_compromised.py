@@ -48,6 +48,12 @@ def test_pubkeys_and_event_ids_parse_to_hex():
         "000005cbe61b41c9c027dbd6aa89cd8d41193af3a1fb89dfd03b7d866cdb35be"
     )
     assert parse_event_id(Nip19Event(EventId.parse(PROOF), None, None, []).to_bech32()) == PROOF
+    # As a NIP-21 URI, the way clients copy a link.
+    derek = "000005cbe61b41c9c027dbd6aa89cd8d41193af3a1fb89dfd03b7d866cdb35be"
+    assert parse_event_id(f"nostr:{real}") == derek
+    assert parse_event_id(f"NOSTR:{EventId.parse(PROOF).to_bech32()}") == PROOF
+    assert parse_event_id(f" nostr:{PROOF} ") == PROOF
+    assert svc.proof_pointer(f"nostr:{real}")[0] == derek
     with pytest.raises(ValueError):
         parse_pubkey("npub1nope")
     with pytest.raises(ValueError):

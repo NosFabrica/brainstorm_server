@@ -104,10 +104,17 @@ def parse_pubkey(value: str) -> str:
         raise ValueError(f"{value!r} is not a pubkey") from e
 
 
-def parse_event_id(value: str) -> str:
-    """hex, note1… or nevent1… → hex. ValueError if none of those.
-    (nostr-sdk's EventId.parse takes hex and note1… but not nevent1….)"""
+def _without_uri_scheme(value: str) -> str:
+    """`nostr:note1…` (NIP-21, as clients copy it) → `note1…`."""
     value = value.strip()
+    return value[len("nostr:") :] if value.lower().startswith("nostr:") else value
+
+
+def parse_event_id(value: str) -> str:
+    """hex, note1… or nevent1…, bare or as a `nostr:` URI → hex. ValueError if
+    none of those. (nostr-sdk's EventId.parse takes hex and note1… but not
+    nevent1….)"""
+    value = _without_uri_scheme(value)
     try:
         if value.startswith("nevent1"):
             return Nip19Event.from_bech32(value).event_id().to_hex()
@@ -442,8 +449,9 @@ async def list_compromised() -> list[CompromisedPubkey]:
 
 
 def proof_pointer(value: str) -> tuple[str, list[str]]:
-    """An event id (hex, note1… or nevent1…) → (hex id, the nevent's relay hints)."""
-    value = value.strip()
+    """An event id (hex, note1… or nevent1…, bare or as a `nostr:` URI) → (hex
+    id, the nevent's relay hints)."""
+    value = _without_uri_scheme(value)
     if value.startswith("nevent1"):
         try:
             pointer = Nip19Event.from_bech32(value)
