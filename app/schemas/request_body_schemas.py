@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
@@ -263,6 +264,13 @@ class OpenPasskeyVaultBody(BaseModel):
     assertion: PasskeyAssertion
 
 
+def _naive_utc(cls, value: datetime | None) -> datetime | None:
+    """An aware time → naive UTC, as the DB stores it; a naive one is read as UTC."""
+    if value is not None and value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
 class CompromisedPubkeyBody(BaseModel):
     """`PUT /admin/compromised/{pubkey}`. The proof is `proof_event`, the whole
     signed event, or `proof_event_id` (hex, note1… or nevent1…), which the server
@@ -274,7 +282,20 @@ class CompromisedPubkeyBody(BaseModel):
     proof_event: dict[str, Any] | None = None
     proof_event_id: str | None = None
     successor_pubkey: str | None = None  # npub or hex; stored as hex
+    # The new account's post about the move: hex, note1… or nevent1…; stored as hex.
+    successor_event_id: str | None = None
+    # From when the key may have been in someone else's hands; stored as naive UTC.
+    compromised_since: datetime | None = None
     reason: str | None = Field(default=None, max_length=2000)
+
+    _since = field_validator("compromised_since")(_naive_utc)
+
+    @field_validator("successor_event_id")
+    @classmethod
+    def _successor_event(cls, value: str | None) -> str | None:
+        from app.services.compromised_service import parse_event_id
+
+        return None if value is None else parse_event_id(value)
 
     @field_validator("proof_event_id")
     @classmethod
@@ -308,12 +329,18 @@ class CheckCompromisedBody(BaseModel):
 
 
 class CompromisedMetadataBody(BaseModel):
-    """`PATCH /admin/compromised/{pubkey}`: the successor and/or the note of a
-    marked account, nothing else, and no zeroing. A field left out stays;
+    """`PATCH /admin/compromised/{pubkey}`: the successor, its post about the
+    move and/or the note of a marked account, nothing else, and no zeroing. A field left out stays;
     `null` clears it."""
 
     successor_pubkey: str | None = None  # npub or hex; stored as hex
+    # The new account's post about the move: hex, note1… or nevent1…; stored as hex.
+    successor_event_id: str | None = None
+    # From when the key may have been in someone else's hands; stored as naive UTC.
+    compromised_since: datetime | None = None
     reason: str | None = Field(default=None, max_length=2000)
+
+    _since = field_validator("compromised_since")(_naive_utc)
 
     @field_validator("successor_pubkey")
     @classmethod
@@ -321,3 +348,10 @@ class CompromisedMetadataBody(BaseModel):
         from app.services.compromised_service import parse_pubkey
 
         return None if value is None else parse_pubkey(value)
+
+    @field_validator("successor_event_id")
+    @classmethod
+    def _successor_event(cls, value: str | None) -> str | None:
+        from app.services.compromised_service import parse_event_id
+
+        return None if value is None else parse_event_id(value)
