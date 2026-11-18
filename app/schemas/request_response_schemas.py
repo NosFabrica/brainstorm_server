@@ -10,6 +10,7 @@ from app.schemas.graperank_schemas import (
 )
 from app.schemas.schemas import (
     AdminStats,
+    AssistantAgentKeys,
     AssistantDictionaryResult,
     AssistantDutyMenuOffer,
     AssistantTreasureMapCheck,
@@ -26,6 +27,7 @@ from app.schemas.schemas import (
     PasskeyVaultBlob,
     PasskeyVaultChallenge,
     PasskeyVaultEntry,
+    PublishedAssistantAgentKeys,
     PublishedAssistantDutyMenu,
     PublishedAssistantTreasureMap,
     RefreshedSubscriptionView,
@@ -168,6 +170,14 @@ class GetAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
 
 class PublishAssistantTreasureMapResponse(SuccessfulResponseDataSchema):
     data: PublishedAssistantTreasureMap
+
+
+class GetAssistantAgentKeysResponse(SuccessfulResponseDataSchema):
+    data: AssistantAgentKeys
+
+
+class PublishAssistantAgentKeysResponse(SuccessfulResponseDataSchema):
+    data: PublishedAssistantAgentKeys
 
 
 class AssistantDictionaryResponse(SuccessfulResponseDataSchema):

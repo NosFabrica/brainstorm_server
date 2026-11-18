@@ -268,3 +268,32 @@ def count_walks(network: dict) -> int:
     for i in range(len(layers) - 2, -1, -1):
         counts = [sum(counts[k] for k in links[i][j]) for j in range(len(layers[i]))]
     return sum(counts)
+
+
+@pytest.fixture
+def app_logs() -> list[str]:
+    """Every line the app's loggers write while the test runs, with any
+    traceback. `caplog` sees none of them: loggr's loggers don't propagate."""
+    import logging
+    import traceback
+
+    lines: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            line = record.getMessage()
+            if record.exc_info:
+                line += "".join(traceback.format_exception(*record.exc_info))
+            lines.append(line)
+
+    handler = _Capture(level=logging.DEBUG)
+    loggers = [
+        logging.getLogger(name)
+        for name in list(logging.root.manager.loggerDict)
+        if name.startswith("app")
+    ]
+    for logger in loggers:
+        logger.addHandler(handler)
+    yield lines
+    for logger in loggers:
+        logger.removeHandler(handler)
