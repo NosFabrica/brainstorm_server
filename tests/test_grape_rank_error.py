@@ -7,9 +7,17 @@ def test_no_eligible_users_is_a_warning_not_our_error():
     assert error.model_dump()["severity"] == "warning"
 
 
+def test_a_refused_compromised_observer_is_a_warning_not_our_error():
+    """The worker refusing a run whose Observer's key is marked compromised is
+    the marking doing its job, not a fault."""
+    error = GrapeRankError.model_validate({"code": "COMPROMISED_OBSERVER"})
+    assert error.model_dump()["severity"] == "warning"
+
+
 def test_other_codes_are_errors():
+    warnings = {ErrorCode.NO_ELIGIBLE_USERS, ErrorCode.COMPROMISED_OBSERVER}
     for code in ErrorCode:
-        if code is not ErrorCode.NO_ELIGIBLE_USERS:
+        if code not in warnings:
             assert GrapeRankError(code=code).severity == "error"
 
 

@@ -8,6 +8,7 @@ from app.repos.event_tagging_repo import (
     upsert_tagging_header_on_db,
 )
 from app.repos.tagging_repo import upsert_tag_element_on_db, upsert_user_tagging_on_db
+from app.services.compromised_authors import compromised_authors
 from app.services.designation_service import DESIGNATION_KIND, parse_designated_pubkeys
 from app.services.report_graph_service import (
     diff_author_targets,
@@ -49,8 +50,20 @@ async def _write(session: AsyncNeoSession, cypher: str, **params):
     return await session.execute_write(work)
 
 
+# What a compromised key publishes about others is not recorded: whoever holds it
+# now isn't who earned its reputation (app/services/compromised_service.py).
+RELATIONSHIP_KINDS = frozenset({3, 10000, 1984, 5, DESIGNATION_KIND})
+
+
 async def process_strfry_event(session: AsyncNeoSession, event: dict):
     kind = event.get("kind")
+
+    if (
+        kind in RELATIONSHIP_KINDS
+        and event.get("pubkey") in await compromised_authors()
+    ):
+        logger.info(f"ignoring kind {kind} from compromised key {event.get('pubkey')}")
+        return
 
     if kind == 3:
         # logger.info("Consuming event of kind 3")

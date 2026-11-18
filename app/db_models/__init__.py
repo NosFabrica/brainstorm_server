@@ -457,6 +457,40 @@ class ObserverWhitelist(TimestampMixin, Base):
     )
 
 
+class CompromisedPubkey(TimestampMixin, Base):
+    """An account whose key is compromised. Every Observer asserts it at rank 0
+    and no run stores or whitelists a score for it (app/services/compromised_service.py).
+    Added and removed by admins (`/admin/compromised`)."""
+
+    __tablename__ = "compromised_pubkey"
+    pubkey: Mapped[str] = mapped_column(String, primary_key=True)  # hex
+    # The event showing the compromise, whole and signature-checked: whoever holds
+    # the key now can delete it from the relays, so its id alone would point at
+    # nothing. `proof_event_id` is its id, for listing.
+    proof_event: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    proof_event_id: Mapped[str] = mapped_column(String, nullable=False)
+    # The owner's new key, once known (hex).
+    successor_pubkey: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The new account's own post about the move (hex id), shown with it so readers
+    # hear it from the owner. Its author can't be the compromised key, so the id
+    # is enough: nobody but the owner can delete it.
+    successor_event_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # From when the key may have been in someone else's hands (naive UTC), when
+    # the admin knows it: the owner's account of it, earlier than marking. Unset,
+    # the public `since` is `created_at`.
+    compromised_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    added_by: Mapped[str | None] = mapped_column(String, nullable=True)  # admin pubkey
+    # When a zeroing was last asked for (every PUT): one that hasn't reported since
+    # is pending. A metadata edit (PATCH) doesn't move it, so it zeroes nothing.
+    zero_requested_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    # The last zeroing's outcome (`compromised_service.ZeroReport`, or its error).
+    last_zeroed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_zero_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
 class GrapeRankPresetHistory(Base):
     __tablename__ = "graperank_preset_history"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

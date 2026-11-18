@@ -14,6 +14,7 @@ from app.db_models import (
     BrainstormNsec,
     BrainstormRequest,
     BrainstormRequestStatus,
+    CompromisedPubkey,
     Scheduling,
 )
 from app.repos.brainstorm_request_repo import in_pipeline_condition
@@ -82,7 +83,14 @@ async def load_scheduler_candidates_on_db(
             consecutive_failures.label("consecutive_failures"),
         )
         .outerjoin(Scheduling, Scheduling.id == BrainstormNsec.scheduling_id)
-        .where(BrainstormNsec.pubkey != platform_pubkey, ~in_flight)
+        .where(
+            BrainstormNsec.pubkey != platform_pubkey,
+            ~in_flight,
+            # A compromised key's own perspective is whoever holds it now.
+            ~select(CompromisedPubkey.pubkey)
+            .where(CompromisedPubkey.pubkey == BrainstormNsec.pubkey)
+            .exists(),
+        )
     )
     result = await execute_db_statement(db, statement, __name__)
     return [

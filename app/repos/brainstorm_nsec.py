@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import cast
 
 from nostr_sdk import Keys  # type: ignore
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 from sqlalchemy.orm import defer
@@ -207,6 +207,67 @@ def _unpack_pubkeys(blob: bytes | None) -> list[str]:
     return [
         blob[i : i + _PUBKEY_BYTES].hex() for i in range(0, len(blob), _PUBKEY_BYTES)
     ]
+
+
+def holds_pubkey(blob: bytes | None, pubkey: str) -> bool:
+    """Whether a packed `last_published_pubkeys` blob lists `pubkey` — at a
+    32-byte boundary, so a match straddling two entries doesn't count."""
+    if not blob:
+        return False
+    needle = bytes.fromhex(pubkey)
+    i = blob.find(needle)
+    while i != -1:
+        if i % _PUBKEY_BYTES == 0:
+            return True
+        i = blob.find(needle, i + 1)
+    return False
+
+
+async def select_observers_publishing_on_db(
+    db: AsyncDBSession, pubkey: str, observer: str | None = None
+) -> set[str]:
+    """Observers whose `last_published_pubkeys` lists `pubkey`. Postgres finds
+    the candidate rows; only those blobs are read, to check the boundary."""
+    stmt = select(BrainstormNsec.pubkey, BrainstormNsec.last_published_pubkeys).where(
+        text("position(:needle IN last_published_pubkeys) > 0").bindparams(
+            needle=bytes.fromhex(pubkey)
+        )
+    )
+    if observer:
+        stmt = stmt.where(BrainstormNsec.pubkey == observer)
+    rows = (await db.execute(stmt)).all()
+    return {obs for obs, blob in rows if holds_pubkey(blob, pubkey)}
+
+
+async def select_observer_signers_on_db(
+    db: AsyncDBSession, observer: str | None = None
+) -> list[tuple[str, str | None]]:
+    """`(observer, assistant_pubkey)` for every Observer (or one): the key its
+    TAs are signed with, as stored — null only until the startup backfill. No
+    nsec is read."""
+    stmt = select(BrainstormNsec.pubkey, BrainstormNsec.assistant_pubkey)
+    if observer:
+        stmt = stmt.where(BrainstormNsec.pubkey == observer)
+    return [(pk, signer) for pk, signer in (await db.execute(stmt)).all()]
+
+
+async def select_observer_nsecs_on_db(
+    db: AsyncDBSession, observers: list[str]
+) -> list[tuple[str, str]]:
+    """`(observer, plaintext nsec)` for these Observers; the multi-MB blob is not
+    read. A row whose nsec won't decrypt is logged and skipped."""
+    if not observers:
+        return []
+    stmt = select(
+        BrainstormNsec.pubkey, BrainstormNsec.nsec, BrainstormNsec.encrypted_nsec
+    ).where(BrainstormNsec.pubkey.in_(observers))
+    out = []
+    for pubkey, nsec, encrypted in (await db.execute(stmt)).all():
+        try:
+            out.append((pubkey, _plaintext_nsec(nsec, encrypted)))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"nsec for observer {pubkey} won't decrypt: {e}")
+    return out
 
 
 async def get_last_published_pubkeys_by_pubkey_on_db(

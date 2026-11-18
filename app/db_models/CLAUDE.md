@@ -83,6 +83,25 @@ blob for `GET /whitelisted/{observer_pubkey}`.
 Written by the results consumer (`message_queue_tasks/message_queue_consumer.py`) in the
 same transaction as the run's status. Read by `observer_whitelist_repo.py`.
 
+### `CompromisedPubkey` — `compromised_pubkey`
+
+Accounts whose key is compromised. Every Observer asserts them at rank 0, and no
+run publishes, stores or whitelists a real score for them
+(`services/compromised_service.py`). Admin-managed (`/admin/compromised`).
+
+| Column | Type | Notes |
+|---|---|---|
+| `pubkey` | str PK | hex |
+| `proof_event` | JSONB | the event proving the compromise, **whole**, id and signature checked: whoever holds the key now can delete it from the relays |
+| `proof_event_id` | str | its id (hex), for listing |
+| `successor_pubkey` | str, nullable | the owner's new key (hex), once known |
+| `successor_event_id` | str, nullable | the new account's post about the move (hex id); only an id, since the compromised key can't delete it |
+| `compromised_since` | timestamp, nullable | from when the key may have been in someone else's hands (naive UTC), when the admin knows it; the public `since` falls back to `created_at` |
+| `zero_requested_at` | DateTime | when a zeroing was last asked for (every `PUT`; a `PATCH` of successor/note doesn't move it). Pending while `last_zeroed_at` is older |
+| `last_zeroed_at` / `last_zero_report` (incl. `edges_cut`) | DateTime / JSONB, nullable | the last zeroing's outcome (counts and `complete`, or `error`): it runs after the admin route answers, so this is where it shows |
+| `reason` | text, nullable | free-form note |
+| `added_by` | str, nullable | the admin pubkey that last set the row |
+
 ### `GrapeRankPreset` — `graperank_preset`
 
 11-float parameter row per builtin preset (DEFAULT / PERMISSIVE / RESTRICTIVE).

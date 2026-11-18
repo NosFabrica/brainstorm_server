@@ -76,7 +76,9 @@ class CreatedAndUpdatedAtModel(BaseModel):
 
 
 # Outcomes caused by the user's own graph, not a fault on our side.
-WARNING_ERROR_CODES = frozenset({ErrorCode.NO_ELIGIBLE_USERS})
+WARNING_ERROR_CODES = frozenset(
+    {ErrorCode.NO_ELIGIBLE_USERS, ErrorCode.COMPROMISED_OBSERVER}
+)
 
 
 class GrapeRankError(BaseModel):
@@ -244,6 +246,9 @@ class UserOverviewData(BaseModel):
     flagged_by_observer: bool
     flagged_count: int
     counts: UserConnectionCounts
+    # The subject's key is marked compromised (`/compromised/{pubkey}` has the
+    # proof and successor). From an in-process cache, at most 30 s behind.
+    compromised: bool = False
 
 
 class TrustSignal(BaseModel):
@@ -975,3 +980,46 @@ class PublishedAssistantTreasureMap(BaseModel):
     # for a repair, the newest one found. None when nothing was sent.
     event: dict[str, Any] | None
     relays: list[AssistantRelayResult]
+
+
+class CompromisedPubkeyItem(BaseModel):
+    pubkey: str
+    proof_event_id: str
+    proof_event: dict[str, Any]
+    successor_pubkey: str | None
+    successor_event_id: str | None = None
+    compromised_since: datetime | None = None
+    reason: str | None
+    added_by: str | None
+    created_at: datetime
+    updated_at: datetime
+    # When a zeroing was last asked for (PUT); pending until `last_zeroed_at` passes it.
+    zero_requested_at: datetime | None = None
+    # The last zeroing's outcome.
+    last_zeroed_at: datetime | None = None
+    last_zero_report: dict[str, Any] | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class CompromisedStatus(BaseModel):
+    """`/compromised`: whether an account is marked compromised, and if so the
+    event proving it (whole), the owner's new key once known, and `since`: from
+    when the key may have been in someone else's hands, as the admin recorded
+    it, or else when it was marked. The admin's note and identity are not public."""
+
+    pubkey: str
+    compromised: bool
+    since: datetime | None = None
+    proof_event_id: str | None = None
+    proof_event: dict[str, Any] | None = None
+    successor_pubkey: str | None = None
+    successor_event_id: str | None = None
+    # When this key is a compromised account's successor (its owner's new key):
+    # that account's record, so a reader of the new key learns which one it
+    # replaces without asking by the old key.
+    replaces: "CompromisedStatus | None" = None
+
+
+class CompromisedStatusesData(BaseModel):
+    results: list[CompromisedStatus]

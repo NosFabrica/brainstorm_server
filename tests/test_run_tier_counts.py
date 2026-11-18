@@ -199,9 +199,54 @@ def test_process_message_buckets_against_the_runs_own_line():
         patch(f"{_CONSUMER}.select_brainstorm_request_by_id_on_db", new=_row),
         patch(f"{_CONSUMER}.update_brainstorm_request_result_by_id_on_db", new=_capture_result),
         patch(f"{_CONSUMER}.upsert_observer_whitelist_on_db", new=AsyncMock()),
+        patch(
+            f"{_CONSUMER}.select_compromised_pubkeys_on_db",
+            new=AsyncMock(return_value=set()),
+        ),
         patch(f"{_CONSUMER}.update_last_time_calculated_graperank_on_db", new=AsyncMock()),
     ):
         asyncio.run(process_message(message))
 
     assert written["count_values"]["medium_high"] == {}
     assert written["count_values"]["low"] == {"1": 1}
+
+
+def test_a_compromised_account_is_left_out_of_the_whitelist_and_the_tier_counts():
+    async def _row(_db, _request_id):
+        return _Row(_params(0.5))
+
+    message = {
+        "private_id": 1,
+        "result": {
+            "success": True,
+            "duration_seconds": 1.0,
+            "scorecards": {
+                "1": _card("good", 0.9),
+                "2": _card("stolen", 0.9),
+            },
+        },
+    }
+    upsert = AsyncMock()
+    written = {}
+
+    async def _capture_result(_db, *, brainstorm_request_id, status, count_values, error):
+        written["count_values"] = json.loads(count_values)
+
+    with (
+        patch(f"{_CONSUMER}.db_session", new=_fake_db_session),
+        patch(f"{_CONSUMER}.select_brainstorm_request_by_id_on_db", new=_row),
+        patch(f"{_CONSUMER}.update_brainstorm_request_result_by_id_on_db", new=_capture_result),
+        patch(f"{_CONSUMER}.upsert_observer_whitelist_on_db", new=upsert),
+        patch(
+            f"{_CONSUMER}.select_compromised_pubkeys_on_db",
+            new=AsyncMock(return_value={"stolen"}),
+        ),
+        patch(f"{_CONSUMER}.update_last_time_calculated_graperank_on_db", new=AsyncMock()),
+    ):
+        asyncio.run(process_message(message))
+
+    whitelist = upsert.await_args.args[2]
+    assert set(whitelist) == {"good"}
+    # ...and counted in no tier band: one account at 0.9, not two.
+    counted = sum(n for band in written["count_values"].values() for n in band.values())
+    assert counted == 1

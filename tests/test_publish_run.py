@@ -6,6 +6,7 @@ baseline, and a forced full relay run resets the every-Nth backstop.
 """
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
@@ -45,11 +46,14 @@ class _Relay:
 
     def __init__(self, fail: bool = False):
         self.sent: list = []
+        self.calls: list[list] = []
         self.fail = fail
 
     async def publish(self, url, events) -> PublishStats:
-        self.sent = [e async for e in events]
-        n = len(self.sent)
+        batch = [e async for e in events]
+        self.calls.append(batch)
+        self.sent += batch
+        n = len(batch)
         return PublishStats(n_events=n, n_acked=0 if self.fail else n)
 
 
@@ -106,12 +110,18 @@ def run(monkeypatch):
     monkeypatch.setattr(
         upload, "relay_publish_gap_pending_on_db", AsyncMock(return_value=False)
     )
+    compromised: set[str] = set()
+    monkeypatch.setattr(
+        upload,
+        "select_compromised_pubkeys_on_db",
+        AsyncMock(side_effect=lambda db: compromised),
+    )
 
     def _go(changed: list[str], force_full_relay: bool = False) -> None:
         request_row.force_full_relay = force_full_relay
         asyncio.run(upload.process_nostr_upload_message(_message(changed)))
 
-    return SimpleNamespace(go=_go, relay=relay, repo=repo)
+    return SimpleNamespace(go=_go, relay=relay, repo=repo, compromised=compromised)
 
 
 def _final_status(repo) -> BrainstormRequestStatus:
@@ -164,3 +174,88 @@ def test_a_failed_calc_leaves_the_publish_stage_to_its_own_consumer(run):
     asyncio.run(upload.process_nostr_upload_message(_empty(success=False)))
 
     run.repo.ta_status.assert_not_awaited()
+
+
+def _ranks(sent) -> dict[str, str]:
+    """`d` -> `rank` of each TA sent; kind-5 deletions are left out."""
+    import json
+
+    out = {}
+    for event in sent:
+        e = json.loads(event.json)
+        if e["kind"] == 30382:
+            tags = {t[0]: t[1] for t in e["tags"]}
+            out[tags["d"]] = tags["rank"]
+    return out
+
+
+def _deleted(sent) -> list[str]:
+    import json
+
+    return [
+        t[1].rsplit(":", 1)[1]
+        for event in sent
+        for t in json.loads(event.json)["tags"]
+        if json.loads(event.json)["kind"] == 5 and t[0] == "a"
+    ]
+
+
+def test_a_compromised_account_is_published_at_rank_zero(run):
+    """Its computed 90 never leaves; rank 0 does, and it stays in the baseline."""
+    run.compromised.add("hi")
+
+    run.go(changed=["hi"])
+
+    assert _ranks(run.relay.sent) == {"hi": "0"}
+    assert _persisted(run.repo) == ["hi"]
+
+
+def test_a_compromised_account_is_not_re_signed_on_a_run_that_did_not_change_it(run):
+    """Its zero went out when it was marked (or when its score last changed); a
+    delta run that would send nothing for it sends nothing."""
+    run.compromised.add("hi")
+
+    run.go(changed=[])
+
+    assert _ranks(run.relay.sent) == {}
+    assert _persisted(run.repo) == ["hi"]
+
+
+def test_a_compromised_account_below_cutoff_is_zeroed_once_not_deleted(run):
+    """"gone" was published and is no longer scored: normally a kind-5; compromised,
+    a rank-0 TA instead. It leaves the baseline, so the next run sends nothing."""
+    run.compromised.add("gone")
+
+    run.go(changed=["hi"])
+
+    assert _ranks(run.relay.sent) == {"hi": "90", "gone": "0"}
+    assert _deleted(run.relay.sent) == []
+    assert _persisted(run.repo) == ["hi"]
+
+
+def test_an_account_marked_mid_run_is_zeroed_after_the_publish(run, monkeypatch):
+    """The run read the marked set before "hi" was marked and published its 90;
+    the re-read after the publish sends rank 0, dated after that 90."""
+    monkeypatch.setattr(
+        upload,
+        "select_compromised_pubkeys_on_db",
+        AsyncMock(side_effect=[set(), {"hi"}]),
+    )
+
+    run.go(changed=["hi"])
+
+    first, late = run.relay.calls
+    assert _ranks(first) == {"hi": "90"}
+    assert _ranks(late) == {"hi": "0"}
+    created = lambda batch: max(json.loads(e.json)["created_at"] for e in batch)  # noqa: E731
+    assert created(late) > created(first)
+    assert _final_status(run.repo) == BrainstormRequestStatus.SUCCESS
+
+
+def test_a_compromised_account_the_observer_never_published_gets_nothing(run):
+    run.compromised.add("lo")  # below cutoff, never published
+
+    run.go(changed=["hi", "lo"])
+
+    assert _ranks(run.relay.sent) == {"hi": "90"}
+    assert _persisted(run.repo) == ["hi"]

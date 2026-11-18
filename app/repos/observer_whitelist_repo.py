@@ -1,7 +1,9 @@
 from datetime import datetime
+from typing import cast
 
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.db_models import ObserverWhitelist
@@ -62,3 +64,13 @@ async def select_whitelisted_pubkeys_of_observer(
         {"pubkey": observer_pubkey, "threshold": threshold},
     )
     return [row[0] for row in result]
+
+
+async def remove_pubkey_from_whitelists_on_db(db: AsyncDBSession, pubkey: str) -> int:
+    """Drop `pubkey` from every observer's snapshot; how many held it."""
+    statement = text(
+        "UPDATE observerwhitelist SET scores = scores - :pk, updated_at = now() "
+        "WHERE scores ? :pk"
+    ).bindparams(pk=pubkey)
+    result = cast(CursorResult, await db.execute(statement))
+    return result.rowcount or 0
