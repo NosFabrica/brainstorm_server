@@ -33,9 +33,27 @@ ROUTER = "app.routers.admin.compromised.router"
 
 
 def test_pubkeys_and_event_ids_parse_to_hex():
+    from nostr_sdk import EventId, Nip19Event
+
     assert parse_pubkey(NPUB) == HEX
     assert parse_pubkey(f" {HEX} ") == HEX
     assert parse_event_id(PROOF) == PROOF
+    assert parse_event_id(EventId.parse(PROOF).to_bech32()) == PROOF  # note1…
+    # nevent1…, which nostr-sdk's EventId.parse refuses: Derek's real proof pointer.
+    real = (
+        "nevent1qgsr7acdvhf6we9fch94qwhpy0nza36e3tgrtkpku25ppuu80f69kfqqyqqqqpwtucd5"
+        "rjwqyldad25fekx5zxf67wslhzwl6qahmpnvmv6mu40hxx9"
+    )
+    assert parse_event_id(real) == (
+        "000005cbe61b41c9c027dbd6aa89cd8d41193af3a1fb89dfd03b7d866cdb35be"
+    )
+    assert parse_event_id(Nip19Event(EventId.parse(PROOF), None, None, []).to_bech32()) == PROOF
+    # As a NIP-21 URI, the way clients copy a link.
+    derek = "000005cbe61b41c9c027dbd6aa89cd8d41193af3a1fb89dfd03b7d866cdb35be"
+    assert parse_event_id(f"nostr:{real}") == derek
+    assert parse_event_id(f"NOSTR:{EventId.parse(PROOF).to_bech32()}") == PROOF
+    assert parse_event_id(f" nostr:{PROOF} ") == PROOF
+    assert svc.proof_pointer(f"nostr:{real}")[0] == derek
     with pytest.raises(ValueError):
         parse_pubkey("npub1nope")
     with pytest.raises(ValueError):
@@ -276,12 +294,14 @@ def admin_client(client):
     yield client
 
 
-def test_put_records_the_account_and_zeroes_it_before_answering(
+def test_put_records_the_account_and_zeroes_it_after_answering(
     admin_client, caller, zeroing, monkeypatch
 ):
-    """The real route and the real zeroing (DB and relay faked): by the time PUT
-    answers, every Observer the relay says holds a TA about the account has
-    published its rank-0 replacement, and the answer carries the outcome."""
+    """The real route and the real zeroing (DB and relay faked): PUT answers at
+    once, pending, and the zeroing it started then has every Observer the relay
+    says holds a TA about the account publish its rank-0 replacement."""
+    import time
+
     a, b, c = sorted(zeroing.keys)
     zeroing.relay = {zeroing.signer[a], zeroing.signer[c]}
     rows = {}
@@ -306,7 +326,11 @@ def test_put_records_the_account_and_zeroes_it_before_answering(
 
     assert response.status_code == 200, response.text
     assert response.json()["pubkey"] == HEX
-    report = response.json()["last_zero_report"]
+
+    deadline = time.monotonic() + 5
+    while not zeroing.recorded and time.monotonic() < deadline:
+        time.sleep(0.01)
+    report = zeroing.recorded[-1]
     assert report["complete"] is True and report["acked"] == 2
     published = [json.loads(e.json) for e in zeroing.sent]
     assert sorted(e["pubkey"] for e in published) == sorted(
@@ -317,18 +341,15 @@ def test_put_records_the_account_and_zeroes_it_before_answering(
         assert (event["kind"], tags["d"], tags["rank"]) == (TA_KIND, HEX, "0")
 
 
-def test_put_does_not_wait_past_its_limit(admin_client, monkeypatch):
-    """A zeroing that outlasts the wait keeps going; PUT answers with the row
-    as it stands (the previous report) instead of hanging."""
-    import app.routers.admin.compromised.router as router_module
-
+def test_put_answers_before_a_slow_zeroing_ends(admin_client, monkeypatch):
+    """A zeroing over every Observer can outlast any HTTP timeout: PUT answers
+    with the row as it stands (pending) and the zeroing keeps going."""
     started, release = [], asyncio.Event()
 
     async def _slow(pubkey):
         started.append(pubkey)
         await release.wait()
 
-    monkeypatch.setattr(router_module, "ZERO_WAIT_SECONDS", 0.05)
     monkeypatch.setattr(svc, "zero_compromised", _slow)
     monkeypatch.setattr(f"{ROUTER}.add_compromised", AsyncMock(return_value=_row()))
     monkeypatch.setattr(f"{ROUTER}.get_compromised", AsyncMock(return_value=_row()))
@@ -485,6 +506,22 @@ def test_a_proof_is_fetched_from_the_first_relay_holding_a_valid_copy(monkeypatc
     assert asked[0] == "wss://hint"
 
 
+def test_a_relay_that_never_answers_does_not_hold_up_the_proof(monkeypatch):
+    event = _signed(Keys.generate())
+
+    async def _fetch(relay, flt):
+        if relay == "wss://hint":
+            await asyncio.sleep(3600)  # hangs: asked alongside the others, not first
+        return event if relay == settings.nostr_transfer_to_relay else None
+
+    monkeypatch.setattr(svc, "fetch_latest", _fetch)
+
+    async def body():
+        return await asyncio.wait_for(svc.fetch_proof_event(event["id"], ["wss://hint"]), 1)
+
+    assert asyncio.run(body()) == event
+
+
 def test_a_proof_no_relay_holds_is_a_422(monkeypatch):
     monkeypatch.setattr(svc, "fetch_latest", AsyncMock(return_value=None))
 
@@ -514,12 +551,23 @@ def stored_rows(monkeypatch):
     async def _select(db, pubkey):
         return rows.get(pubkey)
 
-    async def _upsert(db, pubkey, proof, successor, reason, added_by):
+    async def _upsert(
+        db,
+        pubkey,
+        proof,
+        successor,
+        reason,
+        added_by,
+        successor_event_id=None,
+        compromised_since=None,
+    ):
         rows[pubkey] = SimpleNamespace(
             pubkey=pubkey,
             proof_event=proof,
             proof_event_id=proof["id"],
             successor_pubkey=successor,
+            successor_event_id=successor_event_id,
+            compromised_since=compromised_since,
             reason=reason,
             added_by=added_by,
         )
@@ -587,6 +635,8 @@ def marked(monkeypatch):
         proof_event_id=PROOF,
         proof_event={"id": PROOF, "content": "my key was stolen"},
         successor_pubkey="c" * 64,
+        successor_event_id=None,
+        compromised_since=None,
     )
     from contextlib import asynccontextmanager
 
@@ -597,8 +647,12 @@ def marked(monkeypatch):
     async def _select(db, pubkeys):
         return [row] if HEX in pubkeys else []
 
+    async def _by_successor(db, pubkeys):
+        return [row] if row.successor_pubkey in pubkeys else []
+
     monkeypatch.setattr(svc, "db_session", _session)
     monkeypatch.setattr(svc, "select_compromised_in_on_db", _select)
+    monkeypatch.setattr(svc, "select_compromised_by_successor_on_db", _by_successor)
     return row
 
 
@@ -613,6 +667,17 @@ def test_the_ui_can_check_one_account_without_logging_in(anonymous, marked):
     assert "reason" not in data and "added_by" not in data
 
 
+def test_a_successor_reads_the_account_it_replaces(anonymous, marked):
+    data = anonymous.post("/compromised", json={"pubkeys": ["c" * 64, HEX]}).json()["data"]
+    successor, old = data["results"]
+
+    assert successor["compromised"] is False
+    assert successor["replaces"]["pubkey"] == HEX
+    assert successor["replaces"]["compromised"] is True
+    assert successor["replaces"]["proof_event"]["content"] == "my key was stolen"
+    assert old["replaces"] is None
+
+
 def test_an_unmarked_account_reads_false(anonymous, marked):
     data = anonymous.get(f"/compromised/{'1' * 64}").json()["data"]
 
@@ -623,6 +688,8 @@ def test_an_unmarked_account_reads_false(anonymous, marked):
         "proof_event_id": None,
         "proof_event": None,
         "successor_pubkey": None,
+        "successor_event_id": None,
+        "replaces": None,
     }
 
 
@@ -822,3 +889,98 @@ def test_the_overview_says_whether_the_key_is_compromised(monkeypatch):
 
     assert overview(HEX).compromised is True
     assert overview("1" * 64).compromised is False
+
+
+
+def test_the_successor_post_is_kept_by_later_puts_and_read_publicly(
+    stored_rows, monkeypatch
+):
+    """The new account's post about the move: set once (as an nevent here),
+    stored as hex, kept by a PUT that leaves it out, and returned by the public
+    check, so the UI needs no list of its own."""
+    from nostr_sdk import EventId, Nip19Event
+
+    post = "5" * 64
+    nevent = Nip19Event(EventId.parse(post), None, None, []).to_bech32()
+    event = _signed(Keys.generate())
+    _add({"proof_event": event, "successor_event_id": nevent})
+    assert stored_rows[HEX].successor_event_id == post
+
+    _add({"reason": "later"})
+    assert stored_rows[HEX].successor_event_id == post
+
+    row = SimpleNamespace(
+        **vars(stored_rows[HEX]), created_at=datetime(2026, 11, 16), compromised=True
+    )
+
+    async def _select(db, pubkeys):
+        return [row]
+
+    async def _none(db, pubkeys):
+        return []
+
+    monkeypatch.setattr(svc, "select_compromised_in_on_db", _select)
+    monkeypatch.setattr(svc, "select_compromised_by_successor_on_db", _none)
+    (status,) = asyncio.run(svc.check_compromised([HEX]))
+    assert status.successor_event_id == post
+
+
+def test_the_compromise_can_start_before_the_marking(stored_rows, monkeypatch):
+    """`compromised_since` (the owner's account of when the key was taken) is
+    stored as naive UTC, kept by a PUT that leaves it out, and is the public
+    `since`; unset, `since` is when the account was marked."""
+    since = "2026-11-15T21:00:00-03:00"
+    _add({"proof_event": _signed(Keys.generate()), "compromised_since": since})
+    assert stored_rows[HEX].compromised_since == datetime(2026, 11, 16)
+
+    _add({"reason": "later"})
+    assert stored_rows[HEX].compromised_since == datetime(2026, 11, 16)
+
+    row = SimpleNamespace(**vars(stored_rows[HEX]), created_at=datetime(2026, 11, 17))
+
+    async def _select(db, pubkeys):
+        return [row]
+
+    async def _none(db, pubkeys):
+        return []
+
+    monkeypatch.setattr(svc, "select_compromised_in_on_db", _select)
+    monkeypatch.setattr(svc, "select_compromised_by_successor_on_db", _none)
+    (status,) = asyncio.run(svc.check_compromised([HEX]))
+    assert status.since == datetime(2026, 11, 16)
+
+    _add({"compromised_since": None})
+    row.compromised_since = stored_rows[HEX].compromised_since
+    (status,) = asyncio.run(svc.check_compromised([HEX]))
+    assert status.since == datetime(2026, 11, 17)
+
+
+def test_patch_sets_and_clears_the_successor_post(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    class _Db:
+        async def commit(self):
+            pass
+
+        async def refresh(self, row):
+            pass
+
+    @asynccontextmanager
+    async def _session():
+        yield _Db()
+
+    seen = []
+
+    async def _update(db, pubkey, values):
+        seen.append(values)
+        return _row()
+
+    monkeypatch.setattr(svc, "db_session", _session)
+    monkeypatch.setattr(svc, "update_compromised_metadata_on_db", _update)
+
+    asyncio.run(svc.update_compromised_metadata(HEX, _metadata({"successor_event_id": PROOF})))
+    asyncio.run(svc.update_compromised_metadata(HEX, _metadata({"successor_event_id": None})))
+    assert seen == [{"successor_event_id": PROOF}, {"successor_event_id": None}]
+
+    with pytest.raises(Exception):
+        _metadata({"successor_event_id": "not-an-id"})

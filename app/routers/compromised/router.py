@@ -31,7 +31,9 @@ def _hex(pubkey: str, field: str) -> str:
     summary="Whether an account is marked compromised",
     description=(
         "`compromised` false, or true with `since`, the event proving it "
-        "(whole), and the owner's new key once known."
+        "(whole), and the owner's new key once known. A key that is a "
+        "compromised account's new key carries that account's record as "
+        "`replaces`."
     ),
 )
 async def get_compromised_status_endpoint(pubkey: str) -> GetCompromisedStatusResponse:

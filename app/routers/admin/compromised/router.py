@@ -19,11 +19,6 @@ from app.services.compromised_service import (
     zero_now,
 )
 
-# How long PUT waits for the zeroing before answering. A run usually takes a few
-# seconds; one that outlasts this keeps going and records its outcome, which
-# GET shows. Kept under the UI's request timeout, with room for the proof fetch.
-ZERO_WAIT_SECONDS = 20.0
-
 router = APIRouter()
 
 
@@ -51,13 +46,13 @@ async def list_compromised_endpoint():
         "Records the account (npub or hex) with the event proving the compromise, "
         "kept whole (`proof_event`, or `proof_event_id` for the server to fetch), "
         "and optionally the owner's new key (`successor_pubkey`). Fields left out "
-        "keep their stored values. Then zeroes its scores at once: every "
-        "Observer holding a Trusted Assertion about it re-signs it at rank 0, and "
-        "its stored scores, whitelist entries and own ratings are cleared. Answers "
-        "when that is done, with its outcome in `last_zero_report`; a zeroing that "
-        "takes longer than 20 s finishes after the answer (`last_zero_report` "
-        "still the previous one) and GET shows it. A zeroing that never reports or "
-        "doesn't succeed is retried by the server. Every later GrapeRank run keeps "
+        "keep their stored values. Then starts zeroing its scores and answers at "
+        "once, before it is done: every Observer holding a Trusted Assertion about "
+        "it re-signs it at rank 0, and its stored scores, whitelist entries and own "
+        "ratings are cleared. The zeroing is pending while `last_zeroed_at` is older "
+        "than `zero_requested_at`; GET shows its outcome in `last_zero_report` once "
+        "it lands. A zeroing that never reports or doesn't succeed is retried by "
+        "the server. Every later GrapeRank run keeps "
         "the account at 0. Idempotent: calling again updates what it sends and "
         "zeroes again."
     ),
@@ -69,7 +64,9 @@ async def put_compromised_endpoint(
 ):
     hex_pubkey = _hex(pubkey)
     row = await add_compromised(hex_pubkey, body, request.state.jwt_data.nostr_pubkey)
-    await zero_now(hex_pubkey, wait_seconds=ZERO_WAIT_SECONDS)
+    # A zeroing over every Observer can outlast any HTTP timeout on the way
+    # (ingress, browser): answer now, pending, and let GET report the outcome.
+    await zero_now(hex_pubkey, wait_seconds=0)
     return await get_compromised(hex_pubkey) or row
 
 

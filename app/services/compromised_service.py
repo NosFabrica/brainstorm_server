@@ -65,6 +65,7 @@ from app.repos.compromised_pubkey_repo import (
     delete_compromised_on_db,
     list_compromised_on_db,
     record_zero_report_on_db,
+    select_compromised_by_successor_on_db,
     select_compromised_due_on_db,
     select_compromised_in_on_db,
     select_compromised_on_db,
@@ -103,10 +104,21 @@ def parse_pubkey(value: str) -> str:
         raise ValueError(f"{value!r} is not a pubkey") from e
 
 
+def _without_uri_scheme(value: str) -> str:
+    """`nostr:note1…` (NIP-21, as clients copy it) → `note1…`."""
+    value = value.strip()
+    return value[len("nostr:") :] if value.lower().startswith("nostr:") else value
+
+
 def parse_event_id(value: str) -> str:
-    """hex, note1… or nevent1… → hex. ValueError if none of those."""
+    """hex, note1… or nevent1…, bare or as a `nostr:` URI → hex. ValueError if
+    none of those. (nostr-sdk's EventId.parse takes hex and note1… but not
+    nevent1….)"""
+    value = _without_uri_scheme(value)
     try:
-        return EventId.parse(value.strip()).to_hex()
+        if value.startswith("nevent1"):
+            return Nip19Event.from_bech32(value).event_id().to_hex()
+        return EventId.parse(value).to_hex()
     except Exception as e:  # noqa: BLE001
         raise ValueError(f"{value!r} is not an event id") from e
 
@@ -389,27 +401,40 @@ async def retry_due_zeroings(pending_grace: timedelta, retry_after: timedelta) -
 # --- admin ---------------------------------------------------------------------
 
 
+def _status(row: CompromisedPubkey) -> CompromisedStatus:
+    return CompromisedStatus(
+        pubkey=row.pubkey,
+        compromised=True,
+        since=row.compromised_since or row.created_at,
+        proof_event_id=row.proof_event_id,
+        proof_event=row.proof_event,
+        successor_pubkey=row.successor_pubkey,
+        successor_event_id=row.successor_event_id,
+    )
+
+
 async def check_compromised(pubkeys: list[str]) -> list[CompromisedStatus]:
     """One status per pubkey (hex), in the order asked: the public read the UI
-    uses to flag a compromised account."""
+    uses to flag a compromised account. A key that is a compromised account's
+    successor carries that account's record as `replaces`."""
     async with db_session() as db:
         marked = {r.pubkey: r for r in await select_compromised_in_on_db(db, pubkeys)}
+        replaced = {
+            r.successor_pubkey: r
+            for r in await select_compromised_by_successor_on_db(db, pubkeys)
+        }
     out = []
     for pk in pubkeys:
         row = marked.get(pk)
-        if row is None:
-            out.append(CompromisedStatus(pubkey=pk, compromised=False))
-        else:
-            out.append(
-                CompromisedStatus(
-                    pubkey=pk,
-                    compromised=True,
-                    since=row.created_at,
-                    proof_event_id=row.proof_event_id,
-                    proof_event=row.proof_event,
-                    successor_pubkey=row.successor_pubkey,
-                )
-            )
+        status = (
+            _status(row)
+            if row is not None
+            else CompromisedStatus(pubkey=pk, compromised=False)
+        )
+        old = replaced.get(pk)
+        if old is not None:
+            status.replaces = _status(old)
+        out.append(status)
     return out
 
 
@@ -424,8 +449,9 @@ async def list_compromised() -> list[CompromisedPubkey]:
 
 
 def proof_pointer(value: str) -> tuple[str, list[str]]:
-    """An event id (hex, note1… or nevent1…) → (hex id, the nevent's relay hints)."""
-    value = value.strip()
+    """An event id (hex, note1… or nevent1…, bare or as a `nostr:` URI) → (hex
+    id, the nevent's relay hints)."""
+    value = _without_uri_scheme(value)
     if value.startswith("nevent1"):
         try:
             pointer = Nip19Event.from_bech32(value)
@@ -449,8 +475,9 @@ def verified_proof(raw: Any) -> dict:
 
 async def fetch_proof_event(event_id: str, hints: list[str]) -> dict:
     """The event with this id, from the nevent's relay hints, the relay we sync
-    from, our own, then `compromised_proof_relays`. 422 when none holds a valid
-    copy."""
+    from, our own and `compromised_proof_relays`, all asked at once: the first
+    valid copy wins, so a dead relay costs one fetch timeout, not one each. 422
+    when none holds a valid copy."""
     relays = list(
         dict.fromkeys(
             [
@@ -461,18 +488,30 @@ async def fetch_proof_event(event_id: str, hints: list[str]) -> dict:
             ]
         )
     )
-    for relay in relays:
+
+    async def _from(relay: str) -> dict | None:
         try:
             raw = await fetch_latest(relay, {"ids": [event_id], "limit": 1})
         except Exception as e:  # noqa: BLE001
             logger.warning(f"compromised: proof fetch from {relay} failed: {e!r}")
-            continue
+            return None
         if raw is None or raw.get("id") != event_id:
-            continue
+            return None
         try:
             return verified_proof(raw)
         except HTTPException:
             logger.warning(f"compromised: {relay} sent an invalid copy of {event_id}")
+            return None
+
+    tasks = [asyncio.create_task(_from(relay)) for relay in relays]
+    try:
+        for next_done in asyncio.as_completed(tasks):
+            proof = await next_done
+            if proof is not None:
+                return proof
+    finally:
+        for task in tasks:
+            task.cancel()
     raise HTTPException(
         status_code=422,
         detail=(
@@ -517,6 +556,8 @@ async def add_compromised(
             keep("successor_pubkey"),
             keep("reason"),
             added_by,
+            successor_event_id=keep("successor_event_id"),
+            compromised_since=keep("compromised_since"),
         )
         await db.commit()
         forget_compromised_authors()
