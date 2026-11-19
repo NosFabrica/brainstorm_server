@@ -133,6 +133,26 @@ Observer (TA only); `--db-only` skips the relay read. Exit 1 when a relay read
 or publish didn't complete. Run in each environment's brainstorm-server pod.
 Idempotent — the pipeline keeps the account at 0 on every later run anyway.
 
+### `backfill_user_ids.py`
+
+Gives every existing `NostrUser` its `user_id` (the id rule: ids committed in the Scorecard
+database first, then written to Neo4j). Needs `SCORECARD_DB_URL`. Dry-run by default (counts);
+`--apply` reads nodes without an id in pubkey order (`--page`), and writes ids back in
+transactions of `--batch` (default `neo4j_write_batch_size`), creating the `pubkey` and `user_id`
+uniqueness constraints first. Resumable and idempotent: only nodes without an id are touched.
+On heavy nodes each write walks the property list: keep `--batch` small, watch the rows per
+second it prints, and never run it alongside a large score write. Nodes whose pubkey is not
+64-char lowercase hex are skipped and reported; they can never have an id.
+
+- `--status`: nodes total / with / without an id, malformed, rows in `nostr_user`, ids no node carries.
+- `--verify`: exit 1 if a well-formed node lacks an id, or a node's id disagrees with `nostr_user`.
+- `--reconcile [--apply]`: after a restore of the Scorecard database. Puts back every
+  `(user_id, pubkey)` the graph has and the table lost and moves the sequence past the graph's
+  highest id. An id that differs between the two, or that the table has since given to another
+  pubkey, stops it with exit 2 and nothing written.
+
+Held by `tests/integration/test_backfill_user_ids_integration.py`, which only runs on an empty graph.
+
 ## When to add a new script
 
 Add one if:

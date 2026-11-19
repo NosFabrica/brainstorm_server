@@ -45,11 +45,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # a real value, so staging/prod (full .env) are unaffected.
 os.environ.setdefault("PUBLIC_BASE_URL", "http://localhost:8080")
 
+from app.core.config import settings  # noqa: E402
 from app.core.redis_db import redis_client  # noqa: E402
 from app.message_queue_tasks.process_strfry_event import (  # noqa: E402
     REPORTED_BY_KEY_PREFIX,
 )
 from app.neo4j_db.driver import driver as neo4j_driver  # noqa: E402
+from app.repos.user_id_repo import ids_for  # noqa: E402
 from app.services.report_graph_service import (  # noqa: E402
     ReportedByDiff,
     build_desired_reported_by,
@@ -109,6 +111,17 @@ async def _apply_redis(diff: ReportedByDiff) -> None:
         await pipe.execute()
 
 
+# Same id rule as ingest: set only where there is none.
+_MERGE_REPORTS_WITH_IDS = """
+UNWIND $pairs AS p
+MERGE (a:NostrUser {pubkey: p.reporter})
+FOREACH (_ IN CASE WHEN a.user_id IS NULL THEN [1] ELSE [] END | SET a.user_id = p.rid)
+MERGE (b:NostrUser {pubkey: p.target})
+FOREACH (_ IN CASE WHEN b.user_id IS NULL THEN [1] ELSE [] END | SET b.user_id = p.tid)
+MERGE (a)-[:REPORTS]->(b)
+"""
+
+
 async def _rebuild_neo4j(desired: dict[str, set[str]], chunk: int) -> int:
     # Full rebuild: REPORTS edges carry no properties, so drop-and-remerge is
     # lossless. Serial writes only — Neo4j fails under concurrent writers.
@@ -116,7 +129,18 @@ async def _rebuild_neo4j(desired: dict[str, set[str]], chunk: int) -> int:
     async with neo4j_driver.session() as session:
         await session.run("MATCH (:NostrUser)-[r:REPORTS]->(:NostrUser) DELETE r")
         for i in range(0, len(pairs), chunk):
-            batch = [{"reporter": r, "target": t} for r, t in pairs[i : i + chunk]]
+            chunk_pairs = pairs[i : i + chunk]
+            if settings.user_ids_enabled:
+                ids = await ids_for({pk for pair in chunk_pairs for pk in pair})
+                await session.run(
+                    _MERGE_REPORTS_WITH_IDS,
+                    pairs=[
+                        {"reporter": r, "rid": ids[r], "target": t, "tid": ids[t]}
+                        for r, t in chunk_pairs
+                    ],
+                )
+                continue
+            batch = [{"reporter": r, "target": t} for r, t in chunk_pairs]
             await session.run(
                 """
                 UNWIND $pairs AS p

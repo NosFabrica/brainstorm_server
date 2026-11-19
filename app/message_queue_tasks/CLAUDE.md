@@ -36,6 +36,13 @@ Dispatches incoming Nostr events by kind:
 - **Kind 5** (NIP-09 deletion) → `process_event_kind_5`. Reconciles the deleting author's `REPORTS` edges + `reported_by:` membership.
 - **Kind 39999** (Decentralized-Lists item) → `process_event_kind_39999`. Tag elements, pubkey taggings, tagging headers and event taggings share this kind and are told apart by their `z` tags (`app/services/tagging_parse.py`); anything matching none is foreign traffic and is dropped. Persists to `nostr_tag_element` / `nostr_user_tagging` / `nostr_tagging_header` / `nostr_event_tagging` — the input set for Trusted Lists. Events held before a shape's parser shipped are replayed by `scripts/backfill_event_taggings.py`.
 
+**User ids (`USER_IDS_ENABLED`, default off).** Every handler above that `MERGE`s a `NostrUser` first asks
+`ids_for` for the author's and targets' ids, which commits them in the Scorecard database, and only then writes
+through `_write_with_ids`: each node gets its `user_id` where it has none, never overwritten. A node already
+holding a different id raises `UserIdMismatch` inside the transaction, so the event is not applied. A new place
+that creates user nodes must do the same; `tests/test_user_ids_at_ingest.py` fails until it is listed there.
+`create_pubkey_index` also creates the uniqueness constraint on `user_id` when ids are on.
+
 The reverse-set helper is `_update_reverse_sets`. Use it for any new "X → relationships → reverse-cache" pattern.
 
 **A wiped Redis is rebuilt from Neo4j** by `backfill_redis_relationships.py`, once, at startup (when the done marker is absent, the graph is populated and no relationship keys exist): the reverse sets from `FOLLOWS` / `MUTES` / `REPORTS` keyed by target, and the forward sets `designates:` / `zaps_via:` from `DESIGNATES` / `ZAPS_VIA` keyed by source. Any new Redis copy of a Neo4j relationship the worker reads belongs in it — otherwise a wipe loses it for good (the profile resolver, for one, skips users it already settled).

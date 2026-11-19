@@ -39,6 +39,18 @@ which is the whole reason it goes.
 - The UPDATE skips rows already cleared (`diagnostics IS NOT NULL`), or every sweep would rewrite every old row forever.
 - **Safe to run on N replicas** — the filter is idempotent, so concurrent writers race-OK.
 
+### `user_id_check.py`
+
+Counts `NostrUser` nodes that should have a `user_id` and do not, every
+`settings.user_id_check_interval_hours` (24), and logs a warning with the number when it is
+not 0. A node without one is invisible to Scorecard reads and Neo4j Community cannot require
+the property. Does nothing while `USER_IDS_ENABLED` is off.
+
+- Nodes with a malformed pubkey can never have an id; they are named in the warning, not counted.
+- The count reads `user_id` on every node, so it costs about one hop query's worth of property reads.
+- The fix is `scripts/backfill_user_ids.py --apply`.
+- **Safe to run on N replicas** — read-only.
+
 ### `periodic_graperank_trigger.py`
 
 Triggers a periodic GrapeRank run for the *platform observer*
