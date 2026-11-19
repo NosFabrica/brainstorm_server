@@ -5,10 +5,13 @@ function takes the caller's session, so a run's writes commit together.
 """
 from collections.abc import Iterable
 from itertools import islice
+from typing import NamedTuple
 
 from sqlalchemy import bindparam, text
-from sqlalchemy.dialects.postgresql import ARRAY, TEXT
+from sqlalchemy.dialects.postgresql import ARRAY, INTEGER, TEXT
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
+
+from app.core.scorecard_database import scorecard_session
 
 # (observee pubkey, influence, hops, verified_followers)
 ScoreRow = tuple[str, float, int, int]
@@ -177,3 +180,69 @@ async def clear_scores_about_on_db(db: AsyncDBSession, pubkey: str) -> int:
         {"pubkey": pubkey},
     )
     return deleted.scalar_one()
+
+
+# ----------------- reads -----------------
+
+
+class Score(NamedTuple):
+    """What one Observer stores about one Observee; all None when nothing is stored."""
+
+    influence: float | None
+    hops: int | None
+    verified_followers: int | None
+
+
+NO_SCORE = Score(None, None, None)
+
+_OBSERVER_ID = "(SELECT id FROM nostr_user WHERE pubkey = :observer)"
+
+
+async def scores_by_pubkey(observer: str, pubkeys: Iterable[str]) -> dict[str, Score]:
+    """The Observer's stored scores for `pubkeys`. A pubkey with none is left out."""
+    wanted = list(dict.fromkeys(pubkeys))
+    if not wanted:
+        return {}
+    async with scorecard_session() as db:
+        rows = await db.execute(
+            text(
+                f"""
+                SELECT u.pubkey, s.influence, s.hops, s.verified_followers
+                FROM nostr_user u
+                JOIN scorecard s ON s.observee_id = u.id AND s.observer_id = {_OBSERVER_ID}
+                WHERE u.pubkey = ANY(:pubkeys)
+                """
+            ).bindparams(bindparam("pubkeys", type_=ARRAY(TEXT))),
+            {"observer": observer, "pubkeys": wanted},
+        )
+        return {row[0]: Score(row[1], row[2], row[3]) for row in rows}
+
+
+async def scores_by_id(
+    observer: str, user_ids: Iterable[int]
+) -> dict[int, tuple[str, Score]]:
+    """Pubkey and the Observer's stored score for each User id the graph returned.
+    An id the table does not know raises: the two stores disagree."""
+    wanted = list(dict.fromkeys(user_ids))
+    if not wanted:
+        return {}
+    async with scorecard_session() as db:
+        rows = await db.execute(
+            text(
+                f"""
+                SELECT u.id, u.pubkey, s.influence, s.hops, s.verified_followers
+                FROM nostr_user u
+                LEFT JOIN scorecard s
+                    ON s.observee_id = u.id AND s.observer_id = {_OBSERVER_ID}
+                WHERE u.id = ANY(:ids)
+                """
+            ).bindparams(bindparam("ids", type_=ARRAY(INTEGER))),
+            {"observer": observer, "ids": wanted},
+        )
+        found = {row[0]: (row[1], Score(row[2], row[3], row[4])) for row in rows}
+    missing = [uid for uid in wanted if uid not in found]
+    if missing:
+        raise MissingUserIds(
+            f"{len(missing)} user ids from the graph are not in nostr_user: {missing[:5]}"
+        )
+    return found

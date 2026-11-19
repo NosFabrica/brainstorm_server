@@ -5,12 +5,15 @@ from neo4j import AsyncSession as AsyncNeoSession
 from neo4j import Query
 from neo4j.exceptions import ClientError
 
+from app.core.config import settings
 from app.core.tier_thresholds import (
     FLAGGED_TIER,
     TIER_HIGH,
     TIER_MEDIUM,
     TIER_MEDIUM_HIGH,
+    classify_tier,
 )
+from app.repos.scorecard_repo import Score, scores_by_id, scores_by_pubkey
 from app.schemas.schemas import (
     ConnectionStats,
     ConnectionTierCounts,
@@ -38,6 +41,11 @@ async def _get_pubkeys_with_influence(
             f"(user:NostrUser {{pubkey: $pubkey}})-[:{relation}]->(other:NostrUser)"
         )
 
+    if settings.scores_in_postgres:
+        return await _connections_from_scorecards(
+            session, match_clause, pubkey, observer or pubkey
+        )
+
     query = f"""
     MATCH {match_clause}
     RETURN
@@ -51,6 +59,30 @@ async def _get_pubkeys_with_influence(
     return [
         UserConnection(pubkey=record["pubkey"], influence=record["influence"])
         async for record in result
+    ]
+
+
+async def _connections_from_scorecards(
+    session: AsyncNeoSession, match_clause: str, pubkey: str, observer: str
+) -> list[UserConnection]:
+    """Graph first: the graph says who (by User id), the Scorecard database gives
+    each one's pubkey and Influence. A node without an id keeps its pubkey and
+    has no score."""
+    result = await session.run(
+        f"""
+        MATCH {match_clause}
+        RETURN other.user_id AS id,
+            CASE WHEN other.user_id IS NULL THEN other.pubkey END AS pubkey
+        """,
+        pubkey=pubkey,
+    )
+    rows = [(record["id"], record["pubkey"]) async for record in result]
+    scored = await scores_by_id(observer, [uid for uid, _ in rows if uid is not None])
+    return [
+        UserConnection(pubkey=pk, influence=None)
+        if uid is None
+        else UserConnection(pubkey=scored[uid][0], influence=scored[uid][1].influence)
+        for uid, pk in rows
     ]
 
 
@@ -213,6 +245,10 @@ async def get_influence_for_observer(
     Returns the value of 'influence_<observer_pubkey>' for the NostrUser with pubkey.
     Returns None if the user or property does not exist.
     """
+    if settings.scores_in_postgres:
+        scored = await scores_by_pubkey(observer_pubkey, [pubkey])
+        return scored[pubkey].influence if pubkey in scored else None
+
     property_name = f"influence_{observer_pubkey}"
     query = """
     MATCH (user:NostrUser {pubkey: $pubkey})
@@ -251,6 +287,13 @@ async def get_qualifying_asserters_for_observer(
     """
     if not pubkeys:
         return {}
+    if settings.scores_in_postgres:
+        scored = await scores_by_pubkey(observer_pubkey, pubkeys)
+        return {
+            pk: round(float(score.influence) * 100) / 100
+            for pk, score in scored.items()
+            if score.influence is not None and score.influence >= min_influence
+        }
     property_name = f"influence_{observer_pubkey}"
     query = """
     UNWIND $pubkeys AS pk
@@ -287,6 +330,16 @@ def _scoped_match_pattern(rel_type: str, direction: str) -> str:
     if direction == "in":
         return f"(other:NostrUser)-[:{rel_type}]->(user)"
     return f"(user)-[:{rel_type}]->(other:NostrUser)"
+
+
+_INFLUENCE_PREFIX = "influence_"
+
+
+def _observer_of(influence_key: str) -> str:
+    """The Observer pubkey behind a Neo4j `influence_<observer>` property name."""
+    if not influence_key.startswith(_INFLUENCE_PREFIX):
+        raise ValueError(f"not an influence key: {influence_key!r:.80}")
+    return influence_key[len(_INFLUENCE_PREFIX) :]
 
 
 class OutboundCounts(NamedTuple):
@@ -331,16 +384,22 @@ async def get_counts_and_influence(
     flagged DISTINCT scan over every inbound edge, and takes no line, so the
     caller needs no preset read. Need a line-driven field? Use the full query.
     """
+    in_postgres = settings.scores_in_postgres
+    influence = "null" if in_postgres else "user[$influence_key]"
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
-    RETURN user[$influence_key] AS influence, following, muting, reporting
+    RETURN {influence} AS influence, following, muting, reporting
     """
     result = await session.run(query, pubkey=pubkey, influence_key=influence_key)
     record = await result.single()
     if not record:
         return OutboundCounts(None, 0, 0, 0)
+    stored = record["influence"]
+    if in_postgres:
+        scored = await scores_by_pubkey(_observer_of(influence_key), [pubkey])
+        stored = scored[pubkey].influence if pubkey in scored else None
     return OutboundCounts(
-        influence=record["influence"],
+        influence=stored,
         following=int(record["following"] or 0),
         muting=int(record["muting"] or 0),
         reporting=int(record["reporting"] or 0),
@@ -365,6 +424,14 @@ async def get_outbound_counts_and_influence(
     "Flagged" is *not verified* (no stored influence, or `<= verified_line`: the
     complement of the strict `>` used everywhere else) AND reported by 2+ accounts
     above `reporter_cutoff`, counted live."""
+    if settings.scores_in_postgres:
+        return await _outbound_overview_from_scorecards(
+            session,
+            pubkey,
+            _observer_of(influence_key),
+            verified_line=verified_line,
+            reporter_cutoff=reporter_cutoff,
+        )
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
     CALL (user) {{
@@ -405,6 +472,91 @@ async def get_outbound_counts_and_influence(
     )
 
 
+# Who reports `node`, by User id. A reporter without an id has no score.
+def _reporter_ids(node: str) -> str:
+    return f"[(rr:NostrUser)-[:REPORTS]->({node}) | rr.user_id]"
+
+
+def _live_reporter_count(
+    reporters: list[int | None],
+    scored: dict[int, tuple[str, Score]],
+    reporter_cutoff: float,
+) -> int:
+    """`_live_reporters` over Scorecards: reporters strictly above the cutoff."""
+    count = 0
+    for uid in reporters:
+        influence = scored[uid][1].influence if uid is not None else None
+        if influence is not None and influence > reporter_cutoff:
+            count += 1
+    return count
+
+
+def _ids(*lists: list[int | None]) -> list[int]:
+    return [uid for ids in lists for uid in ids if uid is not None]
+
+
+async def _outbound_overview_from_scorecards(
+    session: AsyncNeoSession,
+    pubkey: str,
+    observer: str,
+    *,
+    verified_line: float,
+    reporter_cutoff: float,
+) -> OutboundOverview:
+    """`get_outbound_counts_and_influence`, graph first. Only a neighbour with
+    2+ reporters can be flagged, so only those leave the graph."""
+    query = f"""
+    MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
+    CALL (user) {{
+        MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
+        WITH DISTINCT other
+        WITH other, {_reporter_ids("other")} AS reporters
+        WHERE size(reporters) >= 2
+        RETURN collect({{id: other.user_id, reporters: reporters}}) AS candidates
+    }}
+    RETURN following, muting, reporting, candidates,
+        {_reporter_ids("user")} AS own_reporters
+    """
+    result = await session.run(query, pubkey=pubkey)
+    record = await result.single()
+    if not record:
+        return OutboundOverview(None, 0, 0, 0, False, 0, None)
+    candidates = record["candidates"]
+    own_reporters = record["own_reporters"]
+    scored = await scores_by_id(
+        observer,
+        _ids(
+            [c["id"] for c in candidates],
+            own_reporters,
+            *(c["reporters"] for c in candidates),
+        ),
+    )
+    own = await scores_by_pubkey(observer, [pubkey])
+    influence = own[pubkey].influence if pubkey in own else None
+
+    flagged_count = 0
+    for candidate in candidates:
+        uid = candidate["id"]
+        other = scored[uid][1].influence if uid is not None else None
+        live = _live_reporter_count(candidate["reporters"], scored, reporter_cutoff)
+        if classify_tier(other, live, verified_line) == FLAGGED_TIER:
+            flagged_count += 1
+    tier = classify_tier(
+        influence,
+        _live_reporter_count(own_reporters, scored, reporter_cutoff),
+        verified_line,
+    )
+    return OutboundOverview(
+        influence=influence,
+        following=int(record["following"] or 0),
+        muting=int(record["muting"] or 0),
+        reporting=int(record["reporting"] or 0),
+        flagged_by_observer=tier == FLAGGED_TIER,
+        flagged_count=flagged_count,
+        tier=tier,
+    )
+
+
 class TrustSignalRow(NamedTuple):
     influence: float | None
     verified: bool
@@ -422,6 +574,14 @@ async def get_trust_signals_for_pubkeys(
     """`/overview`'s verdicts for many subjects in one UNWIND; unknown pubkeys unrated."""
     if not pubkeys:
         return {}
+    if settings.scores_in_postgres:
+        return await _trust_signals_from_scorecards(
+            session,
+            pubkeys,
+            _observer_of(influence_key),
+            verified_line=verified_line,
+            reporter_cutoff=reporter_cutoff,
+        )
     query = f"""
     UNWIND $pubkeys AS pk
     OPTIONAL MATCH (user:NostrUser {{pubkey: pk}})
@@ -445,6 +605,39 @@ async def get_trust_signals_for_pubkeys(
             influence=record["influence"],
             verified=bool(record["verified"]),
             flagged=bool(record["flagged"]),
+        )
+    return out
+
+
+async def _trust_signals_from_scorecards(
+    session: AsyncNeoSession,
+    pubkeys: list[str],
+    observer: str,
+    *,
+    verified_line: float,
+    reporter_cutoff: float,
+) -> dict[str, TrustSignalRow]:
+    """`get_trust_signals_for_pubkeys`, graph first: the graph gives each
+    subject's reporters, the Scorecard database every score."""
+    result = await session.run(
+        f"""
+        UNWIND $pubkeys AS pk
+        MATCH (user:NostrUser {{pubkey: pk}})
+        RETURN pk AS pubkey, {_reporter_ids("user")} AS reporters
+        """,
+        pubkeys=pubkeys,
+    )
+    reporters = {record["pubkey"]: record["reporters"] async for record in result}
+    own = await scores_by_pubkey(observer, pubkeys)
+    scored = await scores_by_id(observer, _ids(*reporters.values()))
+    out = {}
+    for pk in pubkeys:
+        influence = own[pk].influence if pk in own else None
+        live = _live_reporter_count(reporters.get(pk, []), scored, reporter_cutoff)
+        out[pk] = TrustSignalRow(
+            influence=influence,
+            verified=influence is not None and influence > verified_line,
+            flagged=classify_tier(influence, live, verified_line) == FLAGGED_TIER,
         )
     return out
 
@@ -1000,6 +1193,10 @@ async def batch_influence_for_pubkeys(
     """
     if not pubkeys:
         return {}
+
+    if settings.scores_in_postgres:
+        scored = await scores_by_pubkey(observer_pubkey, pubkeys)
+        return {pk: scored[pk].influence if pk in scored else None for pk in pubkeys}
 
     influence_key = f"influence_{observer_pubkey}"
     query = """

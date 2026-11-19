@@ -170,6 +170,17 @@ query text gives every observer its own Neo4j plan-cache entry. The write side
 follows the same rule from the other direction: `write_neo4j_results.py` builds
 the `{name: value}` map in Python and `set_observer_scores` does `SET n += row.props`.
 
+**Score reads from the Scorecard database (`SCORES_IN_POSTGRES`, default off).** Reads are
+graph first: Cypher answers "who" by `user_id` and never touches a score property, then
+`scorecard_repo.scores_by_id` / `scores_by_pubkey` (the one read helper, opening its own session)
+give pubkeys and scores, and the verdicts (`verified`, `tier`, flagged, live reporter counts) are
+computed in Python with `tier_thresholds.classify_tier`. Each converted function keeps its Neo4j
+form behind the setting; the Scorecard form lives beside it as `_…_from_scorecards`. A graph id
+missing from `nostr_user` raises rather than returning a partial answer.
+`tests/test_score_reads_go_through_scorecards.py` lists the reads not converted yet and fails on a
+new score read that is neither switched nor listed;
+`tests/integration/test_score_reads_equivalence_integration.py` holds both forms to the same answer.
+
 ## Common tasks
 
 | I want to… | Do this |
