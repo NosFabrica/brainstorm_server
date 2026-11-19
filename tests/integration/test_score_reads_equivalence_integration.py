@@ -33,7 +33,18 @@ SCORES = {
     "d": 0.05,
     "r1": 0.5,
     "r2": 0.5,
+    # Followers of the subject for the paged reads: ties, every band, and two
+    # below the verified line (one of them reported twice, so flagged).
+    "t1": 0.3,
+    "t2": 0.3,
+    "t3": 0.3,
+    "high": 0.9,
+    "medium": 0.08,
+    "below": 0.01,
+    "below_flagged": 0.02,
 }
+UNSCORED = ("unscored", "quiet", "once_reported")
+PAGED = ("t1", "t2", "t3", "high", "medium", "below", "below_flagged", "quiet")
 VERIFIED_LINE = 0.0625
 REPORTER_CUTOFF = 0.25
 
@@ -46,9 +57,7 @@ class Graph:
     def __init__(self):
         self.observer = _pk()
         self.subject = _pk()
-        self.people = {
-            name: _pk() for name in ("a", "b", "c", "d", "unscored", "r1", "r2")
-        }
+        self.people = {name: _pk() for name in (*SCORES, *UNSCORED)}
         self.no_id = _pk()
         self.unknown = _pk()
 
@@ -87,6 +96,10 @@ async def _seed(g: Graph, driver) -> None:
             key=key,
         )
         edges = [
+            *((name, "FOLLOWS", "in") for name in (*PAGED, "once_reported")),
+            ("t1", "MUTES", "in"),
+            ("below", "MUTES", "in"),
+            ("high", "REPORTS", "in"),
             ("a", "FOLLOWS", "in"),
             ("b", "FOLLOWS", "in"),
             ("unscored", "FOLLOWS", "in"),
@@ -118,7 +131,7 @@ async def _seed(g: Graph, driver) -> None:
         # Two trusted reporters on a verified, an unverified and an unscored
         # user; c is below the reporter cutoff, so its report never counts.
         for reporter in ("r1", "r2", "c"):
-            for target in ("a", "d", "unscored"):
+            for target in ("a", "d", "unscored", "below_flagged"):
                 await s.run(
                     "MATCH (x:NostrUser {pubkey: $src}), (y:NostrUser {pubkey: $dst})"
                     " MERGE (x)-[:REPORTS]->(y)",
@@ -130,6 +143,12 @@ async def _seed(g: Graph, driver) -> None:
             " MERGE (x)-[:REPORTS]->(y)",
             src=g.people["r1"],
             dst=g.people["b"],
+        )
+        await s.run(
+            "MATCH (x:NostrUser {pubkey: $src}), (y:NostrUser {pubkey: $dst})"
+            " MERGE (x)-[:REPORTS]->(y)",
+            src=g.people["r1"],
+            dst=g.people["once_reported"],
         )
     async with scorecard_session() as db:
         for pk, value in [
@@ -224,12 +243,9 @@ def test_followers_include_the_unscored_and_the_node_without_an_id(graph, monkey
 
     neo4j, postgres = _both(graph, monkeypatch, read)
     assert neo4j == postgres
-    assert postgres == {
-        graph.people["a"]: SCORES["a"],
-        graph.people["b"]: 0.5,
-        graph.people["unscored"]: None,
-        graph.no_id: None,
-    }
+    assert postgres[graph.people["a"]] == SCORES["a"]
+    assert postgres[graph.people["unscored"]] is None
+    assert postgres[graph.no_id] is None
 
 
 def test_a_list_with_no_observer_reads_the_subjects_own_scores(graph, monkeypatch):
@@ -286,12 +302,11 @@ def test_qualifying_asserters_agree(graph, monkeypatch):
     assert neo4j == postgres
     # Inclusive floor, weight quantized to the Rank quantum.
     assert postgres == {
-        graph.people["a"]: 0.75,
-        graph.people["b"]: 0.5,
-        graph.people["c"]: 0.12,
-        graph.people["r1"]: 0.5,
-        graph.people["r2"]: 0.5,
+        graph.people[name]: round(value * 100) / 100
+        for name, value in SCORES.items()
+        if value >= 0.125
     }
+    assert postgres[graph.people["c"]] == 0.12
 
 
 def test_counts_and_influence_agree(graph, monkeypatch):
@@ -354,12 +369,12 @@ def test_the_overview_agrees(graph, monkeypatch):
     neo4j, postgres = _both(graph, monkeypatch, read)
     assert neo4j == postgres
     subject, reported, reporter, unknown = postgres
-    # Around the subject: d and unscored are flagged; a is reported but verified.
-    assert subject.flagged_count == 2
+    # Around the subject: d, unscored and below_flagged; a is reported but verified.
+    assert subject.flagged_count == 3
     assert (subject.influence, subject.tier) == (0.25, "medium_high")
     assert subject.flagged_by_observer is False
     assert reported.flagged_by_observer is True
-    assert reporter.reporting == 4
+    assert reporter.reporting == 6
     assert unknown == user_repo.OutboundOverview(None, 0, 0, 0, False, 0, None)
 
 
@@ -379,6 +394,199 @@ def test_a_score_exactly_on_the_line_is_not_verified_in_either_store(
         return rows[graph.people["d"]].verified
 
     assert _both(graph, monkeypatch, read) == [False, False]
+
+
+SECTIONS = [
+    ("FOLLOWS", "in"),
+    ("FOLLOWS", "out"),
+    ("MUTES", "in"),
+    ("MUTES", "out"),
+    ("REPORTS", "in"),
+    ("REPORTS", "out"),
+]
+TIERS = [None, *user_repo._TIER_PREDICATES]
+
+
+def _walk(read_page):
+    """Every page until the cursor runs out: [(items, cursor, total), ...]."""
+
+    async def _all(session):
+        pages, cursor = [], (None, None)
+        while True:
+            items, last, total = await read_page(session, *cursor)
+            pages.append((items, last, total))
+            if last is None:
+                return pages
+            cursor = last
+
+    return _all
+
+
+@pytest.mark.parametrize("rel_type,direction", SECTIONS)
+@pytest.mark.parametrize("order", ["desc", "asc"])
+def test_connection_pages_agree(graph, monkeypatch, rel_type, direction, order):
+    """Every tier filter, with and without verified_only, two rows a page."""
+
+    def pages_for(tier, verified_only):
+        async def read_page(session, cursor_inf, cursor_pk):
+            return await user_repo.get_paginated_section_connections(
+                session,
+                graph.subject,
+                f"influence_{graph.observer}",
+                rel_type,
+                direction,
+                2,
+                cursor_inf,
+                cursor_pk,
+                verified_cutoff=0.25,
+                verified_line=VERIFIED_LINE,
+                reporter_cutoff=REPORTER_CUTOFF,
+                order=order,
+                tier=tier,
+                verified_only=verified_only,
+                with_total=True,
+            )
+
+        return _walk(read_page)
+
+    async def read(session):
+        return {
+            (tier, verified_only): await pages_for(tier, verified_only)(session)
+            for tier in TIERS
+            for verified_only in (False, True)
+        }
+
+    neo4j, postgres = _both(graph, monkeypatch, read)
+    assert neo4j == postgres
+    if (rel_type, direction) == ("FOLLOWS", "in"):
+        everyone = [item for items, _, _ in postgres[(None, False)] for item in items]
+        influences = [-1.0 if i.influence is None else i.influence for i in everyone]
+        assert influences == sorted(influences, reverse=order == "desc")
+        tied = [i.pubkey for i in everyone if i.influence == 0.3]
+        assert tied == sorted(tied) and len(tied) == 3
+        assert postgres[(None, False)][0][2] == len(everyone) == 13
+        flagged = postgres[(user_repo.FLAGGED_TIER, False)]
+        assert {i.pubkey for items, _, _ in flagged for i in items} == {
+            graph.people["unscored"],
+            graph.people["below_flagged"],
+        }
+        once = next(i for i in everyone if i.pubkey == graph.people["once_reported"])
+        assert (once.trusted_reporters, once.tier) == (1, "low")
+
+
+def test_a_page_without_a_total_agrees(graph, monkeypatch):
+    async def read(session):
+        return await user_repo.get_paginated_section_connections(
+            session,
+            graph.subject,
+            f"influence_{graph.observer}",
+            "FOLLOWS",
+            "in",
+            50,
+            None,
+            None,
+            verified_cutoff=0.25,
+            verified_line=VERIFIED_LINE,
+            reporter_cutoff=REPORTER_CUTOFF,
+        )
+
+    neo4j, postgres = _both(graph, monkeypatch, read)
+    assert neo4j == postgres
+    assert postgres[1] is None and postgres[2] is None
+
+
+@pytest.mark.parametrize("order", ["desc", "asc"])
+def test_flagged_pages_agree(graph, monkeypatch, order):
+    async def read_page(session, cursor_inf, cursor_pk):
+        return await user_repo.get_paginated_flagged_connections(
+            session,
+            graph.subject,
+            f"influence_{graph.observer}",
+            2,
+            cursor_inf,
+            cursor_pk,
+            verified_line=VERIFIED_LINE,
+            reporter_cutoff=REPORTER_CUTOFF,
+            order=order,
+            with_total=True,
+        )
+
+    neo4j, postgres = _both(graph, monkeypatch, _walk(read_page))
+    assert neo4j == postgres
+    assert postgres[0][2] == 3
+    assert all(
+        item.tier == user_repo.FLAGGED_TIER
+        for items, _, _ in postgres
+        for item in items
+    )
+
+
+def test_section_stats_agree(graph, monkeypatch):
+    kinds = [name for name, _, _ in user_repo._STATS_KINDS]
+
+    async def read(session):
+        return [
+            await user_repo.get_all_section_stats(
+                session,
+                pk,
+                f"influence_{graph.observer}",
+                {kind: 0.25 if kind == "followed_by" else 0.0625 for kind in kinds},
+                verified_line=VERIFIED_LINE,
+                reporter_cutoff=REPORTER_CUTOFF,
+            )
+            for pk in (graph.subject, graph.unknown)
+        ]
+
+    neo4j, postgres = _both(graph, monkeypatch, read)
+    assert neo4j == postgres
+    followed_by = postgres[0]["followed_by"]
+    assert followed_by.total == 13
+    assert sum(followed_by.tier_counts.model_dump().values()) == 13
+    assert getattr(followed_by.tier_counts, user_repo.FLAGGED_TIER) == 2
+    assert postgres[1]["followed_by"].total == 0
+
+
+def test_graph_data_agrees(graph, monkeypatch):
+    def _sorted(data):
+        return {
+            name: sorted(rows, key=lambda r: r["pubkey"])
+            if name != "influence"
+            else rows
+            for name, rows in data.model_dump().items()
+        }
+
+    async def read(session):
+        return [
+            _sorted(
+                await user_repo.get_user_graph_data(
+                    session,
+                    pk,
+                    f"influence_{graph.observer}",
+                    reporter_cutoff=REPORTER_CUTOFF,
+                )
+            )
+            for pk in (graph.subject, graph.unknown)
+        ]
+
+    neo4j, postgres = _both(graph, monkeypatch, read)
+    assert neo4j == postgres
+    assert postgres[0]["influence"] == 0.25
+    assert len(postgres[0]["followed_by"]) == 13
+    assert postgres[1]["followed_by"] == [] and postgres[1]["influence"] is None
+
+
+@pytest.mark.parametrize("relation", ["FOLLOWS", "MUTES", "REPORTS"])
+@pytest.mark.parametrize("limit", [1, 4, 50])
+def test_top_inbound_agrees(graph, monkeypatch, relation, limit):
+    async def read(session):
+        return await user_repo.get_top_inbound_by_influence(
+            session, graph.subject, graph.observer, relation, limit
+        )
+
+    neo4j, postgres = _both(graph, monkeypatch, read)
+    assert neo4j == postgres
+    if relation == "FOLLOWS":
+        assert postgres[0].pubkey == graph.people["high"]
 
 
 def test_a_graph_id_missing_from_the_table_fails_the_read(graph, monkeypatch):

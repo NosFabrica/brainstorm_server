@@ -8,12 +8,7 @@ from app.repos import user_repo
 
 # Shrinks to nothing as the remaining reads are converted.
 NOT_CONVERTED_YET = {
-    "get_paginated_section_connections",
-    "get_paginated_flagged_connections",
-    "get_all_section_stats",
-    "get_user_graph_data",
     "get_ta_observees_for_observer",
-    "get_top_inbound_by_influence",
     "get_network_alert_candidates",
     "count_above_cutoff_followers_capped",
     "count_verified_muters",

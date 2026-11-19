@@ -177,6 +177,10 @@ give pubkeys and scores, and the verdicts (`verified`, `tier`, flagged, live rep
 computed in Python with `tier_thresholds.classify_tier`. Each converted function keeps its Neo4j
 form behind the setting; the Scorecard form lives beside it as `_…_from_scorecards`. A graph id
 missing from `nostr_user` raises rather than returning a partial answer.
+The paged and counted reads (`/connections`, flagged, `/stats`, top inbound) take ids only from the
+graph, in one collected list per section plus the reporters of the few members anyone reports, and
+tier, filter, sort and page in SQL (`scorecard_repo.page_of_members` / `count_members`, whose
+`_TIER_SQL` restates `classify_tier`). The unpaginated graph data reads every member's row.
 `tests/test_score_reads_go_through_scorecards.py` lists the reads not converted yet and fails on a
 new score read that is neither switched nor listed;
 `tests/integration/test_score_reads_equivalence_integration.py` holds both forms to the same answer.
