@@ -25,8 +25,15 @@ pytestmark = [
     ),
 ]
 
-# Exactly representable, so the stores hold the same number whatever the column type.
-SCORES = {"a": 0.75, "b": 0.5, "c": 0.125, "d": 0.03125, "r1": 0.5, "r2": 0.5}
+# `a` and `d` are not representable in single precision: the stores must still agree.
+SCORES = {
+    "a": 0.7512345678901234,
+    "b": 0.5,
+    "c": 0.125,
+    "d": 0.05,
+    "r1": 0.5,
+    "r2": 0.5,
+}
 VERIFIED_LINE = 0.0625
 REPORTER_CUTOFF = 0.25
 
@@ -218,7 +225,7 @@ def test_followers_include_the_unscored_and_the_node_without_an_id(graph, monkey
     neo4j, postgres = _both(graph, monkeypatch, read)
     assert neo4j == postgres
     assert postgres == {
-        graph.people["a"]: 0.75,
+        graph.people["a"]: SCORES["a"],
         graph.people["b"]: 0.5,
         graph.people["unscored"]: None,
         graph.no_id: None,
@@ -250,7 +257,7 @@ def test_single_influence_agrees(graph, monkeypatch):
         ]
 
     neo4j, postgres = _both(graph, monkeypatch, read)
-    assert neo4j == postgres == [0.75, None, None, None]
+    assert neo4j == postgres == [SCORES["a"], None, None, None]
 
 
 def test_batch_influence_agrees(graph, monkeypatch):
@@ -264,7 +271,7 @@ def test_batch_influence_agrees(graph, monkeypatch):
     neo4j, postgres = _both(graph, monkeypatch, read)
     assert neo4j == postgres
     assert set(postgres) == set(wanted)
-    assert postgres[graph.people["d"]] == 0.03125
+    assert postgres[graph.people["d"]] == SCORES["d"]
 
 
 def test_qualifying_asserters_agree(graph, monkeypatch):
@@ -317,8 +324,10 @@ def test_trust_signals_agree(graph, monkeypatch):
     assert neo4j == postgres
     row = user_repo.TrustSignalRow
     people = graph.people
-    assert postgres[people["a"]] == row(0.75, True, False)  # verified, never flagged
-    assert postgres[people["d"]] == row(0.03125, False, True)
+    assert postgres[people["a"]] == row(
+        SCORES["a"], True, False
+    )  # verified, never flagged
+    assert postgres[people["d"]] == row(SCORES["d"], False, True)
     assert postgres[people["unscored"]] == row(None, False, True)
     assert postgres[people["b"]] == row(0.5, True, False)
     assert postgres[graph.unknown] == row(None, False, False)
@@ -352,6 +361,24 @@ def test_the_overview_agrees(graph, monkeypatch):
     assert reported.flagged_by_observer is True
     assert reporter.reporting == 4
     assert unknown == user_repo.OutboundOverview(None, 0, 0, 0, False, 0, None)
+
+
+def test_a_score_exactly_on_the_line_is_not_verified_in_either_store(
+    graph, monkeypatch
+):
+    """d's Influence equals the line; verified is strictly above it."""
+
+    async def read(session):
+        rows = await user_repo.get_trust_signals_for_pubkeys(
+            session,
+            [graph.people["d"]],
+            f"influence_{graph.observer}",
+            verified_line=SCORES["d"],
+            reporter_cutoff=REPORTER_CUTOFF,
+        )
+        return rows[graph.people["d"]].verified
+
+    assert _both(graph, monkeypatch, read) == [False, False]
 
 
 def test_a_graph_id_missing_from_the_table_fails_the_read(graph, monkeypatch):

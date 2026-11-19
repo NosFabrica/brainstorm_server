@@ -53,7 +53,7 @@ async def set_observer_scores_on_db(
     without a user id raises `MissingUserIds` and nothing is written."""
     await db.execute(
         text(
-            "CREATE TEMP TABLE score_in (pubkey text, influence real, hops smallint,"
+            "CREATE TEMP TABLE score_in (pubkey text, influence double precision, hops smallint,"
             " verified_followers integer) ON COMMIT DROP"
         )
     )

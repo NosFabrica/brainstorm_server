@@ -14,6 +14,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # influence is double precision: `real` moves a score across a cutoff it sat
+    # on, and costs the same space here (alignment padding).
     # fillfactor 85: a run rewrites most of an Observer's rows, and the free
     # space lets those updates stay on the same page.
     op.execute(
@@ -21,7 +23,7 @@ def upgrade() -> None:
         CREATE TABLE scorecard (
             observer_id integer NOT NULL,
             observee_id integer NOT NULL,
-            influence real,
+            influence double precision,
             hops smallint,
             verified_followers integer,
             PRIMARY KEY (observer_id, observee_id)
