@@ -9,8 +9,8 @@ from app.repos.event_tagging_repo import (
     upsert_tagging_header_on_db,
 )
 from app.repos.tagging_repo import upsert_tag_element_on_db, upsert_user_tagging_on_db
-from app.services.compromised_authors import compromised_authors
 from app.repos.user_id_repo import ids_for
+from app.services.compromised_authors import compromised_authors
 from app.services.designation_service import DESIGNATION_KIND, parse_designated_pubkeys
 from app.services.report_graph_service import (
     diff_author_targets,
@@ -55,6 +55,8 @@ async def _write(session: AsyncNeoSession, cypher: str, **params):
 # What a compromised key publishes about others is not recorded: whoever holds it
 # now isn't who earned its reputation (app/services/compromised_service.py).
 RELATIONSHIP_KINDS = frozenset({3, 10000, 1984, 5, DESIGNATION_KIND})
+
+
 class UserIdMismatch(RuntimeError):
     """A node already holds a user_id other than the one the table gives its pubkey."""
 
