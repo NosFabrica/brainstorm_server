@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     # Scorecards). Required once user_ids_enabled is on.
     scorecard_db_url: str = Field(default="")
     user_ids_enabled: bool = Field(default=False)
+    # Scorecards are written to (and, as reads are converted, read from) the
+    # Scorecard database instead of Neo4j properties. Needs user_ids_enabled.
+    scores_in_postgres: bool = Field(default=False)
     # How often the count of user nodes without a user_id runs (it reads every node).
     user_id_check_interval_hours: float = Field(default=24.0, gt=0)
     # Flash payments. Off by default so self-hosted and one-click deployments —
@@ -207,6 +210,8 @@ class Settings(BaseSettings):
     def _user_ids_need_a_scorecard_database(self) -> "Settings":
         if self.user_ids_enabled and not self.scorecard_db_url:
             raise ValueError("USER_IDS_ENABLED needs SCORECARD_DB_URL")
+        if self.scores_in_postgres and not self.user_ids_enabled:
+            raise ValueError("SCORES_IN_POSTGRES needs USER_IDS_ENABLED")
         return self
 
     @property

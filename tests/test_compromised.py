@@ -47,7 +47,10 @@ def test_pubkeys_and_event_ids_parse_to_hex():
     assert parse_event_id(real) == (
         "000005cbe61b41c9c027dbd6aa89cd8d41193af3a1fb89dfd03b7d866cdb35be"
     )
-    assert parse_event_id(Nip19Event(EventId.parse(PROOF), None, None, []).to_bech32()) == PROOF
+    assert (
+        parse_event_id(Nip19Event(EventId.parse(PROOF), None, None, []).to_bech32())
+        == PROOF
+    )
     # As a NIP-21 URI, the way clients copy a link.
     derek = "000005cbe61b41c9c027dbd6aa89cd8d41193af3a1fb89dfd03b7d866cdb35be"
     assert parse_event_id(f"nostr:{real}") == derek
@@ -156,7 +159,7 @@ def zeroing(monkeypatch):
     monkeypatch.setattr(svc, "select_observers_publishing_on_db", _scan)
     monkeypatch.setattr(svc, "fetch_ta_signers", _fetch)
     monkeypatch.setattr(svc, "publish_events", _publish)
-    monkeypatch.setattr(svc, "clear_neo4j_scores", AsyncMock(return_value=3))
+    monkeypatch.setattr(svc, "clear_stored_scores", AsyncMock(return_value=3))
     monkeypatch.setattr(svc, "cut_outgoing_ratings", AsyncMock(return_value=4))
     monkeypatch.setattr(
         svc, "remove_pubkey_from_whitelists_on_db", AsyncMock(return_value=2)
@@ -214,7 +217,9 @@ def test_a_dry_run_publishes_clears_and_records_nothing(zeroing):
 
 
 def test_a_background_failure_is_recorded_on_the_row(zeroing, monkeypatch):
-    monkeypatch.setattr(svc, "load_observers", AsyncMock(side_effect=RuntimeError("db down")))
+    monkeypatch.setattr(
+        svc, "load_observers", AsyncMock(side_effect=RuntimeError("db down"))
+    )
 
     asyncio.run(svc.zero_compromised_in_background(HEX))
 
@@ -230,7 +235,9 @@ def test_a_row_without_a_stored_signer_decrypts_just_that_row(monkeypatch):
         decrypted.extend(observers)
         return [("b" * 64, keys[1].secret_key().to_bech32())] if observers else []
 
-    monkeypatch.setattr(svc, "select_observer_signers_on_db", AsyncMock(return_value=rows))
+    monkeypatch.setattr(
+        svc, "select_observer_signers_on_db", AsyncMock(return_value=rows)
+    )
     monkeypatch.setattr(svc, "select_observer_nsecs_on_db", _nsecs)
 
     observers = asyncio.run(svc.load_observers(None, None))
@@ -313,7 +320,9 @@ def test_put_records_the_account_and_zeroes_it_after_answering(
     async def _get(pubkey):
         row = rows[pubkey]
         row.last_zero_report = zeroing.recorded[-1] if zeroing.recorded else None
-        row.last_zeroed_at = datetime(2026, 11, 16, 0, 0, 5) if zeroing.recorded else None
+        row.last_zeroed_at = (
+            datetime(2026, 11, 16, 0, 0, 5) if zeroing.recorded else None
+        )
         return row
 
     monkeypatch.setattr(f"{ROUTER}.add_compromised", _add)
@@ -354,7 +363,9 @@ def test_put_answers_before_a_slow_zeroing_ends(admin_client, monkeypatch):
     monkeypatch.setattr(f"{ROUTER}.add_compromised", AsyncMock(return_value=_row()))
     monkeypatch.setattr(f"{ROUTER}.get_compromised", AsyncMock(return_value=_row()))
 
-    response = admin_client.put(f"/admin/compromised/{HEX}", json={"proof_event_id": PROOF})
+    response = admin_client.put(
+        f"/admin/compromised/{HEX}", json={"proof_event_id": PROOF}
+    )
 
     assert response.status_code == 200
     assert started == [HEX]
@@ -374,7 +385,9 @@ def test_zero_now_joins_a_run_under_way_and_waits_at_most_its_limit(monkeypatch)
         nonlocal release
         release = asyncio.Event()
         assert await svc.zero_now(HEX, wait_seconds=0.01) is False
-        assert await svc.zero_now(HEX, wait_seconds=0.01) is False  # joins, no second run
+        assert (
+            await svc.zero_now(HEX, wait_seconds=0.01) is False
+        )  # joins, no second run
         release.set()
         assert await svc.zero_now(HEX, wait_seconds=1) is True
         await asyncio.sleep(0)
@@ -419,10 +432,15 @@ def test_put_rejects_bad_fields_with_a_422(admin_client, monkeypatch):
         {"successor_pubkey": "npub1nope"},
         {"proof_event_id": PROOF, "proof_event": {"id": PROOF}},
     ):
-        assert admin_client.put(f"/admin/compromised/{HEX}", json=body).status_code == 422
-    assert admin_client.put(
-        "/admin/compromised/npub1nope", json={"proof_event_id": PROOF}
-    ).status_code == 422
+        assert (
+            admin_client.put(f"/admin/compromised/{HEX}", json=body).status_code == 422
+        )
+    assert (
+        admin_client.put(
+            "/admin/compromised/npub1nope", json={"proof_event_id": PROOF}
+        ).status_code
+        == 422
+    )
     add.assert_not_awaited()
 
 
@@ -476,7 +494,9 @@ def test_a_proof_event_is_kept_whole_after_its_signature_is_checked():
 def test_an_nevent_pointer_keeps_its_relay_hints():
     from nostr_sdk import EventId, Nip19Event
 
-    nevent = Nip19Event(EventId.parse(PROOF), None, None, ["wss://relay.example"]).to_bech32()
+    nevent = Nip19Event(
+        EventId.parse(PROOF), None, None, ["wss://relay.example"]
+    ).to_bech32()
     assert svc.proof_pointer(nevent) == (PROOF, ["wss://relay.example"])
     assert svc.proof_pointer(PROOF) == (PROOF, [])
 
@@ -517,7 +537,9 @@ def test_a_relay_that_never_answers_does_not_hold_up_the_proof(monkeypatch):
     monkeypatch.setattr(svc, "fetch_latest", _fetch)
 
     async def body():
-        return await asyncio.wait_for(svc.fetch_proof_event(event["id"], ["wss://hint"]), 1)
+        return await asyncio.wait_for(
+            svc.fetch_proof_event(event["id"], ["wss://hint"]), 1
+        )
 
     assert asyncio.run(body()) == event
 
@@ -668,7 +690,9 @@ def test_the_ui_can_check_one_account_without_logging_in(anonymous, marked):
 
 
 def test_a_successor_reads_the_account_it_replaces(anonymous, marked):
-    data = anonymous.post("/compromised", json={"pubkeys": ["c" * 64, HEX]}).json()["data"]
+    data = anonymous.post("/compromised", json={"pubkeys": ["c" * 64, HEX]}).json()[
+        "data"
+    ]
     successor, old = data["results"]
 
     assert successor["compromised"] is False
@@ -711,10 +735,8 @@ def test_bad_pubkeys_and_oversized_batches_are_refused(anonymous, marked):
         == 422
     )
     assert (
-        anonymous.post("/compromised", json={"pubkeys": [HEX] * 501}).status_code
-        == 413
+        anonymous.post("/compromised", json={"pubkeys": [HEX] * 501}).status_code == 413
     )
-
 
 
 # --- what a compromised key rates stops existing ----------------------------------
@@ -730,14 +752,21 @@ def test_marking_cuts_the_keys_own_ratings_everywhere_the_worker_reads(monkeypat
         async def __aexit__(self, *a):
             return False
 
-    cut = {"FOLLOWS": ["s1", "s2"], "MUTES": ["m1"], "REPORTS": ["r1"], "DESIGNATES": ["p1"]}
+    cut = {
+        "FOLLOWS": ["s1", "s2"],
+        "MUTES": ["m1"],
+        "REPORTS": ["r1"],
+        "DESIGNATES": ["p1"],
+    }
     calls = []
 
     async def _reverse(prefix, publisher, added_pubkeys=None, removed_pubkeys=None):
         calls.append((prefix, publisher, removed_pubkeys))
 
     redis = SimpleNamespace(delete=AsyncMock())
-    monkeypatch.setattr(svc, "neo4j_driver", SimpleNamespace(session=lambda: _Session()))
+    monkeypatch.setattr(
+        svc, "neo4j_driver", SimpleNamespace(session=lambda: _Session())
+    )
     monkeypatch.setattr(svc, "delete_outgoing_ratings", AsyncMock(return_value=cut))
     monkeypatch.setattr(svc, "update_reverse_sets", _reverse)
     monkeypatch.setattr(svc, "redis_client", redis)
@@ -765,11 +794,15 @@ def test_ingest_ignores_what_a_compromised_key_publishes_about_others(monkeypatc
         monkeypatch.setattr(
             ingest, name, AsyncMock(side_effect=lambda s, e: handled.append(e["kind"]))
         )
-    monkeypatch.setattr(ingest, "compromised_authors", AsyncMock(return_value=frozenset({HEX})))
+    monkeypatch.setattr(
+        ingest, "compromised_authors", AsyncMock(return_value=frozenset({HEX}))
+    )
 
     for kind in (3, 10000, 1984, 5, 10040):
         asyncio.run(ingest.process_strfry_event(None, {"kind": kind, "pubkey": HEX}))
-        asyncio.run(ingest.process_strfry_event(None, {"kind": kind, "pubkey": "1" * 64}))
+        asyncio.run(
+            ingest.process_strfry_event(None, {"kind": kind, "pubkey": "1" * 64})
+        )
 
     assert handled == [3, 10000, 1984, 5, 10040]  # only the live author's
 
@@ -856,11 +889,15 @@ def test_metadata_update_keeps_what_it_leaves_out_and_404s_unmarked(monkeypatch)
     assert updated == [{"reason": None}]  # null clears; the successor isn't touched
 
     with pytest.raises(HTTPException) as e:
-        asyncio.run(svc.update_compromised_metadata("1" * 64, _metadata({"reason": "x"})))
+        asyncio.run(
+            svc.update_compromised_metadata("1" * 64, _metadata({"reason": "x"}))
+        )
     assert e.value.status_code == 404
 
     with pytest.raises(HTTPException) as e:
-        asyncio.run(svc.update_compromised_metadata(HEX, _metadata({"successor_pubkey": HEX})))
+        asyncio.run(
+            svc.update_compromised_metadata(HEX, _metadata({"successor_pubkey": HEX}))
+        )
     assert e.value.status_code == 422
 
 
@@ -872,8 +909,13 @@ def test_the_overview_says_whether_the_key_is_compromised(monkeypatch):
 
     async def _neo(*a, **kw):
         return SimpleNamespace(
-            influence=0.5, tier=None, flagged_by_observer=False, flagged_count=0,
-            following=0, muting=0, reporting=0,
+            influence=0.5,
+            tier=None,
+            flagged_by_observer=False,
+            flagged_count=0,
+            following=0,
+            muting=0,
+            reporting=0,
         )
 
     monkeypatch.setattr(user_service, "_redis_inbound_count", _count)
@@ -889,7 +931,6 @@ def test_the_overview_says_whether_the_key_is_compromised(monkeypatch):
 
     assert overview(HEX).compromised is True
     assert overview("1" * 64).compromised is False
-
 
 
 def test_the_successor_post_is_kept_by_later_puts_and_read_publicly(
@@ -978,8 +1019,12 @@ def test_patch_sets_and_clears_the_successor_post(monkeypatch):
     monkeypatch.setattr(svc, "db_session", _session)
     monkeypatch.setattr(svc, "update_compromised_metadata_on_db", _update)
 
-    asyncio.run(svc.update_compromised_metadata(HEX, _metadata({"successor_event_id": PROOF})))
-    asyncio.run(svc.update_compromised_metadata(HEX, _metadata({"successor_event_id": None})))
+    asyncio.run(
+        svc.update_compromised_metadata(HEX, _metadata({"successor_event_id": PROOF}))
+    )
+    asyncio.run(
+        svc.update_compromised_metadata(HEX, _metadata({"successor_event_id": None}))
+    )
     assert seen == [{"successor_event_id": PROOF}, {"successor_event_id": None}]
 
     with pytest.raises(Exception):

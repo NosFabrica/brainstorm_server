@@ -110,6 +110,14 @@ Neo4j still holds scores for, and the writer clears them every run (by pubkey, n
 scan). No stored score = Influence at or below the floor, or out of reach. An older
 worker sends neither field: everything is written as before.
 
+**Scorecard database (`SCORES_IN_POSTGRES`, default off).** With it on, the same message is
+written to the `scorecard` table instead (`repos/scorecard_repo.py`), never to both: the listed
+scorecards upserted, the clear set deleted and, when the unreached clear is due, every row for a
+user the run did not reach deleted, all in one transaction. Which scorecards are written, the
+floor, the clear set and when the unreached clear runs are decided exactly as above.
+`trusted_followers` is stored as `verified_followers`. A scored pubkey, or an Observer, with no
+user id raises `MissingUserIds`: the stage is marked `FAILURE` and nothing is written.
+
 ## Adding a new consumer
 
 1. Add an `async def consume_<topic>(): while True: msg = await ...; await handle(msg)` to `message_queue_consumer.py`.
