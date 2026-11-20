@@ -153,6 +153,30 @@ second it prints, and never run it alongside a large score write. Nodes whose pu
 
 Held by `tests/integration/test_backfill_user_ids_integration.py`, which only runs on an empty graph.
 
+### `copy_scores_to_postgres.py`
+
+The one-time copy of every Observer's stored scores from Neo4j properties into the `scorecard`
+table, for the cutover to `SCORES_IN_POSTGRES`. **Reads Neo4j and never writes it.** Needs
+`SCORECARD_DB_URL`, every node backfilled with its `user_id`, and the scheduler paused: it refuses
+to run while any run is in the pipeline (`--force` overrides). Dry-run by default.
+
+`--apply` sweeps the user nodes once in pubkey order (`--page` nodes per read, default 200),
+reading each node's whole property map, so all Observers are copied in one pass. Each page's rows,
+their per-Observer count and sums, and the cursor commit together, so an interrupted copy resumes
+where it stopped and counts nothing twice. `trusted_reporters_` properties are ignored; a NaN or
+infinite Influence is stored as none and counted; scores on a node without a `user_id` cannot be
+copied and are counted.
+
+- `--status`: Observers ever stored, nodes read of total, Observers and rows copied, the two counts above.
+- `--verify`: exit 1 unless the sweep finished, every Observer's rows in `scorecard` match the count
+  and sums read from Neo4j, and no score was left on a node without a `user_id`. A mismatch names the Observer.
+- `--only <observer> --apply`: redo one Observer (its rows are replaced in one transaction).
+- `--restart --apply`: forget progress and checksums; `scorecard` rows stay.
+
+It keeps its progress in two small tables it creates in the Scorecard database
+(`score_copy_progress`, `score_copy_checksum`); drop them once the cutover is settled.
+Held by `tests/test_copy_scores_parsing.py` and `tests/integration/test_copy_scores_integration.py`.
+
 ## When to add a new script
 
 Add one if:
