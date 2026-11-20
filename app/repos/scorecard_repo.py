@@ -255,6 +255,42 @@ async def scores_by_id(
     return found
 
 
+async def ids_above(observer: str, user_ids: Iterable[int], cutoff: float) -> set[int]:
+    """Of `user_ids`, those the Observer scores strictly above `cutoff`."""
+    wanted = list(dict.fromkeys(user_ids))
+    if not wanted:
+        return set()
+    async with scorecard_session() as db:
+        rows = await db.execute(
+            text(
+                f"""
+                SELECT s.observee_id FROM scorecard s
+                WHERE s.observer_id = {_OBSERVER_ID}
+                    AND s.observee_id = ANY(:ids) AND s.influence > :cutoff
+                """
+            ).bindparams(bindparam("ids", type_=ARRAY(INTEGER))),
+            {"observer": observer, "ids": wanted, "cutoff": cutoff},
+        )
+        return {row[0] for row in rows}
+
+
+async def observees_at_or_above(observer: str, floor: float) -> list[tuple[str, float]]:
+    """Everyone the Observer scores at or above `floor`, with the Influence:
+    one indexed range over the Observer's rows."""
+    async with scorecard_session() as db:
+        rows = await db.execute(
+            text(
+                f"""
+                SELECT u.pubkey, s.influence
+                FROM scorecard s JOIN nostr_user u ON u.id = s.observee_id
+                WHERE s.observer_id = {_OBSERVER_ID} AND s.influence >= :floor
+                """
+            ),
+            {"observer": observer, "floor": floor},
+        )
+        return [(row[0], row[1]) for row in rows]
+
+
 # ----------------- sections: tier, sort and page in SQL -----------------
 
 

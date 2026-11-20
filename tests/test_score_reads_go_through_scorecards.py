@@ -6,13 +6,8 @@ import inspect
 
 from app.repos import user_repo
 
-# Shrinks to nothing as the remaining reads are converted.
-NOT_CONVERTED_YET = {
-    "get_ta_observees_for_observer",
-    "get_network_alert_candidates",
-    "count_above_cutoff_followers_capped",
-    "count_verified_muters",
-}
+# Empty: every score read is converted. A new one must be switched too.
+NOT_CONVERTED_YET: set[str] = set()
 
 # The writer's side and the compromised clear: switched by their callers.
 WRITE_SIDE = {

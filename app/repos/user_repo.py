@@ -14,9 +14,12 @@ from app.core.tier_thresholds import (
     classify_tier,
 )
 from app.repos.scorecard_repo import (
+    NO_SCORE,
     Members,
     Score,
     count_members,
+    ids_above,
+    observees_at_or_above,
     page_of_members,
     scores_by_id,
     scores_by_pubkey,
@@ -479,27 +482,34 @@ async def get_outbound_counts_and_influence(
     )
 
 
-# Who reports `node`, by User id. A reporter without an id has no score.
+def _raters(rel_type: str, node: str) -> str:
+    """Who rates `node` over `rel_type`: one map per rater, so a later read can
+    carry more than the id (a report's reason, say). A rater without a User id
+    has no score."""
+    return f"[(rr:NostrUser)-[:{rel_type}]->({node}) | {{id: rr.user_id}}]"
+
+
 def _reporter_ids(node: str) -> str:
-    return f"[(rr:NostrUser)-[:REPORTS]->({node}) | rr.user_id]"
+    return _raters("REPORTS", node)
 
 
 def _live_reporter_count(
-    reporters: list[int | None],
+    raters: list[dict],
     scored: dict[int, tuple[str, Score]],
-    reporter_cutoff: float,
+    cutoff: float,
 ) -> int:
-    """`_live_reporters` over Scorecards: reporters strictly above the cutoff."""
+    """`_live_reporters` over Scorecards: raters strictly above the cutoff."""
     count = 0
-    for uid in reporters:
+    for rater in raters:
+        uid = rater["id"]
         influence = scored[uid][1].influence if uid is not None else None
-        if influence is not None and influence > reporter_cutoff:
+        if influence is not None and influence > cutoff:
             count += 1
     return count
 
 
-def _ids(*lists: list[int | None]) -> list[int]:
-    return [uid for ids in lists for uid in ids if uid is not None]
+def _ids(*lists: list[dict]) -> list[int]:
+    return [r["id"] for raters in lists for r in raters if r["id"] is not None]
 
 
 async def _outbound_overview_from_scorecards(
@@ -532,11 +542,7 @@ async def _outbound_overview_from_scorecards(
     own_reporters = record["own_reporters"]
     scored = await scores_by_id(
         observer,
-        _ids(
-            [c["id"] for c in candidates],
-            own_reporters,
-            *(c["reporters"] for c in candidates),
-        ),
+        _ids(candidates, own_reporters, *(c["reporters"] for c in candidates)),
     )
     own = await scores_by_pubkey(observer, [pubkey])
     influence = own[pubkey].influence if pubkey in own else None
@@ -849,8 +855,7 @@ async def _members_from(
             uid
             for suffix in suffixes
             for reported in record[f"reported{suffix}"]
-            for uid in reported["r"]
-            if uid is not None
+            for uid in _ids(reported["r"])
         },
     )
     sections = []
@@ -1479,6 +1484,15 @@ async def get_ta_observees_for_observer(
     """Observees the publisher would assert a TA for: stored influence at or above
     the publish cutoff after the same 2-decimal rounding. A full label scan — the
     per-observer property can't be indexed."""
+    if settings.scores_in_postgres:
+        # One indexed range over the Observer's rows; no graph read.
+        return {
+            pubkey
+            for pubkey, influence in await observees_at_or_above(
+                observer_pubkey, cutoff - 0.01
+            )
+            if round(influence, 2) >= cutoff
+        }
     query = """
     MATCH (user:NostrUser)
     WITH user, user[$influence_key] AS score
@@ -1736,6 +1750,14 @@ async def get_network_alert_candidates(
     Touches no follower or muter edges; the reporter count is live, over
     REPORTS edges from raters above `reporter_cutoff`.
     """
+    if settings.scores_in_postgres:
+        return await _alert_candidates_from_scorecards(
+            session,
+            observer_pubkey,
+            cutoff,
+            reporter_cutoff=reporter_cutoff,
+            max_candidates=int(max_candidates),
+        )
     result = await session.run(
         _ALERT_CANDIDATES_QUERY,
         observer_pubkey=observer_pubkey,
@@ -1748,6 +1770,92 @@ async def get_network_alert_candidates(
         max_candidates=int(max_candidates),
     )
     return [dict(record) async for record in result]
+
+
+async def _alert_candidates_from_scorecards(
+    session: AsyncNeoSession,
+    observer: str,
+    cutoff: float,
+    *,
+    reporter_cutoff: float,
+    max_candidates: int,
+) -> list[dict]:
+    """`get_network_alert_candidates`, graph first. A live count can't exceed
+    the number of reporters, so only users with enough reporters leave the graph."""
+    result = await session.run(
+        f"""
+        MATCH (observer:NostrUser {{pubkey: $observer_pubkey}})
+        CALL (observer) {{
+            MATCH (:NostrUser)-[:REPORTS]->(bob:NostrUser)
+            WITH DISTINCT observer, bob
+            WHERE bob <> observer
+            WITH observer, bob, {_reporter_ids("bob")} AS reporters
+            WHERE size(reporters) >= $min_reporters
+            RETURN collect({{
+                id: bob.user_id,
+                pk: CASE WHEN bob.user_id IS NULL THEN bob.pubkey END,
+                reporters: reporters,
+                is_direct: EXISTS {{ (observer)-[:FOLLOWS]->(bob) }}
+            }}) AS candidates
+        }}
+        RETURN candidates
+        """,
+        observer_pubkey=observer,
+        min_reporters=MIN_ALERT_REPORTERS,
+    )
+    record = await result.single()
+    candidates = record["candidates"] if record else []
+    scored = await scores_by_id(
+        observer, _ids(candidates, *(c["reporters"] for c in candidates))
+    )
+    rows = []
+    for candidate in candidates:
+        live = _live_reporter_count(candidate["reporters"], scored, reporter_cutoff)
+        if live < MIN_ALERT_REPORTERS:
+            continue
+        uid = candidate["id"]
+        pubkey, score = (candidate["pk"], NO_SCORE) if uid is None else scored[uid]
+        if not candidate["is_direct"] and not (
+            score.influence is not None and score.influence > cutoff
+        ):
+            continue
+        rows.append(
+            {
+                "pubkey": pubkey,
+                "verified_reporters": live,
+                "stored_followers": score.verified_followers,
+                "influence": score.influence,
+                "hops": score.hops,
+                "is_direct": candidate["is_direct"],
+            }
+        )
+    return rows[:max_candidates]
+
+
+async def _live_counts_from_scorecards(
+    session: AsyncNeoSession,
+    rel_type: str,
+    pubkeys: list[str],
+    observer: str,
+    cutoff: float,
+) -> dict[str, int]:
+    """Per pubkey, how many of its `rel_type` raters sit strictly above
+    `cutoff`: the graph returns the raters, the Scorecard database says which
+    are above the line. A pubkey with no node is left out."""
+    result = await session.run(
+        f"""
+        UNWIND $pubkeys AS pk
+        MATCH (bob:NostrUser {{pubkey: pk}})
+        RETURN pk AS pubkey, {_raters(rel_type, "bob")} AS raters
+        """,
+        pubkeys=pubkeys,
+    )
+    raters = {record["pubkey"]: record["raters"] async for record in result}
+    above = await ids_above(observer, _ids(*raters.values()), cutoff)
+    return {
+        pubkey: sum(1 for uid in _ids(rated_by) if uid in above)
+        for pubkey, rated_by in raters.items()
+    }
 
 
 async def count_above_cutoff_followers_capped(
@@ -1787,6 +1895,13 @@ async def count_above_cutoff_followers_capped(
     """
     if not pubkeys:
         return {}
+    if settings.scores_in_postgres:
+        # The cap bounded what Neo4j collected; here it only keeps the meaning
+        # of the result (a count at the cap is "at least the cap").
+        counts = await _live_counts_from_scorecards(
+            session, "FOLLOWS", pubkeys, _observer_of(influence_key), cutoff
+        )
+        return {pubkey: min(count, int(cap)) for pubkey, count in counts.items()}
 
     query = """
     UNWIND $pubkeys AS pk
@@ -1827,6 +1942,10 @@ async def count_verified_muters(
     """
     if not pubkeys:
         return {}
+    if settings.scores_in_postgres:
+        return await _live_counts_from_scorecards(
+            session, "MUTES", pubkeys, _observer_of(influence_key), verified_threshold
+        )
 
     query = """
     UNWIND $pubkeys AS pk

@@ -42,8 +42,13 @@ SCORES = {
     "medium": 0.08,
     "below": 0.01,
     "below_flagged": 0.02,
+    # Network alerts: five reporters above the cutoff, on a reachable target.
+    "r3": 0.5,
+    "r4": 0.5,
+    "r5": 0.5,
+    "alerted_scored": 0.4,
 }
-UNSCORED = ("unscored", "quiet", "once_reported")
+UNSCORED = ("unscored", "quiet", "once_reported", "alerted", "alerted_unreached")
 PAGED = ("t1", "t2", "t3", "high", "medium", "below", "below_flagged", "quiet")
 VERIFIED_LINE = 0.0625
 REPORTER_CUTOFF = 0.25
@@ -85,10 +90,13 @@ async def _seed(g: Graph, driver) -> None:
         await s.run("MERGE (n:NostrUser {pubkey: $pk})", pk=g.no_id)
         for name, value in SCORES.items():
             await s.run(
-                "MATCH (n:NostrUser {pubkey: $pk}) SET n[$key] = $value",
+                "MATCH (n:NostrUser {pubkey: $pk})"
+                " SET n[$key] = $value, n[$hops] = 2, n[$followers] = 0",
                 pk=g.people[name],
                 key=key,
                 value=value,
+                hops=f"hops_{g.observer}",
+                followers=f"trusted_followers_{g.observer}",
             )
         await s.run(
             "MATCH (n:NostrUser {pubkey: $pk}) SET n[$key] = 0.25",
@@ -149,6 +157,21 @@ async def _seed(g: Graph, driver) -> None:
             " MERGE (x)-[:REPORTS]->(y)",
             src=g.people["r1"],
             dst=g.people["once_reported"],
+        )
+        # c is below the reporter cutoff: six reporters, five of them live.
+        for reporter in ("r1", "r2", "r3", "r4", "r5", "c"):
+            for target in ("alerted", "alerted_scored", "alerted_unreached"):
+                await s.run(
+                    "MATCH (x:NostrUser {pubkey: $src}), (y:NostrUser {pubkey: $dst})"
+                    " MERGE (x)-[:REPORTS]->(y)",
+                    src=g.people[reporter],
+                    dst=g.people[target],
+                )
+        await s.run(
+            "MATCH (x:NostrUser {pubkey: $src}), (y:NostrUser {pubkey: $dst})"
+            " MERGE (x)-[:FOLLOWS]->(y)",
+            src=g.observer,
+            dst=g.people["alerted"],
         )
     async with scorecard_session() as db:
         for pk, value in [
@@ -257,7 +280,7 @@ def test_a_list_with_no_observer_reads_the_subjects_own_scores(graph, monkeypatc
         )
 
     neo4j, postgres = _both(graph, monkeypatch, read)
-    assert neo4j == postgres == {}
+    assert neo4j == postgres == {graph.people["alerted"]: None}
 
 
 def test_single_influence_agrees(graph, monkeypatch):
@@ -374,7 +397,7 @@ def test_the_overview_agrees(graph, monkeypatch):
     assert (subject.influence, subject.tier) == (0.25, "medium_high")
     assert subject.flagged_by_observer is False
     assert reported.flagged_by_observer is True
-    assert reporter.reporting == 6
+    assert reporter.reporting == 9
     assert unknown == user_repo.OutboundOverview(None, 0, 0, 0, False, 0, None)
 
 
@@ -587,6 +610,95 @@ def test_top_inbound_agrees(graph, monkeypatch, relation, limit):
     assert neo4j == postgres
     if relation == "FOLLOWS":
         assert postgres[0].pubkey == graph.people["high"]
+
+
+def test_network_alert_candidates_agree(graph, monkeypatch):
+    async def read(session):
+        rows = await user_repo.get_network_alert_candidates(
+            session,
+            graph.observer,
+            f"influence_{graph.observer}",
+            f"hops_{graph.observer}",
+            f"trusted_followers_{graph.observer}",
+            VERIFIED_LINE,
+            reporter_cutoff=REPORTER_CUTOFF,
+        )
+        return sorted(rows, key=lambda r: r["pubkey"])
+
+    neo4j, postgres = _both(graph, monkeypatch, read)
+    assert neo4j == postgres
+    by_pubkey = {row["pubkey"]: row for row in postgres}
+    # Reached by a direct follow, and by score; the unreached one is left out.
+    assert set(by_pubkey) == {
+        graph.people["alerted"],
+        graph.people["alerted_scored"],
+    }
+    direct = by_pubkey[graph.people["alerted"]]
+    assert direct["verified_reporters"] == 5  # the sixth is below the cutoff
+    assert (direct["is_direct"], direct["stored_followers"]) == (True, None)
+    scored = by_pubkey[graph.people["alerted_scored"]]
+    assert (scored["influence"], scored["hops"], scored["stored_followers"]) == (
+        0.4,
+        2,
+        0,
+    )
+
+
+def test_a_reporter_cutoff_above_every_reporter_leaves_no_candidate(graph, monkeypatch):
+    async def read(session):
+        return await user_repo.get_network_alert_candidates(
+            session,
+            graph.observer,
+            f"influence_{graph.observer}",
+            f"hops_{graph.observer}",
+            f"trusted_followers_{graph.observer}",
+            VERIFIED_LINE,
+            reporter_cutoff=0.5,
+        )
+
+    assert _both(graph, monkeypatch, read) == [[], []]
+
+
+def test_verified_muter_counts_agree(graph, monkeypatch):
+    wanted = [graph.subject, graph.people["a"], graph.unknown]
+
+    async def read(session):
+        return await user_repo.count_verified_muters(
+            session, wanted, f"influence_{graph.observer}", 0.2
+        )
+
+    neo4j, postgres = _both(graph, monkeypatch, read)
+    assert neo4j == postgres
+    # Muted by c (0.125), t1 (0.3) and below (0.01): one above the line.
+    assert postgres == {graph.subject: 1, graph.people["a"]: 0}
+
+
+@pytest.mark.parametrize("cap", [4, 50])
+def test_capped_follower_counts_agree(graph, monkeypatch, cap):
+    wanted = [graph.subject, graph.people["quiet"], graph.unknown]
+
+    async def read(session):
+        return await user_repo.count_above_cutoff_followers_capped(
+            session, wanted, f"influence_{graph.observer}", 0.25, cap
+        )
+
+    neo4j, postgres = _both(graph, monkeypatch, read)
+    assert neo4j == postgres
+    # a, b, t1, t2, t3 and high follow the subject above 0.25.
+    assert postgres == {graph.subject: min(6, cap), graph.people["quiet"]: 0}
+
+
+def test_ta_observees_agree(graph, monkeypatch):
+    async def read(session):
+        return await user_repo.get_ta_observees_for_observer(
+            session, graph.observer, 0.3
+        )
+
+    neo4j, postgres = _both(graph, monkeypatch, read)
+    assert neo4j == postgres
+    assert postgres == {
+        graph.people[name] for name, value in SCORES.items() if value >= 0.3
+    }
 
 
 def test_a_graph_id_missing_from_the_table_fails_the_read(graph, monkeypatch):

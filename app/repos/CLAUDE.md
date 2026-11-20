@@ -181,8 +181,12 @@ The paged and counted reads (`/connections`, flagged, `/stats`, top inbound) tak
 graph, in one collected list per section plus the reporters of the few members anyone reports, and
 tier, filter, sort and page in SQL (`scorecard_repo.page_of_members` / `count_members`, whose
 `_TIER_SQL` restates `classify_tier`). The unpaginated graph data reads every member's row.
-`tests/test_score_reads_go_through_scorecards.py` lists the reads not converted yet and fails on a
-new score read that is neither switched nor listed;
+Live counts (alert reporters, verified muters, the capped follower fallback) are two steps: the
+graph returns each subject's raters as maps (`_raters`, `{id}` today, room for a report's reason),
+`scorecard_repo.ids_above` says which sit above the Observer's cutoff. Observer-wide reads
+(`get_ta_observees_for_observer`) are one indexed range over the Observer's rows, no graph read.
+`tests/test_score_reads_go_through_scorecards.py` fails on a new score read that is not switched
+(its not-converted list is empty);
 `tests/integration/test_score_reads_equivalence_integration.py` holds both forms to the same answer.
 
 ## Common tasks
