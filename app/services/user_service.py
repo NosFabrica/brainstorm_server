@@ -2,12 +2,14 @@ import asyncio
 import base64
 import binascii
 import json
+from datetime import datetime
 from typing import Literal, NamedTuple
 
 from fastapi import HTTPException, status
 from nostr_sdk import Keys
 from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
+from app.core.config import settings
 from app.core.redis_db import redis_client
 
 # Tier boundaries match the FE (high ≥ 0.5, trusted ≥ 0.2, neutral ≥ 0.07).
@@ -33,7 +35,11 @@ from app.repos.brainstorm_request_repo import (
     count_brainstorm_requests_with_priority_over_one_on_db,
     select_latest_brainstorm_request_on_db,
 )
-from app.repos.observer_whitelist_repo import select_whitelisted_pubkeys_of_observer
+from app.repos.observer_whitelist_repo import (
+    select_observer_whitelist_updated_at,
+    select_whitelisted_pubkeys_of_observer,
+)
+from app.repos.scorecard_repo import observees_at_or_above, observer_written_at
 from app.repos.user_repo import (
     OutboundCounts,
     OutboundOverview,
@@ -406,4 +412,24 @@ async def get_user_connections(
 async def get_whitelisted_pubkeys_of_observer(
     db: AsyncDBSession, pubkey: str, threshold: float = 0.02
 ) -> list[str]:
-    return await select_whitelisted_pubkeys_of_observer(db, pubkey, threshold)
+    """The Observer's Valid users at or above `threshold`, in pubkey order.
+
+    With Scorecards in Postgres there is no stored snapshot: the list is the
+    Observer's Scorecards, filtered the way the snapshot was built (Influence
+    rounded to two decimals, at or above the validity cutoff)."""
+    if not settings.scores_in_postgres:
+        return await select_whitelisted_pubkeys_of_observer(db, pubkey, threshold)
+    line = max(threshold, settings.cutoff_of_valid_graperank_scores)
+    # Rounded here, not in SQL: Postgres rounds a half up, Python to even on the
+    # float's own value, and the snapshot was rounded by Python.
+    scored = await observees_at_or_above(pubkey, line - 0.01)
+    return sorted(
+        observee for observee, influence in scored if round(influence, 2) >= line
+    )
+
+
+async def whitelist_updated_at(db: AsyncDBSession, pubkey: str) -> datetime | None:
+    """When the Observer's whitelist last changed; None if it has none."""
+    if settings.scores_in_postgres:
+        return await observer_written_at(pubkey)
+    return await select_observer_whitelist_updated_at(db, pubkey)

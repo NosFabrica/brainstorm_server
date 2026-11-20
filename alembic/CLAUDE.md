@@ -19,7 +19,7 @@ A second Postgres (`SCORECARD_DB_URL`) with its own environment in `alembic_scor
 Run it with `alembic -n scorecard upgrade head`; `start.sh` does so when the URL is set. Its
 migrations are plain SQL (no models, no autogenerate) and the two chains never reference each other.
 Only the server creates or alters tables there.
-Tables: `nostr_user` (User ids) and `scorecard` (one row per Observer and Observee, `fillfactor = 85`).
+Tables: `nostr_user` (User ids), `scorecard` (one row per Observer and Observee, `fillfactor = 85`) and `scorecard_observer` (when each Observer's Scorecards last changed).
 Its migrations run at startup like the main chain's. Once the score table is populated, a migration
 that rewrites or scans it (column type change, validated constraint, non-concurrent index) holds the
 server's start for as long as it takes: write those with care.

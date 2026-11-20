@@ -23,6 +23,7 @@ from app.repos.scorecard_repo import (
     ScoreRow,
     clear_observer_scores_on_db,
     clear_unreached_scores_on_db,
+    mark_observer_written_on_db,
     observer_id_on_db,
     set_observer_scores_on_db,
 )
@@ -87,6 +88,7 @@ async def _write_to_postgres(
         observer_id = await observer_id_on_db(db, observer)
         await set_observer_scores_on_db(db, observer_id, rows)
         await clear_observer_scores_on_db(db, observer_id, clear_set)
+        await mark_observer_written_on_db(db, observer_id)
         if reached is None:
             return 0
         return await clear_unreached_scores_on_db(db, observer_id, reached)

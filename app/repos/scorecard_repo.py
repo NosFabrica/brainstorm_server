@@ -170,16 +170,37 @@ async def get_pubkeys_scored_by_observer_on_db(
     return [row[0] for row in result]
 
 
+_MARK_WRITTEN = """
+    INSERT INTO scorecard_observer (observer_id, written_at)
+    {source}
+    ON CONFLICT (observer_id) DO UPDATE SET written_at = EXCLUDED.written_at
+"""
+
+
+async def mark_observer_written_on_db(db: AsyncDBSession, observer_id: int) -> None:
+    """Stamp the Observer's Scorecards as changed now. Call it in the transaction
+    that changes them: readers version their answers on it."""
+    await db.execute(
+        text(_MARK_WRITTEN.format(source="VALUES (:observer, now())")),
+        {"observer": observer_id},
+    )
+
+
 async def clear_scores_about_on_db(db: AsyncDBSession, pubkey: str) -> int:
-    """Delete every Observer's score for one Observee. Scans the table: there is
-    no index by Observee, and this is a rare admin action."""
+    """Delete every Observer's score for one Observee, and stamp each Observer
+    that lost one. Scans the table: there is no index by Observee, and this is a
+    rare admin action."""
     deleted = await db.execute(
         text(
             """
             WITH gone AS (
                 DELETE FROM scorecard
                 WHERE observee_id = (SELECT id FROM nostr_user WHERE pubkey = :pubkey)
-                RETURNING 1
+                RETURNING observer_id
+            ), stamped AS (
+                INSERT INTO scorecard_observer (observer_id, written_at)
+                SELECT observer_id, now() FROM gone
+                ON CONFLICT (observer_id) DO UPDATE SET written_at = EXCLUDED.written_at
             )
             SELECT count(*) FROM gone
             """
@@ -253,6 +274,21 @@ async def scores_by_id(
             f"{len(missing)} user ids from the graph are not in nostr_user: {missing[:5]}"
         )
     return found
+
+
+async def observer_written_at(observer: str):
+    """When the Observer's Scorecards last changed; None if they never were written."""
+    async with scorecard_session() as db:
+        row = (
+            await db.execute(
+                text(
+                    f"SELECT written_at FROM scorecard_observer"
+                    f" WHERE observer_id = {_OBSERVER_ID}"
+                ),
+                {"observer": observer},
+            )
+        ).first()
+    return row[0] if row else None
 
 
 async def ids_above(observer: str, user_ids: Iterable[int], cutoff: float) -> set[int]:

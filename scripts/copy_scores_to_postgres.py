@@ -98,6 +98,12 @@ ON CONFLICT (observer_id) DO UPDATE
 SET rows = c.rows + EXCLUDED.rows, influence = c.influence + EXCLUDED.influence,
     hops = c.hops + EXCLUDED.hops, followers = c.followers + EXCLUDED.followers
 """
+# Readers version an Observer's answers on this; a copied Observer needs one.
+_STAMP = """
+INSERT INTO scorecard_observer (observer_id, written_at)
+SELECT DISTINCT observer_id, now() FROM copy_in
+ON CONFLICT (observer_id) DO UPDATE SET written_at = EXCLUDED.written_at
+"""
 _COMPARE = """
 SELECT u.pubkey, c.rows, s.rows, c.influence, s.influence, c.hops, s.hops,
        c.followers, s.followers
@@ -219,6 +225,7 @@ async def _copy_rows(db, rows: list[tuple]) -> None:
     )
     await db.execute(text(_UPSERT))
     await db.execute(text(_ADD_CHECKSUM))
+    await db.execute(text(_STAMP))
 
 
 async def ensure_state() -> None:

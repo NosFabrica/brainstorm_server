@@ -165,7 +165,14 @@ async def process_message(message: dict):
         # write. Only on a successful calc with scorecards present: a degenerate
         # empty-scorecard run must NOT wipe a good snapshot. An all-below-cutoff
         # run legitimately writes {} (nobody trusted now).
-        if status == BrainstormRequestStatus.SUCCESS and scorecards and pubkey:
+        # With Scorecards in Postgres the whitelist is read from them, and no
+        # snapshot is kept.
+        if (
+            status == BrainstormRequestStatus.SUCCESS
+            and scorecards
+            and pubkey
+            and not settings.scores_in_postgres
+        ):
             await upsert_observer_whitelist_on_db(
                 db, pubkey, whitelist, message["private_id"]
             )
