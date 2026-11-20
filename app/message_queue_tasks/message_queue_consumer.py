@@ -11,10 +11,7 @@ from app.core.tier_thresholds import (
     classify_tier,
 )
 from app.db_models import BrainstormRequestStatus
-from app.message_queue_tasks.process_strfry_event import (
-    create_pubkey_index,
-    process_strfry_event,
-)
+from app.message_queue_tasks.process_strfry_event import process_strfry_event
 from app.message_queue_tasks.result_queue import consume_result_queue
 from app.message_queue_tasks.set_brainstorm_request_as_ongoing import (
     process_job_started_message,
@@ -23,6 +20,7 @@ from app.message_queue_tasks.upload_nostr_events import process_nostr_upload_mes
 from app.message_queue_tasks.write_neo4j_results import process_neo4j_write_message
 from app.models.grapeRankResult import GrapeRankResult
 from app.neo4j_db.driver import driver as neo4j_driver
+from app.neo4j_db.schema import ensure_schema
 from app.repos.brainstorm_nsec import update_last_time_calculated_graperank_on_db
 from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
@@ -258,7 +256,7 @@ async def consume_strfry_plugin_messages():
         redis_client = None
 
         async with neo4j_driver.session() as neo4j_session:
-            await create_pubkey_index(neo4j_session)
+            await ensure_schema(neo4j_session)
         try:
             redis_client = get_redis_client()
             while True:

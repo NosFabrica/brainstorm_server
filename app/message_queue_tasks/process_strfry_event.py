@@ -162,25 +162,6 @@ async def process_strfry_event(session: AsyncNeoSession, event: dict):
         return await process_event_kind_39999(event)
 
 
-async def create_pubkey_index(session: AsyncNeoSession):
-    query = """
-    CREATE CONSTRAINT nostr_user_pubkey IF NOT EXISTS
-    FOR (u:NostrUser)
-    REQUIRE u.pubkey IS UNIQUE
-    """
-
-    await session.run(query)
-
-    if settings.user_ids_enabled:
-        await session.run(
-            """
-            CREATE CONSTRAINT nostr_user_user_id IF NOT EXISTS
-            FOR (u:NostrUser)
-            REQUIRE u.user_id IS UNIQUE
-            """
-        )
-
-
 async def process_event_kind_1984(session: AsyncNeoSession, event: dict):
     publisher = event["pubkey"]
     reported_pubkeys = extract_report_targets(event)

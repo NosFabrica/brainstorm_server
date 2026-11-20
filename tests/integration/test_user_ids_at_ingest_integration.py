@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.redis_db import get_redis_client
 from app.core.scorecard_database import dispose_scorecard_engine, scorecard_session
 from app.message_queue_tasks import process_strfry_event as mod
+from app.neo4j_db.schema import ensure_schema
 from app.repos.user_id_repo import ids_for
 from tests.integration.test_user_ids_integration import migrated  # noqa: F401
 
@@ -54,7 +55,7 @@ def _run(scenario):
         module_redis, mod.redis_client = mod.redis_client, get_redis_client()
         try:
             async with driver.session() as session:
-                await mod.create_pubkey_index(session)
+                await ensure_schema(session)
             await scenario(driver, created)
         finally:
             async with driver.session() as session:

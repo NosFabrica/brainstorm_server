@@ -41,7 +41,7 @@ Dispatches incoming Nostr events by kind:
 through `_write_with_ids`: each node gets its `user_id` where it has none, never overwritten. A node already
 holding a different id raises `UserIdMismatch` inside the transaction, so the event is not applied. A new place
 that creates user nodes must do the same; `tests/test_user_ids_at_ingest.py` fails until it is listed there.
-`create_pubkey_index` also creates the uniqueness constraint on `user_id` when ids are on.
+The uniqueness constraint on `user_id` is part of the graph's schema ([`../neo4j_db/schema.py`](../neo4j_db/schema.py)), ensured when this consumer starts.
 
 The reverse-set helper is `_update_reverse_sets`. Use it for any new "X → relationships → reverse-cache" pattern.
 

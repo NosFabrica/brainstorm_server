@@ -26,6 +26,7 @@ os.environ.setdefault("PUBLIC_BASE_URL", "http://localhost:8080")
 from app.core.config import settings  # noqa: E402
 from app.core.scorecard_database import dispose_scorecard_engine  # noqa: E402
 from app.neo4j_db.driver import driver as neo4j_driver  # noqa: E402
+from app.neo4j_db.schema import ensure_schema  # noqa: E402
 from app.repos.user_id_repo import (  # noqa: E402
     all_user_ids,
     count_users,
@@ -55,13 +56,6 @@ _PAGE_ALL = """
 MATCH (u:NostrUser) WHERE u.pubkey > $after
 RETURN u.pubkey AS pubkey, u.user_id AS user_id ORDER BY u.pubkey LIMIT $limit
 """
-
-_CONSTRAINTS = (
-    "CREATE CONSTRAINT nostr_user_pubkey IF NOT EXISTS "
-    "FOR (u:NostrUser) REQUIRE u.pubkey IS UNIQUE",
-    "CREATE CONSTRAINT nostr_user_user_id IF NOT EXISTS "
-    "FOR (u:NostrUser) REQUIRE u.user_id IS UNIQUE",
-)
 
 _SET_IDS = """
 UNWIND $rows AS row
@@ -138,8 +132,7 @@ async def status(session) -> Status:
 
 async def backfill(session, page: int, batch: int, log=print) -> int:
     """Set `user_id` on every well-formed node without one. Returns nodes written."""
-    for constraint in _CONSTRAINTS:
-        await session.run(constraint)
+    await ensure_schema(session, user_ids=True)
     written = 0
     t0 = time.monotonic()
     async for rows in _pages(session, _PAGE_WITHOUT_ID, page):

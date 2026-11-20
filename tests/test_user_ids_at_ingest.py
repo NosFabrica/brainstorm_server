@@ -197,15 +197,6 @@ def test_the_onboarding_follow_list_takes_the_same_path(wired, monkeypatch):
     assert _merges(session)[0][2]["targets"][0]["pubkey"] == T1
 
 
-def test_the_id_constraint_is_created_only_with_ids_on(monkeypatch):
-    for enabled, expected in ((False, 1), (True, 2)):
-        monkeypatch.setattr(settings, "user_ids_enabled", enabled)
-        session = _Session()
-        asyncio.run(mod.create_pubkey_index(session))
-        assert len(session.log) == expected
-    assert "user_id IS UNIQUE" in session.log[-1][1]
-
-
 # Any new place that creates a user node has to follow the id rule too.
 _CREATES_A_USER = re.compile(r"MERGE\s*\(\s*\w*\s*:NostrUser")
 _KNOWN = {
