@@ -177,6 +177,38 @@ It keeps its progress in two small tables it creates in the Scorecard database
 (`score_copy_progress`, `score_copy_checksum`); drop them once the cutover is settled.
 Held by `tests/test_copy_scores_parsing.py` and `tests/integration/test_copy_scores_integration.py`.
 
+### `rebuild_neo4j.py`
+
+Rebuilds the Neo4j store without the per-Observer score properties, once Scorecards live in the
+Scorecard database and the gate for it is met. Deleting the properties in place frees no file
+space; exporting what is kept and importing it into a new store does. **The source database is
+only read.** Stop every writer first (ingest, graph-streamer, the profile resolver, GrapeRank
+runs): the export stops if the graph changes under it.
+
+1. `inventory`: labels, relationship types and property keys, marked kept or not.
+2. `export --out DIR`: `nodes.csv`, `relationships.csv` and their header files in the shape
+   `neo4j-admin database import full` takes, plus `summary.json` (counts, the source's constraints
+   and indexes, a sample of user nodes) and `import-command.txt`. Scores are filtered inside the
+   database and never cross the wire.
+3. The import: run the command in `import-command.txt` with `neo4j-admin` against an empty store,
+   with `DIR` mounted at `/import`, then start Neo4j on that store.
+4. `schema --dir DIR --apply`, with `NEO4J_DB_URL` pointing at the rebuilt database: recreates
+   the constraints and indexes the source had.
+5. `check --dir DIR`: exit 1 unless node counts per label set, relationship counts per type,
+   property counts per key (users and relationships), every non-user node, the sampled users
+   (property by property, and their degree per relationship type) and the schema all match, and
+   no score property key exists.
+
+What is kept is listed at the top of the script (`KEPT_LABELS`, `KEPT_RELATIONSHIPS`,
+`KEPT_USER_KEYS`); a label, relationship type or user property outside those lists stops the
+export until it is added or dropped on purpose. Relationships keep all their properties. An empty
+array cannot be carried and is counted. Node ids change; nothing refers to them.
+
+Fallback if a rebuild is not possible: remove the properties in place in id-range batches, as
+`clean_trusted_reporters_props.py` does. Space is then reused but the store files do not shrink.
+
+Held by `tests/test_rebuild_neo4j.py`; the whole procedure is rehearsed end to end outside this repo.
+
 ## When to add a new script
 
 Add one if:
