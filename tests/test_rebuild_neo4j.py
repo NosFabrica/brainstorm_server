@@ -98,6 +98,44 @@ def test_temporal_values_survive_the_intermediate_file(tmp_path):
     assert json.loads(json.dumps({"v": DateTime(2026, 1, 2)}, default=mod._json))
 
 
+def test_schema_on_labels_not_kept_or_on_score_properties_is_left_behind():
+    rows = [
+        {
+            "name": "nostr_user_pubkey",
+            "labelsOrTypes": ["NostrUser"],
+            "properties": ["pubkey"],
+            "createStatement": "A",
+        },
+        {
+            "name": "nostr_user_score_shard",
+            "labelsOrTypes": ["NostrUser"],
+            "properties": ["score_shard"],
+            "createStatement": "B",
+        },
+        {
+            "name": "score_shard_unique",
+            "labelsOrTypes": ["ScoreShard"],
+            "properties": ["shard", "pubkey"],
+            "createStatement": "C",
+        },
+        {
+            "name": "bench_user_pubkey",
+            "labelsOrTypes": ["BenchUser"],
+            "properties": ["pubkey"],
+            "createStatement": "D",
+        },
+        {
+            "name": "streamer_follows_at",
+            "labelsOrTypes": ["NostrUser"],
+            "properties": ["follows_at"],
+            "createStatement": "E",
+        },
+    ]
+    kept, left = mod.carried_schema(rows)
+    assert kept == {"nostr_user_pubkey": "A", "streamer_follows_at": "E"}
+    assert left == ["bench_user_pubkey", "nostr_user_score_shard", "score_shard_unique"]
+
+
 _WRITES = re.compile(r"\b(SET|CREATE|MERGE|DELETE|REMOVE|DROP)\b")
 
 

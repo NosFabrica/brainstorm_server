@@ -236,31 +236,36 @@ async def _read(session, cypher: str, **params) -> list[dict]:
 
 
 async def inventory(session) -> dict:
-    """Labels, relationship types and property keys, each marked kept, dropped or unknown."""
-    labels = [
-        r["label"]
-        for r in await _read(session, "CALL db.labels() YIELD label RETURN label")
-    ]
-    types = [
-        r["relationshipType"]
-        for r in await _read(
-            session,
-            "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType",
-        )
-    ]
+    """Labels and relationship types in use, each marked kept or unknown, and the
+    property keys the database knows. Counted from the graph: a label nothing
+    carries any more is not listed."""
+    counts = await _counts(session)
+    labels: Counter[str] = Counter()
+    for label_set, n in counts["nodes_by_labels"].items():
+        for label in label_set.split("+"):
+            labels[label] += n
     keys = [
         r["propertyKey"]
         for r in await _read(
             session, "CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"
         )
     ]
-    dropped = [k for k in keys if is_dropped(k)]
+
+    def mark(name: str, kept: set[str]) -> str:
+        return "kept" if name in kept else "unknown"
+
     return {
-        "labels": {label: label in KEPT_LABELS for label in sorted(labels)},
-        "relationship_types": {t: t in KEPT_RELATIONSHIPS for t in sorted(types)},
-        "property_keys_dropped": len(dropped),
+        "labels": {
+            label: {"nodes": n, "action": mark(label, KEPT_LABELS)}
+            for label, n in sorted(labels.items())
+        },
+        "relationship_types": {
+            t: {"relationships": n, "action": mark(t, KEPT_RELATIONSHIPS)}
+            for t, n in sorted(counts["relationships_by_type"].items())
+        },
+        "property_keys_dropped": sum(1 for k in keys if is_dropped(k)),
         # A key name may also live on a relationship or the state node, so this
-        # is only a first look; the export checks every node.
+        # is only a first look; the export checks every node it keeps.
         "property_keys_other": sorted(k for k in keys if not is_dropped(k)),
     }
 
@@ -276,28 +281,50 @@ async def _counts(session) -> dict:
     }
 
 
+def carried_schema(rows: list[dict]) -> tuple[dict[str, str], list[str]]:
+    """Constraints or indexes to recreate, by name, and the names left behind:
+    those on a label the rebuild does not keep, or on a score property."""
+    kept, left = {}, []
+    allowed = KEPT_LABELS | KEPT_RELATIONSHIPS
+    for row in rows:
+        on = set(row["labelsOrTypes"] or [])
+        if on <= allowed and not any(is_dropped(k) for k in row["properties"] or []):
+            kept[row["name"]] = row["createStatement"]
+        else:
+            left.append(row["name"])
+    return kept, sorted(left)
+
+
 async def _schema(session) -> dict:
-    constraints = await _read(
-        session,
-        "SHOW CONSTRAINTS YIELD name, createStatement RETURN name, createStatement",
+    constraints, left_constraints = carried_schema(
+        await _read(
+            session,
+            "SHOW CONSTRAINTS YIELD name, labelsOrTypes, properties, createStatement"
+            " RETURN name, labelsOrTypes, properties, createStatement",
+        ),
     )
-    indexes = await _read(
-        session,
-        "SHOW INDEXES YIELD name, type, owningConstraint, createStatement"
-        " WHERE owningConstraint IS NULL AND type <> 'LOOKUP'"
-        " RETURN name, createStatement",
+    indexes, left_indexes = carried_schema(
+        await _read(
+            session,
+            "SHOW INDEXES YIELD name, type, owningConstraint, labelsOrTypes, properties,"
+            " createStatement WHERE owningConstraint IS NULL AND type <> 'LOOKUP'"
+            " RETURN name, labelsOrTypes, properties, createStatement",
+        ),
     )
     return {
-        "constraints": {r["name"]: r["createStatement"] for r in constraints},
-        "indexes": {r["name"]: r["createStatement"] for r in indexes},
+        "constraints": constraints,
+        "indexes": indexes,
+        "left_behind": left_constraints + left_indexes,
     }
 
 
 async def export(session, out: Path, page: int, log=print) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     found = await inventory(session)
-    unknown = [n for n, kept in found["labels"].items() if not kept]
-    unknown += [t for t, kept in found["relationship_types"].items() if not kept]
+    unknown = [n for n, v in found["labels"].items() if v["action"] == "unknown"]
+    unknown += [
+        t for t, v in found["relationship_types"].items() if v["action"] == "unknown"
+    ]
     if unknown:
         raise Stop(f"labels or relationship types not on the keep list: {unknown}")
 
@@ -526,6 +553,7 @@ async def main() -> int:
                 print(f"nodes: {summary['nodes_by_labels']}")
                 print(f"relationships: {summary['relationships_by_type']}")
                 print(f"score values left behind: {summary['dropped_values']}")
+                print(f"schema left behind: {summary['schema']['left_behind']}")
                 print(
                     f"empty arrays not carried: {summary['empty_arrays_not_carried']}"
                 )
