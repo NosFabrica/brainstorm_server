@@ -7,6 +7,7 @@ Reads Neo4j and never writes it. Dry-run by default. See scripts/CLAUDE.md.
     poetry run python -m scripts.copy_scores_to_postgres --status
     poetry run python -m scripts.copy_scores_to_postgres --verify            # exit 1 on a mismatch
     poetry run python -m scripts.copy_scores_to_postgres --only <observer> --apply
+    poetry run python -m scripts.copy_scores_to_postgres --catch-up --apply  # Observers run since
     poetry run python -m scripts.copy_scores_to_postgres --restart --apply   # forget progress
 """
 from __future__ import annotations
@@ -19,6 +20,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -37,6 +39,7 @@ from app.db_models import BrainstormRequest  # noqa: E402
 from app.neo4j_db.driver import driver as neo4j_driver  # noqa: E402
 from app.repos.brainstorm_request_repo import in_pipeline_condition  # noqa: E402
 from app.repos.user_id_repo import ids_for  # noqa: E402
+from app.utils.datetimes import as_naive_utc, utc_now  # noqa: E402
 
 # Neo4j property prefix -> position in a score row. `trusted_reporters_` and
 # anything else on the node is ignored.
@@ -51,6 +54,17 @@ MATCH (u:NostrUser) WHERE u.pubkey > $after
 WITH u ORDER BY u.pubkey LIMIT $limit
 RETURN u.pubkey AS pubkey, properties(u) AS props
 """
+# The same walk, but only the named Observers' scores leave the database.
+_PAGE_OF = """
+MATCH (u:NostrUser) WHERE u.pubkey > $after
+WITH u ORDER BY u.pubkey LIMIT $limit
+WITH u, properties(u) AS p
+RETURN u.pubkey AS pubkey, p.user_id AS user_id,
+       [k IN $keys WHERE p[k] IS NOT NULL | [k, p[k]]] AS found
+"""
+_PAGE_OF_FACTOR = 25  # little crosses the wire, so pages can be larger
+# Covers clock skew between this host and the domain database.
+_CATCH_UP_MARGIN = timedelta(minutes=10)
 
 _STATE_TABLES = (
     """
@@ -63,6 +77,7 @@ _STATE_TABLES = (
         done boolean NOT NULL DEFAULT false
     )
     """,
+    "ALTER TABLE score_copy_progress ADD COLUMN IF NOT EXISTS started_at timestamp",
     """
     CREATE TABLE IF NOT EXISTS score_copy_checksum (
         observer_id integer PRIMARY KEY,
@@ -125,6 +140,9 @@ class Progress:
     rows_without_user_id: int = 0
     non_finite: int = 0
     done: bool = False
+    # When the last complete read of Neo4j began (UTC): a run finished after it
+    # may not be in `scorecard`.
+    started_at: datetime | None = None
 
 
 @dataclass
@@ -208,6 +226,24 @@ async def _read_page(session, after: str, limit: int) -> list[dict]:
     return await session.execute_read(work)
 
 
+async def _read_page_of(
+    session, observers: list[str], after: str, limit: int
+) -> list[dict]:
+    keys = [f"{prefix}_{o}" for o in observers for prefix in FIELDS]
+
+    async def work(tx):
+        result = await tx.run(_PAGE_OF, after=after, limit=limit, keys=keys)
+        return [
+            {
+                "pubkey": r["pubkey"],
+                "props": {**dict(r["found"]), "user_id": r["user_id"]},
+            }
+            async for r in result
+        ]
+
+    return await session.execute_read(work)
+
+
 async def _copy_rows(db, rows: list[tuple]) -> None:
     await db.execute(text(_TEMP))
     connection = await db.connection()
@@ -244,7 +280,8 @@ async def read_progress() -> Progress:
         row = (
             await db.execute(
                 text(
-                    "SELECT after, nodes, rows_without_user_id, non_finite, done"
+                    "SELECT after, nodes, rows_without_user_id, non_finite, done,"
+                    " started_at"
                     " FROM score_copy_progress"
                 )
             )
@@ -258,6 +295,13 @@ async def copy_all(session, page_size: int, log=print) -> Progress:
     progress = await read_progress()
     if progress.done:
         return progress
+    if not progress.nodes:
+        progress.started_at = utc_now()
+        async with scorecard_session() as db:
+            await db.execute(
+                text("UPDATE score_copy_progress SET started_at = :at"),
+                {"at": progress.started_at},
+            )
     observer_ids: dict[str, int] = {}
     total = (
         await (await session.run("MATCH (u:NostrUser) RETURN count(u) AS n")).single()
@@ -308,10 +352,12 @@ async def copy_one(session, observer: str, page_size: int, log=print) -> int:
     rows: list[tuple] = []
     after = ""
     while True:
-        nodes = await _read_page(session, after, page_size)
+        nodes = await _read_page_of(
+            session, [observer], after, page_size * _PAGE_OF_FACTOR
+        )
         if not nodes:
             break
-        rows.extend((await build_page(nodes, observer_ids, only=observer)).rows)
+        rows.extend((await build_page(nodes, observer_ids)).rows)
         after = nodes[-1]["pubkey"]
     async with scorecard_session() as db:
         observer_id = (await ids_for([observer]))[observer]
@@ -326,6 +372,73 @@ async def copy_one(session, observer: str, page_size: int, log=print) -> int:
             await _copy_rows(db, rows)
     log(f"  {observer}: {len(rows)} rows")
     return len(rows)
+
+
+async def observers_run_since(since: datetime) -> list[str]:
+    """Observers with a request created or updated at or after `since` (UTC)."""
+    async with db_session() as db:
+        rows = (
+            await db.execute(
+                select(
+                    BrainstormRequest.pubkey,
+                    func.max(BrainstormRequest.created_at),
+                    func.max(BrainstormRequest.updated_at),
+                )
+                .where(BrainstormRequest.pubkey.is_not(None))
+                .group_by(BrainstormRequest.pubkey)
+            )
+        ).all()
+    # Compared here, not in SQL: production holds these columns with a time zone.
+    return sorted(
+        pubkey
+        for pubkey, *stamps in rows
+        if _OBSERVER.fullmatch(pubkey)
+        and max(as_naive_utc(t) for t in stamps if t is not None) >= since
+    )
+
+
+async def catch_up(
+    session, since: datetime, page_size: int, apply: bool = True, log=print
+) -> list[str]:
+    """Redo the Observers run since `since`, in one walk of the user nodes.
+
+    Their rows are deleted first and come back page by page: run it before
+    anything reads `scorecard`. An interrupted catch-up is simply run again.
+    """
+    await ensure_state()
+    began = utc_now()
+    observers = await observers_run_since(since - _CATCH_UP_MARGIN)
+    log(f"{len(observers)} Observers run since {since.isoformat()}")
+    if not apply:
+        return observers
+    if observers:
+        observer_ids = await ids_for(observers)
+        async with scorecard_session() as db:
+            for table in ("scorecard", "score_copy_checksum"):
+                await db.execute(
+                    text(f"DELETE FROM {table} WHERE observer_id = ANY(:ids)"),
+                    {"ids": list(observer_ids.values())},
+                )
+        after, rows, skipped = "", 0, 0
+        while True:
+            nodes = await _read_page_of(
+                session, observers, after, page_size * _PAGE_OF_FACTOR
+            )
+            if not nodes:
+                break
+            page = await build_page(nodes, observer_ids)
+            after = nodes[-1]["pubkey"]
+            if page.rows:
+                async with scorecard_session() as db:
+                    await _copy_rows(db, page.rows)
+            rows += len(page.rows)
+            skipped += page.rows_without_user_id
+        log(f"  {rows} rows; {skipped} on nodes without a user_id (not copied)")
+    async with scorecard_session() as db:
+        await db.execute(
+            text("UPDATE score_copy_progress SET started_at = :at"), {"at": began}
+        )
+    return observers
 
 
 def _close(a: float, b: float) -> bool:
@@ -381,6 +494,12 @@ async def _print_status(session) -> None:
     )
     print(f"NaN or infinite Influence (stored as none): {progress.non_finite}")
     print(f"sweep finished: {'yes' if progress.done else 'no'}")
+    if progress.done and progress.started_at:
+        waiting = await observers_run_since(progress.started_at - _CATCH_UP_MARGIN)
+        print(
+            f"Observers run since the last read began ({progress.started_at.isoformat()}):"
+            f" {len(waiting)}"
+        )
 
 
 async def main() -> int:
@@ -390,6 +509,16 @@ async def main() -> int:
     ap.add_argument("--verify", action="store_true")
     ap.add_argument("--only", metavar="OBSERVER", help="redo one Observer's rows")
     ap.add_argument("--restart", action="store_true", help="forget progress")
+    ap.add_argument(
+        "--catch-up",
+        action="store_true",
+        help="redo the Observers run since the last read began",
+    )
+    ap.add_argument(
+        "--since",
+        type=datetime.fromisoformat,
+        help="with --catch-up: a UTC time instead of the recorded one",
+    )
     ap.add_argument(
         "--force", action="store_true", help="run with runs in the pipeline"
     )
@@ -432,6 +561,22 @@ async def main() -> int:
                 )
                 return 2
 
+            if args.catch_up:
+                await ensure_state()
+                progress = await read_progress()
+                since = as_naive_utc(args.since) or progress.started_at
+                if not progress.done or since is None:
+                    print("finish the sweep first (or pass --since)")
+                    return 2
+                observers = await catch_up(session, since, args.page, args.apply)
+                for observer in observers:
+                    print(f"  {observer}")
+                if not args.apply:
+                    print("[dry-run] no writes; pass --apply to redo them")
+                    return 0
+                print(f"done in {time.monotonic() - started:.1f}s; now run --verify")
+                return 0
+
             if not args.apply:
                 await _print_status(session)
                 print("[dry-run] no writes; pass --apply to copy")
@@ -444,7 +589,8 @@ async def main() -> int:
                     await db.execute(
                         text(
                             "UPDATE score_copy_progress SET after = '', nodes = 0,"
-                            " rows_without_user_id = 0, non_finite = 0, done = false"
+                            " rows_without_user_id = 0, non_finite = 0, done = false,"
+                            " started_at = NULL"
                         )
                     )
                 print("progress forgotten; scorecard rows left in place")

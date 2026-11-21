@@ -1,20 +1,25 @@
 """The one-time score copy against a real Neo4j and Scorecard database.
 
-Needs Neo4j, and a Postgres at SCORECARD_DB_URL. The copy sweeps every user
+Needs Neo4j, the domain Postgres and a Postgres at SCORECARD_DB_URL. The copy sweeps every user
 node, so its progress is reset before each test and its assertions are scoped to
 this test's own Observers.
 """
 import asyncio
 import secrets
+from datetime import timedelta
 
 import pytest
 from neo4j import AsyncGraphDatabase
-from sqlalchemy import text
+from sqlalchemy import delete, text, update
 
 from app.core.config import settings
+from app.core.database import db_session
 from app.core.scorecard_database import dispose_scorecard_engine, scorecard_session
+from app.db_models import BrainstormRequest
+from app.repos.brainstorm_request_repo import create_brainstorm_request_on_db
 from app.repos.scorecard_repo import scores_by_pubkey
 from app.repos.user_id_repo import ids_for
+from app.utils.datetimes import utc_now
 from scripts import copy_scores_to_postgres as mod
 from tests.integration.test_user_ids_integration import migrated  # noqa: F401
 
@@ -198,5 +203,77 @@ def test_a_lost_row_is_a_named_mismatch_and_only_repairs_it():
         )
         assert await mod.mismatches() == []
         assert len(await scores_by_pubkey(w.two, w.users)) == 13
+
+    _run(test)
+
+
+async def _request_for(observer: str) -> None:
+    async with db_session() as db:
+        await create_brainstorm_request_on_db(db, "graperank", "{}", observer)
+
+
+async def _forget_requests(w: World) -> None:
+    async with db_session() as db:
+        await db.execute(
+            delete(BrainstormRequest).where(
+                BrainstormRequest.pubkey.in_([w.one, w.two])
+            )
+        )
+
+
+def test_catch_up_redoes_only_the_observers_run_since_the_sweep():
+    async def test(w, session):
+        try:
+            # A run from before the sweep is not redone.
+            await _request_for(w.two)
+            long_ago = utc_now() - timedelta(days=1)
+            async with db_session() as db:
+                await db.execute(
+                    update(BrainstormRequest)
+                    .where(BrainstormRequest.pubkey == w.two)
+                    .values(created_at=long_ago, updated_at=long_ago)
+                )
+            await mod.copy_all(session, page_size=50, log=lambda _: None)
+            swept_at = (await mod.read_progress()).started_at
+            assert swept_at is not None
+
+            # A run after it: one score changed, one cleared, one new.
+            await session.run(
+                "MATCH (a:NostrUser {pubkey: $a}), (b:NostrUser {pubkey: $b}),"
+                " (c:NostrUser {pubkey: $c})"
+                " SET a[$key] = 0.125, c[$key] = 0.75 REMOVE b[$key]",
+                a=w.users[0],
+                b=w.users[1],
+                c=w.two,
+                key=f"influence_{w.one}",
+            )
+            # Left alone: this Observer's change in Neo4j must not be picked up.
+            await session.run(
+                "MATCH (a:NostrUser {pubkey: $a}) SET a[$key] = 0.5",
+                a=w.users[0],
+                key=f"influence_{w.two}",
+            )
+            await _request_for(w.one)
+
+            since = swept_at + mod._CATCH_UP_MARGIN
+            assert w.one in await mod.catch_up(
+                session, since, page_size=1, apply=False, log=lambda _: None
+            )
+            assert (await scores_by_pubkey(w.one, [w.users[0]]))[w.users[0]][
+                0
+            ] == _score(0)
+
+            redone = await mod.catch_up(session, since, page_size=1, log=lambda _: None)
+            assert w.one in redone and w.two not in redone
+            one = await scores_by_pubkey(w.one, [*w.users, w.two])
+            assert one[w.users[0]] == (0.125, 2, 0)
+            assert one[w.users[1]] == (None, 2, 1)
+            assert one[w.two][0] == 0.75
+            assert len(one) == 26
+            assert (await scores_by_pubkey(w.two, [w.users[0]]))[w.users[0]][0] == 0.25
+            assert await mod.mismatches() == []
+            assert (await mod.read_progress()).started_at > swept_at
+        finally:
+            await _forget_requests(w)
 
     _run(test)
