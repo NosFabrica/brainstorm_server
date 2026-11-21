@@ -21,6 +21,8 @@ COLUMN_MAP: dict[str, str] = {
     "verifiedFollowersInfluenceCutoff": "verified_followers_influence_cutoff",
     "verifiedReportersInfluenceCutoff": "verified_reporters_influence_cutoff",
     "verifiedMutersInfluenceCutoff": "verified_muters_influence_cutoff",
+    "vouchRating": "vouch_rating",
+    "vouchConfidence": "vouch_confidence",
 }
 
 

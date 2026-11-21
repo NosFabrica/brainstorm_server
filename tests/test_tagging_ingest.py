@@ -176,5 +176,5 @@ def test_ev_kinds_still_only_graph_kinds():
     """
     kinds = {k.as_u16() for k, _ in ev_kinds}
     # No kind 0: nothing reads profiles from neofry any more.
-    assert kinds == {3, 5, 1984, 10000}
+    assert kinds == {3, 5, 1984, 10000, 30000}
     assert TAGGING_KIND not in kinds
