@@ -13,7 +13,7 @@ from neo4j import AsyncGraphDatabase
 from sqlalchemy import delete, text, update
 
 from app.core.config import settings
-from app.core.database import db_session
+from app.core.database import db_session, engine
 from app.core.scorecard_database import dispose_scorecard_engine, scorecard_session
 from app.db_models import BrainstormRequest
 from app.repos.brainstorm_request_repo import create_brainstorm_request_on_db
@@ -116,6 +116,7 @@ def _run(test):
             await _cleanup(w, driver)
             await driver.close()
             await dispose_scorecard_engine()
+            await engine.dispose()
 
     return asyncio.run(_go())
 

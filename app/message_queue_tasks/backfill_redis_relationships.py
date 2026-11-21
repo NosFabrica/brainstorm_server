@@ -1,6 +1,7 @@
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import get_redis_client
+from app.message_queue_tasks.ingest_gate import claim_naming
 from app.message_queue_tasks.process_strfry_event import (
     DESIGNATES_KEY_PREFIX,
     FOLLOWED_BY_KEY_PREFIX,
@@ -280,6 +281,8 @@ async def _backfill_relationship(
 async def backfill_redis_relationships_if_needed() -> None:
     redis_client = get_redis_client()
     try:
+        # A server of the other naming may still be ingesting (a rolling deploy).
+        await claim_naming(redis_client)
         if names_are_ids():
             await _build_id_sets_if_needed(redis_client)
             return
@@ -327,7 +330,8 @@ async def backfill_redis_relationships_if_needed() -> None:
 async def _build_id_sets_if_needed(redis_client) -> None:
     """First start with scores in Postgres: the id-named sets are made from the
     pubkey-named ones (from Neo4j when there are none). Runs before the ingest
-    consumer starts, so nothing writes them meanwhile."""
+    consumer starts and after the naming is claimed, so nothing writes them meanwhile.
+    """
     if await redis_client.exists(IDS_DONE_MARKER_KEY):
         logger.info(f"Redis id sets marker '{IDS_DONE_MARKER_KEY}' present — skipping.")
         return

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 
 from app.core.config import settings
 from app.core.database import db_session
@@ -11,6 +12,11 @@ from app.core.tier_thresholds import (
     classify_tier,
 )
 from app.db_models import BrainstormRequestStatus
+from app.message_queue_tasks.ingest_gate import (
+    BUSY_PREFIX,
+    BUSY_TTL_SECONDS,
+    may_ingest,
+)
 from app.message_queue_tasks.process_strfry_event import process_strfry_event
 from app.message_queue_tasks.result_queue import consume_result_queue
 from app.message_queue_tasks.set_brainstorm_request_as_ongoing import (
@@ -254,7 +260,35 @@ async def wait_until_graph_db_is_populated():
             print("error", e)
 
 
+async def ingest_next_event(redis_client, busy_key: str, timeout: int = 30) -> bool:
+    """Take one event off the queue and ingest it. False when ingest is held
+    for a server of the other set naming: the event stays at the head."""
+    if not await may_ingest(redis_client):
+        return False
+    msg = await redis_client.blpop(STRFRY_EVENTS_QUEUE_NAME, timeout=timeout)
+    if not msg:
+        return True
+    _, message_bytes = msg
+    # Busy first, then the check: the claiming server sets its naming first,
+    # then waits for busy consumers. One of the two always sees the other.
+    await redis_client.set(busy_key, "1", ex=BUSY_TTL_SECONDS)
+    try:
+        if not await may_ingest(redis_client):
+            await redis_client.lpush(STRFRY_EVENTS_QUEUE_NAME, message_bytes)
+            return False
+        try:
+            async with neo4j_driver.session() as neo4j_session:
+                await process_strfry_event(neo4j_session, json.loads(message_bytes))
+        except Exception as e:
+            logger.error(e)
+        return True
+    finally:
+        await redis_client.delete(busy_key)
+
+
 async def consume_strfry_plugin_messages():
+    busy_key = f"{BUSY_PREFIX}{uuid.uuid4().hex}"
+    held = False
     logger.info(
         f"Connected to Redis. Waiting for messages on '{STRFRY_EVENTS_QUEUE_NAME}'..."
     )
@@ -267,17 +301,16 @@ async def consume_strfry_plugin_messages():
         try:
             redis_client = get_redis_client()
             while True:
-                msg = await redis_client.blpop(STRFRY_EVENTS_QUEUE_NAME, timeout=30)
-                if msg:
-                    try:
-                        _, message_bytes = msg
-                        message = json.loads(message_bytes)
-
-                        async with neo4j_driver.session() as neo4j_session:
-                            await process_strfry_event(neo4j_session, message)
-
-                    except Exception as e:
-                        logger.error(e)
+                if await ingest_next_event(redis_client, busy_key):
+                    held = False
+                    continue
+                if not held:
+                    logger.warning(
+                        "Ingest held: the Redis sets were claimed by a server"
+                        " of the other naming."
+                    )
+                    held = True
+                await asyncio.sleep(1)
 
         except Exception as e:
             logger.error(f"exception {e}")

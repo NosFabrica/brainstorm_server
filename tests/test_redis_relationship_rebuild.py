@@ -100,6 +100,7 @@ def test_the_rebuild_covers_designations_and_zap_signers(monkeypatch):
     redis = MagicMock()
     redis.exists = AsyncMock(return_value=False)
     redis.set = AsyncMock()
+    redis.getset = AsyncMock(return_value=None)
     redis.close = AsyncMock()
     monkeypatch.setattr(mod, "get_redis_client", lambda: redis)
     monkeypatch.setattr(mod, "_is_graph_db_populated", AsyncMock(return_value=True))
