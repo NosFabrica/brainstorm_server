@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 import orjson
 
 from app.core.loggr import loggr
+from app.message_queue_tasks.result_names import name_by_pubkey
 
 logger = loggr.get_logger(__name__)
 
@@ -90,6 +91,7 @@ async def handle_one(
             else:
                 message["result"] = orjson.loads(blob)["result"]
                 del blob
+                await name_by_pubkey(message["result"])
                 await handler(message)
     except Exception as e:
         # No retry: a handler exception would fail the same way again. Close the

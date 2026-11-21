@@ -66,6 +66,7 @@ from app.services.brainstorm_request_service import (
     brainstorm_request_db_obj_to_schema_converter,
 )
 from app.services.compromised_authors import compromised_authors
+from app.services.relationship_sets import set_name
 from app.services.verified_cutoffs import VerifiedCutoffs
 from app.utils.neo4j_values import safe_float
 
@@ -106,7 +107,10 @@ def _decode_cursor(cursor: str) -> tuple[float, str]:
 
 
 async def _redis_inbound_count(prefix: str, pubkey: str) -> int:
-    return int(await redis_client.scard(f"{prefix}{pubkey}"))  # type: ignore[misc]
+    name = await set_name(pubkey)
+    if name is None:
+        return 0
+    return int(await redis_client.scard(f"{prefix}{name}"))  # type: ignore[misc]
 
 
 async def _neo4j_outbound_counts_and_influence(

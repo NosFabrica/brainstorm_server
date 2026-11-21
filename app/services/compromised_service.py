@@ -87,6 +87,7 @@ from app.schemas.request_body_schemas import (
 from app.schemas.schemas import CompromisedStatus
 from app.services.compromised_authors import forget_compromised_authors
 from app.services.designation_service import fetch_latest
+from app.services.relationship_sets import set_name
 from app.utils.signed_event import SignedEventRejected, verify_signed_event
 
 logger = loggr.get_logger(__name__)
@@ -271,7 +272,9 @@ async def cut_outgoing_ratings(pubkey: str) -> int:
         ("REPORTS", REPORTED_BY_KEY_PREFIX),
     ):
         await update_reverse_sets(prefix, pubkey, removed_pubkeys=cut.get(kind))
-    await redis_client.delete(f"{DESIGNATES_KEY_PREFIX}{pubkey}")
+    name = await set_name(pubkey)
+    if name is not None:
+        await redis_client.delete(f"{DESIGNATES_KEY_PREFIX}{name}")
     return sum(len(targets) for targets in cut.values())
 
 

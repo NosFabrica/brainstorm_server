@@ -108,7 +108,8 @@ cluster operators first.
 Smoke test for `POST /admin/trustedLists/{observer}`. `--seed` pushes a tag
 element, a pubkey tagging and an event tagging (an article by coordinate, so no
 lookup relay is needed) through the real redis ingest; `--verify-relay` reads
-the Observer's 30392/30393/30394 lists back.
+the Observer's 30392/30393/30394 lists back. The asserters' Influence is seeded where the
+server reads it: the Scorecard database with `SCORES_IN_POSTGRES`, else Neo4j.
 
 ### `clean_trusted_reporters_props.py`
 
@@ -171,6 +172,11 @@ copied and are counted.
 - `--verify`: exit 1 unless the sweep finished, every Observer's rows in `scorecard` match the count
   and sums read from Neo4j, and no score was left on a node without a `user_id`. A mismatch names the Observer.
 - `--only <observer> --apply`: redo one Observer (its rows are replaced in one transaction).
+- `--catch-up [--apply]`: redo every Observer with a request since the last complete read of
+  Neo4j began (the sweep, or the catch-up before; `--since <UTC time>` overrides). One walk of the
+  nodes in which only those Observers' scores leave the database. This is what keeps the pause
+  short: sweep with `--force` while runs go on, pause, catch up, verify. Their rows are deleted
+  first, so run it before anything reads `scorecard`.
 - `--restart --apply`: forget progress and checksums; `scorecard` rows stay.
 
 It keeps its progress in two small tables it creates in the Scorecard database
