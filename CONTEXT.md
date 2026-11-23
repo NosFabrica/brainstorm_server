@@ -19,6 +19,18 @@ _Avoid_: source, truster, viewer
 The user a Trusted Assertion is about — the subject being scored.
 _Avoid_: target, subject, scoree
 
+**User**:
+Any pubkey known to the trust graph, whether or not it belongs to a person or has ever signed in: a key
+seen only in someone's follow list is a User, and so is a service's signing key. Someone who signs in to
+Brainstorm is an Observer.
+_Avoid_: account (in code it means a signed-in login), member, customer
+
+**User id**:
+Brainstorm's own short identifier for a User, standing in for the pubkey inside our stores. Given once,
+never changed and never reused. It never appears outside Brainstorm: the API and published events name
+Users by pubkey.
+_Avoid_: uid (as a domain word), internal key, account id
+
 **House Observer**:
 The Observer whose scores are Brainstorm's default, global view. Used when nobody's own Perspective
 applies; always available.
@@ -97,6 +109,13 @@ _Avoid_: trusted follower (ambiguous with the tier bands), confirmed, real
 The follow-path distance from one account to another: the number of follows on the shortest chain
 between them (0 = the same account). A Trusted Assertion carries a snapshot from its Observer's last run.
 _Avoid_: distance (unqualified), degree (UI copy only), depth, separation
+
+**Scorecard**:
+One Observer's stored record for one Observee: the Influence, Hops and Verified-follower count from that
+Observer's last run. One Scorecard per Observer→Observee pair; a Trusted Assertion publishes the Rank
+taken from it. No Scorecard means the Observer's last run did not reach that Observee, or gave it a
+negligible Influence. An Observer has a Scorecard for themselves.
+_Avoid_: score (reserve for Rank), card, metrics card, score row
 
 **Path network**:
 Everything that links one account to another at the shortest Hops: every Path between them, together,
