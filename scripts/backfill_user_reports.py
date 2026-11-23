@@ -47,6 +47,7 @@ os.environ.setdefault("PUBLIC_BASE_URL", "http://localhost:8080")
 
 from app.core.config import settings  # noqa: E402
 from app.core.redis_db import redis_client  # noqa: E402
+from app.core.scorecard_database import unbounded_statements  # noqa: E402
 from app.message_queue_tasks.process_strfry_event import (  # noqa: E402
     REPORTED_BY_KEY_PREFIX,
 )
@@ -165,6 +166,7 @@ async def main() -> None:
     )
     ap.add_argument("--chunk", type=int, default=5000, help="Neo4j merge batch size")
     args = ap.parse_args()
+    unbounded_statements()
 
     t0 = time.monotonic()
     reports, deletions = _split_by_kind(_read_events(args.scan))

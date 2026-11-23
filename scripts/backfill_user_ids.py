@@ -24,7 +24,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("PUBLIC_BASE_URL", "http://localhost:8080")
 
 from app.core.config import settings  # noqa: E402
-from app.core.scorecard_database import dispose_scorecard_engine  # noqa: E402
+from app.core.scorecard_database import (  # noqa: E402
+    dispose_scorecard_engine,
+    unbounded_statements,
+)
 from app.neo4j_db.driver import driver as neo4j_driver  # noqa: E402
 from app.neo4j_db.schema import ensure_schema  # noqa: E402
 from app.repos.user_id_repo import (  # noqa: E402
@@ -221,6 +224,7 @@ async def main() -> int:
         help="nodes per write transaction",
     )
     args = ap.parse_args()
+    unbounded_statements()
 
     t0 = time.monotonic()
     try:

@@ -7,6 +7,7 @@ from sqlalchemy.pool import NullPool
 
 from alembic import context
 from app.core.config import settings
+from app.core.scorecard_database import MIGRATION_SERVER_SETTINGS
 
 config = context.config
 
@@ -27,7 +28,12 @@ def do_run_migrations(connection) -> None:
 async def run_migrations_online() -> None:
     if not settings.scorecard_db_url:
         raise RuntimeError("SCORECARD_DB_URL is not set")
-    engine = create_async_engine(settings.scorecard_db_url, poolclass=NullPool)
+    # Its own engine: the server's statement_timeout must not reach migrations.
+    engine = create_async_engine(
+        settings.scorecard_db_url,
+        poolclass=NullPool,
+        connect_args={"server_settings": MIGRATION_SERVER_SETTINGS},
+    )
     async with engine.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await engine.dispose()

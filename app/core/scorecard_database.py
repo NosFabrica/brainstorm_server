@@ -7,7 +7,32 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import settings
 
+SERVER_STATEMENT_TIMEOUT_MS = 60_000
+SERVER_COMMAND_TIMEOUT_SECONDS = 180.0
+
+# Migrations: wait at most 10 s for a lock, never cap a statement.
+MIGRATION_SERVER_SETTINGS = {"lock_timeout": "10s", "statement_timeout": "0"}
+
 _engine: AsyncEngine | None = None
+_unbounded = False
+
+
+def unbounded_statements() -> None:
+    """For scripts: no statement_timeout and no client timeout on this process's
+    connections. Call before the first use of the engine."""
+    global _unbounded
+    if _engine is not None and not _unbounded:
+        raise RuntimeError("the Scorecard engine already exists with server limits")
+    _unbounded = True
+
+
+def _connect_args() -> dict:
+    if _unbounded:
+        return {"command_timeout": None, "server_settings": {"statement_timeout": "0"}}
+    return {
+        "command_timeout": SERVER_COMMAND_TIMEOUT_SECONDS,
+        "server_settings": {"statement_timeout": str(SERVER_STATEMENT_TIMEOUT_MS)},
+    }
 
 
 def scorecard_engine() -> AsyncEngine:
@@ -22,7 +47,7 @@ def scorecard_engine() -> AsyncEngine:
             max_overflow=20,
             pool_timeout=60,
             pool_pre_ping=True,
-            connect_args={"command_timeout": 180.0},
+            connect_args=_connect_args(),
         )
     return _engine
 

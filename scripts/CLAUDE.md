@@ -164,5 +164,6 @@ Don't add one if it should be a proper test — put it in a `tests/` directory a
 ## Conventions
 
 - Most scripts import `from app.core.config import settings` to pick up env, and **need `.env` populated**. The exceptions are deliberate: `emit_flash_webhook.py`, `check_flash_credentials.py` and the `search_*.sh` set are stdlib-only and app-free so they can run against a **deployed** host with no `.env` — they take everything from flags and environment variables instead. A stdlib-only script that re-derives app logic (the Flash HMAC) must be held to the real one by a test.
+- A script on the Scorecard database calls `unbounded_statements()` (`app/core/scorecard_database.py`) before first use: no `statement_timeout`, no client timeout.
 - Output is plain `print()` — these are CLI tools, not library code.
 - Exit codes: 0 = ok, non-zero = something failed. The smoke tests assert and let `AssertionError` propagate.
