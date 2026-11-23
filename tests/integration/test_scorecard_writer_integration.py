@@ -19,6 +19,7 @@ from app.core.scorecard_database import dispose_scorecard_engine, scorecard_sess
 from app.message_queue_tasks.write_neo4j_results import process_neo4j_write_message
 from app.repos.scorecard_repo import (
     MissingUserIds,
+    clear_unreached_scores_on_db,
     get_pubkeys_scored_by_observer_on_db,
     observer_id_on_db,
 )
@@ -362,3 +363,33 @@ def test_a_compromised_account_loses_every_observers_score(run, monkeypatch):
             await _forget([one, two, victim, other])
 
     _go(_test)
+
+
+def test_a_large_new_observers_first_clear_does_not_scan_per_score():
+    """An Observer the table's statistics do not know yet, at a real size."""
+    observer, known = _pk(), _pk()
+    users = [_pk() for _ in range(150_000)]
+    insert = text(
+        "INSERT INTO scorecard (observer_id, observee_id, influence, hops,"
+        " verified_followers) SELECT :o, unnest(CAST(:ids AS integer[])), 0.5, 2, 1"
+    )
+
+    async def go():
+        try:
+            ids = await ids_for([observer, known, *users])
+            observees = [ids[u] for u in users]
+            async with scorecard_session() as db:
+                await db.execute(insert, {"o": ids[known], "ids": observees})
+            async with scorecard_session() as db:
+                await db.execute(text("ANALYZE scorecard"))
+                await db.execute(text("ANALYZE nostr_user"))
+            async with scorecard_session() as db:
+                await db.execute(insert, {"o": ids[observer], "ids": observees})
+                await db.execute(text("SET LOCAL statement_timeout = '5s'"))
+                gone = await clear_unreached_scores_on_db(db, ids[observer], users[1:])
+            assert gone == 1
+        finally:
+            await _forget([observer, known, *users])
+            await dispose_scorecard_engine()
+
+    asyncio.run(go())
