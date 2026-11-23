@@ -194,22 +194,25 @@ The cutover read comparison: the same Scorecards must answer the same reads befo
 `SCORES_IN_POSTGRES` flips. Take both records with ingest held (`ingest:hold`, see
 `app/message_queue_tasks/CLAUDE.md`).
 
-- `record --base-url URL (--sample N | --observers FILE) --out DIR [--tokens FILE] [--raw]`: per
-  Observer `/user/{o}/overview`, `/stats`, `/whitelisted/{o}`, `/networkAlerts?observer=o`,
-  `/connections` (every kind both orders, `verified_only`, each tier; up to 3 pages by cursor), and
-  for the first few followed users their `/overview` and `/shortestPath` from the Observer. Writes
-  `observers.txt` (pass it as `--observers` to the next record) and `calls.jsonl`: per call the
-  status, a hash of the normalised body (timestamp and request-id keys dropped, equal-Influence runs
-  and `pubkeys` lists in a stable order) and the item count. `--raw` also keeps the bodies.
-- `--sample N` (default selection ~20) reads the Scorecard and domain databases, so it runs in a
-  server pod after the copy: House, the 3 largest, the newest scored, 2 Free and 2 paid (scheduling
-  assigned) near the median size, the rest spread over sizes.
-- `diff A B [--base-url URL]`: exit 1 on any differing or missing call; saves into `B/mismatches/`
-  the raw bodies both records kept, and with `--base-url` a refetch of the current answer plus the
-  three hashes, so a transient difference shows as `now == a`.
-- **Auth:** House reads go anonymous (the server's default Observer). Every other Observer's
-  `/user/*` reads take that Observer's session token, from `--tokens` (`{pubkey: bearer}`); there is
-  no admin route to read as another Observer, and `record` refuses an Observer it has no token for.
+Reads in-process, no HTTP and no tokens: it calls the services the routers call
+(`user_service`, `network_alerts_service`, `graph_service`, `resolve_verified_cutoffs`) with the
+Observer passed explicitly, and serialises each answer through the route's response model, so it
+compares what the API would return and honours `SCORES_IN_POSTGRES` as the server does. Runs in a
+server pod (same env); an `HTTPException` is recorded as its status and detail.
+
+- `record (--sample N | --observers FILE) --out DIR [--raw]`: per Observer its overview and stats,
+  whitelist, network alerts, connections (every kind both orders, `verified_only`, each tier; up to
+  3 pages by cursor), and for the first few followed users their overview and the shortest path
+  from the Observer. Writes `observers.txt` (pass it as `--observers` to the next record) and
+  `calls.jsonl`: per call the status, a hash of the normalised body (timestamp and request-id keys
+  dropped, equal-Influence runs and `pubkeys` lists in a stable order) and the item count. `--raw`
+  also keeps the bodies.
+- `--sample N` (~20) reads the Scorecard and domain databases after the copy: House, the 3
+  largest, the newest scored, 2 Free and 2 paid (scheduling assigned) near the median size, the
+  rest spread over sizes.
+- `diff A B [--reread]`: exit 1 on any differing or missing call; saves into `B/mismatches/` the
+  raw bodies both records kept, and with `--reread` a fresh read of each plus the three hashes, so
+  a transient difference shows as `now == a`.
 
 Held by `tests/test_compare_reads.py`.
 
