@@ -169,13 +169,11 @@ infinite Influence is stored as none and counted; scores on a node without a `us
 copied and are counted.
 
 - `--status`: Observers ever stored, nodes read of total, Observers and rows copied, the two counts above.
-- `--verify [--only O] [--group N]`: exit 1 unless the sweep finished, every row in `scorecard`
-  equals Neo4j's (observer, observee, influence, hops, verified_followers) for every Observer (the
-  ones Neo4j has a score key for, plus any with stored rows), and no score was left on a node
-  without a `user_id`. Walks the nodes by `user_id` once per `--group` Observers (default 50) and
-  merges each with that Observer's rows in key order, so memory is a page per Observer. A mismatch
-  names the Observer with a few sample rows. (`mismatches()`, the per-Observer count/sum check, is
-  kept for the tests.)
+- `--verify`: exit 1 with the reasons unless the copy is ready for the switch: the sweep finished;
+  it met no score on a node without a `user_id`; every Observer's stored rows have the count and
+  sums recorded while reading (an Observer with stored rows and no record fails too); no Observer
+  has a request since the last read began; no run is in the pipeline. Reads only Postgres, in
+  seconds. It does not compare rows with Neo4j: `compare_reads` covers what the reads return.
 - `--only <observer> --apply`: redo one Observer (its rows are replaced in one transaction).
 - `--catch-up [--apply]`: redo every Observer with a request since the last complete read of
   Neo4j began (the sweep, or the catch-up before; `--since <UTC time>` overrides). One walk of the
