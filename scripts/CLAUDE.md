@@ -172,7 +172,8 @@ copied and are counted.
 - `--verify`: exit 1 with the reasons unless the copy is ready for the switch: the sweep finished;
   it met no score on a node without a `user_id`; every Observer's stored rows have the count and
   sums recorded while reading (an Observer with stored rows and no record fails too); no Observer
-  has a request since the last read began; no run is in the pipeline. Reads only Postgres, in
+  has a started request since the last read began; no run is under way (a request still waiting
+  for a worker is neither). Reads only Postgres, in
   seconds. It does not compare rows with Neo4j: `compare_reads` covers what the reads return.
 - `--only <observer> --apply`: redo one Observer (its rows are replaced in one transaction).
 - `--catch-up [--apply]`: redo every Observer with a request since the last complete read of

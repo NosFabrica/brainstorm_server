@@ -306,10 +306,18 @@ def test_verify_names_what_keeps_the_copy_from_the_switch():
             assert [p.split(":")[1].strip() for p in await mine(w)] == [w.two]
 
             await mod.copy_one(session, w.two, page_size=50, log=lambda _: None)
+            # A request still waiting for a worker wrote nothing.
             await _request_for(w.one)
+            assert await mine(w) == []
+            async with db_session() as db:
+                await db.execute(
+                    update(BrainstormRequest)
+                    .where(BrainstormRequest.pubkey == w.one)
+                    .values(status="ongoing")
+                )
             found = await mine(w)
             assert len(found) == 1 and found[0].startswith(w.one)
-            assert any("in the pipeline" in p for p in await mod.verify_problems())
+            assert any("under way" in p for p in await mod.verify_problems())
         finally:
             await _forget_requests(w)
 

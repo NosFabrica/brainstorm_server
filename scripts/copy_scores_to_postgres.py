@@ -36,7 +36,7 @@ from app.core.scorecard_database import (  # noqa: E402
     scorecard_session,
     unbounded_statements,
 )
-from app.db_models import BrainstormRequest  # noqa: E402
+from app.db_models import BrainstormRequest, BrainstormRequestStatus  # noqa: E402
 from app.neo4j_db.driver import driver as neo4j_driver  # noqa: E402
 from app.repos.brainstorm_request_repo import in_pipeline_condition  # noqa: E402
 from app.repos.user_id_repo import ids_for  # noqa: E402
@@ -66,6 +66,7 @@ RETURN u.pubkey AS pubkey, p.user_id AS user_id,
 _PAGE_OF_FACTOR = 25  # little crosses the wire, so pages can be larger
 # Covers clock skew between this host and the domain database.
 _CATCH_UP_MARGIN = timedelta(minutes=10)
+_WAITING = BrainstormRequestStatus.WAITING.value
 
 _STATE_TABLES = (
     """
@@ -375,20 +376,20 @@ async def copy_one(session, observer: str, page_size: int, log=print) -> int:
     return len(rows)
 
 
-async def observers_run_since(since: datetime) -> list[str]:
-    """Observers with a request created or updated at or after `since` (UTC)."""
+async def observers_run_since(since: datetime, started: bool = False) -> list[str]:
+    """Observers with a request created or updated at or after `since` (UTC).
+
+    `started` leaves out requests still waiting for a worker: they wrote nothing.
+    """
+    query = select(
+        BrainstormRequest.pubkey,
+        func.max(BrainstormRequest.created_at),
+        func.max(BrainstormRequest.updated_at),
+    ).where(BrainstormRequest.pubkey.is_not(None))
+    if started:
+        query = query.where(BrainstormRequest.status != _WAITING)
     async with db_session() as db:
-        rows = (
-            await db.execute(
-                select(
-                    BrainstormRequest.pubkey,
-                    func.max(BrainstormRequest.created_at),
-                    func.max(BrainstormRequest.updated_at),
-                )
-                .where(BrainstormRequest.pubkey.is_not(None))
-                .group_by(BrainstormRequest.pubkey)
-            )
-        ).all()
+        rows = (await db.execute(query.group_by(BrainstormRequest.pubkey))).all()
     # Compared here, not in SQL: production holds these columns with a time zone.
     return sorted(
         pubkey
@@ -479,22 +480,24 @@ async def verify_problems() -> list[str]:
     if progress.started_at:
         problems += [
             f"{observer} has a request since the last read began: --catch-up --apply"
-            for observer in await observers_run_since(progress.started_at)
+            for observer in await observers_run_since(progress.started_at, started=True)
         ]
-    in_pipeline = await runs_in_pipeline()
-    if in_pipeline:
-        problems.append(f"{in_pipeline} runs are in the pipeline")
+    under_way = await runs_in_pipeline(started=True)
+    if under_way:
+        problems.append(f"{under_way} runs are under way")
     return problems
 
 
-async def runs_in_pipeline() -> int:
+async def runs_in_pipeline(started: bool = False) -> int:
+    query = (
+        select(func.count())
+        .select_from(BrainstormRequest)
+        .where(in_pipeline_condition())
+    )
+    if started:
+        query = query.where(BrainstormRequest.status != _WAITING)
     async with db_session() as db:
-        result = await db.execute(
-            select(func.count())
-            .select_from(BrainstormRequest)
-            .where(in_pipeline_condition())
-        )
-        return int(result.scalar_one())
+        return int((await db.execute(query)).scalar_one())
 
 
 async def _print_status(session) -> None:
@@ -567,6 +570,9 @@ async def main() -> int:
 
             if args.verify:
                 problems = await verify_problems()
+                waiting = await runs_in_pipeline() - await runs_in_pipeline(True)
+                if waiting:
+                    print(f"  ({waiting} requests wait for a worker: not a problem)")
                 for line in problems[:50]:
                     print(f"  {line}")
                 print(f"problems: {len(problems)}")
