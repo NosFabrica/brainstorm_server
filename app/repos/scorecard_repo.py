@@ -186,28 +186,34 @@ async def mark_observer_written_on_db(db: AsyncDBSession, observer_id: int) -> N
     )
 
 
+# Outer client cap for the Observee scan; the engine's 180 s would cut it.
+CLEAR_SCORES_ABOUT_TIMEOUT_SECONDS = 1800.0
+
+_CLEAR_SCORES_ABOUT = """
+WITH gone AS (
+    DELETE FROM scorecard
+    WHERE observee_id = (SELECT id FROM nostr_user WHERE pubkey = $1)
+    RETURNING observer_id
+), stamped AS (
+    INSERT INTO scorecard_observer (observer_id, written_at)
+    SELECT observer_id, now() FROM gone
+    ON CONFLICT (observer_id) DO UPDATE SET written_at = EXCLUDED.written_at
+)
+SELECT count(*) FROM gone
+"""
+
+
 async def clear_scores_about_on_db(db: AsyncDBSession, pubkey: str) -> int:
     """Delete every Observer's score for one Observee, and stamp each Observer
     that lost one. Scans the table: there is no index by Observee, and this is a
-    rare admin action."""
-    deleted = await db.execute(
-        text(
-            """
-            WITH gone AS (
-                DELETE FROM scorecard
-                WHERE observee_id = (SELECT id FROM nostr_user WHERE pubkey = :pubkey)
-                RETURNING observer_id
-            ), stamped AS (
-                INSERT INTO scorecard_observer (observer_id, written_at)
-                SELECT observer_id, now() FROM gone
-                ON CONFLICT (observer_id) DO UPDATE SET written_at = EXCLUDED.written_at
-            )
-            SELECT count(*) FROM gone
-            """
-        ),
-        {"pubkey": pubkey},
+    rare admin action, so it runs without the server's statement_timeout."""
+    await db.execute(text("SET LOCAL statement_timeout = 0"))
+    connection = await db.connection()
+    raw = await connection.get_raw_connection()
+    # asyncpg's per-call timeout overrides the connection's command_timeout.
+    return await raw.driver_connection.fetchval(  # type: ignore[union-attr]
+        _CLEAR_SCORES_ABOUT, pubkey, timeout=CLEAR_SCORES_ABOUT_TIMEOUT_SECONDS
     )
-    return deleted.scalar_one()
 
 
 # ----------------- reads -----------------
