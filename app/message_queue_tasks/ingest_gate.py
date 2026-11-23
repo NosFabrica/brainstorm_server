@@ -3,7 +3,8 @@
 A deploy that switches the naming runs two servers side by side: the new one
 renames the sets while the old one would still write the old naming. The new
 server claims its naming here before it renames; a consumer of the other naming
-then stops taking events (they wait in the queue) and never resumes.
+then stops taking events (they wait in the queue) for as long as the claim
+stands: it resumes only if its own naming is claimed again.
 """
 import asyncio
 
