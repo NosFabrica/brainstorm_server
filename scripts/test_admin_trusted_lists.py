@@ -62,10 +62,15 @@ def seed_influence(observer_hex: str, influences: dict[str, float]) -> None:
 
 
 async def _seed_scorecard(observer_hex: str, influences: dict[str, float]) -> None:
-    from app.core.scorecard_database import dispose_scorecard_engine, scorecard_session
+    from app.core.scorecard_database import (
+        dispose_scorecard_engine,
+        scorecard_session,
+        unbounded_statements,
+    )
     from app.repos import scorecard_repo
     from app.repos.user_id_repo import ids_for
 
+    unbounded_statements()
     try:
         ids = await ids_for([observer_hex, *influences])
         async with scorecard_session() as db:

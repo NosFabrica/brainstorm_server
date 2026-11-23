@@ -67,7 +67,8 @@ _WRITES = re.compile(r"\b(SET|CREATE|MERGE|DELETE|REMOVE|DROP)\b")
 def test_no_cypher_in_the_script_writes():
     """Every Cypher string in the module, checked for a write clause."""
     source = inspect.getsource(mod)
-    cypher = [mod._PAGE] + re.findall(r'session\.run\(\s*"((?:[^"\\]|\\.)*)"', source)
+    cypher = [mod._PAGE, mod._PAGE_OF, mod._PAGE_OF_BY_ID, mod._SCORED_WITHOUT_ID]
+    cypher += re.findall(r'session\.run\(\s*"((?:[^"\\]|\\.)*)"', source)
     cypher += re.findall(r'"(CALL db\.[^"]*)"', source)
     assert len(cypher) >= 3
     for statement in cypher:
@@ -90,5 +91,92 @@ def test_node_pages_are_read_in_a_read_transaction():
 
 
 def test_no_cypher_variable_is_a_float_literal():
-    for statement in (mod._PAGE,):
+    for statement in (
+        mod._PAGE,
+        mod._PAGE_OF,
+        mod._PAGE_OF_BY_ID,
+        mod._SCORED_WITHOUT_ID,
+    ):
         assert not re.search(r"\bAS\s+(inf|infinity|nan)\b", statement, re.I)
+
+
+async def _aiter(items):
+    for item in items:
+        yield item
+
+
+def _compare(expected, stored):
+    check = mod.RowCheck()
+    names = {1: OBS, 2: OTHER}
+    asyncio.run(
+        mod.compare_rows(
+            _aiter(expected),
+            {o: _aiter(rows) for o, rows in stored.items()},
+            names,
+            check,
+        )
+    )
+    return check
+
+
+def test_identical_rows_verify():
+    check = _compare(
+        [(7, {1: (0.5, 2, 9), 2: (None, 3, None)}), (9, {1: (0.25, 1, 0)})],
+        {1: [(7, 0.5, 2, 9), (9, 0.25, 1, 0)], 2: [(7, None, 3, None)]},
+    )
+    assert check.ok and check.rows == 3
+
+
+def test_every_kind_of_row_difference_is_named_by_observer():
+    check = _compare(
+        [(7, {1: (0.5, 2, 9)}), (9, {1: (0.25, 1, 0)}), (11, {2: (0.1, 2, 1)})],
+        {
+            # 7 differs in the last bit, 9 is missing, 10 and 12 are extra.
+            1: [(7, 0.5 + 1e-16 * 2, 2, 9), (10, 0.3, 1, 0), (12, 0.3, 1, 0)],
+            2: [(11, 0.1, 2, 2)],
+        },
+    )
+    assert check.bad == {OBS: 4, OTHER: 1}
+    assert any("missing" in line for line in check.samples[OBS])
+    assert sum("only in scorecard" in line for line in check.samples[OBS]) == 2
+
+
+def test_an_observer_without_stored_rows_misses_all_of_them():
+    check = _compare([(7, {1: (0.5, 2, 9)}), (8, {1: (0.5, 2, 9)})], {})
+    assert check.bad == {OBS: 2}
+
+
+def test_scores_on_nodes_without_a_user_id_fail_verify():
+    check = mod.RowCheck(rows_without_user_id=1)
+    assert not check.ok
+
+
+def test_verify_reads_nodes_in_a_read_transaction_by_user_id():
+    seen = []
+
+    class _Result:
+        def __init__(self, records):
+            self.records = records
+
+        def __aiter__(self):
+            return _aiter(self.records).__aiter__()
+
+    class _Tx:
+        async def run(self, cypher, **params):
+            seen.append(params["after"])
+            if params["after"] == -1:
+                return _Result([{"user_id": 7, "found": [[f"influence_{OBS}", 0.5]]}])
+            return _Result([])
+
+    class _Session:
+        async def execute_read(self, work):
+            return await work(_Tx())
+
+        async def execute_write(self, work):  # pragma: no cover
+            raise AssertionError("verify wrote to Neo4j")
+
+    async def collect():
+        return [r async for r in mod._expected_rows(_Session(), [OBS], {OBS: 1}, 10)]
+
+    assert asyncio.run(collect()) == [(7, {1: (0.5, None, None)})]
+    assert seen == [-1, 7]

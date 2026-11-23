@@ -278,3 +278,30 @@ def test_catch_up_redoes_only_the_observers_run_since_the_sweep():
             await _forget_requests(w)
 
     _run(test)
+
+
+def test_verify_compares_every_row_and_names_a_changed_one():
+    async def test(w, session):
+        await mod.copy_all(session, page_size=50, log=lambda _: None)
+        observers = sorted([w.one, w.two])
+        check = await mod.verify_rows(session, observers, 7, log=lambda _: None)
+        assert check.bad == {} and check.rows == 38
+        # The node without a user_id holds one of w.one's scores.
+        assert check.rows_without_user_id == 1 and not check.ok
+
+        # Same count, same sums, different rows: the checksum misses it.
+        async with scorecard_session() as db:
+            await db.execute(
+                text(
+                    "UPDATE scorecard s SET hops = CASE u.pubkey WHEN :a THEN 3"
+                    " ELSE 1 END FROM nostr_user o, nostr_user u"
+                    " WHERE o.id = s.observer_id AND u.id = s.observee_id"
+                    " AND o.pubkey = :o AND u.pubkey IN (:a, :b)"
+                ),
+                {"o": w.one, "a": w.users[0], "b": w.users[1]},
+            )
+        assert await mod.mismatches() == []
+        check = await mod.verify_rows(session, observers, 7, log=lambda _: None)
+        assert check.bad == {w.one: 2}
+
+    _run(test)

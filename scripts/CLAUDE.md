@@ -169,8 +169,13 @@ infinite Influence is stored as none and counted; scores on a node without a `us
 copied and are counted.
 
 - `--status`: Observers ever stored, nodes read of total, Observers and rows copied, the two counts above.
-- `--verify`: exit 1 unless the sweep finished, every Observer's rows in `scorecard` match the count
-  and sums read from Neo4j, and no score was left on a node without a `user_id`. A mismatch names the Observer.
+- `--verify [--only O] [--group N]`: exit 1 unless the sweep finished, every row in `scorecard`
+  equals Neo4j's (observer, observee, influence, hops, verified_followers) for every Observer (the
+  ones Neo4j has a score key for, plus any with stored rows), and no score was left on a node
+  without a `user_id`. Walks the nodes by `user_id` once per `--group` Observers (default 50) and
+  merges each with that Observer's rows in key order, so memory is a page per Observer. A mismatch
+  names the Observer with a few sample rows. (`mismatches()`, the per-Observer count/sum check, is
+  kept for the tests.)
 - `--only <observer> --apply`: redo one Observer (its rows are replaced in one transaction).
 - `--catch-up [--apply]`: redo every Observer with a request since the last complete read of
   Neo4j began (the sweep, or the catch-up before; `--since <UTC time>` overrides). One walk of the
@@ -182,6 +187,31 @@ copied and are counted.
 It keeps its progress in two small tables it creates in the Scorecard database
 (`score_copy_progress`, `score_copy_checksum`); drop them once the cutover is settled.
 Held by `tests/test_copy_scores_parsing.py` and `tests/integration/test_copy_scores_integration.py`.
+
+### `compare_reads.py`
+
+The cutover read comparison: the same Scorecards must answer the same reads before and after
+`SCORES_IN_POSTGRES` flips. Take both records with ingest held (`ingest:hold`, see
+`app/message_queue_tasks/CLAUDE.md`).
+
+- `record --base-url URL (--sample N | --observers FILE) --out DIR [--tokens FILE] [--raw]`: per
+  Observer `/user/{o}/overview`, `/stats`, `/whitelisted/{o}`, `/networkAlerts?observer=o`,
+  `/connections` (every kind both orders, `verified_only`, each tier; up to 3 pages by cursor), and
+  for the first few followed users their `/overview` and `/shortestPath` from the Observer. Writes
+  `observers.txt` (pass it as `--observers` to the next record) and `calls.jsonl`: per call the
+  status, a hash of the normalised body (timestamp and request-id keys dropped, equal-Influence runs
+  and `pubkeys` lists in a stable order) and the item count. `--raw` also keeps the bodies.
+- `--sample N` (default selection ~20) reads the Scorecard and domain databases, so it runs in a
+  server pod after the copy: House, the 3 largest, the newest scored, 2 Free and 2 paid (scheduling
+  assigned) near the median size, the rest spread over sizes.
+- `diff A B [--base-url URL]`: exit 1 on any differing or missing call; saves into `B/mismatches/`
+  the raw bodies both records kept, and with `--base-url` a refetch of the current answer plus the
+  three hashes, so a transient difference shows as `now == a`.
+- **Auth:** House reads go anonymous (the server's default Observer). Every other Observer's
+  `/user/*` reads take that Observer's session token, from `--tokens` (`{pubkey: bearer}`); there is
+  no admin route to read as another Observer, and `record` refuses an Observer it has no token for.
+
+Held by `tests/test_compare_reads.py`.
 
 ### `rebuild_neo4j.py`
 
