@@ -210,7 +210,8 @@ server pod (same env); an `HTTPException` is recorded as its status and detail.
 - `--sample N` (~20) reads the Scorecard and domain databases after the copy: House, the 3
   largest, the newest scored, 2 Free and 2 paid (scheduling assigned) near the median size, the
   rest spread over sizes.
-- `diff A B [--reread]`: exit 1 on any differing or missing call; saves into `B/mismatches/` the
+- `diff A B [--reread]`: exit 1 on any differing or missing call (the whitelist is recorded but not
+  compared: a run's snapshot before the flip, derived from stored scores after); saves into `B/mismatches/` the
   raw bodies both records kept, and with `--reread` a fresh read of each plus the three hashes, so
   a transient difference shows as `now == a`.
 

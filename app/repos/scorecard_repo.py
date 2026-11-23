@@ -138,14 +138,25 @@ async def clear_unreached_scores_on_db(
     """Delete the Observer's scores for everyone not in `reached`."""
     await db.execute(text("CREATE TEMP TABLE reached_in (pubkey text) ON COMMIT DROP"))
     await _copy(db, "reached_in", ["pubkey"], ((pubkey,) for pubkey in reached))
+    # By id with a primary key: an Observer new to the table is planned as one
+    # row, and without a key that plan scans the reached list once per score.
+    await db.execute(
+        text("CREATE TEMP TABLE reached_id (id integer PRIMARY KEY) ON COMMIT DROP")
+    )
+    await db.execute(
+        text(
+            "INSERT INTO reached_id SELECT u.id FROM reached_in r"
+            " JOIN nostr_user u USING (pubkey) ON CONFLICT DO NOTHING"
+        )
+    )
+    await db.execute(text("ANALYZE reached_id"))
     deleted = await db.execute(
         text(
             """
             WITH gone AS (
                 DELETE FROM scorecard s
                 WHERE s.observer_id = :observer AND NOT EXISTS (
-                    SELECT 1 FROM reached_in r JOIN nostr_user u USING (pubkey)
-                    WHERE u.id = s.observee_id
+                    SELECT 1 FROM reached_id r WHERE r.id = s.observee_id
                 )
                 RETURNING 1
             )

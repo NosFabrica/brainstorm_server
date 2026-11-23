@@ -113,6 +113,15 @@ def test_a_call_only_in_one_record_is_a_difference(tmp_path):
     assert found and all(d.a is None and d.b.observer == HOUSE for d in found)
 
 
+def test_a_whitelist_change_is_not_a_difference():
+    def entry(endpoint, digest):
+        e = cr.Entry(endpoint, OBS, [], 200, digest, 1)
+        return {e.call.key: e}
+
+    assert cr.differences(entry("whitelist", "x"), entry("whitelist", "y")) == []
+    assert cr.differences(entry("overview", "x"), entry("overview", "y"))
+
+
 def test_an_http_error_from_a_service_is_recorded_as_its_status():
     from fastapi import HTTPException
 
