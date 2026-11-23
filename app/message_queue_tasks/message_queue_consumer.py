@@ -262,7 +262,8 @@ async def wait_until_graph_db_is_populated():
 
 async def ingest_next_event(redis_client, busy_key: str, timeout: int = 30) -> bool:
     """Take one event off the queue and ingest it. False when ingest is held
-    for a server of the other set naming: the event stays at the head."""
+    (`ingest:hold`, or a server of the other set naming): the event stays at
+    the head."""
     if not await may_ingest(redis_client):
         return False
     msg = await redis_client.blpop(STRFRY_EVENTS_QUEUE_NAME, timeout=timeout)
@@ -306,8 +307,8 @@ async def consume_strfry_plugin_messages():
                     continue
                 if not held:
                     logger.warning(
-                        "Ingest held: the Redis sets were claimed by a server"
-                        " of the other naming."
+                        "Ingest held: ingest:hold is set, or the Redis sets were"
+                        " claimed by a server of the other naming."
                     )
                     held = True
                 await asyncio.sleep(1)

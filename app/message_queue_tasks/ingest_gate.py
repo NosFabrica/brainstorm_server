@@ -5,6 +5,9 @@ renames the sets while the old one would still write the old naming. The new
 server claims its naming here before it renames; a consumer of the other naming
 then stops taking events (they wait in the queue) for as long as the claim
 stands: it resumes only if its own naming is claimed again.
+
+`ingest:hold` stops every consumer, whatever naming, until an operator deletes
+it; nothing here ever clears it.
 """
 import asyncio
 
@@ -14,6 +17,7 @@ from app.services.relationship_sets import names_are_ids
 logger = loggr.get_logger(__name__)
 
 NAMING_KEY = "migration:redis_sets:naming"
+HOLD_KEY = "ingest:hold"
 BUSY_PREFIX = "ingest:busy:"
 # Longer than any one event takes; a consumer that died mid-event stops
 # blocking a switch after this.
@@ -25,7 +29,9 @@ def _naming() -> str:
 
 
 async def may_ingest(redis_client) -> bool:
-    claimed = await redis_client.get(NAMING_KEY)
+    held, claimed = await redis_client.mget(HOLD_KEY, NAMING_KEY)
+    if held is not None:
+        return False
     return claimed is None or claimed == _naming()
 
 

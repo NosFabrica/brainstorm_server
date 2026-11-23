@@ -43,6 +43,12 @@ holding a different id raises `UserIdMismatch` inside the transaction, so the ev
 that creates user nodes must do the same; `tests/test_user_ids_at_ingest.py` fails until it is listed there.
 The uniqueness constraint on `user_id` is part of the graph's schema ([`../neo4j_db/schema.py`](../neo4j_db/schema.py)), ensured when this consumer starts, as is a temporary index on `nip05_status` the GrapeRank worker reads penalised statuses through until the score properties are off the nodes.
 
+**`ingest:hold` (operator tool, permanent).** While the key exists every `strfry:events` consumer stops taking
+events, whatever naming is claimed; events wait in the queue. Nothing in the server sets or clears it: not a
+start, not `claim_naming`. Used for cutover read comparisons, Neo4j maintenance and any window that needs the
+graph and Scorecards still. `redis-cli SET ingest:hold 1` to hold, `redis-cli DEL ingest:hold` to resume
+(consumers recheck each second). A Redis restart in the window loses it unless persisted.
+
 The reverse-set helper is `_update_reverse_sets`. Use it for any new "X → relationships → reverse-cache" pattern.
 
 **With `SCORES_IN_POSTGRES` the worker's result names users by User id** (`scorecardsById`, `…Ids` lists, the Observer's pubkey once). `result_names.name_by_pubkey` rewrites it into the pubkey form in `result_queue.handle_one`, with one batched lookup, so every consumer still sees `scorecards` keyed by pubkey. An id without a pubkey fails the stage. A pubkey-named result (failure results, a worker with the switch off) passes through untouched.
