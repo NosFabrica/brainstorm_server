@@ -56,16 +56,11 @@ KEPT_USER_KEYS = {
 # Labels whose nodes keep every property (graph-streamer's one state node).
 KEEP_ALL_KEYS_ON = {"GraphStreamerState"}
 DROPPED_PREFIXES = ("influence_", "hops_", "trusted_followers_", "trusted_reporters_")
-DROPPED_KEYS = {"score_shard"}
 
 ARRAY_DELIMITER = ";"
 SAMPLE_SIZE = 500
 
-_IS_DROPPED = (
-    "("
-    + " OR ".join(f"k STARTS WITH '{p}'" for p in DROPPED_PREFIXES)
-    + " OR k IN $dropped)"
-)
+_IS_DROPPED = "(" + " OR ".join(f"k STARTS WITH '{p}'" for p in DROPPED_PREFIXES) + ")"
 # One read of each node's property map; the scores are filtered out in the
 # database, so they never cross the wire.
 _NODES = f"""
@@ -93,7 +88,7 @@ class Stop(RuntimeError):
 
 
 def is_dropped(key: str) -> bool:
-    return key.startswith(DROPPED_PREFIXES) or key in DROPPED_KEYS
+    return key.startswith(DROPPED_PREFIXES)
 
 
 def csv_type(value) -> str:
@@ -341,9 +336,7 @@ async def export(session, out: Path, page: int, log=print) -> dict:
     other_nodes: list[dict] = []
     started = time.monotonic()
     for lo in range(0, top + 1, page):
-        for row in await _read(
-            session, _NODES, lo=lo, hi=lo + page, dropped=sorted(DROPPED_KEYS)
-        ):
+        for row in await _read(session, _NODES, lo=lo, hi=lo + page):
             props = {k: v for k, v in row["kept"]}
             check_node(row["labels"], list(props))
             nodes.add([row["id"], ARRAY_DELIMITER.join(sorted(row["labels"]))], props)

@@ -17,7 +17,6 @@ def test_score_properties_are_dropped_and_nothing_else():
         f"hops_{OBS}",
         f"trusted_followers_{OBS}",
         f"trusted_reporters_{OBS}",
-        "score_shard",
     ):
         assert mod.is_dropped(key), key
     for key in mod.KEPT_USER_KEYS:
@@ -107,9 +106,9 @@ def test_schema_on_labels_not_kept_or_on_score_properties_is_left_behind():
             "createStatement": "A",
         },
         {
-            "name": "nostr_user_score_shard",
+            "name": "nostr_user_influence",
             "labelsOrTypes": ["NostrUser"],
-            "properties": ["score_shard"],
+            "properties": [f"influence_{OBS}"],
             "createStatement": "B",
         },
         {
@@ -133,7 +132,7 @@ def test_schema_on_labels_not_kept_or_on_score_properties_is_left_behind():
     ]
     kept, left = mod.carried_schema(rows)
     assert kept == {"nostr_user_pubkey": "A", "streamer_follows_at": "E"}
-    assert left == ["bench_user_pubkey", "nostr_user_score_shard", "score_shard_unique"]
+    assert left == ["bench_user_pubkey", "nostr_user_influence", "score_shard_unique"]
 
 
 _WRITES = re.compile(r"\b(SET|CREATE|MERGE|DELETE|REMOVE|DROP)\b")
