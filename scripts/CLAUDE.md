@@ -172,8 +172,8 @@ copied and are counted.
 - `--verify`: exit 1 with the reasons unless the copy is ready for the switch: the sweep finished;
   it met no score on a node without a `user_id`; every Observer's stored rows have the count and
   sums recorded while reading (an Observer with stored rows and no record fails too); no Observer
-  has a started request since the last read began; no run is under way (a request still waiting
-  for a worker is neither). Reads only Postgres, in
+  has a started request since the last read began; no run is under way, up to the end of its score write (a
+  request still waiting for a worker is neither). Times are the domain database's clock. Reads only Postgres, in
   seconds. It does not compare rows with Neo4j: `compare_reads` covers what the reads return.
 - `--only <observer> --apply`: redo one Observer (its rows are replaced in one transaction).
 - `--catch-up [--apply]`: redo every Observer with a request since the last complete read of
@@ -209,8 +209,8 @@ server pod (same env); an `HTTPException` is recorded as its status and detail.
 - `--sample N` (~20) reads the Scorecard and domain databases after the copy: House, the 3
   largest, the newest scored, 2 Free and 2 paid (scheduling assigned) near the median size, the
   rest spread over sizes.
-- `diff A B [--reread]`: exit 1 on any differing or missing call (the whitelist is recorded but not
-  compared: a run's snapshot before the flip, derived from stored scores after); saves into `B/mismatches/` the
+- `diff A B [--reread]`: exit 1 on any differing or missing call (of the whitelist only the status
+  is compared: its body is a run's snapshot before the flip, derived from stored scores after); saves into `B/mismatches/` the
   raw bodies both records kept, and with `--reread` a fresh read of each plus the three hashes, so
   a transient difference shows as `now == a`.
 

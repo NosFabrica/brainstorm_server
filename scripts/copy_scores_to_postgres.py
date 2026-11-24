@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("PUBLIC_BASE_URL", "http://localhost:8080")
 
-from sqlalchemy import func, select, text  # noqa: E402
+from sqlalchemy import and_, func, or_, select, text  # noqa: E402
 
 from app.core.config import settings  # noqa: E402
 from app.core.database import db_session  # noqa: E402
@@ -40,7 +40,7 @@ from app.db_models import BrainstormRequest, BrainstormRequestStatus  # noqa: E4
 from app.neo4j_db.driver import driver as neo4j_driver  # noqa: E402
 from app.repos.brainstorm_request_repo import in_pipeline_condition  # noqa: E402
 from app.repos.user_id_repo import ids_for  # noqa: E402
-from app.utils.datetimes import as_naive_utc, utc_now  # noqa: E402
+from app.utils.datetimes import as_naive_utc  # noqa: E402
 
 # Neo4j property prefix -> position in a score row. `trusted_reporters_` and
 # anything else on the node is ignored.
@@ -67,6 +67,9 @@ _PAGE_OF_FACTOR = 25  # little crosses the wire, so pages can be larger
 # Covers clock skew between this host and the domain database.
 _CATCH_UP_MARGIN = timedelta(minutes=10)
 _WAITING = BrainstormRequestStatus.WAITING.value
+_UNFINISHED = [_WAITING, BrainstormRequestStatus.ONGOING.value]
+# A score write left unfinished longer ago than this was abandoned.
+_WRITE_WINDOW = "interval '1 day'"
 
 _STATE_TABLES = (
     """
@@ -298,7 +301,7 @@ async def copy_all(session, page_size: int, log=print) -> Progress:
     if progress.done:
         return progress
     if not progress.nodes:
-        progress.started_at = utc_now()
+        progress.started_at = await _domain_now()
         async with scorecard_session() as db:
             await db.execute(
                 text("UPDATE score_copy_progress SET started_at = :at"),
@@ -376,6 +379,12 @@ async def copy_one(session, observer: str, page_size: int, log=print) -> int:
     return len(rows)
 
 
+async def _domain_now() -> datetime:
+    """The domain database's clock, which stamps the requests."""
+    async with db_session() as db:
+        return as_naive_utc((await db.execute(select(func.now()))).scalar_one())
+
+
 async def observers_run_since(since: datetime, started: bool = False) -> list[str]:
     """Observers with a request created or updated at or after `since` (UTC).
 
@@ -408,7 +417,7 @@ async def catch_up(
     anything reads `scorecard`. An interrupted catch-up is simply run again.
     """
     await ensure_state()
-    began = utc_now()
+    began = await _domain_now()
     observers = await observers_run_since(since - _CATCH_UP_MARGIN)
     log(f"{len(observers)} Observers run since {since.isoformat()}")
     if not apply:
@@ -464,8 +473,14 @@ async def mismatches() -> list[str]:
     return bad
 
 
-async def verify_problems() -> list[str]:
-    """Why the copy is not ready for the switch; empty when it is. Neo4j is not read."""
+@dataclass
+class Verdict:
+    problems: list[str]
+    waiting: int  # requests waiting for a worker: they wrote nothing
+
+
+async def verify() -> Verdict:
+    """Why the copy is not ready for the switch, if it is not. Neo4j is not read."""
     await ensure_state()
     progress = await read_progress()
     problems = []
@@ -482,22 +497,39 @@ async def verify_problems() -> list[str]:
             f"{observer} has a request since the last read began: --catch-up --apply"
             for observer in await observers_run_since(progress.started_at, started=True)
         ]
-    under_way = await runs_in_pipeline(started=True)
+    elif progress.done:
+        problems.append(
+            "no record of when the read began: --catch-up --since <UTC time> --apply"
+        )
+    waiting, under_way = await pipeline_counts()
     if under_way:
         problems.append(f"{under_way} runs are under way")
-    return problems
+    return Verdict(problems, waiting)
 
 
-async def runs_in_pipeline(started: bool = False) -> int:
-    query = (
-        select(func.count())
-        .select_from(BrainstormRequest)
-        .where(in_pipeline_condition())
+async def pipeline_counts() -> tuple[int, int]:
+    """(requests waiting for a worker, runs under way).
+
+    A run is under way until its scores are written, a stage the scheduler's
+    own test of the pipeline leaves out.
+    """
+    waiting = BrainstormRequest.status == _WAITING
+    writing = and_(
+        BrainstormRequest.status == BrainstormRequestStatus.SUCCESS.value,
+        BrainstormRequest.status_internal_brainstorm_publication.in_(_UNFINISHED),
+        BrainstormRequest.updated_at >= func.now() - text(_WRITE_WINDOW),
     )
-    if started:
-        query = query.where(BrainstormRequest.status != _WAITING)
+    query = select(
+        func.count().filter(and_(in_pipeline_condition(), waiting)),
+        func.count().filter(or_(and_(in_pipeline_condition(), ~waiting), writing)),
+    ).select_from(BrainstormRequest)
     async with db_session() as db:
-        return int((await db.execute(query)).scalar_one())
+        row = (await db.execute(query)).one()
+    return int(row[0]), int(row[1])
+
+
+async def runs_in_pipeline() -> int:
+    return sum(await pipeline_counts())
 
 
 async def _print_status(session) -> None:
@@ -569,10 +601,15 @@ async def main() -> int:
                 return 0
 
             if args.verify:
-                problems = await verify_problems()
-                waiting = await runs_in_pipeline() - await runs_in_pipeline(True)
-                if waiting:
-                    print(f"  ({waiting} requests wait for a worker: not a problem)")
+                if args.only:
+                    print("--verify takes no --only")
+                    return 2
+                verdict = await verify()
+                problems = verdict.problems
+                if verdict.waiting:
+                    print(
+                        f"  ({verdict.waiting} requests wait for a worker: not a problem)"
+                    )
                 for line in problems[:50]:
                     print(f"  {line}")
                 print(f"problems: {len(problems)}")

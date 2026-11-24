@@ -248,18 +248,18 @@ class Difference:
     b: Entry | None
 
 
-# Recorded but not compared: with the flag off the whitelist is the snapshot of a
+# Only the status is compared: with the flag off the whitelist is the snapshot of a
 # run's fresh scores, with it on it is derived from the stored ones.
-NOT_COMPARED = frozenset({"whitelist"})
+BODY_NOT_COMPARED = frozenset({"whitelist"})
 
 
 def differences(a: dict[str, Entry], b: dict[str, Entry]) -> list[Difference]:
     out = []
     for key in sorted(a.keys() | b.keys()):
         ea, eb = a.get(key), b.get(key)
-        if (ea or eb).endpoint in NOT_COMPARED:  # type: ignore[union-attr]
-            continue
-        if ea is None or eb is None or (ea.status, ea.hash) != (eb.status, eb.hash):
+        if ea is None or eb is None or ea.status != eb.status:
+            out.append(Difference(key, ea, eb))
+        elif ea.hash != eb.hash and ea.endpoint not in BODY_NOT_COMPARED:
             out.append(Difference(key, ea, eb))
     return out
 
@@ -513,7 +513,9 @@ async def main() -> int:
     found = differences(load(args.a), load(args.b))
     for d in found[:50]:
         print(f"  {d.key}: a {d.a and d.a.hash[:12]}, b {d.b and d.b.hash[:12]}")
-    print(f"calls that differ: {len(found)} (not compared: {', '.join(NOT_COMPARED)})")
+    print(
+        f"calls that differ: {len(found)} (body not compared: {', '.join(BODY_NOT_COMPARED)})"
+    )
     if not found:
         return 0
     if args.reread:

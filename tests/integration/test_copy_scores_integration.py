@@ -282,13 +282,13 @@ def test_catch_up_redoes_only_the_observers_run_since_the_sweep():
 
 def test_verify_names_what_keeps_the_copy_from_the_switch():
     async def mine(w):
-        return [p for p in await mod.verify_problems() if w.one in p or w.two in p]
+        return [p for p in (await mod.verify()).problems if w.one in p or w.two in p]
 
     async def test(w, session):
         try:
-            assert "the sweep has not finished" in await mod.verify_problems()
+            assert "the sweep has not finished" in (await mod.verify()).problems
             await mod.copy_all(session, page_size=50, log=lambda _: None)
-            problems = await mod.verify_problems()
+            problems = (await mod.verify()).problems
             assert "the sweep has not finished" not in problems
             # The node without a user_id holds one of w.one's scores.
             assert any("without a user_id" in p for p in problems)
@@ -317,7 +317,27 @@ def test_verify_names_what_keeps_the_copy_from_the_switch():
                 )
             found = await mine(w)
             assert len(found) == 1 and found[0].startswith(w.one)
-            assert any("under way" in p for p in await mod.verify_problems())
+            assert any("under way" in p for p in (await mod.verify()).problems)
+
+            # Calculated and published, scores not written yet: still under way.
+            async with db_session() as db:
+                await db.execute(
+                    update(BrainstormRequest)
+                    .where(BrainstormRequest.pubkey == w.one)
+                    .values(
+                        status="success",
+                        status_ta_publication="success",
+                        status_internal_brainstorm_publication="ongoing",
+                    )
+                )
+            assert any("under way" in p for p in (await mod.verify()).problems)
+            async with db_session() as db:
+                await db.execute(
+                    update(BrainstormRequest)
+                    .where(BrainstormRequest.pubkey == w.one)
+                    .values(status_internal_brainstorm_publication="success")
+                )
+            assert not any("under way" in p for p in (await mod.verify()).problems)
         finally:
             await _forget_requests(w)
 

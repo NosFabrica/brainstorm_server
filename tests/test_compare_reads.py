@@ -113,12 +113,14 @@ def test_a_call_only_in_one_record_is_a_difference(tmp_path):
     assert found and all(d.a is None and d.b.observer == HOUSE for d in found)
 
 
-def test_a_whitelist_change_is_not_a_difference():
-    def entry(endpoint, digest):
-        e = cr.Entry(endpoint, OBS, [], 200, digest, 1)
+def test_a_whitelist_change_is_not_a_difference_but_a_failing_one_is():
+    def entry(endpoint, digest, status=200):
+        e = cr.Entry(endpoint, OBS, [], status, digest, 1)
         return {e.call.key: e}
 
     assert cr.differences(entry("whitelist", "x"), entry("whitelist", "y")) == []
+    assert cr.differences(entry("whitelist", "x"), entry("whitelist", "x", 500))
+    assert cr.differences(entry("whitelist", "x"), {})
     assert cr.differences(entry("overview", "x"), entry("overview", "y"))
 
 
