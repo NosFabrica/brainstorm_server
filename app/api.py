@@ -24,6 +24,7 @@ from app.cronjobs.fail_stale_ongoing_brainstorm_requests import (
 from app.cronjobs.periodic_graperank_trigger import periodic_graperank_trigger_cronjob
 from app.cronjobs.retry_compromised_zeroing import retry_compromised_zeroing_cronjob
 from app.cronjobs.scheduler import scheduler_cronjob
+from app.cronjobs.user_id_check import user_id_check_cronjob
 from app.message_queue_tasks.backfill_redis_relationships import (
     backfill_redis_relationships_if_needed,
 )
@@ -137,6 +138,7 @@ async def lifespan(app: FastAPI):
     billing_sync_task = asyncio.create_task(billing_sync_cronjob())
     support_diagnostics_task = asyncio.create_task(expire_support_diagnostics_cronjob())
     compromised_retry_task = asyncio.create_task(retry_compromised_zeroing_cronjob())
+    user_id_check_task = asyncio.create_task(user_id_check_cronjob())
 
     try:
         yield
@@ -153,7 +155,10 @@ async def lifespan(app: FastAPI):
         billing_sync_task.cancel()
         support_diagnostics_task.cancel()
         compromised_retry_task.cancel()
-        await asyncio.gather(support_diagnostics_task, return_exceptions=True)
+        user_id_check_task.cancel()
+        await asyncio.gather(
+            support_diagnostics_task, user_id_check_task, return_exceptions=True
+        )
         # In-flight support notifications finish rather than being dropped.
         await drain_notifications()
         # Awaited before the clients below are closed: a cancelled reconcile can
