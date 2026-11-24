@@ -154,6 +154,21 @@ second it prints, and never run it alongside a large score write. Nodes whose pu
 
 Held by `tests/integration/test_backfill_user_ids_integration.py`, which only runs on an empty graph.
 
+### `remove_malformed_nodes.py`
+
+Removes the `NostrUser` nodes whose pubkey is not 64-char lowercase hex (they can never have a
+`user_id`, and the score copy refuses while one holds a score). Those still followed come from
+uppercase `p` tags ingested before `p_tag_pubkeys` lowercased them. Dry-run by default: the nodes,
+the edges on them, the followers, and whether the relay (`nostr_transfer_to_relay`) holds each
+follower's kind 3. `--apply` puts each follower's current kind 3 on `strfry:events`, so the
+running server's ingest moves the follow to the lowercase node and fixes `followed_by:`, waits
+(`--wait`, default 300 s) until no edge is left, then deletes the nodes that have none. Their
+score properties go with them.
+
+It writes nothing and exits 2 when an edge is not a follow from a well-formed author, when a
+follower has no kind 3 on the relay, or when ingest is held. Exit 1 if a malformed node is left.
+Needs the server's ingest running. Idempotent. Held by `tests/test_remove_malformed_nodes.py`.
+
 ### `copy_scores_to_postgres.py`
 
 The one-time copy of every Observer's stored scores from Neo4j properties into the `scorecard`
