@@ -14,6 +14,7 @@ from app.routers.user.dependencies import get_verified_cutoffs, resolve_observer
 from app.schemas.request_body_schemas import (
     AssistantDictionaryBody,
     GetTrustSignalsBody,
+    PublishAssistantAgentKeysBody,
     RefreshSubscriptionBody,
     SetAssistantTreasureMapBody,
     SubmitFollowListBody,
@@ -21,6 +22,7 @@ from app.schemas.request_body_schemas import (
 from app.schemas.request_response_schemas import (
     AssistantDictionaryResponse,
     ErrorResponseSchema,
+    GetAssistantAgentKeysResponse,
     GetAssistantDutyMenuResponse,
     GetAssistantTreasureMapResponse,
     GetOwnLatestGraperankResponse,
@@ -32,6 +34,7 @@ from app.schemas.request_response_schemas import (
     GetUserHistoryResponse,
     GetUserOverviewResponse,
     GetUserStatsResponse,
+    PublishAssistantAgentKeysResponse,
     PublishAssistantDutyMenuResponse,
     PublishAssistantProfileData,
     PublishAssistantProfileResponse,
@@ -40,6 +43,10 @@ from app.schemas.request_response_schemas import (
     SubmitFollowListResponse,
 )
 from app.schemas.schemas import FollowListIngestResult, OwnUserData, TrustSignalsData
+from app.services.agent_keys_service import (
+    publish_assistant_agent_keys,
+    read_assistant_agent_keys,
+)
 from app.services.assistant_dictionary_service import (
     add_to_assistant_dictionary,
     withdraw_from_assistant_dictionary,
@@ -81,6 +88,7 @@ from app.utils.datetimes import as_naive_utc, utc_now
 from app.utils.rate_limiting.rate_limiting import (
     GRAPERANK_POLICY,
     rate_limit,
+    validate_agent_keys_allowed,
     validate_subscription_refresh_allowed,
 )
 
@@ -387,6 +395,48 @@ async def publish_assistant_treasure_map_endpoint(
     jwt_data: JWTData = request.state.jwt_data
     published = await publish_assistant_treasure_map(db, jwt_data.nostr_pubkey, body.on)
     return PublishAssistantTreasureMapResponse(data=published)
+
+
+# On the authenticated router, as the Duty Menu's: on `public_router`,
+# `/{pubkey}` would answer GET /user/assistantAgentKeys as a profile. Neither
+# route takes a pubkey, an Assistant or an id: the Assistant is the token's.
+@router.get(
+    path="/assistantAgentKeys",
+    tags=[],
+    dependencies=[],
+    summary="The user's brainstorm assistant's AI keys (kind 12000), encrypted to the user",
+)
+async def get_assistant_agent_keys_endpoint(
+    request: Request,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> GetAssistantAgentKeysResponse:
+    jwt_data: JWTData = request.state.jwt_data
+    await validate_agent_keys_allowed(jwt_data.nostr_pubkey)
+    keys = await read_assistant_agent_keys(db, jwt_data.nostr_pubkey)
+    return GetAssistantAgentKeysResponse(data=keys)
+
+
+@router.post(
+    path="/assistantAgentKeys",
+    tags=[],
+    dependencies=[],
+    summary="Replace and publish the user's brainstorm assistant's AI keys (kind 12000)",
+)
+async def publish_assistant_agent_keys_endpoint(
+    request: Request,
+    body: PublishAssistantAgentKeysBody,
+    db: AsyncDBSession = Depends(dependency=get_db),
+) -> PublishAssistantAgentKeysResponse:
+    jwt_data: JWTData = request.state.jwt_data
+    await validate_agent_keys_allowed(jwt_data.nostr_pubkey)
+    published = await publish_assistant_agent_keys(
+        db,
+        jwt_data.nostr_pubkey,
+        body.ciphertext,
+        body.previous_created_at,
+        body.previous_id,
+    )
+    return PublishAssistantAgentKeysResponse(data=published)
 
 
 # On the authenticated router for the same reason as the Duty Menu's: on
