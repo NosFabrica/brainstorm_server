@@ -67,7 +67,7 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 
 - **Everything is async** — FastAPI endpoints, DB calls (`asyncpg`, `neo4j.AsyncDriver`, `redis.asyncio`), and outbound HTTP. Don't introduce blocking I/O.
 - **Settings via Pydantic** in `app/core/config.py`. Add a `Field(...)` for required vars, `Field(default=...)` for optional. Mirror in `env.example`.
-- **Background tasks are spawned in the FastAPI lifespan** (`app/api.py`) with `asyncio.create_task` and cancelled in the `finally` block. Add new long-running consumers there.
+- **Background tasks are spawned in the FastAPI lifespan** (`app/api.py`) with `background.start(name, coro)` (`app/core/background_tasks.py`). A task that ends by an error or an unasked cancellation is logged with its traceback and stops the process, so the pod restarts; one that returns (a cronjob switched off) is only logged. Add new long-running consumers there, never with a bare `asyncio.create_task`.
 - **Loggers**: `from app.core.loggr import loggr; logger = loggr.get_logger(__name__)`. Don't use `print` or stdlib `logging` directly.
 - **Client tag**: every event we sign carries `client_tag()` ([`app/utils/client_tag.py`](app/utils/client_tag.py)) — add it to any new `EventBuilder`.
 
@@ -75,7 +75,7 @@ Each directory has its own `CLAUDE.md`. Start there before diving in.
 
 | I want to… | Look at… |
 |---|---|
-| Add a new redis consumer | `app/message_queue_tasks/` + spawn the task in `app/api.py` lifespan |
+| Add a new redis consumer | `app/message_queue_tasks/` + `background.start(...)` in `app/api.py` lifespan |
 | Add an HTTP endpoint | Create a router under `app/routers/<topic>/router.py`, register it in `app/routers/router.py` |
 | Add an env var | `app/core/config.py` + `env.example` + the relevant compose file |
 | Add a PostgreSQL migration | `alembic revision --autogenerate -m "..."` (after model change in `app/db_models/`) |
