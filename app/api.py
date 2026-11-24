@@ -10,6 +10,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi_pagination import add_pagination
 
 from app.core.admin_whitelist import init_admin_whitelist
+from app.core.background_tasks import BackgroundTasks
 from app.core.billing_admin_whitelist import init_billing_admin_whitelist
 from app.core.config import settings
 from app.core.flash import aclose as flash_aclose
@@ -101,9 +102,8 @@ async def lifespan(app: FastAPI):
     # from Neo4j on machines whose graph DB was populated before Redis was wired in.
     await backfill_redis_relationships_if_needed()
 
-    consume_strfry_plugin_messages_task = asyncio.create_task(
-        consume_strfry_plugin_messages()
-    )
+    background = BackgroundTasks()
+    background.start("ingest consumer", consume_strfry_plugin_messages())
 
     if settings.perform_nostr_full_sync:
         # populate the STRFRY relay
@@ -126,36 +126,29 @@ async def lifespan(app: FastAPI):
     # regular_update_task = asyncio.create_task(nostr_event_recent_transferer_cronjob())
 
     # Start the listener task
-    listener_task = asyncio.create_task(consume_messages())
-    listener_nostr_upload_task = asyncio.create_task(consume_nostr_upload_messages())
-    listener_neo4j_write_task = asyncio.create_task(consume_neo4j_write_messages())
-    listener_ongoing_job_task = asyncio.create_task(consume_job_started_messages())
-    fail_stale_ongoing_task = asyncio.create_task(
-        fail_stale_ongoing_brainstorm_requests_cronjob()
+    background.start("result consumer", consume_messages())
+    background.start("TA publish consumer", consume_nostr_upload_messages())
+    background.start("score write consumer", consume_neo4j_write_messages())
+    background.start("job started consumer", consume_job_started_messages())
+    background.start(
+        "stale request cronjob", fail_stale_ongoing_brainstorm_requests_cronjob()
     )
-    periodic_graperank_task = asyncio.create_task(periodic_graperank_trigger_cronjob())
-    scheduler_task = asyncio.create_task(scheduler_cronjob())
-    billing_sync_task = asyncio.create_task(billing_sync_cronjob())
-    support_diagnostics_task = asyncio.create_task(expire_support_diagnostics_cronjob())
-    compromised_retry_task = asyncio.create_task(retry_compromised_zeroing_cronjob())
-    user_id_check_task = asyncio.create_task(user_id_check_cronjob())
+    background.start("periodic GrapeRank cronjob", periodic_graperank_trigger_cronjob())
+    background.start("scheduler", scheduler_cronjob())
+    billing_sync_task = background.start("billing sync cronjob", billing_sync_cronjob())
+    support_diagnostics_task = background.start(
+        "support diagnostics cronjob", expire_support_diagnostics_cronjob()
+    )
+    background.start("compromised retry cronjob", retry_compromised_zeroing_cronjob())
+    user_id_check_task = background.start(
+        "user id check cronjob", user_id_check_cronjob()
+    )
 
     try:
         yield
     finally:
         # Graceful shutdown
-        listener_task.cancel()
-        listener_nostr_upload_task.cancel()
-        listener_neo4j_write_task.cancel()
-        listener_ongoing_job_task.cancel()
-        consume_strfry_plugin_messages_task.cancel()
-        fail_stale_ongoing_task.cancel()
-        periodic_graperank_task.cancel()
-        scheduler_task.cancel()
-        billing_sync_task.cancel()
-        support_diagnostics_task.cancel()
-        compromised_retry_task.cancel()
-        user_id_check_task.cancel()
+        background.cancel_all()
         await asyncio.gather(
             support_diagnostics_task, user_id_check_task, return_exceptions=True
         )
