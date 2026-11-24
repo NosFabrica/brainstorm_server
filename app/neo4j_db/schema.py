@@ -32,6 +32,15 @@ SCHEMA: tuple[SchemaItem, ...] = (
         " FOR (u:NostrUser) REQUIRE u.user_id IS UNIQUE",
         needs_user_ids=True,
     ),
+    # Temporary: lets the worker read penalised NIP-05 statuses without one
+    # property read per reached user while score properties are still on the
+    # nodes. Drop it once they are gone.
+    SchemaItem(
+        "nostr_user_nip05_status",
+        "CREATE INDEX nostr_user_nip05_status IF NOT EXISTS"
+        " FOR (u:NostrUser) ON (u.nip05_status)",
+        needs_user_ids=True,
+    ),
 )
 
 

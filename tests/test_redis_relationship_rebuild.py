@@ -77,7 +77,12 @@ def _rebuild(monkeypatch, relationship, prefix, forward, pages):
 
 
 def test_forward_sets_are_keyed_by_the_source(monkeypatch):
-    pages = [[{"source": ALICE, "targets": [PROVIDER]}, {"source": BOB, "targets": []}]]
+    pages = [
+        [
+            {"cursor": ALICE, "source": ALICE, "targets": [PROVIDER]},
+            {"cursor": BOB, "source": BOB, "targets": []},
+        ]
+    ]
     writes, calls = _rebuild(monkeypatch, "DESIGNATES", "designates:", True, pages)
 
     assert writes == [(f"designates:{ALICE}", PROVIDER)]
@@ -85,7 +90,7 @@ def test_forward_sets_are_keyed_by_the_source(monkeypatch):
 
 
 def test_reverse_sets_are_keyed_by_the_target(monkeypatch):
-    pages = [[{"source": ALICE, "targets": [BOB]}]]
+    pages = [[{"cursor": ALICE, "source": ALICE, "targets": [BOB]}]]
     writes, _ = _rebuild(monkeypatch, "FOLLOWS", "followed_by:", False, pages)
 
     assert writes == [(f"followed_by:{BOB}", ALICE)]
@@ -95,6 +100,7 @@ def test_the_rebuild_covers_designations_and_zap_signers(monkeypatch):
     redis = MagicMock()
     redis.exists = AsyncMock(return_value=False)
     redis.set = AsyncMock()
+    redis.getset = AsyncMock(return_value=None)
     redis.close = AsyncMock()
     monkeypatch.setattr(mod, "get_redis_client", lambda: redis)
     monkeypatch.setattr(mod, "_is_graph_db_populated", AsyncMock(return_value=True))

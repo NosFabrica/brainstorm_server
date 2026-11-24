@@ -6,6 +6,7 @@ from itertools import islice
 from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
+from app.core.scorecard_database import scorecard_session
 from app.db_models import BrainstormRequestStatus
 from app.models.grapeRankResult import GrapeRankResult, ScoreCard
 from app.neo4j_db.driver import driver as neo4j_driver
@@ -18,6 +19,14 @@ from app.repos.brainstorm_request_repo import (
     update_brainstorm_request_internal_publication_status_by_id_on_db,
 )
 from app.repos.compromised_pubkey_repo import select_compromised_pubkeys_on_db
+from app.repos.scorecard_repo import (
+    ScoreRow,
+    clear_observer_scores_on_db,
+    clear_unreached_scores_on_db,
+    mark_observer_written_on_db,
+    observer_id_on_db,
+    set_observer_scores_on_db,
+)
 from app.repos.user_repo import (
     clear_observer_scores,
     get_pubkeys_scored_by_observer,
@@ -55,6 +64,34 @@ async def _clear_unreached(keys: dict[str, str], scored: set[str]) -> int:
         lambda session, batch: clear_observer_scores(session, batch, key_list), stale
     )
     return len(stale)
+
+
+async def _write_to_postgres(
+    observer: str,
+    cards: list[ScoreCard],
+    clear_set: list[str],
+    reached: set[str] | None,
+) -> int:
+    """The run's Scorecard writes as one transaction; returns how many
+    out-of-reach scores were cleared. A scored pubkey without a user id raises,
+    which fails the run with nothing written."""
+    rows: Iterable[ScoreRow] = (
+        (
+            card["observee"],
+            float(card.get("influence", 0)),
+            int(card.get("hops", 0)),
+            int(card.get("trusted_followers", 0)),
+        )
+        for card in cards
+    )
+    async with scorecard_session() as db:
+        observer_id = await observer_id_on_db(db, observer)
+        await set_observer_scores_on_db(db, observer_id, rows)
+        await clear_observer_scores_on_db(db, observer_id, clear_set)
+        await mark_observer_written_on_db(db, observer_id)
+        if reached is None:
+            return 0
+        return await clear_unreached_scores_on_db(db, observer_id, reached)
 
 
 def cleanup_due(last: datetime | None, interval_days: int, now: datetime) -> bool:
@@ -145,20 +182,27 @@ async def process_neo4j_write_message(message: dict):
         cards = [c for c in cards if c["observee"] not in scored_compromised]
         clear_set = list(clear_set) + sorted(scored_compromised - set(clear_set))
 
-    # Rows built a batch at a time, so the event loop is never held for all of them.
-    await _write_batches(set_observer_scores, (row(card) for card in cards))
     written = len(cards)
-
-    key_list = list(keys.values())
-    await _write_batches(
-        lambda session, batch: clear_observer_scores(session, batch, key_list),
-        clear_set,
-    )
-
     cleared = 0
-    if clear_unreached:
-        scored = {c["observee"] for c in scorecards.values()}
-        cleared = await _clear_unreached(keys, scored)
+    # One store or the other, never both.
+    if settings.scores_in_postgres:
+        reached = {c["observee"] for c in scorecards.values()}
+        cleared = await _write_to_postgres(
+            observer, cards, list(clear_set), reached if clear_unreached else None
+        )
+    else:
+        # Rows built a batch at a time, so the event loop is never held for all of them.
+        await _write_batches(set_observer_scores, (row(card) for card in cards))
+
+        key_list = list(keys.values())
+        await _write_batches(
+            lambda session, batch: clear_observer_scores(session, batch, key_list),
+            clear_set,
+        )
+
+        if clear_unreached:
+            scored = {c["observee"] for c in scorecards.values()}
+            cleared = await _clear_unreached(keys, scored)
 
     async with db_session() as db:
         await update_brainstorm_request_internal_publication_status_by_id_on_db(
@@ -173,8 +217,9 @@ async def process_neo4j_write_message(message: dict):
 
     final_time = time.time() - start_time
     logger.info(
-        f"Took {final_time:.2f} seconds to process Neo4j writes "
-        f"(mode={'full' if full else 'changed'} written={written} of {len(scorecards)} "
+        f"Took {final_time:.2f} seconds to process score writes "
+        f"(store={'postgres' if settings.scores_in_postgres else 'neo4j'} "
+        f"mode={'full' if full else 'changed'} written={written} of {len(scorecards)} "
         f"below_floor_cleared={len(clear_set)} cleared={cleared}) run={run_id} "
         f"observer={observer}"
     )

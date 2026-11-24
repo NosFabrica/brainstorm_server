@@ -31,8 +31,13 @@ def test_without_user_ids_only_the_pubkey_constraint_is_ensured(monkeypatch):
 def test_with_user_ids_the_id_constraint_is_ensured_too(monkeypatch):
     monkeypatch.setattr(schema.settings, "user_ids_enabled", True)
     names, ran = _ensure()
-    assert names == ["nostr_user_pubkey", "nostr_user_user_id"]
+    assert names == [
+        "nostr_user_pubkey",
+        "nostr_user_user_id",
+        "nostr_user_nip05_status",
+    ]
     assert "u.user_id IS UNIQUE" in ran[1]
+    assert "u.nip05_status" in ran[2]
 
 
 def test_a_caller_about_to_write_ids_asks_for_them_whatever_the_setting(monkeypatch):

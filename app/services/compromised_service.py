@@ -38,6 +38,7 @@ from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import redis_client
+from app.core.scorecard_database import scorecard_session
 from app.db_models import CompromisedPubkey
 from app.message_queue_tasks.process_strfry_event import (
     DESIGNATES_KEY_PREFIX,
@@ -73,6 +74,7 @@ from app.repos.compromised_pubkey_repo import (
     upsert_compromised_on_db,
 )
 from app.repos.observer_whitelist_repo import remove_pubkey_from_whitelists_on_db
+from app.repos.scorecard_repo import clear_scores_about_on_db
 from app.repos.user_repo import (
     clear_observer_scores,
     delete_outgoing_ratings,
@@ -85,6 +87,7 @@ from app.schemas.request_body_schemas import (
 from app.schemas.schemas import CompromisedStatus
 from app.services.compromised_authors import forget_compromised_authors
 from app.services.designation_service import fetch_latest
+from app.services.relationship_sets import set_name
 from app.utils.signed_event import SignedEventRejected, verify_signed_event
 
 logger = loggr.get_logger(__name__)
@@ -269,12 +272,18 @@ async def cut_outgoing_ratings(pubkey: str) -> int:
         ("REPORTS", REPORTED_BY_KEY_PREFIX),
     ):
         await update_reverse_sets(prefix, pubkey, removed_pubkeys=cut.get(kind))
-    await redis_client.delete(f"{DESIGNATES_KEY_PREFIX}{pubkey}")
+    name = await set_name(pubkey)
+    if name is not None:
+        await redis_client.delete(f"{DESIGNATES_KEY_PREFIX}{name}")
     return sum(len(targets) for targets in cut.values())
 
 
-async def clear_neo4j_scores(pubkey: str) -> int:
-    """Remove every observer's stored score for `pubkey`; how many properties."""
+async def clear_stored_scores(pubkey: str) -> int:
+    """Remove every observer's stored score for `pubkey`; how many properties
+    (Neo4j) or rows (Scorecard database) went."""
+    if settings.scores_in_postgres:
+        async with scorecard_session() as db:
+            return await clear_scores_about_on_db(db, pubkey)
     async with neo4j_driver.session() as session:
         keys = await get_score_keys_on_node(session, pubkey)
         if keys:
@@ -337,7 +346,7 @@ async def zero_compromised(
             )
     if observer is None:
         report.edges_cut = await cut_outgoing_ratings(pubkey)
-        report.neo4j_cleared = await clear_neo4j_scores(pubkey)
+        report.neo4j_cleared = await clear_stored_scores(pubkey)
         async with db_session() as db:
             report.whitelists_updated = await remove_pubkey_from_whitelists_on_db(
                 db, pubkey

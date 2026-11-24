@@ -12,6 +12,7 @@ from app.repos.tagging_repo import upsert_tag_element_on_db, upsert_user_tagging
 from app.repos.user_id_repo import ids_for
 from app.services.compromised_authors import compromised_authors
 from app.services.designation_service import DESIGNATION_KIND, parse_designated_pubkeys
+from app.services.relationship_sets import set_names
 from app.services.report_graph_service import (
     diff_author_targets,
     extract_report_targets,
@@ -357,12 +358,16 @@ async def process_event_kind_10040(session: AsyncNeoSession, event: dict):
             designated=designated,
         )
 
+    names = await set_names([publisher, *designated])
+    if publisher not in names:
+        return
+    members = [names[pk] for pk in designated if pk in names]
     # Replaced whole, atomically: a reader never sees half of the old list.
-    key = f"{DESIGNATES_KEY_PREFIX}{publisher}"
+    key = f"{DESIGNATES_KEY_PREFIX}{names[publisher]}"
     pipe = redis_client.pipeline(transaction=True)
     pipe.delete(key)
-    if designated:
-        pipe.sadd(key, *designated)
+    if members:
+        pipe.sadd(key, *members)
     await pipe.execute()
 
 
@@ -376,11 +381,18 @@ async def _update_reverse_sets(
     removed_pubkeys = removed_pubkeys or []
     if not added_pubkeys and not removed_pubkeys:
         return
+    # Pubkeys, or User ids once scores are in Postgres (services/relationship_sets.py).
+    names = await set_names([publisher, *added_pubkeys, *removed_pubkeys])
+    member = names.get(publisher)
+    if member is None:
+        return
     pipe = redis_client.pipeline(transaction=False)
     for pk in added_pubkeys:
-        pipe.sadd(f"{key_prefix}{pk}", publisher)
+        if pk in names:
+            pipe.sadd(f"{key_prefix}{names[pk]}", member)
     for pk in removed_pubkeys:
-        pipe.srem(f"{key_prefix}{pk}", publisher)
+        if pk in names:
+            pipe.srem(f"{key_prefix}{names[pk]}", member)
     await pipe.execute()
 
 

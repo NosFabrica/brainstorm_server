@@ -52,7 +52,12 @@ from app.message_queue_tasks.process_strfry_event import (  # noqa: E402
     REPORTED_BY_KEY_PREFIX,
 )
 from app.neo4j_db.driver import driver as neo4j_driver  # noqa: E402
-from app.repos.user_id_repo import ids_for  # noqa: E402
+from app.repos.user_id_repo import ids_for, pubkeys_for  # noqa: E402
+from app.services.relationship_sets import (  # noqa: E402
+    is_set_name,
+    names_are_ids,
+    set_names,
+)
 from app.services.report_graph_service import (  # noqa: E402
     ReportedByDiff,
     build_desired_reported_by,
@@ -86,14 +91,28 @@ def _split_by_kind(events: Iterable[dict]) -> tuple[list[dict], list[dict]]:
 
 
 async def _load_current_reported_by() -> dict[str, set[str]]:
+    """The reported-by sets as pubkeys, whichever naming Redis uses."""
+    ids = names_are_ids()
     current: dict[str, set[str]] = {}
     async for key in redis_client.scan_iter(
         match=f"{REPORTED_BY_KEY_PREFIX}*", count=500
     ):
+        name = key[len(REPORTED_BY_KEY_PREFIX) :]
+        if not is_set_name(name, ids):
+            continue
         members = await redis_client.smembers(key)
         if members:
-            current[key[len(REPORTED_BY_KEY_PREFIX) :]] = set(members)
-    return current
+            current[name] = set(members)
+    if not ids:
+        return current
+    pubkeys = await pubkeys_for(
+        {int(n) for target, members in current.items() for n in (target, *members)}
+    )
+    return {
+        pubkeys[int(target)]: {pubkeys[int(m)] for m in members if int(m) in pubkeys}
+        for target, members in current.items()
+        if int(target) in pubkeys
+    }
 
 
 async def _apply_redis(diff: ReportedByDiff) -> None:
@@ -101,8 +120,13 @@ async def _apply_redis(diff: ReportedByDiff) -> None:
     pending = 0
     ops = [("sadd", t, m) for t, ms in diff.to_add.items() for m in ms]
     ops += [("srem", t, m) for t, ms in diff.to_remove.items() for m in ms]
+    names = await set_names(
+        {pk for _, target, member in ops for pk in (target, member)}
+    )
     for op, target, member in ops:
-        getattr(pipe, op)(f"{REPORTED_BY_KEY_PREFIX}{target}", member)
+        if target not in names or member not in names:
+            continue
+        getattr(pipe, op)(f"{REPORTED_BY_KEY_PREFIX}{names[target]}", names[member])
         pending += 1
         if pending >= _REDIS_PIPE_CHUNK:
             await pipe.execute()

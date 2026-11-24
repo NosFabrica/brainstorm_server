@@ -45,13 +45,16 @@ async def select_observer_whitelist_updated_at(
 
 # Filter above-threshold observees server-side so the ~99k-key scores blob is
 # never parsed into a Python dict on the event loop; only matching keys return.
+# Compared as floats: against `numeric` the driver sends the threshold as the
+# float's exact decimal expansion (0.02 becomes 0.0200000000000000004...), which
+# left out everyone sitting exactly on it.
 _WHITELISTED_PUBKEYS_SQL = text(
     """
     SELECT e.key
     FROM observerwhitelist w,
          jsonb_each_text(w.scores) AS e(key, value)
     WHERE w.observer_pubkey = :pubkey
-      AND e.value::numeric >= :threshold
+      AND e.value::double precision >= CAST(:threshold AS double precision)
     """
 )
 

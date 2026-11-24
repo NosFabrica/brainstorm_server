@@ -5,11 +5,24 @@ from neo4j import AsyncSession as AsyncNeoSession
 from neo4j import Query
 from neo4j.exceptions import ClientError
 
+from app.core.config import settings
 from app.core.tier_thresholds import (
     FLAGGED_TIER,
     TIER_HIGH,
     TIER_MEDIUM,
     TIER_MEDIUM_HIGH,
+    classify_tier,
+)
+from app.repos.scorecard_repo import (
+    NO_SCORE,
+    Members,
+    Score,
+    count_members,
+    ids_above,
+    observees_at_or_above,
+    page_of_members,
+    scores_by_id,
+    scores_by_pubkey,
 )
 from app.schemas.schemas import (
     ConnectionStats,
@@ -38,6 +51,11 @@ async def _get_pubkeys_with_influence(
             f"(user:NostrUser {{pubkey: $pubkey}})-[:{relation}]->(other:NostrUser)"
         )
 
+    if settings.scores_in_postgres:
+        return await _connections_from_scorecards(
+            session, match_clause, pubkey, observer or pubkey
+        )
+
     query = f"""
     MATCH {match_clause}
     RETURN
@@ -51,6 +69,30 @@ async def _get_pubkeys_with_influence(
     return [
         UserConnection(pubkey=record["pubkey"], influence=record["influence"])
         async for record in result
+    ]
+
+
+async def _connections_from_scorecards(
+    session: AsyncNeoSession, match_clause: str, pubkey: str, observer: str
+) -> list[UserConnection]:
+    """Graph first: the graph says who (by User id), the Scorecard database gives
+    each one's pubkey and Influence. A node without an id keeps its pubkey and
+    has no score."""
+    result = await session.run(
+        f"""
+        MATCH {match_clause}
+        RETURN other.user_id AS id,
+            CASE WHEN other.user_id IS NULL THEN other.pubkey END AS pubkey
+        """,
+        pubkey=pubkey,
+    )
+    rows = [(record["id"], record["pubkey"]) async for record in result]
+    scored = await scores_by_id(observer, [uid for uid, _ in rows if uid is not None])
+    return [
+        UserConnection(pubkey=pk, influence=None)
+        if uid is None
+        else UserConnection(pubkey=scored[uid][0], influence=scored[uid][1].influence)
+        for uid, pk in rows
     ]
 
 
@@ -213,6 +255,10 @@ async def get_influence_for_observer(
     Returns the value of 'influence_<observer_pubkey>' for the NostrUser with pubkey.
     Returns None if the user or property does not exist.
     """
+    if settings.scores_in_postgres:
+        scored = await scores_by_pubkey(observer_pubkey, [pubkey])
+        return scored[pubkey].influence if pubkey in scored else None
+
     property_name = f"influence_{observer_pubkey}"
     query = """
     MATCH (user:NostrUser {pubkey: $pubkey})
@@ -251,6 +297,13 @@ async def get_qualifying_asserters_for_observer(
     """
     if not pubkeys:
         return {}
+    if settings.scores_in_postgres:
+        scored = await scores_by_pubkey(observer_pubkey, pubkeys)
+        return {
+            pk: round(float(score.influence) * 100) / 100
+            for pk, score in scored.items()
+            if score.influence is not None and score.influence >= min_influence
+        }
     property_name = f"influence_{observer_pubkey}"
     query = """
     UNWIND $pubkeys AS pk
@@ -287,6 +340,16 @@ def _scoped_match_pattern(rel_type: str, direction: str) -> str:
     if direction == "in":
         return f"(other:NostrUser)-[:{rel_type}]->(user)"
     return f"(user)-[:{rel_type}]->(other:NostrUser)"
+
+
+_INFLUENCE_PREFIX = "influence_"
+
+
+def _observer_of(influence_key: str) -> str:
+    """The Observer pubkey behind a Neo4j `influence_<observer>` property name."""
+    if not influence_key.startswith(_INFLUENCE_PREFIX):
+        raise ValueError(f"not an influence key: {influence_key!r:.80}")
+    return influence_key[len(_INFLUENCE_PREFIX) :]
 
 
 class OutboundCounts(NamedTuple):
@@ -331,16 +394,22 @@ async def get_counts_and_influence(
     flagged DISTINCT scan over every inbound edge, and takes no line, so the
     caller needs no preset read. Need a line-driven field? Use the full query.
     """
+    in_postgres = settings.scores_in_postgres
+    influence = "null" if in_postgres else "user[$influence_key]"
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
-    RETURN user[$influence_key] AS influence, following, muting, reporting
+    RETURN {influence} AS influence, following, muting, reporting
     """
     result = await session.run(query, pubkey=pubkey, influence_key=influence_key)
     record = await result.single()
     if not record:
         return OutboundCounts(None, 0, 0, 0)
+    stored = record["influence"]
+    if in_postgres:
+        scored = await scores_by_pubkey(_observer_of(influence_key), [pubkey])
+        stored = scored[pubkey].influence if pubkey in scored else None
     return OutboundCounts(
-        influence=record["influence"],
+        influence=stored,
         following=int(record["following"] or 0),
         muting=int(record["muting"] or 0),
         reporting=int(record["reporting"] or 0),
@@ -365,6 +434,14 @@ async def get_outbound_counts_and_influence(
     "Flagged" is *not verified* (no stored influence, or `<= verified_line`: the
     complement of the strict `>` used everywhere else) AND reported by 2+ accounts
     above `reporter_cutoff`, counted live."""
+    if settings.scores_in_postgres:
+        return await _outbound_overview_from_scorecards(
+            session,
+            pubkey,
+            _observer_of(influence_key),
+            verified_line=verified_line,
+            reporter_cutoff=reporter_cutoff,
+        )
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
     CALL (user) {{
@@ -405,6 +482,94 @@ async def get_outbound_counts_and_influence(
     )
 
 
+def _raters(rel_type: str, node: str) -> str:
+    """Who rates `node` over `rel_type`: one map per rater, so a later read can
+    carry more than the id (a report's reason, say). A rater without a User id
+    has no score."""
+    return f"[(rr:NostrUser)-[:{rel_type}]->({node}) | {{id: rr.user_id}}]"
+
+
+def _reporter_ids(node: str) -> str:
+    return _raters("REPORTS", node)
+
+
+def _live_reporter_count(
+    raters: list[dict],
+    scored: dict[int, tuple[str, Score]],
+    cutoff: float,
+) -> int:
+    """`_live_reporters` over Scorecards: raters strictly above the cutoff."""
+    count = 0
+    for rater in raters:
+        uid = rater["id"]
+        influence = scored[uid][1].influence if uid is not None else None
+        if influence is not None and influence > cutoff:
+            count += 1
+    return count
+
+
+def _ids(*lists: list[dict]) -> list[int]:
+    return [r["id"] for raters in lists for r in raters if r["id"] is not None]
+
+
+async def _outbound_overview_from_scorecards(
+    session: AsyncNeoSession,
+    pubkey: str,
+    observer: str,
+    *,
+    verified_line: float,
+    reporter_cutoff: float,
+) -> OutboundOverview:
+    """`get_outbound_counts_and_influence`, graph first. Only a neighbour with
+    2+ reporters can be flagged, so only those leave the graph."""
+    query = f"""
+    MATCH (user:NostrUser {{pubkey: $pubkey}}){_OUTBOUND_COUNT_BLOCKS}
+    CALL (user) {{
+        MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)
+        WITH DISTINCT other
+        WITH other, {_reporter_ids("other")} AS reporters
+        WHERE size(reporters) >= 2
+        RETURN collect({{id: other.user_id, reporters: reporters}}) AS candidates
+    }}
+    RETURN following, muting, reporting, candidates,
+        {_reporter_ids("user")} AS own_reporters
+    """
+    result = await session.run(query, pubkey=pubkey)
+    record = await result.single()
+    if not record:
+        return OutboundOverview(None, 0, 0, 0, False, 0, None)
+    candidates = record["candidates"]
+    own_reporters = record["own_reporters"]
+    scored = await scores_by_id(
+        observer,
+        _ids(candidates, own_reporters, *(c["reporters"] for c in candidates)),
+    )
+    own = await scores_by_pubkey(observer, [pubkey])
+    influence = own[pubkey].influence if pubkey in own else None
+
+    flagged_count = 0
+    for candidate in candidates:
+        uid = candidate["id"]
+        other = scored[uid][1].influence if uid is not None else None
+        live = _live_reporter_count(candidate["reporters"], scored, reporter_cutoff)
+        if classify_tier(other, live, verified_line) == FLAGGED_TIER:
+            flagged_count += 1
+    tier = classify_tier(
+        influence,
+        _live_reporter_count(own_reporters, scored, reporter_cutoff),
+        verified_line,
+    )
+    return OutboundOverview(
+        influence=influence,
+        following=int(record["following"] or 0),
+        muting=int(record["muting"] or 0),
+        reporting=int(record["reporting"] or 0),
+        flagged_by_observer=tier == FLAGGED_TIER,
+        flagged_count=flagged_count,
+        tier=tier,
+    )
+
+
 class TrustSignalRow(NamedTuple):
     influence: float | None
     verified: bool
@@ -422,6 +587,14 @@ async def get_trust_signals_for_pubkeys(
     """`/overview`'s verdicts for many subjects in one UNWIND; unknown pubkeys unrated."""
     if not pubkeys:
         return {}
+    if settings.scores_in_postgres:
+        return await _trust_signals_from_scorecards(
+            session,
+            pubkeys,
+            _observer_of(influence_key),
+            verified_line=verified_line,
+            reporter_cutoff=reporter_cutoff,
+        )
     query = f"""
     UNWIND $pubkeys AS pk
     OPTIONAL MATCH (user:NostrUser {{pubkey: pk}})
@@ -445,6 +618,39 @@ async def get_trust_signals_for_pubkeys(
             influence=record["influence"],
             verified=bool(record["verified"]),
             flagged=bool(record["flagged"]),
+        )
+    return out
+
+
+async def _trust_signals_from_scorecards(
+    session: AsyncNeoSession,
+    pubkeys: list[str],
+    observer: str,
+    *,
+    verified_line: float,
+    reporter_cutoff: float,
+) -> dict[str, TrustSignalRow]:
+    """`get_trust_signals_for_pubkeys`, graph first: the graph gives each
+    subject's reporters, the Scorecard database every score."""
+    result = await session.run(
+        f"""
+        UNWIND $pubkeys AS pk
+        MATCH (user:NostrUser {{pubkey: pk}})
+        RETURN pk AS pubkey, {_reporter_ids("user")} AS reporters
+        """,
+        pubkeys=pubkeys,
+    )
+    reporters = {record["pubkey"]: record["reporters"] async for record in result}
+    own = await scores_by_pubkey(observer, pubkeys)
+    scored = await scores_by_id(observer, _ids(*reporters.values()))
+    out = {}
+    for pk in pubkeys:
+        influence = own[pk].influence if pk in own else None
+        live = _live_reporter_count(reporters.get(pk, []), scored, reporter_cutoff)
+        out[pk] = TrustSignalRow(
+            influence=influence,
+            verified=influence is not None and influence > verified_line,
+            flagged=classify_tier(influence, live, verified_line) == FLAGGED_TIER,
         )
     return out
 
@@ -610,6 +816,117 @@ def _flagged_single_pass_query(scan: str, where: str, row: str, order: str) -> s
     """
 
 
+# ----------------- graph first (SCORES_IN_POSTGRES) -----------------
+#
+# The graph says who is in a section: every member's User id in one collected
+# list, and, for the few members anyone reports, their reporters' ids. The
+# Scorecard database then tiers, filters, sorts and pages by the same rules the
+# Cypher above applies (`scorecard_repo.page_of_members` / `count_members`).
+
+_NO_ID_PUBKEY = "CASE WHEN other.user_id IS NULL THEN other.pubkey END"
+
+
+def _members_blocks(scan: str, suffix: str = "") -> str:
+    """One pass over `scan`: every member's id (collect drops the nulls, so a
+    node without an id lands in `no_id` by pubkey), and the reported members
+    with their reporters' ids."""
+    return f"""
+    CALL (user) {{
+        {scan}
+        WITH other, EXISTS {{ (:NostrUser)-[:REPORTS]->(other) }} AS is_reported
+        RETURN collect(other.user_id) AS ids{suffix},
+            collect({_NO_ID_PUBKEY}) AS no_id{suffix},
+            collect(CASE WHEN is_reported THEN {{
+                id: other.user_id, pk: {_NO_ID_PUBKEY}, r: {_reporter_ids("other")}
+            }} END) AS reported{suffix}
+    }}"""
+
+
+async def _members_from(
+    observer: str, record, suffixes: list[str], reporter_cutoff: float
+) -> list[Members]:
+    """`Members` per section from a `_members_blocks` record, with each reported
+    member's live reporter count worked out from its reporters' scores."""
+    if record is None:
+        return [Members([], [], {}) for _ in suffixes]
+    scored = await scores_by_id(
+        observer,
+        {
+            uid
+            for suffix in suffixes
+            for reported in record[f"reported{suffix}"]
+            for uid in _ids(reported["r"])
+        },
+    )
+    sections = []
+    for suffix in suffixes:
+        live: dict[int | str, int] = {}
+        for reported in record[f"reported{suffix}"]:
+            count = _live_reporter_count(reported["r"], scored, reporter_cutoff)
+            if count:
+                key = reported["id"] if reported["id"] is not None else reported["pk"]
+                live[key] = count
+        sections.append(Members(record[f"ids{suffix}"], record[f"no_id{suffix}"], live))
+    return sections
+
+
+async def _section_connections_from_scorecards(
+    session: AsyncNeoSession,
+    scan: str,
+    pubkey: str,
+    observer: str,
+    limit: int,
+    cursor_inf: float | None,
+    cursor_pk: str | None,
+    *,
+    verified_cutoff: float | None,
+    verified_line: float,
+    reporter_cutoff: float,
+    order: str,
+    tier: str | None,
+    with_total: bool,
+) -> tuple[list[UserConnectionItem], tuple[float, str] | None, int | None]:
+    result = await session.run(
+        f"""
+        MATCH (user:NostrUser {{pubkey: $pubkey}}){_members_blocks(scan)}
+        RETURN ids, no_id, reported
+        """,
+        pubkey=pubkey,
+    )
+    (members,) = await _members_from(
+        observer, await result.single(), [""], reporter_cutoff
+    )
+    rows, total = await page_of_members(
+        observer,
+        members,
+        verified_line=verified_line,
+        order=order,
+        limit=limit,
+        cursor=(
+            (cursor_inf, cursor_pk)
+            if cursor_inf is not None and cursor_pk is not None
+            else None
+        ),
+        tier=tier,
+        verified_cutoff=verified_cutoff,
+    )
+    items = [
+        UserConnectionItem(
+            pubkey=row.pubkey,
+            influence=row.influence,
+            trusted_reporters=row.reporters,
+            tier=row.tier,
+        )
+        for row in rows
+    ]
+    last_cursor = (
+        (float(rows[-1].sort_inf), rows[-1].pubkey)
+        if rows and len(rows) == limit
+        else None
+    )
+    return items, last_cursor, total if with_total else None
+
+
 def _row_to_item(row: dict) -> UserConnectionItem:
     return UserConnectionItem(
         pubkey=row["pubkey"],
@@ -661,6 +978,22 @@ async def get_paginated_section_connections(
     Returns (items, last_record_cursor_or_none, total_or_none).
     """
     scoped_pattern = _scoped_match_pattern(rel_type, direction)
+    if settings.scores_in_postgres:
+        return await _section_connections_from_scorecards(
+            session,
+            f"MATCH {scoped_pattern}",
+            pubkey,
+            _observer_of(influence_key),
+            limit,
+            cursor_inf,
+            cursor_pk,
+            verified_cutoff=verified_cutoff if verified_only else None,
+            verified_line=verified_line,
+            reporter_cutoff=reporter_cutoff,
+            order=order,
+            tier=tier,
+            with_total=with_total,
+        )
 
     # Bound unconditionally: the per-row `verified` / `tier` columns reference
     # them whether or not the caller filters on them.
@@ -778,6 +1111,23 @@ async def get_paginated_flagged_connections(
     One pass yields both the page and the DISTINCT flagged total; `with_total`
     only decides whether the total is returned.
     Returns (items, last_record_cursor_or_none, total_or_none)."""
+    if settings.scores_in_postgres:
+        return await _section_connections_from_scorecards(
+            session,
+            "MATCH (other:NostrUser)-[:FOLLOWS|MUTES|REPORTS]-(user)\n"
+            "            WITH DISTINCT other",
+            pubkey,
+            _observer_of(influence_key),
+            limit,
+            cursor_inf,
+            cursor_pk,
+            verified_cutoff=None,
+            verified_line=verified_line,
+            reporter_cutoff=reporter_cutoff,
+            order=order,
+            tier=FLAGGED_TIER,
+            with_total=with_total,
+        )
     params: dict = {
         "pubkey": pubkey,
         "influence_key": influence_key,
@@ -836,6 +1186,15 @@ async def get_all_section_stats(
     strict `>` to match GrapeRank. The tier buckets expand `_TIER_PREDICATES` —
     the same table `/connections?tier=…` filters on — so the two endpoints can't
     disagree about which subject sits in which bucket."""
+    if settings.scores_in_postgres:
+        return await _section_stats_from_scorecards(
+            session,
+            pubkey,
+            _observer_of(influence_key),
+            verified_cutoff_by_kind,
+            verified_line=verified_line,
+            reporter_cutoff=reporter_cutoff,
+        )
     blocks: list[str] = ["MATCH (user:NostrUser {pubkey: $pubkey})"]
     return_fields: list[str] = []
     params: dict = {
@@ -897,6 +1256,100 @@ async def get_all_section_stats(
     return {name: _stats_for(name) for name, _, _ in _STATS_KINDS}
 
 
+async def _members_of_every_section(
+    session: AsyncNeoSession, pubkey: str, observer: str, reporter_cutoff: float
+) -> list[Members] | None:
+    """The six sections' members, in `_STATS_KINDS` order, from one round trip;
+    None when the user has no node."""
+    names = [name for name, _, _ in _STATS_KINDS]
+    blocks = "".join(
+        _members_blocks(
+            f"MATCH {_scoped_match_pattern(rel_type, direction)}", f"_{name}"
+        )
+        for name, rel_type, direction in _STATS_KINDS
+    )
+    fields = ", ".join(
+        f"{field}_{name}" for name in names for field in ("ids", "no_id", "reported")
+    )
+    result = await session.run(
+        f"MATCH (user:NostrUser {{pubkey: $pubkey}}){blocks}\nRETURN {fields}",
+        pubkey=pubkey,
+    )
+    record = await result.single()
+    if record is None:
+        return None
+    return await _members_from(
+        observer, record, [f"_{name}" for name in names], reporter_cutoff
+    )
+
+
+async def _section_stats_from_scorecards(
+    session: AsyncNeoSession,
+    pubkey: str,
+    observer: str,
+    verified_cutoff_by_kind: dict[str, float],
+    *,
+    verified_line: float,
+    reporter_cutoff: float,
+) -> dict[str, ConnectionStats]:
+    names = [name for name, _, _ in _STATS_KINDS]
+    sections = await _members_of_every_section(
+        session, pubkey, observer, reporter_cutoff
+    ) or [Members([], [], {}) for _ in names]
+    counted = await count_members(
+        observer,
+        sections,
+        [verified_cutoff_by_kind[name] for name in names],
+        verified_line=verified_line,
+    )
+    return {
+        name: ConnectionStats(
+            total=total, verified=verified, tier_counts=ConnectionTierCounts(**tiers)
+        )
+        for name, (total, verified, tiers) in zip(names, counted)
+    }
+
+
+async def _graph_data_from_scorecards(
+    session: AsyncNeoSession,
+    pubkey: str,
+    observer: str,
+    *,
+    reporter_cutoff: float,
+) -> UserGraphData:
+    """Unpaginated, so every member's pubkey and score is read."""
+    names = [name for name, _, _ in _STATS_KINDS]
+    sections = await _members_of_every_section(
+        session, pubkey, observer, reporter_cutoff
+    )
+    if sections is None:
+        return UserGraphData(influence=None, **{name: [] for name in names})
+    scored = await scores_by_id(observer, {uid for m in sections for uid in m.ids})
+    own = await scores_by_pubkey(observer, [pubkey])
+
+    def rows(members: Members) -> list[UserConnection]:
+        known = [
+            UserConnection(
+                pubkey=scored[uid][0],
+                influence=scored[uid][1].influence,
+                trusted_reporters=members.live.get(uid, 0),
+            )
+            for uid in members.ids
+        ]
+        unknown = [
+            UserConnection(
+                pubkey=pk, influence=None, trusted_reporters=members.live.get(pk, 0)
+            )
+            for pk in members.no_id
+        ]
+        return known + unknown
+
+    return UserGraphData(
+        influence=own[pubkey].influence if pubkey in own else None,
+        **{name: rows(members) for name, members in zip(names, sections)},
+    )
+
+
 async def get_user_graph_data(
     session: AsyncNeoSession,
     pubkey: str,
@@ -907,6 +1360,13 @@ async def get_user_graph_data(
     """Single Cypher returning all 6 relationship lists (full, unpaginated) plus
     the user's own influence — used by /self and /user/{pubkey}. Row
     `trusted_reporters` is the live count above `reporter_cutoff`."""
+    if settings.scores_in_postgres:
+        return await _graph_data_from_scorecards(
+            session,
+            pubkey,
+            _observer_of(influence_key),
+            reporter_cutoff=reporter_cutoff,
+        )
     row = _row_map()
     query = f"""
     MATCH (user:NostrUser {{pubkey: $pubkey}})
@@ -1001,6 +1461,10 @@ async def batch_influence_for_pubkeys(
     if not pubkeys:
         return {}
 
+    if settings.scores_in_postgres:
+        scored = await scores_by_pubkey(observer_pubkey, pubkeys)
+        return {pk: scored[pk].influence if pk in scored else None for pk in pubkeys}
+
     influence_key = f"influence_{observer_pubkey}"
     query = """
     UNWIND $pubkeys AS pk
@@ -1020,6 +1484,15 @@ async def get_ta_observees_for_observer(
     """Observees the publisher would assert a TA for: stored influence at or above
     the publish cutoff after the same 2-decimal rounding. A full label scan — the
     per-observer property can't be indexed."""
+    if settings.scores_in_postgres:
+        # One indexed range over the Observer's rows; no graph read.
+        return {
+            pubkey
+            for pubkey, influence in await observees_at_or_above(
+                observer_pubkey, cutoff - 0.01
+            )
+            if round(influence, 2) >= cutoff
+        }
     query = """
     MATCH (user:NostrUser)
     WITH user, user[$influence_key] AS score
@@ -1051,6 +1524,26 @@ async def get_top_inbound_by_influence(
     """
     if relation not in ("FOLLOWS", "MUTES", "REPORTS"):
         raise ValueError(f"Unsupported relation: {relation}")
+
+    if settings.scores_in_postgres:
+        result = await session.run(
+            f"""
+            MATCH (other:NostrUser)-[:{relation}]->(user:NostrUser {{pubkey: $pubkey}})
+            RETURN collect(other.user_id) AS ids, collect({_NO_ID_PUBKEY}) AS no_id
+            """,
+            pubkey=pubkey,
+        )
+        record = await result.single()
+        rows, _ = await page_of_members(
+            observer_pubkey,
+            Members(record["ids"], record["no_id"], {})
+            if record
+            else Members([], [], {}),
+            verified_line=0.0,
+            order="desc",
+            limit=int(limit),
+        )
+        return [UserConnection(pubkey=r.pubkey, influence=r.influence) for r in rows]
 
     influence_key = f"influence_{observer_pubkey}"
     query = f"""
@@ -1257,6 +1750,14 @@ async def get_network_alert_candidates(
     Touches no follower or muter edges; the reporter count is live, over
     REPORTS edges from raters above `reporter_cutoff`.
     """
+    if settings.scores_in_postgres:
+        return await _alert_candidates_from_scorecards(
+            session,
+            observer_pubkey,
+            cutoff,
+            reporter_cutoff=reporter_cutoff,
+            max_candidates=int(max_candidates),
+        )
     result = await session.run(
         _ALERT_CANDIDATES_QUERY,
         observer_pubkey=observer_pubkey,
@@ -1269,6 +1770,92 @@ async def get_network_alert_candidates(
         max_candidates=int(max_candidates),
     )
     return [dict(record) async for record in result]
+
+
+async def _alert_candidates_from_scorecards(
+    session: AsyncNeoSession,
+    observer: str,
+    cutoff: float,
+    *,
+    reporter_cutoff: float,
+    max_candidates: int,
+) -> list[dict]:
+    """`get_network_alert_candidates`, graph first. A live count can't exceed
+    the number of reporters, so only users with enough reporters leave the graph."""
+    result = await session.run(
+        f"""
+        MATCH (observer:NostrUser {{pubkey: $observer_pubkey}})
+        CALL (observer) {{
+            MATCH (:NostrUser)-[:REPORTS]->(bob:NostrUser)
+            WITH DISTINCT observer, bob
+            WHERE bob <> observer
+            WITH observer, bob, {_reporter_ids("bob")} AS reporters
+            WHERE size(reporters) >= $min_reporters
+            RETURN collect({{
+                id: bob.user_id,
+                pk: CASE WHEN bob.user_id IS NULL THEN bob.pubkey END,
+                reporters: reporters,
+                is_direct: EXISTS {{ (observer)-[:FOLLOWS]->(bob) }}
+            }}) AS candidates
+        }}
+        RETURN candidates
+        """,
+        observer_pubkey=observer,
+        min_reporters=MIN_ALERT_REPORTERS,
+    )
+    record = await result.single()
+    candidates = record["candidates"] if record else []
+    scored = await scores_by_id(
+        observer, _ids(candidates, *(c["reporters"] for c in candidates))
+    )
+    rows = []
+    for candidate in candidates:
+        live = _live_reporter_count(candidate["reporters"], scored, reporter_cutoff)
+        if live < MIN_ALERT_REPORTERS:
+            continue
+        uid = candidate["id"]
+        pubkey, score = (candidate["pk"], NO_SCORE) if uid is None else scored[uid]
+        if not candidate["is_direct"] and not (
+            score.influence is not None and score.influence > cutoff
+        ):
+            continue
+        rows.append(
+            {
+                "pubkey": pubkey,
+                "verified_reporters": live,
+                "stored_followers": score.verified_followers,
+                "influence": score.influence,
+                "hops": score.hops,
+                "is_direct": candidate["is_direct"],
+            }
+        )
+    return rows[:max_candidates]
+
+
+async def _live_counts_from_scorecards(
+    session: AsyncNeoSession,
+    rel_type: str,
+    pubkeys: list[str],
+    observer: str,
+    cutoff: float,
+) -> dict[str, int]:
+    """Per pubkey, how many of its `rel_type` raters sit strictly above
+    `cutoff`: the graph returns the raters, the Scorecard database says which
+    are above the line. A pubkey with no node is left out."""
+    result = await session.run(
+        f"""
+        UNWIND $pubkeys AS pk
+        MATCH (bob:NostrUser {{pubkey: pk}})
+        RETURN pk AS pubkey, {_raters(rel_type, "bob")} AS raters
+        """,
+        pubkeys=pubkeys,
+    )
+    raters = {record["pubkey"]: record["raters"] async for record in result}
+    above = await ids_above(observer, _ids(*raters.values()), cutoff)
+    return {
+        pubkey: sum(1 for uid in _ids(rated_by) if uid in above)
+        for pubkey, rated_by in raters.items()
+    }
 
 
 async def count_above_cutoff_followers_capped(
@@ -1308,6 +1895,13 @@ async def count_above_cutoff_followers_capped(
     """
     if not pubkeys:
         return {}
+    if settings.scores_in_postgres:
+        # The cap bounded what Neo4j collected; here it only keeps the meaning
+        # of the result (a count at the cap is "at least the cap").
+        counts = await _live_counts_from_scorecards(
+            session, "FOLLOWS", pubkeys, _observer_of(influence_key), cutoff
+        )
+        return {pubkey: min(count, int(cap)) for pubkey, count in counts.items()}
 
     query = """
     UNWIND $pubkeys AS pk
@@ -1348,6 +1942,10 @@ async def count_verified_muters(
     """
     if not pubkeys:
         return {}
+    if settings.scores_in_postgres:
+        return await _live_counts_from_scorecards(
+            session, "MUTES", pubkeys, _observer_of(influence_key), verified_threshold
+        )
 
     query = """
     UNWIND $pubkeys AS pk
