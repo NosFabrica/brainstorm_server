@@ -34,12 +34,25 @@ Flags:
     --state-file P  campaign-state json (default ./graperank_backfill_state.json).
     --status        print progress and exit (no enqueue).
     --dry-run       list what WOULD be enqueued; don't enqueue.
+    --observers F   only the Observers in this file (one pubkey a line).
+    --assigned      with --observers: also every Observer on an enabled plan of
+                    its own (the paid ones).
+    --source S      what the runs are recorded as: manual (default) or admin
+                    (the admin lane on the queue).
+    --wait          after enqueuing, wait for every run to end; exit 1 unless
+                    all succeeded.
+
+A sample after a change, one a minute so the worker keeps up:
+
+    python -m scripts.trigger_graperank_all --observers sample.txt --assigned \
+        --source admin --rate 1 --wait
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +66,8 @@ from app.db_models import (  # noqa: E402
     BrainstormNsec,
     BrainstormRequest,
     BrainstormRequestStatus,
+    Scheduling,
+    TriggerSource,
 )
 from app.services.brainstorm_request_service import (  # noqa: E402
     create_brainstorm_request,
@@ -61,6 +76,9 @@ from app.utils.datetimes import utc_now  # noqa: E402
 
 _GRAPERANK = "graperank"
 _SUCCESS = BrainstormRequestStatus.SUCCESS.value
+_FAILURE = BrainstormRequestStatus.FAILURE.value
+_PUBKEY = re.compile(r"[0-9a-f]{64}")
+_WAIT_POLL_SECONDS = 15
 _DEFAULT_STATE = "graperank_backfill_state.json"
 
 
@@ -84,12 +102,45 @@ def _resolve_cutoff(args) -> datetime:
     return started
 
 
+def read_observers(path: str) -> list[str]:
+    """The pubkeys in a file, one a line, in order; blank lines and `#` comments
+    are skipped. Anything else that is not a pubkey is an error."""
+    keys: dict[str, None] = {}
+    for line in Path(path).read_text().splitlines():
+        key = line.split("#", 1)[0].strip()
+        if not key:
+            continue
+        if not _PUBKEY.fullmatch(key):
+            raise ValueError(f"{path}: not a 64-char lowercase hex pubkey: {key!r:.80}")
+        keys[key] = None
+    return list(keys)
+
+
+def choose(everyone: list[str], listed: list[str] | None, assigned: list[str]):
+    """Whom this campaign runs: everyone, or the listed Observers (then those
+    on a plan of their own, when asked for). Never a key that is not an Observer."""
+    if listed is None:
+        return everyone
+    known = set(everyone)
+    chosen = dict.fromkeys(pk for pk in [*listed, *assigned] if pk in known)
+    return list(chosen)
+
+
+async def _assigned_observers() -> list[str]:
+    async with db_session() as db:
+        rows = await db.execute(
+            select(BrainstormNsec.pubkey)
+            .join(Scheduling, Scheduling.id == BrainstormNsec.scheduling_id)
+            .where(Scheduling.enabled.is_(True))
+            .order_by(BrainstormNsec.pubkey)
+        )
+        return list(rows.scalars().all())
+
+
 async def _load_state(cutoff: datetime):
     """Return (all_observers, triggered_set, completed_set) for this campaign."""
     async with db_session() as db:
-        observers = (
-            (await db.execute(select(BrainstormNsec.pubkey))).scalars().all()
-        )
+        observers = (await db.execute(select(BrainstormNsec.pubkey))).scalars().all()
         rows = (
             await db.execute(
                 select(BrainstormRequest.pubkey, BrainstormRequest.status).where(
@@ -124,7 +175,7 @@ def _print_status(observers, triggered, completed, cutoff) -> None:
     print(f"  pending      : {n_pending}  (not yet triggered)")
 
 
-async def _trigger_one(pubkey: str) -> None:
+async def _trigger_one(pubkey: str, source: str = TriggerSource.MANUAL.value) -> None:
     async with db_session() as db:
         await create_brainstorm_request(
             db=db,
@@ -132,7 +183,61 @@ async def _trigger_one(pubkey: str) -> None:
             parameters=pubkey,
             pubkey=pubkey,
             nsec_exists=True,  # observers in brainstorm_nsec already have one
+            trigger_source=source,
         )
+
+
+async def _wait(chosen: list[str], cutoff: datetime, timeout_minutes: float) -> int:
+    """Until every chosen Observer's newest run since `cutoff` has ended. 0 when
+    all succeeded."""
+    deadline = asyncio.get_running_loop().time() + timeout_minutes * 60
+    while True:
+        async with db_session() as db:
+            rows = (
+                await db.execute(
+                    select(
+                        BrainstormRequest.pubkey,
+                        BrainstormRequest.status,
+                        BrainstormRequest.created_at,
+                        BrainstormRequest.updated_at,
+                    )
+                    .where(
+                        BrainstormRequest.algorithm == _GRAPERANK,
+                        BrainstormRequest.created_at >= cutoff,
+                        BrainstormRequest.pubkey.in_(chosen),
+                    )
+                    .order_by(BrainstormRequest.created_at)
+                )
+            ).all()
+        newest = {
+            pubkey: (status, created, updated)
+            for pubkey, status, created, updated in rows
+        }
+        ended = {pk: v for pk, v in newest.items() if v[0] in (_SUCCESS, _FAILURE)}
+        if len(ended) == len(chosen) or asyncio.get_running_loop().time() >= deadline:
+            break
+        print(f"  {len(ended)}/{len(chosen)} runs ended", flush=True)
+        await asyncio.sleep(_WAIT_POLL_SECONDS)
+
+    failed = sorted(pk for pk, v in ended.items() if v[0] == _FAILURE)
+    unfinished = sorted(pk for pk in chosen if pk not in ended)
+    seconds = sorted(
+        (v[2] - v[1]).total_seconds() for v in ended.values() if v[0] == _SUCCESS
+    )
+    print(
+        f"runs: {len(chosen)}, succeeded: {len(seconds)}, failed: {len(failed)}, "
+        f"not ended: {len(unfinished)}"
+    )
+    if seconds:
+        print(
+            f"seconds per run: min {seconds[0]:.1f}, median "
+            f"{seconds[len(seconds) // 2]:.1f}, max {seconds[-1]:.1f}"
+        )
+    for pk in failed:
+        print(f"  failed: {pk}")
+    for pk in unfinished:
+        print(f"  not ended: {pk}")
+    return 0 if len(seconds) == len(chosen) else 1
 
 
 async def main() -> int:
@@ -143,10 +248,27 @@ async def main() -> int:
     p.add_argument("--state-file", default=_DEFAULT_STATE)
     p.add_argument("--status", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--observers", default=None, help="file of pubkeys to run")
+    p.add_argument("--assigned", action="store_true")
+    p.add_argument(
+        "--source",
+        choices=[TriggerSource.MANUAL.value, TriggerSource.ADMIN.value],
+        default=TriggerSource.MANUAL.value,
+    )
+    p.add_argument("--wait", action="store_true")
+    p.add_argument("--wait-minutes", type=float, default=180.0)
     args = p.parse_args()
+    if args.assigned and not args.observers:
+        p.error("--assigned goes with --observers")
 
     cutoff = _resolve_cutoff(args)
     observers, triggered, completed = await _load_state(cutoff)
+    listed = read_observers(args.observers) if args.observers else None
+    observers = choose(
+        observers, listed, await _assigned_observers() if args.assigned else []
+    )
+    if listed is not None:
+        print(f"listed: {len(listed)}, chosen with plans: {len(observers)}")
 
     if args.status:
         _print_status(observers, triggered, completed, cutoff)
@@ -168,19 +290,29 @@ async def main() -> int:
 
     delay = 60.0 / args.rate if args.rate > 0 else 0.0
     enqueued = 0
+    refused: list[str] = []
     for o in to_trigger:
         try:
-            await _trigger_one(o)
+            await _trigger_one(o, args.source)
             enqueued += 1
             if enqueued % 25 == 0:
-                print(f"  enqueued {enqueued}/{len(to_trigger)}")
+                print(f"  enqueued {enqueued}/{len(to_trigger)}", flush=True)
         except Exception as exc:  # noqa: BLE001 — keep going; resume covers gaps
+            refused.append(o)
             print(f"  FAILED to trigger {o}: {exc!r}", file=sys.stderr)
         if delay:
             await asyncio.sleep(delay)
 
-    print(f"done: enqueued {enqueued} graperank request(s). "
-          f"Re-run to continue, or --status to watch completion.")
+    print(
+        f"done: enqueued {enqueued} graperank request(s). "
+        f"Re-run to continue, or --status to watch completion."
+    )
+    if args.wait:
+        # A run that was refused (a compromised key) never ends: not waited for.
+        waited = await _wait(
+            [o for o in observers if o not in refused], cutoff, args.wait_minutes
+        )
+        return 1 if refused else waited
     return 0
 
 
