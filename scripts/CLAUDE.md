@@ -83,6 +83,13 @@ GrapeRank is expensive per observer, so:
 Note: the default observer alone covers anonymous/default search; this is for
 refreshing ALL personalized perspectives at once.
 
+A sample instead of everyone: `--observers FILE` (one pubkey a line; the read
+comparison's `observers.txt` fits) runs only those, `--assigned` adds every
+Observer on an enabled plan of its own (the paid ones), `--source admin` records
+the runs as an operator's and uses the admin lane, and `--wait` stays until every
+run has ended and exits 1 unless all succeeded. At `--rate 1` the worker keeps
+up, so nothing queues. Held by `tests/test_trigger_graperank_all.py`.
+
 ### `backfill_designations.py`
 
 Replays every kind-10040 neofry holds through the live ingest handler
