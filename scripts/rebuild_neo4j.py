@@ -566,7 +566,10 @@ async def main() -> int:
 
     started = time.monotonic()
     try:
-        async with neo4j_driver.session() as session:
+        # id() is deprecated in Neo4j 5 and warned about on every page read.
+        async with neo4j_driver.session(
+            notifications_disabled_classifications=["DEPRECATION"]
+        ) as session:
             if args.command == "inventory":
                 found = await inventory(session)
                 print(json.dumps(found, indent=1))
