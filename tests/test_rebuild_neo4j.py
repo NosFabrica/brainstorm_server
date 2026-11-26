@@ -152,3 +152,40 @@ def test_the_export_reads_only():
 
 def test_no_cypher_alias_is_a_float_literal():
     assert not re.search(r"\bAS\s+(inf|infinity|nan)\b", inspect.getsource(mod), re.I)
+
+
+def test_unlisted_keys_are_those_neither_scores_nor_kept():
+    keys = [
+        "pubkey",
+        "user_id",
+        "influence_" + "a" * 64,
+        "nip05",
+        "legacy_flag",
+        "types",
+    ]
+    assert mod.unlisted_keys(keys) == ["legacy_flag", "types"]
+
+
+def _found(**unlisted):
+    return {
+        "labels": {"NostrUser": {"nodes": 3, "action": "kept"}},
+        "relationship_types": {"FOLLOWS": {"relationships": 2, "action": "kept"}},
+        "property_keys_unlisted": unlisted,
+    }
+
+
+def test_an_unlisted_key_on_a_user_node_stops_the_export():
+    found = _found(legacy_flag={"user_nodes": 7, "action": "unknown"})
+    assert mod.unknown_in(found) == ["legacy_flag (on 7 user nodes)"]
+
+
+def test_an_unlisted_key_no_user_node_carries_does_not():
+    found = _found(types={"user_nodes": 0, "action": "not on a user node"})
+    assert mod.unknown_in(found) == []
+
+
+def test_an_unknown_label_or_relationship_type_stops_it():
+    found = _found()
+    found["labels"]["ScoreShard"] = {"nodes": 5, "action": "unknown"}
+    found["relationship_types"]["LIKES"] = {"relationships": 1, "action": "unknown"}
+    assert mod.unknown_in(found) == ["ScoreShard", "LIKES"]

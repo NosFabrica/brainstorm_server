@@ -230,10 +230,36 @@ async def _read(session, cypher: str, **params) -> list[dict]:
     return await session.execute_read(work)
 
 
+_USERS_WITH_KEY = """
+MATCH (n:NostrUser) WHERE n[$key] IS NOT NULL RETURN count(n) AS users
+"""
+
+
+def unlisted_keys(keys: list[str]) -> list[str]:
+    """Property keys that are neither scores nor on the user keep list."""
+    return sorted(k for k in keys if not is_dropped(k) and k not in KEPT_USER_KEYS)
+
+
+def unknown_in(found: dict) -> list[str]:
+    """What an inventory holds that the export would stop on: labels and
+    relationship types off the keep lists, and unlisted keys a user node carries."""
+    unknown = [n for n, v in found["labels"].items() if v["action"] == "unknown"]
+    unknown += [
+        t for t, v in found["relationship_types"].items() if v["action"] == "unknown"
+    ]
+    unknown += [
+        f"{key} (on {v['user_nodes']} user nodes)"
+        for key, v in found["property_keys_unlisted"].items()
+        if v["action"] == "unknown"
+    ]
+    return unknown
+
+
 async def inventory(session) -> dict:
-    """Labels and relationship types in use, each marked kept or unknown, and the
-    property keys the database knows. Counted from the graph: a label nothing
-    carries any more is not listed."""
+    """Labels, relationship types and property keys, each marked kept or unknown.
+    Labels and types are counted from the graph: one nothing carries any more is
+    not listed. The database never forgets a property key, so an unlisted one is
+    unknown only if a user node carries it."""
     counts = await _counts(session)
     labels: Counter[str] = Counter()
     for label_set, n in counts["nodes_by_labels"].items():
@@ -249,6 +275,14 @@ async def inventory(session) -> dict:
     def mark(name: str, kept: set[str]) -> str:
         return "kept" if name in kept else "unknown"
 
+    unlisted = {}
+    for key in unlisted_keys(keys):
+        users = (await _read(session, _USERS_WITH_KEY, key=key))[0]["users"]
+        unlisted[key] = {
+            "user_nodes": users,
+            "action": "unknown" if users else "not on a user node",
+        }
+
     return {
         "labels": {
             label: {"nodes": n, "action": mark(label, KEPT_LABELS)}
@@ -259,9 +293,8 @@ async def inventory(session) -> dict:
             for t, n in sorted(counts["relationships_by_type"].items())
         },
         "property_keys_dropped": sum(1 for k in keys if is_dropped(k)),
-        # A key name may also live on a relationship or the state node, so this
-        # is only a first look; the export checks every node it keeps.
-        "property_keys_other": sorted(k for k in keys if not is_dropped(k)),
+        "property_keys_kept": sorted(k for k in keys if k in KEPT_USER_KEYS),
+        "property_keys_unlisted": unlisted,
     }
 
 
@@ -315,13 +348,9 @@ async def _schema(session) -> dict:
 
 async def export(session, out: Path, page: int, log=print) -> dict:
     out.mkdir(parents=True, exist_ok=True)
-    found = await inventory(session)
-    unknown = [n for n, v in found["labels"].items() if v["action"] == "unknown"]
-    unknown += [
-        t for t, v in found["relationship_types"].items() if v["action"] == "unknown"
-    ]
+    unknown = unknown_in(await inventory(session))
     if unknown:
-        raise Stop(f"labels or relationship types not on the keep list: {unknown}")
+        raise Stop(f"not on the keep lists: {unknown}")
 
     before = await _counts(session)
     top = (await _read(session, "MATCH (n) RETURN coalesce(max(id(n)), -1) AS top"))[0][
@@ -539,7 +568,11 @@ async def main() -> int:
     try:
         async with neo4j_driver.session() as session:
             if args.command == "inventory":
-                print(json.dumps(await inventory(session), indent=1))
+                found = await inventory(session)
+                print(json.dumps(found, indent=1))
+                unknown = unknown_in(found)
+                if unknown:
+                    raise Stop(f"not on the keep lists: {unknown}")
                 return 0
             if args.command == "export":
                 summary = await export(session, args.out, args.page)

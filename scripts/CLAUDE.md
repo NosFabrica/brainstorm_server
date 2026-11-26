@@ -246,7 +246,10 @@ space; exporting what is kept and importing it into a new store does. **The sour
 only read.** Stop every writer first (ingest, graph-streamer, the profile resolver, GrapeRank
 runs): the export stops if the graph changes under it.
 
-1. `inventory`: labels, relationship types and property keys, marked kept or not.
+1. `inventory`: labels, relationship types and property keys, marked kept or not. Exit 2 if the
+   export would stop on any: a label or type off the keep lists, or an unlisted property key that a
+   user node carries (one count per unlisted key; the database lists keys it no longer uses, and
+   those are reported as not on a user node). Read-only: run it a day ahead.
 2. `export --out DIR`: `nodes.csv`, `relationships.csv` and their header files in the shape
    `neo4j-admin database import full` takes, plus `summary.json` (counts, the source's constraints
    and indexes, a sample of user nodes) and `import-command.txt`. Scores are filtered inside the
