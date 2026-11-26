@@ -83,6 +83,13 @@ GrapeRank is expensive per observer, so:
 Note: the default observer alone covers anonymous/default search; this is for
 refreshing ALL personalized perspectives at once.
 
+A sample instead of everyone: `--observers FILE` (one pubkey a line; the read
+comparison's `observers.txt` fits) runs only those, `--assigned` adds every
+Observer on an enabled plan of its own (the paid ones), `--source admin` records
+the runs as an operator's and uses the admin lane, and `--wait` stays until every
+run has ended and exits 1 unless all succeeded. At `--rate 1` the worker keeps
+up, so nothing queues. Held by `tests/test_trigger_graperank_all.py`.
+
 ### `backfill_designations.py`
 
 Replays every kind-10040 neofry holds through the live ingest handler
@@ -108,7 +115,8 @@ cluster operators first.
 Smoke test for `POST /admin/trustedLists/{observer}`. `--seed` pushes a tag
 element, a pubkey tagging and an event tagging (an article by coordinate, so no
 lookup relay is needed) through the real redis ingest; `--verify-relay` reads
-the Observer's 30392/30393/30394 lists back.
+the Observer's 30392/30393/30394 lists back. The asserters' Influence is seeded where the
+server reads it: the Scorecard database with `SCORES_IN_POSTGRES`, else Neo4j.
 
 ### `clean_trusted_reporters_props.py`
 
@@ -133,6 +141,138 @@ Observer (TA only); `--db-only` skips the relay read. Exit 1 when a relay read
 or publish didn't complete. Run in each environment's brainstorm-server pod.
 Idempotent — the pipeline keeps the account at 0 on every later run anyway.
 
+### `backfill_user_ids.py`
+
+Gives every existing `NostrUser` its `user_id` (the id rule: ids committed in the Scorecard
+database first, then written to Neo4j). Needs `SCORECARD_DB_URL`. Dry-run by default (counts);
+`--apply` reads nodes without an id in pubkey order (`--page`), and writes ids back in
+transactions of `--batch` (default `neo4j_write_batch_size`), creating the `pubkey` and `user_id`
+uniqueness constraints first. Resumable and idempotent: only nodes without an id are touched.
+On heavy nodes each write walks the property list: keep `--batch` small, watch the rows per
+second it prints, and never run it alongside a large score write. Nodes whose pubkey is not
+64-char lowercase hex are skipped and reported; they can never have an id.
+
+- `--status`: nodes total / with / without an id, malformed, rows in `nostr_user`, ids no node carries.
+- `--verify`: exit 1 if a well-formed node lacks an id, or a node's id disagrees with `nostr_user`.
+- `--reconcile [--apply]`: after a restore of the Scorecard database. Puts back every
+  `(user_id, pubkey)` the graph has and the table lost and moves the sequence past the graph's
+  highest id. An id that differs between the two, or that the table has since given to another
+  pubkey, stops it with exit 2 and nothing written.
+
+Held by `tests/integration/test_backfill_user_ids_integration.py`, which only runs on an empty graph.
+
+### `remove_malformed_nodes.py`
+
+Removes the `NostrUser` nodes whose pubkey is not 64-char lowercase hex (they can never have a
+`user_id`, and the score copy refuses while one holds a score). Those still followed come from
+uppercase `p` tags ingested before `p_tag_pubkeys` lowercased them. Dry-run by default: the nodes,
+the edges on them, the followers, and whether the relay (`nostr_transfer_to_relay`) holds each
+follower's kind 3. `--apply` puts each follower's current kind 3 on `strfry:events`, so the
+running server's ingest moves the follow to the lowercase node and fixes `followed_by:`, waits
+(`--wait`, default 300 s) until no edge is left, then deletes the nodes that have none. Their
+score properties go with them.
+
+It writes nothing and exits 2 when an edge is not a follow from a well-formed author, when a
+follower has no kind 3 on the relay, or when ingest is held. Exit 1 if a malformed node is left.
+Needs the server's ingest running. Idempotent. Held by `tests/test_remove_malformed_nodes.py`.
+
+### `copy_scores_to_postgres.py`
+
+The one-time copy of every Observer's stored scores from Neo4j properties into the `scorecard`
+table, for the cutover to `SCORES_IN_POSTGRES`. **Reads Neo4j and never writes it.** Needs
+`SCORECARD_DB_URL`, every node backfilled with its `user_id`, and the scheduler paused: it refuses
+to run while any run is in the pipeline (`--force` overrides). Dry-run by default.
+
+`--apply` sweeps the user nodes once in pubkey order (`--page` nodes per read, default 200),
+reading each node's whole property map, so all Observers are copied in one pass. Each page's rows,
+their per-Observer count and sums, and the cursor commit together, so an interrupted copy resumes
+where it stopped and counts nothing twice. `trusted_reporters_` properties are ignored; a NaN or
+infinite Influence is stored as none and counted; scores on a node without a `user_id` cannot be
+copied and are counted.
+
+- `--status`: Observers ever stored, nodes read of total, Observers and rows copied, the two counts above.
+- `--verify`: exit 1 with the reasons unless the copy is ready for the switch: the sweep finished;
+  it met no score on a node without a `user_id`; every Observer's stored rows have the count and
+  sums recorded while reading (an Observer with stored rows and no record fails too); no Observer
+  has a started request since the last read began; no run is under way, up to the end of its score write (a
+  request still waiting for a worker is neither). Times are the domain database's clock. Reads only Postgres, in
+  seconds. It does not compare rows with Neo4j: `compare_reads` covers what the reads return.
+- `--only <observer> --apply`: redo one Observer (its rows are replaced in one transaction).
+- `--catch-up [--apply]`: redo every Observer with a request since the last complete read of
+  Neo4j began (the sweep, or the catch-up before; `--since <UTC time>` overrides). One walk of the
+  nodes in which only those Observers' scores leave the database. This is what keeps the pause
+  short: sweep with `--force` while runs go on, pause, catch up, verify. Their rows are deleted
+  first, so run it before anything reads `scorecard`.
+- `--restart --apply`: forget progress and checksums; `scorecard` rows stay.
+
+It keeps its progress in two small tables it creates in the Scorecard database
+(`score_copy_progress`, `score_copy_checksum`); drop them once the cutover is settled.
+Held by `tests/test_copy_scores_parsing.py` and `tests/integration/test_copy_scores_integration.py`.
+
+### `compare_reads.py`
+
+The cutover read comparison: the same Scorecards must answer the same reads before and after
+`SCORES_IN_POSTGRES` flips. Take both records with ingest held (`ingest:hold`, see
+`app/message_queue_tasks/CLAUDE.md`).
+
+Reads in-process, no HTTP and no tokens: it calls the services the routers call
+(`user_service`, `network_alerts_service`, `graph_service`, `resolve_verified_cutoffs`) with the
+Observer passed explicitly, and serialises each answer through the route's response model, so it
+compares what the API would return and honours `SCORES_IN_POSTGRES` as the server does. Runs in a
+server pod (same env); an `HTTPException` is recorded as its status and detail.
+
+- `record (--sample N | --observers FILE) --out DIR [--raw]`: per Observer its overview and stats,
+  whitelist, network alerts, connections (every kind both orders, `verified_only`, each tier; up to
+  3 pages by cursor), and for the first few followed users their overview and the shortest path
+  from the Observer. Writes `observers.txt` (pass it as `--observers` to the next record) and
+  `calls.jsonl`: per call the status, a hash of the normalised body (timestamp and request-id keys
+  dropped, equal-Influence runs and `pubkeys` lists in a stable order) and the item count. `--raw`
+  also keeps the bodies.
+- `--sample N` (~20) reads the Scorecard and domain databases after the copy: House, the 3
+  largest, the newest scored, 2 Free and 2 paid (scheduling assigned) near the median size, the
+  rest spread over sizes.
+- `diff A B [--reread]`: exit 1 on any differing or missing call (of the whitelist only the status
+  is compared: its body is a run's snapshot before the flip, derived from stored scores after); saves into `B/mismatches/` the
+  raw bodies both records kept, and with `--reread` a fresh read of each plus the three hashes, so
+  a transient difference shows as `now == a`.
+
+Held by `tests/test_compare_reads.py`.
+
+### `rebuild_neo4j.py`
+
+Rebuilds the Neo4j store without the per-Observer score properties, once Scorecards live in the
+Scorecard database and the gate for it is met. Deleting the properties in place frees no file
+space; exporting what is kept and importing it into a new store does. **The source database is
+only read.** Stop every writer first (ingest, graph-streamer, the profile resolver, GrapeRank
+runs): the export stops if the graph changes under it.
+
+1. `inventory`: labels, relationship types and property keys, marked kept or not. Exit 2 if the
+   export would stop on any: a label or type off the keep lists, or an unlisted property key that a
+   user node carries (one count per unlisted key; the database lists keys it no longer uses, and
+   those are reported as not on a user node). Read-only: run it a day ahead.
+2. `export --out DIR`: `nodes.csv`, `relationships.csv` and their header files in the shape
+   `neo4j-admin database import full` takes, plus `summary.json` (counts, the source's constraints
+   and indexes, a sample of user nodes) and `import-command.txt`. Scores are filtered inside the
+   database and never cross the wire.
+3. The import: run the command in `import-command.txt` with `neo4j-admin` against an empty store,
+   with `DIR` mounted at `/import`, then start Neo4j on that store.
+4. `schema --dir DIR --apply`, with `NEO4J_DB_URL` pointing at the rebuilt database: recreates
+   the constraints and indexes the source had.
+5. `check --dir DIR`: exit 1 unless node counts per label set, relationship counts per type,
+   property counts per key (users and relationships), every non-user node, the sampled users
+   (property by property, and their degree per relationship type) and the schema all match, and
+   no score property key exists.
+
+What is kept is listed at the top of the script (`KEPT_LABELS`, `KEPT_RELATIONSHIPS`,
+`KEPT_USER_KEYS`); a label, relationship type or user property outside those lists stops the
+export until it is added or dropped on purpose. Relationships keep all their properties. An empty
+array cannot be carried and is counted. Node ids change; nothing refers to them.
+
+Fallback if a rebuild is not possible: remove the properties in place in id-range batches, as
+`clean_trusted_reporters_props.py` does. Space is then reused but the store files do not shrink.
+
+Held by `tests/test_rebuild_neo4j.py`; the whole procedure is rehearsed end to end outside this repo.
+
 ## When to add a new script
 
 Add one if:
@@ -144,5 +284,6 @@ Don't add one if it should be a proper test — put it in a `tests/` directory a
 ## Conventions
 
 - Most scripts import `from app.core.config import settings` to pick up env, and **need `.env` populated**. The exceptions are deliberate: `emit_flash_webhook.py`, `check_flash_credentials.py` and the `search_*.sh` set are stdlib-only and app-free so they can run against a **deployed** host with no `.env` — they take everything from flags and environment variables instead. A stdlib-only script that re-derives app logic (the Flash HMAC) must be held to the real one by a test.
+- A script on the Scorecard database calls `unbounded_statements()` (`app/core/scorecard_database.py`) before first use: no `statement_timeout`, no client timeout.
 - Output is plain `print()` — these are CLI tools, not library code.
 - Exit codes: 0 = ok, non-zero = something failed. The smoke tests assert and let `AssertionError` propagate.

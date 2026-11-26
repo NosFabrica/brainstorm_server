@@ -5,7 +5,6 @@ from sqlalchemy.ext.asyncio import AsyncSession as AsyncDBSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.repos.observer_whitelist_repo import select_observer_whitelist_updated_at
 from app.routers.admin.billing.dev import router as billing_dev_router
 from app.routers.admin.billing.router import router as billing_admin_router
 from app.routers.admin.billing.router import verify_billing_access
@@ -32,7 +31,10 @@ from app.schemas.request_response_schemas import (
     GetWhitelistedPubkeysOfObserverResponse,
     WhitelistedPubkeys,
 )
-from app.services.user_service import get_whitelisted_pubkeys_of_observer
+from app.services.user_service import (
+    get_whitelisted_pubkeys_of_observer,
+    whitelist_updated_at,
+)
 from app.utils.api_validators import verify_token
 from app.utils.constants import DEPLOY_ENVIRONMENT_LOCAL
 
@@ -228,7 +230,7 @@ async def get_whitelisted_pubkeys_of_observer_endpoint(
 ) -> GetWhitelistedPubkeysOfObserverResponse | Response:
     # Cheap meta-read (no scores detoast) → ETag. Lets an unchanged whitelist
     # short-circuit to 304 before we scan/serialize the ~99k-key blob.
-    updated_at = await select_observer_whitelist_updated_at(db, observer_pubkey)
+    updated_at = await whitelist_updated_at(db, observer_pubkey)
     if updated_at is None:
         return GetWhitelistedPubkeysOfObserverResponse(
             data=WhitelistedPubkeys(

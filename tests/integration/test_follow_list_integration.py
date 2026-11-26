@@ -27,6 +27,7 @@ import pytest
 from neo4j import AsyncGraphDatabase
 from nostr_sdk import Keys
 
+from app.core import scorecard_database
 from app.core.config import settings
 from app.core.redis_db import get_redis_client, redis_client
 from app.message_queue_tasks.process_strfry_event import FOLLOWED_BY_KEY_PREFIX
@@ -129,6 +130,9 @@ def test_endpoint_persists_follows_before_responding(client, caller, monkeypatch
     monkeypatch.setattr(
         "app.message_queue_tasks.process_strfry_event.redis_client", endpoint_redis
     )
+    # Same for the Scorecard engine when ids are on: rebuilt on the portal loop,
+    # and dropped again so the next test doesn't inherit that loop.
+    scorecard_database._engine = None
 
     followees = [Keys.generate().public_key().to_hex() for _ in range(3)]
     caller_pubkey = caller.pubkey
@@ -151,4 +155,5 @@ def test_endpoint_persists_follows_before_responding(client, caller, monkeypatch
         assert response.json()["data"]["followCount"] == 3
         asyncio.run(_verify())
     finally:
+        scorecard_database._engine = None
         asyncio.run(_cleanup_fresh())

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 
 from app.core.config import settings
 from app.core.database import db_session
@@ -11,10 +12,12 @@ from app.core.tier_thresholds import (
     classify_tier,
 )
 from app.db_models import BrainstormRequestStatus
-from app.message_queue_tasks.process_strfry_event import (
-    create_pubkey_index,
-    process_strfry_event,
+from app.message_queue_tasks.ingest_gate import (
+    BUSY_PREFIX,
+    BUSY_TTL_SECONDS,
+    may_ingest,
 )
+from app.message_queue_tasks.process_strfry_event import process_strfry_event
 from app.message_queue_tasks.result_queue import consume_result_queue
 from app.message_queue_tasks.set_brainstorm_request_as_ongoing import (
     process_job_started_message,
@@ -23,6 +26,7 @@ from app.message_queue_tasks.upload_nostr_events import process_nostr_upload_mes
 from app.message_queue_tasks.write_neo4j_results import process_neo4j_write_message
 from app.models.grapeRankResult import GrapeRankResult
 from app.neo4j_db.driver import driver as neo4j_driver
+from app.neo4j_db.schema import ensure_schema
 from app.repos.brainstorm_nsec import update_last_time_calculated_graperank_on_db
 from app.repos.brainstorm_request_repo import (
     select_brainstorm_request_by_id_on_db,
@@ -167,7 +171,14 @@ async def process_message(message: dict):
         # write. Only on a successful calc with scorecards present: a degenerate
         # empty-scorecard run must NOT wipe a good snapshot. An all-below-cutoff
         # run legitimately writes {} (nobody trusted now).
-        if status == BrainstormRequestStatus.SUCCESS and scorecards and pubkey:
+        # With Scorecards in Postgres the whitelist is read from them, and no
+        # snapshot is kept.
+        if (
+            status == BrainstormRequestStatus.SUCCESS
+            and scorecards
+            and pubkey
+            and not settings.scores_in_postgres
+        ):
             await upsert_observer_whitelist_on_db(
                 db, pubkey, whitelist, message["private_id"]
             )
@@ -249,7 +260,36 @@ async def wait_until_graph_db_is_populated():
             print("error", e)
 
 
+async def ingest_next_event(redis_client, busy_key: str, timeout: int = 30) -> bool:
+    """Take one event off the queue and ingest it. False when ingest is held
+    (`ingest:hold`, or a server of the other set naming): the event stays at
+    the head."""
+    if not await may_ingest(redis_client):
+        return False
+    msg = await redis_client.blpop(STRFRY_EVENTS_QUEUE_NAME, timeout=timeout)
+    if not msg:
+        return True
+    _, message_bytes = msg
+    # Busy first, then the check: the claiming server sets its naming first,
+    # then waits for busy consumers. One of the two always sees the other.
+    await redis_client.set(busy_key, "1", ex=BUSY_TTL_SECONDS)
+    try:
+        if not await may_ingest(redis_client):
+            await redis_client.lpush(STRFRY_EVENTS_QUEUE_NAME, message_bytes)
+            return False
+        try:
+            async with neo4j_driver.session() as neo4j_session:
+                await process_strfry_event(neo4j_session, json.loads(message_bytes))
+        except Exception as e:
+            logger.error(e)
+        return True
+    finally:
+        await redis_client.delete(busy_key)
+
+
 async def consume_strfry_plugin_messages():
+    busy_key = f"{BUSY_PREFIX}{uuid.uuid4().hex}"
+    held = False
     logger.info(
         f"Connected to Redis. Waiting for messages on '{STRFRY_EVENTS_QUEUE_NAME}'..."
     )
@@ -258,21 +298,20 @@ async def consume_strfry_plugin_messages():
         redis_client = None
 
         async with neo4j_driver.session() as neo4j_session:
-            await create_pubkey_index(neo4j_session)
+            await ensure_schema(neo4j_session)
         try:
             redis_client = get_redis_client()
             while True:
-                msg = await redis_client.blpop(STRFRY_EVENTS_QUEUE_NAME, timeout=30)
-                if msg:
-                    try:
-                        _, message_bytes = msg
-                        message = json.loads(message_bytes)
-
-                        async with neo4j_driver.session() as neo4j_session:
-                            await process_strfry_event(neo4j_session, message)
-
-                    except Exception as e:
-                        logger.error(e)
+                if await ingest_next_event(redis_client, busy_key):
+                    held = False
+                    continue
+                if not held:
+                    logger.warning(
+                        "Ingest held: ingest:hold is set, or the Redis sets were"
+                        " claimed by a server of the other naming."
+                    )
+                    held = True
+                await asyncio.sleep(1)
 
         except Exception as e:
             logger.error(f"exception {e}")

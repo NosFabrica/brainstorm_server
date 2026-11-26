@@ -36,6 +36,52 @@ sys.path.insert(0, str(Path(__file__).parent))
 from get_admin_token import fetch_admin_token  # noqa: E402
 
 
+def seed_influence(observer_hex: str, influences: dict[str, float]) -> None:
+    """Asserter Influence where the server reads it: the Scorecard database
+    with SCORES_IN_POSTGRES, else `influence_<observer>` on the Neo4j node."""
+    from app.core.config import settings
+
+    if settings.scores_in_postgres:
+        asyncio.run(_seed_scorecard(observer_hex, influences))
+        return
+    from neo4j import GraphDatabase
+
+    drv = GraphDatabase.driver(
+        settings.neo4j_db_url,
+        auth=(settings.neo4j_db_username, settings.neo4j_db_password),
+    )
+    with drv.session() as s:
+        for pubkey, influence in influences.items():
+            s.run(
+                "MERGE (u:NostrUser {pubkey: $pk}) SET u[$key] = $influence",
+                pk=pubkey,
+                key=f"influence_{observer_hex}",
+                influence=influence,
+            )
+    drv.close()
+
+
+async def _seed_scorecard(observer_hex: str, influences: dict[str, float]) -> None:
+    from app.core.scorecard_database import (
+        dispose_scorecard_engine,
+        scorecard_session,
+        unbounded_statements,
+    )
+    from app.repos import scorecard_repo
+    from app.repos.user_id_repo import ids_for
+
+    unbounded_statements()
+    try:
+        ids = await ids_for([observer_hex, *influences])
+        async with scorecard_session() as db:
+            await scorecard_repo.set_observer_scores_on_db(
+                db, ids[observer_hex], [(pk, i, 1, 0) for pk, i in influences.items()]
+            )
+            await scorecard_repo.mark_observer_written_on_db(db, ids[observer_hex])
+    finally:
+        await dispose_scorecard_engine()
+
+
 def seed(observer_hex: str) -> dict:
     """Push a signed tag element, a pubkey tagging and an event tagging (with
     its tagging header) through the real redis ingest, and give the asserter
@@ -45,7 +91,6 @@ def seed(observer_hex: str) -> dict:
     (kind 30023, "Articles") needs no lookup and the 30394 builds on a dev box
     with no lookup relay (ADR trusted-lists/0002 D2)."""
     import redis as redis_sync
-    from neo4j import GraphDatabase
 
     from app.core.config import settings
     from app.services.tagging_parse import (
@@ -111,17 +156,7 @@ def seed(observer_hex: str) -> dict:
     r.rpush("strfry:events", header.as_json())
     r.rpush("strfry:events", event_tagging.as_json())
 
-    drv = GraphDatabase.driver(
-        settings.neo4j_db_url,
-        auth=(settings.neo4j_db_username, settings.neo4j_db_password),
-    )
-    with drv.session() as s:
-        s.run(
-            "MERGE (u:NostrUser {pubkey: $pk}) SET u[$key] = 0.9",
-            pk=asserter.public_key().to_hex(),
-            key=f"influence_{observer_hex}",
-        )
-    drv.close()
+    seed_influence(observer_hex, {asserter.public_key().to_hex(): 0.9})
     print(f"seeded: tag '{slug}' on a person and on article {article[:24]}…, "
           "asserter rank 90 under this observer")
     print("  (waiting 3s for the queue consumer to ingest)")
@@ -157,7 +192,6 @@ def seed_weighted(observer_hex: str) -> dict:
     head-count, `ten-light` would top it; under D12 it sits third.
     """
     import redis as redis_sync
-    from neo4j import GraphDatabase
 
     from app.core.config import settings
     from app.services.tagging_parse import NOSTR_USER_TAG_Z_TAG, TAG_Z_TAG
@@ -178,37 +212,28 @@ def seed_weighted(observer_hex: str) -> dict:
     r = redis_sync.Redis(host=settings.redis_host, port=int(settings.redis_port))
     r.rpush("strfry:events", element.as_json())
 
-    drv = GraphDatabase.driver(
-        settings.neo4j_db_url,
-        auth=(settings.neo4j_db_username, settings.neo4j_db_password),
-    )
     expected = {}
-    with drv.session() as neo:
-        for label, asserters, want in WEIGHTED_SCENARIO:
-            target = Keys.generate()
-            expected[target.public_key().to_hex()] = (label, want)
-            for i, (rank, polarity) in enumerate(asserters):
-                asserter = Keys.generate()
-                tagging = (
-                    EventBuilder(Kind(39999), "")
-                    .tags([
-                        Tag.parse(["d", f"profile-tag-{slug}-{label}-{i}"]),
-                        Tag.parse(["z", NOSTR_USER_TAG_Z_TAG]),
-                        Tag.parse(["p", target.public_key().to_hex()]),
-                        Tag.parse(["e", element.id().to_hex()]),
-                        Tag.parse(["polarity", str(polarity)]),
-                    ])
-                    .sign_with_keys(asserter)
-                )
-                r.rpush("strfry:events", tagging.as_json())
-                # Rank -> Influence is the inverse of the wire quantum.
-                neo.run(
-                    "MERGE (u:NostrUser {pubkey: $pk}) SET u[$key] = $inf",
-                    pk=asserter.public_key().to_hex(),
-                    key=f"influence_{observer_hex}",
-                    inf=rank / 100,
-                )
-    drv.close()
+    influences: dict[str, float] = {}
+    for label, asserters, want in WEIGHTED_SCENARIO:
+        target = Keys.generate()
+        expected[target.public_key().to_hex()] = (label, want)
+        for i, (rank, polarity) in enumerate(asserters):
+            asserter = Keys.generate()
+            tagging = (
+                EventBuilder(Kind(39999), "")
+                .tags([
+                    Tag.parse(["d", f"profile-tag-{slug}-{label}-{i}"]),
+                    Tag.parse(["z", NOSTR_USER_TAG_Z_TAG]),
+                    Tag.parse(["p", target.public_key().to_hex()]),
+                    Tag.parse(["e", element.id().to_hex()]),
+                    Tag.parse(["polarity", str(polarity)]),
+                ])
+                .sign_with_keys(asserter)
+            )
+            r.rpush("strfry:events", tagging.as_json())
+            # Rank -> Influence is the inverse of the wire quantum.
+            influences[asserter.public_key().to_hex()] = rank / 100
+    seed_influence(observer_hex, influences)
 
     total = sum(len(a) for _, a, _ in WEIGHTED_SCENARIO)
     print(f"seeded: tag '{slug}', {len(WEIGHTED_SCENARIO)} targets, {total} taggings")

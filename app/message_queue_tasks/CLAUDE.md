@@ -36,7 +36,24 @@ Dispatches incoming Nostr events by kind:
 - **Kind 5** (NIP-09 deletion) → `process_event_kind_5`. Reconciles the deleting author's `REPORTS` edges + `reported_by:` membership.
 - **Kind 39999** (Decentralized-Lists item) → `process_event_kind_39999`. Tag elements, pubkey taggings, tagging headers and event taggings share this kind and are told apart by their `z` tags (`app/services/tagging_parse.py`); anything matching none is foreign traffic and is dropped. Persists to `nostr_tag_element` / `nostr_user_tagging` / `nostr_tagging_header` / `nostr_event_tagging` — the input set for Trusted Lists. Events held before a shape's parser shipped are replayed by `scripts/backfill_event_taggings.py`.
 
+**User ids (`USER_IDS_ENABLED`, default off).** Every handler above that `MERGE`s a `NostrUser` first asks
+`ids_for` for the author's and targets' ids, which commits them in the Scorecard database, and only then writes
+through `_write_with_ids`: each node gets its `user_id` where it has none, never overwritten. A node already
+holding a different id raises `UserIdMismatch` inside the transaction, so the event is not applied. A new place
+that creates user nodes must do the same; `tests/test_user_ids_at_ingest.py` fails until it is listed there.
+The uniqueness constraint on `user_id` is part of the graph's schema ([`../neo4j_db/schema.py`](../neo4j_db/schema.py)), ensured when this consumer starts, as is a temporary index on `nip05_status` the GrapeRank worker reads penalised statuses through until the score properties are off the nodes.
+
+**`ingest:hold` (operator tool, permanent).** While the key exists every `strfry:events` consumer stops taking
+events, whatever naming is claimed; events wait in the queue. Nothing in the server sets or clears it: not a
+start, not `claim_naming`. Used for cutover read comparisons, Neo4j maintenance and any window that needs the
+graph and Scorecards still. `redis-cli SET ingest:hold 1` to hold, `redis-cli DEL ingest:hold` to resume
+(consumers recheck each second). A Redis restart in the window loses it unless persisted.
+
 The reverse-set helper is `_update_reverse_sets`. Use it for any new "X → relationships → reverse-cache" pattern.
+
+**With `SCORES_IN_POSTGRES` the worker's result names users by User id** (`scorecardsById`, `…Ids` lists, the Observer's pubkey once). `result_names.name_by_pubkey` rewrites it into the pubkey form in `result_queue.handle_one`, with one batched lookup, so every consumer still sees `scorecards` keyed by pubkey. An id without a pubkey fails the stage. A pubkey-named result (failure results, a worker with the switch off) passes through untouched.
+
+**With `SCORES_IN_POSTGRES` the sets name users by User id**: same prefixes, id keys and id members (`followed_by:<id>` holding ids). Every reader and writer gets the name from `app/services/relationship_sets.py` (`set_names`, `set_name`), never by concatenating a pubkey. The first start with the switch on renames the pubkey sets into id sets before ingest starts (same content; Neo4j is read only when Redis has no finished sets); the pubkey sets stay, stale, and the first start with the switch off again replaces them with the id sets renamed back. A user without an id has no id set. A rolling deploy runs the old server beside the new one, so before renaming the new one claims its naming (`ingest_gate.py`, `migration:redis_sets:naming`): a consumer of the other naming stops taking events (until its own naming is claimed again), which wait in `strfry:events`, and the claim waits for any event already under way (`ingest:busy:*`).
 
 **A wiped Redis is rebuilt from Neo4j** by `backfill_redis_relationships.py`, once, at startup (when the done marker is absent, the graph is populated and no relationship keys exist): the reverse sets from `FOLLOWS` / `MUTES` / `REPORTS` keyed by target, and the forward sets `designates:` / `zaps_via:` from `DESIGNATES` / `ZAPS_VIA` keyed by source. Any new Redis copy of a Neo4j relationship the worker reads belongs in it — otherwise a wipe loses it for good (the profile resolver, for one, skips users it already settled).
 
@@ -102,6 +119,14 @@ Persist floor: the worker sends `neo4jPersistFloor` (default 0.0001, its
 Neo4j still holds scores for, and the writer clears them every run (by pubkey, no
 scan). No stored score = Influence at or below the floor, or out of reach. An older
 worker sends neither field: everything is written as before.
+
+**Scorecard database (`SCORES_IN_POSTGRES`, default off).** With it on, the same message is
+written to the `scorecard` table instead (`repos/scorecard_repo.py`), never to both: the listed
+scorecards upserted, the clear set deleted and, when the unreached clear is due, every row for a
+user the run did not reach deleted, all in one transaction. Which scorecards are written, the
+floor, the clear set and when the unreached clear runs are decided exactly as above.
+`trusted_followers` is stored as `verified_followers`. A scored pubkey, or an Observer, with no
+user id raises `MissingUserIds`: the stage is marked `FAILURE` and nothing is written.
 
 ## Adding a new consumer
 

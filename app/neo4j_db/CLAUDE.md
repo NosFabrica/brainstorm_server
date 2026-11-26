@@ -1,12 +1,13 @@
 # app/neo4j_db
 
-Neo4j async driver bootstrap. **Only the driver lives here**; the Cypher queries are in [../repos/user_repo.py](../repos/user_repo.py). Don't put queries in this folder.
+Neo4j async driver bootstrap and the graph's schema. The Cypher queries are in [../repos/user_repo.py](../repos/user_repo.py). Don't put queries in this folder.
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `driver.py` | Module-level `driver = AsyncGraphDatabase.driver(...)` singleton. Connects on import. Exports `test_neo4j_driver()` (used by `app/api.py` lifespan to verify connectivity at startup). |
+| `schema.py` | Every constraint and index the server needs, declared once in `SCHEMA`. `ensure_schema(session)` creates what is missing (each statement is `IF NOT EXISTS`); the ingest consumer calls it when it starts, so a rebuilt or restored store gets its schema back. Items marked `needs_user_ids` are created only with `USER_IDS_ENABLED`. There is no migration tool for Neo4j: add a constraint or index here, never in passing elsewhere (`tests/test_neo4j_schema.py` fails otherwise). |
 | `__init__.py` | Empty. |
 
 ## Usage pattern

@@ -33,6 +33,7 @@ from app.routers.open_ranking.schemas import (
     RankResult,
     ore_responses,
 )
+from app.services.relationship_sets import set_name
 from app.utils.auth.nwt import optional_nwt_signer
 
 router = APIRouter()
@@ -54,7 +55,10 @@ def _safe_rank(value) -> float:
 
 
 async def _redis_inbound_count(prefix: str, pubkey: str) -> int:
-    return int(await redis_client.scard(f"{prefix}{pubkey}"))  # type: ignore[misc]
+    name = await set_name(pubkey)
+    if name is None:
+        return 0
+    return int(await redis_client.scard(f"{prefix}{name}"))  # type: ignore[misc]
 
 
 async def _top_inbound_response(

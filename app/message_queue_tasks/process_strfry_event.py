@@ -1,5 +1,6 @@
 from neo4j import AsyncSession as AsyncNeoSession
 
+from app.core.config import settings
 from app.core.database import db_session
 from app.core.loggr import loggr
 from app.core.redis_db import redis_client
@@ -8,8 +9,10 @@ from app.repos.event_tagging_repo import (
     upsert_tagging_header_on_db,
 )
 from app.repos.tagging_repo import upsert_tag_element_on_db, upsert_user_tagging_on_db
+from app.repos.user_id_repo import ids_for
 from app.services.compromised_authors import compromised_authors
 from app.services.designation_service import DESIGNATION_KIND, parse_designated_pubkeys
+from app.services.relationship_sets import set_names
 from app.services.report_graph_service import (
     diff_author_targets,
     extract_report_targets,
@@ -55,6 +58,77 @@ async def _write(session: AsyncNeoSession, cypher: str, **params):
 RELATIONSHIP_KINDS = frozenset({3, 10000, 1984, 5, DESIGNATION_KIND})
 
 
+class UserIdMismatch(RuntimeError):
+    """A node already holds a user_id other than the one the table gives its pubkey."""
+
+
+async def _user_ids(publisher: str, targets: list[str]) -> dict[str, int] | None:
+    """The ids for an event's author and targets, committed before any graph write;
+    None while ids are off."""
+    if not settings.user_ids_enabled:
+        return None
+    return await ids_for([publisher, *targets])
+
+
+def _set_id_if_none(node: str, value: str) -> str:
+    # Never overwritten, and no write lock on a node that already has one.
+    return (
+        f"FOREACH (_ IN CASE WHEN {node}.user_id IS NULL THEN [1] ELSE [] END"
+        f" | SET {node}.user_id = {value})"
+    )
+
+
+def _merge_with_ids_cypher(rel: str, prelude: str = "") -> str:
+    return f"""
+    MERGE (pub:NostrUser {{pubkey: $publisher}})
+    {_set_id_if_none("pub", "$publisher_id")}
+    WITH pub{prelude}
+    UNWIND $targets AS row
+        MERGE (t:NostrUser {{pubkey: row.pubkey}})
+        {_set_id_if_none("t", "row.user_id")}
+        MERGE (pub)-[:{rel}]->(t)
+    WITH pub, collect(CASE WHEN t.user_id <> row.user_id THEN t.pubkey END) AS wrong
+    RETURN wrong + CASE WHEN pub.user_id <> $publisher_id THEN [pub.pubkey] ELSE [] END
+        AS mismatched
+    """
+
+
+async def _write_with_ids(
+    session: AsyncNeoSession,
+    rel: str,
+    publisher: str,
+    targets: list[str],
+    ids: dict[str, int],
+    prelude: str = "",
+    **params,
+):
+    """Merge the author, the targets and their `rel` edges, giving each node its
+    id. A node holding a different id fails the event: the transaction rolls back."""
+    cypher = _merge_with_ids_cypher(rel, prelude)
+    rows = [{"pubkey": pk, "user_id": ids[pk]} for pk in targets]
+
+    async def work(tx):
+        result = await tx.run(
+            cypher,
+            publisher=publisher,
+            publisher_id=ids[publisher],
+            targets=rows,
+            **params,
+        )
+        record = await result.single()
+        mismatched = record["mismatched"] if record else []
+        if mismatched:
+            raise UserIdMismatch(
+                f"{len(mismatched)} nodes hold another user_id: {mismatched[:5]}"
+            )
+
+    try:
+        await session.execute_write(work)
+    except UserIdMismatch as exc:
+        logger.error("event from %s not applied: %s", publisher, exc)
+        raise
+
+
 async def process_strfry_event(session: AsyncNeoSession, event: dict):
     kind = event.get("kind")
 
@@ -89,16 +163,6 @@ async def process_strfry_event(session: AsyncNeoSession, event: dict):
         return await process_event_kind_39999(event)
 
 
-async def create_pubkey_index(session: AsyncNeoSession):
-    query = """
-    CREATE CONSTRAINT nostr_user_pubkey IF NOT EXISTS
-    FOR (u:NostrUser)
-    REQUIRE u.pubkey IS UNIQUE
-    """
-
-    await session.run(query)
-
-
 async def process_event_kind_1984(session: AsyncNeoSession, event: dict):
     publisher = event["pubkey"]
     reported_pubkeys = extract_report_targets(event)
@@ -115,9 +179,13 @@ async def process_event_kind_1984(session: AsyncNeoSession, event: dict):
         MERGE (pub)-[:REPORTS]->(reported)
     """
 
-    await _write(
-        session, cypher, publisher=publisher, reported_pubkeys=reported_pubkeys
-    )
+    ids = await _user_ids(publisher, reported_pubkeys)
+    if ids is None:
+        await _write(
+            session, cypher, publisher=publisher, reported_pubkeys=reported_pubkeys
+        )
+    else:
+        await _write_with_ids(session, "REPORTS", publisher, reported_pubkeys, ids)
 
     await _update_reverse_sets(
         REPORTED_BY_KEY_PREFIX, publisher, added_pubkeys=reported_pubkeys
@@ -154,9 +222,13 @@ async def process_event_kind_10000(session: AsyncNeoSession, event: dict):
         MERGE (f:NostrUser {pubkey: fp})
         MERGE (pub)-[:MUTES]->(f)
     """
-    await _write(
-        session, upsert_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys
-    )
+    ids = await _user_ids(publisher, muted_pubkeys)
+    if ids is None:
+        await _write(
+            session, upsert_cypher, publisher=publisher, muted_pubkeys=muted_pubkeys
+        )
+    else:
+        await _write_with_ids(session, "MUTES", publisher, muted_pubkeys, ids)
 
     cleanup_cypher = """
     MATCH (pub:NostrUser {pubkey: $publisher})-[r:MUTES]->(oldF)
@@ -205,9 +277,16 @@ async def process_event_kind_3(session: AsyncNeoSession, event: dict):
         MERGE (f:NostrUser {pubkey: fp})
         MERGE (pub)-[:FOLLOWS]->(f)
     """
-    await _write(
-        session, upsert_cypher, publisher=publisher, followed_pubkeys=followed_pubkeys
-    )
+    ids = await _user_ids(publisher, followed_pubkeys)
+    if ids is None:
+        await _write(
+            session,
+            upsert_cypher,
+            publisher=publisher,
+            followed_pubkeys=followed_pubkeys,
+        )
+    else:
+        await _write_with_ids(session, "FOLLOWS", publisher, followed_pubkeys, ids)
 
     cleanup_cypher = """
     MATCH (pub:NostrUser {pubkey: $publisher})-[r:FOLLOWS]->(oldF)
@@ -227,6 +306,13 @@ async def process_event_kind_3(session: AsyncNeoSession, event: dict):
         added_pubkeys=followed_pubkeys,
         removed_pubkeys=removed,
     )
+
+
+_DROP_UNLISTED_DESIGNATIONS = """
+    OPTIONAL MATCH (pub)-[r:DESIGNATES]->(old:NostrUser)
+    WHERE NOT old.pubkey IN $designated
+    DELETE r
+    WITH DISTINCT pub"""
 
 
 async def process_event_kind_10040(session: AsyncNeoSession, event: dict):
@@ -258,14 +344,30 @@ async def process_event_kind_10040(session: AsyncNeoSession, event: dict):
         MATCH (:NostrUser {pubkey: $publisher})-[r:DESIGNATES]->()
         DELETE r
         """
-    await _write(session, cypher, publisher=publisher, designated=designated)
+    ids = await _user_ids(publisher, designated) if designated else None
+    if ids is None:
+        await _write(session, cypher, publisher=publisher, designated=designated)
+    else:
+        await _write_with_ids(
+            session,
+            "DESIGNATES",
+            publisher,
+            designated,
+            ids,
+            prelude=_DROP_UNLISTED_DESIGNATIONS,
+            designated=designated,
+        )
 
+    names = await set_names([publisher, *designated])
+    if publisher not in names:
+        return
+    members = [names[pk] for pk in designated if pk in names]
     # Replaced whole, atomically: a reader never sees half of the old list.
-    key = f"{DESIGNATES_KEY_PREFIX}{publisher}"
+    key = f"{DESIGNATES_KEY_PREFIX}{names[publisher]}"
     pipe = redis_client.pipeline(transaction=True)
     pipe.delete(key)
-    if designated:
-        pipe.sadd(key, *designated)
+    if members:
+        pipe.sadd(key, *members)
     await pipe.execute()
 
 
@@ -279,11 +381,18 @@ async def _update_reverse_sets(
     removed_pubkeys = removed_pubkeys or []
     if not added_pubkeys and not removed_pubkeys:
         return
+    # Pubkeys, or User ids once scores are in Postgres (services/relationship_sets.py).
+    names = await set_names([publisher, *added_pubkeys, *removed_pubkeys])
+    member = names.get(publisher)
+    if member is None:
+        return
     pipe = redis_client.pipeline(transaction=False)
     for pk in added_pubkeys:
-        pipe.sadd(f"{key_prefix}{pk}", publisher)
+        if pk in names:
+            pipe.sadd(f"{key_prefix}{names[pk]}", member)
     for pk in removed_pubkeys:
-        pipe.srem(f"{key_prefix}{pk}", publisher)
+        if pk in names:
+            pipe.srem(f"{key_prefix}{names[pk]}", member)
     await pipe.execute()
 
 
@@ -333,18 +442,23 @@ async def process_event_kind_5(session: AsyncNeoSession, event: dict):
         )
 
     if diff.to_add:
-        await _write(
-            session,
-            """
-            MERGE (pub:NostrUser {pubkey: $author})
-            WITH pub
-            UNWIND $targets AS tp
-                MERGE (t:NostrUser {pubkey: tp})
-                MERGE (pub)-[:REPORTS]->(t)
-            """,
-            author=author,
-            targets=sorted(diff.to_add),
-        )
+        to_add = sorted(diff.to_add)
+        ids = await _user_ids(author, to_add)
+        if ids is None:
+            await _write(
+                session,
+                """
+                MERGE (pub:NostrUser {pubkey: $author})
+                WITH pub
+                UNWIND $targets AS tp
+                    MERGE (t:NostrUser {pubkey: tp})
+                    MERGE (pub)-[:REPORTS]->(t)
+                """,
+                author=author,
+                targets=to_add,
+            )
+        else:
+            await _write_with_ids(session, "REPORTS", author, to_add, ids)
 
     # Re-assert the whole surviving set rather than only the Neo4j delta: Redis is
     # what GrapeRank reads and it drifts from Neo4j independently (the backfill

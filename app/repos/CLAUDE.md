@@ -16,6 +16,8 @@ never touch SQLAlchemy `Select`s or Cypher strings directly.
 | `passkey_vault_repo.py` | PostgreSQL (`passkey_vault`) | Passkey vault rows: by credential hash, by owner, an owner-only `ON CONFLICT DO UPDATE` upsert (returns nothing for someone else's hash; resets the counter), a conditional mark-used that only moves the counter forward, owner-scoped delete |
 | `tagging_repo.py` / `event_tagging_repo.py` | PostgreSQL (`nostr_tag_element`, `nostr_user_tagging` / `nostr_tagging_header`, `nostr_event_tagging`, `nostr_tagged_event`) | Trusted Lists input: tag elements and pubkey taggings; tagging headers, event taggings and the by-id lookup cache. See the sections below |
 | `compromised_pubkey_repo.py` | PostgreSQL (`compromised_pubkey`) | Accounts marked compromised: the set each pipeline stage reads once per run, list, upsert, delete |
+| `user_id_repo.py` | PostgreSQL, **Scorecard database** (`nostr_user`) | Pubkey ↔ User id: `ids_for(pubkeys, create=True)` and `pubkeys_for(user_ids)`. The only code that writes `nostr_user`. Opens and commits its own session (no `db` argument), so an id is durable before the caller writes it to Neo4j. A known pubkey never draws from the sequence. Also `count_users`, `all_user_ids` and `restore_users` (explicit ids, after a restore only) for `scripts/backfill_user_ids.py` |
+| `scorecard_repo.py` | PostgreSQL, **Scorecard database** (`scorecard`) | One row per (Observer, Observee): `influence`, `hops`, `verified_followers`. Callers pass pubkeys and the caller's session; the statements translate through `nostr_user` (rows are `COPY`'d into a temp table and joined). Set (upsert, unchanged rows skipped), clear by pubkey, clear everyone not reached, list, and clear one Observee for every Observer (a table scan, used when an account is marked compromised). A scored pubkey with no user id raises `MissingUserIds`. `scorecard_observer` holds when each Observer's Scorecards last changed (`mark_observer_written_on_db`, called in the transaction that changes them; `observer_written_at`): the whitelist endpoint's version stamp |
 | `user_repo.py` | **Neo4j** | All Cypher queries for the social graph (follows/mutes/reports + influence-weighted counts/paginations) |
 | `billing_plan_repo.py` | PostgreSQL (`billing_plan`) | Mapping CRUD — Flash plan → scheduling policy, and whether we sell it. Listed by `id`, which is a stable order rather than a meaningful one: display order is Flash's `sortOrder`. `is_active` means *sellable*: only the plans-for-sale listing filters on it, never the entitlement lookup. There is **no** scheduling-id → plan lookup — a subscriber's tier is their policy, read straight off the assignment |
 | `support_repo.py` | PostgreSQL (`support_ticket`, `support_message`, `support_event`) | Ticket list statement builders (newest activity first), the unclosed-ticket count behind the cap and the per-pubkey advisory lock that makes it hold, plain inserts, the thread reads — messages and events ordered by **`id`**, not `created_at`, which ties when two rows land in the same millisecond — `lock_support_ticket_on_db` (the `FOR UPDATE` read every mutation opens with), and `build_admin_support_tickets_stmt` — the queue, with each filter applied only when given, so an unfiltered queue constrains nothing. `build_expired_diagnostics_stmt` / `clear_expired_support_diagnostics_on_db` clear the snapshot past its retention window — dated from filing, skipping rows already cleared. `select_user_support_digest_on_db` / `select_admin_support_digest_on_db` back the conditional GET: `max(updated_at), count(*)` over the same rows the listing would return, through the shared `_admin_support_filters` so the two can never disagree about scope. **`updated_at`, never `last_message_at`** — resolving, recategorizing and a message-less reopen change what the client renders while touching no message, and a validator keyed on message activity reports those as unchanged forever. **Unindexed on purpose (for now):** nothing indexes `updated_at`, `status` or `category`, so the admin digest is a scan. It is still strictly cheaper than the listing it guards — same rows, no sort, no limit, no serialization — which is the bar. If polling ever shows up in slow queries, `(pubkey, updated_at desc)` and `(updated_at desc)` are the indexes to reach for; pick them off a real plan rather than a guess. No ticket-field writes beyond insert — the service's private helpers own those |
@@ -167,6 +169,31 @@ Don't write the property name into the query string — a per-observer name in t
 query text gives every observer its own Neo4j plan-cache entry. The write side
 follows the same rule from the other direction: `write_neo4j_results.py` builds
 the `{name: value}` map in Python and `set_observer_scores` does `SET n += row.props`.
+
+**Score reads from the Scorecard database (`SCORES_IN_POSTGRES`, default off).** Reads are
+graph first: Cypher answers "who" by `user_id` and never touches a score property, then
+`scorecard_repo.scores_by_id` / `scores_by_pubkey` (the one read helper, opening its own session)
+give pubkeys and scores, and the verdicts (`verified`, `tier`, flagged, live reporter counts) are
+computed in Python with `tier_thresholds.classify_tier`. Each converted function keeps its Neo4j
+form behind the setting; the Scorecard form lives beside it as `_…_from_scorecards`. A graph id
+missing from `nostr_user` raises rather than returning a partial answer.
+The paged and counted reads (`/connections`, flagged, `/stats`, top inbound) take ids only from the
+graph, in one collected list per section plus the reporters of the few members anyone reports, and
+tier, filter, sort and page in SQL (`scorecard_repo.page_of_members` / `count_members`, whose
+`_TIER_SQL` restates `classify_tier`). The unpaginated graph data reads every member's row.
+Live counts (alert reporters, verified muters, the capped follower fallback) are two steps: the
+graph returns each subject's raters as maps (`_raters`, `{id}` today, room for a report's reason),
+`scorecard_repo.ids_above` says which sit above the Observer's cutoff. Observer-wide reads
+(`get_ta_observees_for_observer`) are one indexed range over the Observer's rows, no graph read.
+`tests/test_score_reads_go_through_scorecards.py` fails on a new score read that is not switched
+(its not-converted list is empty);
+`tests/integration/test_score_reads_equivalence_integration.py` holds both forms to the same answer.
+
+**The whitelist** (an Observer's Valid users) is a stored JSON snapshot in `observerwhitelist`
+(`observer_whitelist_repo.py`) until `SCORES_IN_POSTGRES`; with it on, nothing writes the snapshot
+and `user_service.get_whitelisted_pubkeys_of_observer` derives the list from Scorecards: Influence
+rounded to two decimals in Python (as the snapshot was), at or above the validity cutoff, in pubkey
+order. A changed cutoff therefore applies at read time, not at the Observer's next run.
 
 ## Common tasks
 
