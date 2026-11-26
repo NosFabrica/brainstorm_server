@@ -23,10 +23,11 @@ PIPELINE_FLUSH_EVERY = 5000
 DONE_MARKER_KEY = "migration:redis_backfill:done"
 # The sets name users by pubkey, or by User id once scores are in Postgres
 # (services/relationship_sets.py). Only the naming in use is kept current, so
-# each has its own marker, and the pubkey sets are flagged stale while ids are
-# in use. Switching either way renames the current sets into the other naming:
-# the same edges, so a run sees what it saw before. Neo4j is read only when
-# there are no complete sets to rename (a wiped Redis).
+# each has its own marker. Switching either way renames the current sets into
+# the other naming: the same edges, so a run sees what it saw before. Once the
+# id sets are complete the pubkey ones are flagged stale and removed; the flag
+# is what a later switch back to pubkeys starts from. Neo4j is read only when
+# there are no sets to rename (a wiped Redis).
 TRANSLATE_KEYS = 500
 LOOKUP_BATCH = 10_000
 IDS_DONE_MARKER_KEY = "migration:redis_backfill:ids:done"
@@ -73,10 +74,11 @@ async def _redis_has_relationship_data(redis_client) -> bool:
     return False
 
 
-async def _has_pubkey_sets(redis_client) -> bool:
+async def _has_sets(redis_client, ids: bool) -> bool:
+    """Whether any reverse set of that naming exists."""
     for prefix in _RELATIONSHIP_TO_PREFIX.values():
         async for key in redis_client.scan_iter(match=f"{prefix}*", count=1000):
-            if is_set_name(key[len(prefix) :], False):
+            if is_set_name(key[len(prefix) :], ids):
                 return True
     return False
 
@@ -331,18 +333,23 @@ async def _build_id_sets_if_needed(redis_client) -> None:
     """First start with scores in Postgres: the id-named sets are made from the
     pubkey-named ones (from Neo4j when there are none). Runs before the ingest
     consumer starts and after the naming is claimed, so nothing writes them meanwhile.
+
+    The pubkey sets are right until that has finished once: no server ingests by
+    id before. From then they are stale, so they are removed, and a start that
+    finds the stale flag never renames from them again.
     """
     if await redis_client.exists(IDS_DONE_MARKER_KEY):
         logger.info(f"Redis id sets marker '{IDS_DONE_MARKER_KEY}' present — skipping.")
         return
+    if await redis_client.exists(PUBKEYS_STALE_KEY):
+        await _restore_id_sets_marker(redis_client)
+        return
     # Whatever pubkey sets exist are what runs read today, with or without the
     # done marker (older environments were filled before it existed).
-    have_pubkey_sets = await _has_pubkey_sets(redis_client)
+    have_pubkey_sets = await _has_sets(redis_client, ids=False)
     if not have_pubkey_sets and not await _is_graph_db_populated():
         logger.info("Graph DB not populated yet — skipping Redis id sets.")
         return
-    # From here on only the id sets are kept current.
-    await redis_client.set(PUBKEYS_STALE_KEY, "1")
     removed = await _delete_sets(redis_client, ids=True)
     if have_pubkey_sets:
         logger.info(
@@ -355,15 +362,39 @@ async def _build_id_sets_if_needed(redis_client) -> None:
             f"Building Redis id sets from Neo4j ({removed} leftover keys removed)."
         )
         await _rebuild_sets(redis_client, ids=True)
-    await redis_client.set(IDS_DONE_MARKER_KEY, "1")
+    await _id_sets_complete(redis_client)
+
+
+async def _id_sets_complete(redis_client) -> None:
+    """From here only the id sets are kept current."""
+    await redis_client.mset({PUBKEYS_STALE_KEY: "1", IDS_DONE_MARKER_KEY: "1"})
     logger.info(f"Redis id sets complete; wrote marker '{IDS_DONE_MARKER_KEY}'.")
+    removed = await _delete_sets(redis_client, ids=False)
+    logger.info(f"{removed} stale pubkey-named sets removed.")
+
+
+async def _restore_id_sets_marker(redis_client) -> None:
+    """The id sets were completed once and their marker is gone (Redis may evict
+    it). They are the sets in use; the pubkey ones, if any are left, are stale."""
+    if await _has_sets(redis_client, ids=True):
+        logger.warning(
+            f"Redis id sets marker '{IDS_DONE_MARKER_KEY}' was missing; the id sets"
+            " are kept as they are and the marker is written again."
+        )
+    elif await _is_graph_db_populated():
+        logger.warning("Redis holds no id sets: building them from Neo4j.")
+        await _rebuild_sets(redis_client, ids=True)
+    else:
+        logger.info("Graph DB not populated yet — skipping Redis id sets.")
+        return
+    await _id_sets_complete(redis_client)
 
 
 async def _rebuild_pubkey_sets_after_ids(redis_client) -> None:
-    """Back from ids to pubkeys: the pubkey sets missed everything ingested
-    meanwhile, so they are replaced by the id sets renamed back (from Neo4j when
-    the id sets were never finished). The id sets are stale from now."""
-    have_id_sets = bool(await redis_client.exists(IDS_DONE_MARKER_KEY))
+    """Back from ids to pubkeys: the id sets, complete since the stale flag was
+    set, are renamed back (from Neo4j when Redis holds none). The id sets are
+    stale from now."""
+    have_id_sets = await _has_sets(redis_client, ids=True)
     removed = await _delete_sets(redis_client, ids=False)
     if have_id_sets:
         logger.info(
