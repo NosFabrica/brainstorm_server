@@ -194,6 +194,21 @@ def test_the_relay_decides_and_only_the_holders_keys_are_decrypted(zeroing):
     ]
 
 
+def test_with_scorecards_in_postgres_the_whitelist_snapshots_are_left_alone(
+    zeroing, monkeypatch
+):
+    """Nothing reads the snapshots then, and rewriting every Observer's is the
+    slowest step of a zeroing."""
+    monkeypatch.setattr(svc.settings, "scores_in_postgres", True)
+    zeroing.relay = set(zeroing.signer.values())
+
+    asyncio.run(svc.zero_compromised(HEX))
+
+    svc.remove_pubkey_from_whitelists_on_db.assert_not_awaited()
+    assert zeroing.recorded[0]["whitelists_updated"] == 0
+    assert zeroing.recorded[0]["neo4j_cleared"] == 3
+
+
 def test_a_failed_relay_read_falls_back_to_the_db_and_records_it(zeroing):
     a, b, c = sorted(zeroing.keys)
     zeroing.relay = None
