@@ -348,9 +348,11 @@ async def zero_compromised(
         report.edges_cut = await cut_outgoing_ratings(pubkey)
         report.neo4j_cleared = await clear_stored_scores(pubkey)
         async with db_session() as db:
-            report.whitelists_updated = await remove_pubkey_from_whitelists_on_db(
-                db, pubkey
-            )
+            # With Scorecards in Postgres the whitelist is read from them.
+            if not settings.scores_in_postgres:
+                report.whitelists_updated = await remove_pubkey_from_whitelists_on_db(
+                    db, pubkey
+                )
             await record_zero_report_on_db(db, pubkey, report.summary())
             await db.commit()
     logger.info(
